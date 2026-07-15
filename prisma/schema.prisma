@@ -1,0 +1,252 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Workspace {
+  id                   String   @id @default(uuid())
+  name                 String   @default("Default")
+  monthlyBudgetCents   Int      @default(5000)
+  autoAnalyzeRulesJson String   @default("{}")
+  analysisConfigJson   String   @default("{\"backend\":\"gemini-native\",\"fallback\":\"gemini-text\",\"geminiModel\":\"gemini-2.5-flash-lite\"}")
+  failureCountsJson    String   @default("{}")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  sources       Source[]
+  boards        Board[]
+  usageLogs     UsageLog[]
+  autoAnalyzeRuns AutoAnalyzeRun[]
+}
+
+model Source {
+  id               String    @id @default(uuid())
+  workspaceId      String
+  platform         String    // tiktok | reels | shorts
+  sourceType       String    // creator | keyword | hashtag
+  query            String
+  language         String    @default("en")
+  videoLimit       Int       @default(50)
+  refreshSchedule  String    @default("manual") // manual | daily | weekly
+  isActive         Boolean   @default(true)
+  nicheTag         String?
+  createdAt        DateTime  @default(now())
+  lastRefreshedAt  DateTime?
+  consecutiveFails Int       @default(0)
+
+  workspace    Workspace      @relation(fields: [workspaceId], references: [id])
+  videos       Video[]
+  refreshRuns  RefreshRun[]
+
+  @@index([workspaceId])
+  @@index([platform])
+  @@index([isActive])
+}
+
+model Video {
+  id              String   @id @default(uuid())
+  sourceId        String
+  platform        String   // tiktok | reels | shorts
+  externalId      String
+  url             String
+  thumbnailUrl    String   @default("")
+  creatorHandle   String
+  creatorFollowers Int?
+  caption         String   @default("")
+  postedAt        DateTime
+  views           Int      @default(0)
+  likes           Int      @default(0)
+  comments        Int      @default(0)
+  shares          Int?
+  saves           Int?
+  durationSec     Int?
+  transcript      String?
+  transcriptSource String  @default("none") // captions | asr | none
+  rawJson         String   @default("{}")
+  scrapedAt       DateTime @default(now())
+
+  source    Source      @relation(fields: [sourceId], references: [id])
+  score     Score?
+  analyses  Analysis[]
+  hooks     Hook[]
+  swipeEntries SwipeEntry[]
+  ideas     Idea[]
+
+  @@index([sourceId])
+  @@index([platform])
+  @@index([creatorHandle])
+  @@index([postedAt])
+  @@index([views])
+}
+
+model Baseline {
+  id            String   @id @default(uuid())
+  creatorHandle String
+  platform      String
+  medianViews   Float
+  sampleSize    Int
+  computedAt    DateTime @default(now())
+
+  @@unique([creatorHandle, platform])
+  @@index([creatorHandle])
+}
+
+model Score {
+  videoId       String   @id
+  outlierScore  Float
+  scoreType     String   @default("actual") // actual | estimated
+  explanation   String
+  scoredAt      DateTime @default(now())
+
+  video Video @relation(fields: [videoId], references: [id])
+
+  @@index([outlierScore])
+}
+
+model Analysis {
+  id            String   @id @default(uuid())
+  videoId       String
+  schemaVersion String   @default("v2")
+  analysisJson  String   // JSON string of the analysis
+  analysisBasis String   // video | video+transcript | frames+transcript | frames+caption | transcript+thumbnail | transcript-only | thumbnail+caption | caption+metadata-only
+  backend       String   @default("gemini-native") // gemini-native | frames | hybrid
+  model         String   @default("gemini-2.5-flash-lite")
+  costCents     Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  video Video       @relation(fields: [videoId], references: [id])
+  hooks Hook[]
+  ideas Idea[]
+  briefs Brief[]
+
+  @@index([videoId])
+}
+
+model Hook {
+  id           String   @id @default(uuid())
+  analysisId   String?
+  videoId      String
+  text         String
+  hookType     String   // POV | curiosity_gap | bold_claim | pattern_interrupt | question | ...
+  placement    String   // spoken | on_screen | visual
+  origin       String   @default("extracted") // extracted | generated
+  nicheTag     String?
+  createdAt    DateTime @default(now())
+
+  analysis Analysis?  @relation(fields: [analysisId], references: [id])
+  video    Video      @relation(fields: [videoId], references: [id])
+
+  @@index([hookType])
+  @@index([nicheTag])
+  @@index([origin])
+}
+
+model Board {
+  id          String   @id @default(uuid())
+  workspaceId String
+  name        String
+  createdAt   DateTime @default(now())
+
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id])
+  swipeEntries  SwipeEntry[]
+
+  @@index([workspaceId])
+}
+
+model SwipeEntry {
+  id                 String   @id @default(uuid())
+  boardId            String
+  videoId            String
+  analysisSnapshotJson String  @default("{}")
+  notes              String   @default("")
+  savedAt            DateTime @default(now())
+
+  board Board @relation(fields: [boardId], references: [id])
+  video Video @relation(fields: [videoId], references: [id])
+
+  @@unique([boardId, videoId])
+  @@index([boardId])
+}
+
+model Idea {
+  id                  String   @id @default(uuid())
+  videoId             String
+  analysisId          String?
+  transferablePattern String
+  whyItWorked         String
+  adaptation          String
+  status              String   @default("new") // new | briefed | tested | archived
+  createdAt           DateTime @default(now())
+
+  video    Video    @relation(fields: [videoId], references: [id])
+  analysis Analysis? @relation(fields: [analysisId], references: [id])
+  briefs   Brief[]
+
+  @@index([status])
+}
+
+model Brief {
+  id             String    @id @default(uuid())
+  ideaId         String?
+  analysisId     String
+  briefJson      String
+  exportedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  analysis Analysis? @relation(fields: [analysisId], references: [id])
+  idea     Idea?     @relation(fields: [ideaId], references: [id])
+}
+
+model UsageLog {
+  id          String   @id @default(uuid())
+  workspaceId String
+  kind        String   // scrape | ai
+  provider    String
+  units       Int      @default(1)
+  costCents   Int      @default(0)
+  refId       String?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@index([workspaceId])
+  @@index([kind])
+  @@index([createdAt])
+}
+
+model RefreshRun {
+  id          String   @id @default(uuid())
+  sourceId    String
+  itemsPulled Int      @default(0)
+  newVideos   Int      @default(0)
+  errorsJson  String   @default("[]")
+  costCents   Int      @default(0)
+  ranAt       DateTime @default(now())
+
+  source Source @relation(fields: [sourceId], references: [id])
+
+  @@index([sourceId])
+  @@index([ranAt])
+}
+
+model AutoAnalyzeRun {
+  id              String   @id @default(uuid())
+  workspaceId     String
+  candidateCount  Int      @default(0)
+  analyzedCount   Int      @default(0)
+  skippedCount    Int      @default(0)
+  failedCount     Int      @default(0)
+  totalCostCents  Int      @default(0)
+  batchMode       Boolean  @default(true)
+  resultsJson     String   @default("[]")
+  ranAt           DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@index([workspaceId])
+  @@index([ranAt])
+}

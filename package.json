@@ -1,0 +1,28 @@
+{
+  "name": "slashloop-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "DATABASE_URL=\"file:$PWD/prisma/slashloop.db\" bun --hot src/index.ts",
+    "start": "DATABASE_URL=\"file:$PWD/prisma/slashloop.db\" bun src/index.ts",
+    "seed": "DATABASE_URL=\"file:$PWD/prisma/slashloop.db\" bun src/seed.ts",
+    "db:push": "DATABASE_URL=\"file:$PWD/prisma/slashloop.db\" prisma db push --schema prisma/schema.prisma",
+    "db:generate": "DATABASE_URL=\"file:$PWD/prisma/slashloop.db\" prisma generate --schema prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@prisma/client": "6.11.1",
+    "date-fns": "^4.1.0",
+    "uuid": "^11.1.0",
+    "z-ai-web-dev-sdk": "^0.0.18",
+    "zod": "^4.0.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.14",
+    "@types/node": "^22.15.21",
+    "@types/uuid": "^10.0.0",
+    "prisma": "6.11.1",
+    "typescript": "^5"
+  }
+}

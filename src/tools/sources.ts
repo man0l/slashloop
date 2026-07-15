@@ -1,0 +1,262 @@
+// ---------------------------------------------------------------------------
+// MCP Tools: Source Management (CRUD + refresh)
+// ---------------------------------------------------------------------------
+
+import { z } from 'zod/v4';
+import { db } from '../db.js';
+import { scrapeSource } from '../lib/apify.js';
+import { assertApifyCap, getApifyCapStatus, SpendCapExceededError } from '../lib/spend-cap.js';
+import { batchScoreVideos } from '../scoring.js';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+
+export function registerSourceTools(server: McpServer) {
+
+  // ---- list_sources ----
+  server.tool('list_sources',
+    'List all tracked sources. Optional filters: platform, sourceType, isActive.',
+    {
+      platform: z.enum(['tiktok', 'reels', 'shorts']).optional(),
+      sourceType: z.enum(['creator', 'keyword', 'hashtag']).optional(),
+      isActive: z.boolean().optional(),
+      nicheTag: z.string().optional(),
+    },
+    async ({ platform, sourceType, isActive, nicheTag }) => {
+      const sources = await db.source.findMany({
+        where: { platform, sourceType, isActive, nicheTag: nicheTag || undefined },
+        include: {
+          _count: { select: { videos: true, refreshRuns: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(sources.map(s => ({
+          id: s.id,
+          platform: s.platform,
+          sourceType: s.sourceType,
+          query: s.query,
+          language: s.language,
+          videoLimit: s.videoLimit,
+          refreshSchedule: s.refreshSchedule,
+          isActive: s.isActive,
+          nicheTag: s.nicheTag,
+          videoCount: s._count.videos,
+          refreshCount: s._count.refreshRuns,
+          lastRefreshedAt: s.lastRefreshedAt?.toISOString() ?? null,
+          consecutiveFails: s.consecutiveFails,
+          createdAt: s.createdAt.toISOString(),
+        })), null, 2) }],
+      };
+    });
+
+  // ---- get_source ----
+  server.tool('get_source',
+    'Get details of a single tracked source by ID.',
+    { sourceId: z.string().describe('Source ID') },
+    async ({ sourceId }) => {
+      const source = await db.source.findUnique({
+        where: { id: sourceId },
+        include: {
+          videos: { take: 5, orderBy: { postedAt: 'desc' }, select: { id: true, views: true, postedAt: true } },
+          refreshRuns: { take: 3, orderBy: { ranAt: 'desc' } },
+        },
+      });
+      if (!source) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Source not found' }) }], isError: true };
+
+      return { content: [{ type: 'text' as const, text: JSON.stringify(source, null, 2) }] };
+    });
+
+  // ---- create_source ----
+  server.tool('create_source',
+    'Add a new tracked source (creator, keyword, or hashtag) to monitor.',
+    {
+      platform: z.enum(['tiktok', 'reels', 'shorts']).describe('Platform to track'),
+      sourceType: z.enum(['creator', 'keyword', 'hashtag']).describe('Type of source'),
+      query: z.string().describe('Handle, keyword phrase, or hashtag (with #)'),
+      language: z.string().default('en').describe('Language code'),
+      videoLimit: z.number().min(1).max(200).default(50).describe('Max videos per refresh'),
+      refreshSchedule: z.enum(['manual', 'daily', 'weekly']).default('manual'),
+      nicheTag: z.string().optional().describe('Niche/workspace tag'),
+    },
+    async ({ platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag }) => {
+      // Get first workspace
+      const workspace = await db.workspace.findFirst();
+      if (!workspace) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No workspace found' }) }], isError: true };
+
+      const source = await db.source.create({
+        data: {
+          workspaceId: workspace.id,
+          platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag,
+        },
+      });
+
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ message: 'Source created', source: { id: source.id, ...source } }, null, 2) }],
+      };
+    });
+
+  // ---- update_source ----
+  server.tool('update_source',
+    'Update a tracked source. Pass only the fields you want to change.',
+    {
+      sourceId: z.string(),
+      query: z.string().optional(),
+      videoLimit: z.number().min(1).max(200).optional(),
+      refreshSchedule: z.enum(['manual', 'daily', 'weekly']).optional(),
+      isActive: z.boolean().optional(),
+      nicheTag: z.string().nullable().optional(),
+      language: z.string().optional(),
+    },
+    async ({ sourceId, ...updates }) => {
+      const source = await db.source.update({
+        where: { id: sourceId },
+        data: updates,
+      }).catch(() => null);
+      if (!source) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Source not found' }) }], isError: true };
+
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ message: 'Source updated', source }, null, 2) }] };
+    });
+
+  // ---- delete_source ----
+  server.tool('delete_source',
+    'Delete a tracked source and all its videos, scores, and analyses.',
+    { sourceId: z.string() },
+    async ({ sourceId }) => {
+      // Delete in FK order
+      await db.hook.deleteMany({ where: { video: { sourceId } } });
+      await db.swipeEntry.deleteMany({ where: { video: { sourceId } } });
+      await db.idea.deleteMany({ where: { video: { sourceId } } });
+      await db.analysis.deleteMany({ where: { videoId: { in: (await db.video.findMany({ where: { sourceId }, select: { id: true } })).map(v => v.id) } } });
+      await db.score.deleteMany({ where: { videoId: { in: (await db.video.findMany({ where: { sourceId }, select: { id: true } })).map(v => v.id) } } });
+      await db.refreshRun.deleteMany({ where: { sourceId } });
+      await db.video.deleteMany({ where: { sourceId } });
+      await db.source.delete({ where: { id: sourceId } }).catch(() => null);
+
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ message: 'Source deleted', sourceId }) }] };
+    });
+
+  // ---- refresh_source ----
+  server.tool('refresh_source',
+    'Trigger a manual refresh for a source. TikTok uses the apify/tiktok-scraper actor (live). Instagram Reels and YouTube Shorts are stubs for now. All Apify calls are subject to the APIFY_SPEND_CAP_CENTS guardrail (default $5) — if exceeded, the call is refused and a cap_breach event is logged.',
+    {
+      sourceId: z.string(),
+      videoLimit: z.number().min(1).max(200).optional().describe('Override source video limit for this run'),
+    },
+    async ({ sourceId, videoLimit: limitOverride }) => {
+      const source = await db.source.findUnique({ where: { id: sourceId } });
+      if (!source) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Source not found' }) }], isError: true };
+
+      const limit = limitOverride ?? source.videoLimit;
+      const startTime = Date.now();
+      let itemsPulled = 0;
+      let newVideos = 0;
+      let costCents = 0;
+      const errors: string[] = [];
+
+      // Pre-flight: cap status check
+      if (source.platform !== 'shorts') {
+        const capStatus = await getApifyCapStatus(source.workspaceId);
+        if (capStatus.breached) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({
+              error: 'APIFY SPEND CAP ALREADY BREACHED',
+              capStatus,
+              message: 'Refresh refused. Raise APIFY_SPEND_CAP_CENTS in .env or wait until next month.',
+            }, null, 2) }],
+            isError: true,
+          };
+        }
+      }
+
+      try {
+        const result = await scrapeSource({
+          workspaceId: source.workspaceId,
+          platform: source.platform,
+          sourceType: source.sourceType as 'creator' | 'keyword' | 'hashtag',
+          query: source.query,
+          limit,
+        });
+
+        itemsPulled = result.items.length;
+        costCents = result.costCents;
+
+        // Persist videos (dedup by platform + externalId)
+        for (const nv of result.items) {
+          const existing = await db.video.findFirst({
+            where: { platform: nv.platform, externalId: nv.externalId },
+            select: { id: true },
+          });
+          if (existing) continue;
+
+          await db.video.create({
+            data: {
+              sourceId,
+              platform: nv.platform,
+              externalId: nv.externalId,
+              url: nv.url,
+              thumbnailUrl: nv.thumbnailUrl,
+              creatorHandle: nv.creatorHandle,
+              creatorFollowers: nv.creatorFollowers,
+              caption: nv.caption,
+              postedAt: new Date(nv.postedAt),
+              views: nv.views,
+              likes: nv.likes,
+              comments: nv.comments,
+              shares: nv.shares,
+              saves: nv.saves,
+              durationSec: nv.durationSec,
+              transcript: nv.transcript,
+              transcriptSource: nv.transcriptSource,
+              rawJson: JSON.stringify(nv.raw),
+            },
+          });
+          newVideos++;
+        }
+
+        // Re-score the source's videos so outliers surface
+        if (newVideos > 0) {
+          await batchScoreVideos(sourceId).catch(err => errors.push(`Scoring failed: ${(err as Error).message}`));
+        }
+      } catch (err) {
+        if (err instanceof SpendCapExceededError) {
+          // Cap breach — refuse and report
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({
+              error: 'SPEND CAP EXCEEDED',
+              message: err.message,
+              capStatus: await getApifyCapStatus(source.workspaceId),
+            }, null, 2) }],
+            isError: true,
+          };
+        }
+        errors.push((err as Error).message);
+      }
+
+      // Log the refresh run regardless of outcome
+      await db.refreshRun.create({
+        data: { sourceId, itemsPulled, newVideos, errorsJson: JSON.stringify(errors), costCents, ranAt: new Date() },
+      });
+      await db.source.update({ where: { id: sourceId }, data: { lastRefreshedAt: new Date() } });
+
+      const capStatus = source.platform !== 'shorts'
+        ? await getApifyCapStatus(source.workspaceId)
+        : null;
+
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          message: errors.length ? 'Refresh completed with errors' : 'Refresh successful',
+          sourceId,
+          platform: source.platform,
+          sourceType: source.sourceType,
+          query: source.query,
+          itemsPulled,
+          newVideos,
+          costCents,
+          costDisplay: `$${(costCents / 100).toFixed(4)}`,
+          durationMs: Date.now() - startTime,
+          errors: errors.length ? errors : undefined,
+          apifyCapStatus: capStatus,
+        }, null, 2) }],
+      };
+    });
+}

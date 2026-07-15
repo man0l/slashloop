@@ -1,0 +1,12 @@
+{
+  "name": "slashloop",
+  "owner": { "name": "man0l" },
+  "description": "Viral short-form video research toolkit — local MCP server plus track/discover/analyze skills.",
+  "plugins": [
+    {
+      "name": "slashloop",
+      "source": "./claude-plugin",
+      "description": "Viral short-form video research toolkit (MCP server + skills)."
+    }
+  ]
+}

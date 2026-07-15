@@ -1,0 +1,31 @@
+# Secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+
+# opencode config holds API keys in plaintext
+opencode.json
+opencode.jsonc
+
+# Build artifacts
+dist/
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+
+# Database — local SQLite, regenerate with `bun run db:push && bun run seed`
+prisma/slashloop.db
+
+# Logs
+*.log
+dev.log
+server.log
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# MCP client temp files
+.mcp-cache/
