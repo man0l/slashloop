@@ -2,9 +2,9 @@
   "mcpServers": {
     "slashloop": {
       "command": "bun",
-      "args": ["${CLAUDE_PROJECT_DIR}/src/index.ts"],
+      "args": ["C:/Users/manol/Projects/slashloop/src/index.ts"],
       "env": {
-        "DATABASE_URL": "file:${CLAUDE_PROJECT_DIR}/prisma/slashloop.db",
+        "DATABASE_URL": "file:C:/Users/manol/Projects/slashloop/prisma/slashloop.db",
         "GEMINI_API_KEY": "${user_config.geminiApiKey}",
         "APIFY_API_KEY": "${user_config.apifyApiKey}",
         "APIFY_SPEND_CAP_CENTS": "${user_config.spendCapCents}"
