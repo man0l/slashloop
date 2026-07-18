@@ -197,8 +197,18 @@ export function registerFeedTools(server: McpServer) {
           video: { select: { id: true, creatorHandle: true, platform: true, views: true, postedAt: true, source: { select: { query: true } } } },
         },
         orderBy: { outlierScore: 'desc' },
-        take: 20,
+        take: 50, // over-fetch so we can rank actual-first after the cut
       });
+
+      // `actual` outliers (real creator baseline) are the trustworthy signal.
+      // `estimated` (limited creator history) can be high-multiple noise, so
+      // rank them below actual in the displayed top list.
+      const actualCount = await db.score.count({ where: { outlierScore: { gte: 5 }, scoreType: 'actual', video: wsFilter } });
+      const estimatedCount = await db.score.count({ where: { outlierScore: { gte: 5 }, scoreType: 'estimated', video: wsFilter } });
+      const ranked = [
+        ...outliers.filter(s => s.scoreType === 'actual'),
+        ...outliers.filter(s => s.scoreType === 'estimated'),
+      ].slice(0, 20);
 
       const analyzed = await db.analysis.count({ where: { video: wsFilter } });
       const hooks = await db.hook.count({ where: { video: wsFilter } });
@@ -210,12 +220,14 @@ export function registerFeedTools(server: McpServer) {
           overview: {
             totalVideos,
             analyzedVideos: analyzed,
-            totalOutliers: outliers.length,
+            totalOutliers: actualCount + estimatedCount,
+            actualOutliers: actualCount,
+            estimatedOutliers: estimatedCount,
             hooksExtracted: hooks,
             ideasCreated: ideas,
             briefsGenerated: briefs,
           },
-          topOutliers: outliers.map(s => ({
+          topOutliers: ranked.map(s => ({
             videoId: s.video.id,
             creator: s.video.creatorHandle,
             platform: s.video.platform,

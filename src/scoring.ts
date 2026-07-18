@@ -136,6 +136,63 @@ export function computeSearchBatchBaseline(views: number[]): number {
 }
 
 // ---------------------------------------------------------------------------
+// computeCreatorBaselinesBatch — one query for many creators
+// ---------------------------------------------------------------------------
+
+// Fetches cross-source history for a set of (handle, platform) pairs in a
+// SINGLE query and computes each creator's trimmed median in memory. Replaces
+// the old per-creator computeCreatorBaseline loop, which fired 2 DB round-trips
+// per creator (~80 sequential queries for a 40-creator hashtag source) — slow
+// and pooler-hostile (the Supabase pooler resets idle connections mid-batch).
+export async function computeCreatorBaselinesBatch(
+  creators: { handle: string; platform: string }[],
+): Promise<Map<string, { medianViews: number; sampleSize: number }>> {
+  const result = new Map<string, { medianViews: number; sampleSize: number }>();
+  if (creators.length === 0) return result;
+
+  const handles = [...new Set(creators.map(c => c.handle))];
+  const platforms = [...new Set(creators.map(c => c.platform))];
+
+  const rows = await db.video.findMany({
+    where: { creatorHandle: { in: handles }, platform: { in: platforms } },
+    select: { creatorHandle: true, platform: true, views: true, postedAt: true },
+  });
+
+  const groups = new Map<string, { handle: string; platform: string; vids: { views: number; postedAt: Date }[] }>();
+  for (const r of rows) {
+    const key = `${r.creatorHandle}__${r.platform}`;
+    if (!groups.has(key)) groups.set(key, { handle: r.creatorHandle, platform: r.platform, vids: [] });
+    groups.get(key)!.vids.push({ views: r.views, postedAt: r.postedAt });
+  }
+
+  for (const [, g] of groups) {
+    g.vids.sort((a, b) => +b.postedAt - +a.postedAt);
+    const sample = g.vids.slice(0, 20); // last 20 by recency
+    const medianViews = trimmedMedian(sample.map(v => v.views));
+    result.set(`${g.handle}__${g.platform}`, { medianViews, sampleSize: sample.length });
+
+    // Persist baseline (best-effort — scoring uses the returned median).
+    try {
+      await db.baseline.upsert({
+        where: { creatorHandle_platform: { creatorHandle: g.handle, platform: g.platform } },
+        create: { creatorHandle: g.handle, platform: g.platform, medianViews, sampleSize: sample.length },
+        update: { medianViews, sampleSize: sample.length, computedAt: new Date() },
+      });
+    } catch {
+      // best-effort
+    }
+  }
+
+  // Ensure every requested creator has an entry (floor 500, sampleSize 0).
+  for (const c of creators) {
+    const key = `${c.handle}__${c.platform}`;
+    if (!result.has(key)) result.set(key, { medianViews: 500, sampleSize: 0 });
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // scoreVideo
 // ---------------------------------------------------------------------------
 
@@ -181,32 +238,33 @@ export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]>
   const source = await db.source.findUnique({ where: { id: sourceId } });
   const workspaceId = source?.workspaceId;
 
-  // Group by creator to compute baselines
-  const creatorGroups = new Map<string, typeof videos>();
+  // Group by creator (handle+platform carried on the group — TikTok handles
+  // commonly contain underscores, so we never re-parse the key back out).
+  const creatorGroups = new Map<string, { handle: string; platform: string; videos: typeof videos }>();
   for (const v of videos) {
     const key = `${v.creatorHandle}__${v.platform}`;
-    if (!creatorGroups.has(key)) creatorGroups.set(key, []);
-    creatorGroups.get(key)!.push(v);
+    if (!creatorGroups.has(key)) creatorGroups.set(key, { handle: v.creatorHandle, platform: v.platform, videos: [] });
+    creatorGroups.get(key)!.videos.push(v);
   }
 
-  // Compute baselines per creator
-  const baselines = new Map<string, number>();
-  for (const [key, group] of creatorGroups) {
-    const [handle, platform] = key.split('__');
-    try {
-      const result = await computeCreatorBaseline(handle, platform);
-      baselines.set(key, result.medianViews);
-    } catch {
-      // Fallback: batch median
-      const views = group.map(v => v.views);
-      baselines.set(key, computeSearchBatchBaseline(views));
-    }
+  // Compute baselines in ONE cross-source query (was: a per-creator loop that
+  // fired ~2 DB round-trips per creator — slow and pooler-hostile, the Supabase
+  // pooler reset idle connections mid-batch). sampleSize reflects global
+  // creator history and drives the actual/estimated confidence label below.
+  const batch = await computeCreatorBaselinesBatch(
+    [...creatorGroups.values()].map(g => ({ handle: g.handle, platform: g.platform })),
+  );
+  const baselines = new Map<string, { median: number; sampleSize: number }>();
+  for (const [key] of creatorGroups) {
+    const info = batch.get(key) ?? { medianViews: 500, sampleSize: 0 };
+    baselines.set(key, { median: info.medianViews, sampleSize: info.sampleSize });
   }
 
   // Score each video
   for (const video of videos) {
     const key = `${video.creatorHandle}__${video.platform}`;
-    const baseline = baselines.get(key) ?? 500;
+    const baselineInfo = baselines.get(key) ?? { median: 500, sampleSize: 0 };
+    const baseline = baselineInfo.median;
 
     if (isTooFresh(video.postedAt)) {
       const result: ScoreResult = {
@@ -236,10 +294,13 @@ export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]>
       continue;
     }
 
-    // Determine score type: actual if we have enough creator history, estimated otherwise
-    const group = creatorGroups.get(key) || [];
-    const creatorHistoryCount = group.filter(v => !isTooFresh(v.postedAt)).length;
-    const scoreType: 'actual' | 'estimated' = creatorHistoryCount >= 5 ? 'actual' : 'estimated';
+    // Confidence label MUST match the baseline's scope. The baseline is built
+    // from the creator's global (cross-source) history, so we decide actual vs
+    // estimated from that same sampleSize. The old per-source-group check
+    // mislabeled creators with strong global history as "estimated" when they
+    // had <5 videos in THIS source — surfacing their viral videos as
+    // high-multiple "estimated" noise instead of real, attributed outliers.
+    const scoreType: 'actual' | 'estimated' = baselineInfo.sampleSize >= 5 ? 'actual' : 'estimated';
 
     const result = scoreVideo(video.id, video.views, baseline, scoreType);
     results.push(result);
