@@ -2,10 +2,13 @@
 .env
 .env.local
 .env.*.local
+.db-credentials.local.json
+.vercel
 
 # opencode config holds API keys in plaintext
 opencode.json
 opencode.jsonc
+.mcp.json
 
 # Build artifacts
 dist/
@@ -16,6 +19,7 @@ node_modules/
 
 # Database — local SQLite, regenerate with `bun run db:push && bun run seed`
 prisma/slashloop.db
+prisma/empty.db
 
 # Logs
 *.log
@@ -29,3 +33,9 @@ server.log
 
 # MCP client temp files
 .mcp-cache/
+
+# Third-party Supabase agent skills (fetched by opencode/claude, not project source)
+.agents/skills/supabase/
+.agents/skills/supabase-postgres-best-practices/
+.claude/skills/supabase/
+.claude/skills/supabase-postgres-best-practices/

@@ -1,15 +1,83 @@
-# Slashloop MCP Server
+# slashloop-mcp
 
-A Model Context Protocol (MCP) server for viral content research. Monitors TikTok, Instagram Reels, and YouTube Shorts for outlier videos, runs AI analysis (Gemini native video, with Gemini text-only as automatic fallback), and converts winners into hooks, ideas, and creative briefs.
+npm package: **[`slashloop-mcp`](https://www.npmjs.com/package/slashloop-mcp)** — local stdio MCP for viral short-form research (TikTok / Reels / Shorts, Gemini analysis, hooks & briefs).
 
-## Install in Claude Code / OpenCode
+This **git repo** also hosts the remote OAuth connector (not published to npm):
+
+| Surface | Where | Install / run | Client |
+|---|---|---|---|
+| **npm package** | `src/` only | `npx slashloop-mcp` / Claude Code `env` block | Claude Code, Cursor, OpenCode |
+| **Remote host** | `remote/` + `api/` + `vercel.json` | `bun run remote:dev` or Vercel | Claude Desktop Custom Connector |
+
+```
+src/                 # ← published on npm as slashloop-mcp
+  index.ts           # stdio entry (bin: slashloop-mcp)
+  register-tools.ts  # 32 tools (Stage 2: also used by remote)
+  tools/
+remote/              # NOT on npm — OAuth + Streamable HTTP
+api/                 # NOT on npm — Vercel entrypoints
+vercel.json          # NOT on npm
+```
+
+> **Stage 1 (remote):** OAuth + `whoami` only.  
+> **Stage 2:** remote imports `registerAllTools()` from the package surface, scoped by JWT + Supabase RLS.
+
+Package name stays **`slashloop-mcp`** (do not rename to `slashloop` on publish).
+
+---
+
+## Remote MCP (Claude Desktop + Supabase OAuth)
+
+### 1. Supabase dashboard
+1. **Auth → URL Configuration → Site URL** = your public connector URL  
+   (e.g. `https://slashloop-….vercel.app` or a cloudflared tunnel).
+2. **Auth → OAuth Server → Enable**. Authorization path = `/oauth/consent`.  
+   Turn on **Dynamic client registration** (Claude self-registers).
+3. **JWT signing → asymmetric (RS256)** so JWKS verification works.
+4. **Email/password** enabled + a test user.
+
+### 2. Env for remote
+```bash
+cp .env.example .env
+# set SUPABASE_URL, SUPABASE_ANON_KEY
+# optional: PUBLIC_URL, PORT (default 8788)
+```
+
+### 3. Local remote server
+```bash
+bun install
+bun run remote:dev
+# optional tunnel:
+#   cloudflared tunnel --url http://localhost:8788
+```
+
+### 4. Deploy (Vercel)
+Root of this repo has `vercel.json` + `api/*`. Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in the Vercel project, then deploy. Prefer a long-lived host (Railway / Fly / Render) if Streamable HTTP sessions flake on serverless.
+
+### 5. Claude Desktop
+**Settings → Connectors → Add custom connector** →  
+`https://<your-public-url>/mcp`  
+Complete login → consent → call **`whoami`**. Expect `{ sub, email, client_id }`.
+
+| Route | Purpose |
+|---|---|
+| `POST /mcp` | MCP endpoint (Bearer JWT) |
+| `GET /.well-known/oauth-protected-resource` | RFC 9728 → Supabase AS |
+| `GET /login` | Email/password sign-in |
+| `GET /oauth/consent` | Consent UI (`?authorization_id=…`) |
+| `GET /health` | Liveness |
+
+---
+
+## Install in Claude Code / OpenCode (local stdio)
 
 Both Claude Code and OpenCode read MCP server definitions from a JSON config file. The same `env` block pattern works for both.
 
 ### 1. Build the server
 
 ```bash
-cd /path/to/mcp-server
+# from git clone, or: npm install -g slashloop-mcp
+cd /path/to/slashloop
 bun install
 cp .env.example .env
 # edit .env and fill in your keys (or skip — you can pass them via the env block below)
@@ -26,9 +94,9 @@ Edit `~/.claude/claude_code_config.json` (or your workspace `.mcp.json`) and add
   "mcpServers": {
     "slashloop": {
       "command": "bun",
-      "args": ["/absolute/path/to/mcp-server/src/index.ts"],
+      "args": ["/absolute/path/to/slashloop/src/index.ts"],
       "env": {
-        "DATABASE_URL": "file:/absolute/path/to/mcp-server/prisma/slashloop.db",
+        "DATABASE_URL": "file:/absolute/path/to/slashloop/prisma/slashloop.db",
         "GEMINI_API_KEY": "your-gemini-key-here",
         "APIFY_API_KEY": "apify_api_xxxxxxxxxxxxxxxxxxxxx",
         "APIFY_SPEND_CAP_CENTS": "500",
@@ -38,6 +106,8 @@ Edit `~/.claude/claude_code_config.json` (or your workspace `.mcp.json`) and add
   }
 }
 ```
+
+From the published package (after `npm i -g slashloop-mcp`), point `args` at the installed `src/index.ts` under the global/npm prefix, or use the `slashloop-mcp` bin if your client supports command-only servers.
 
 > Gemini is the only AI provider — it powers both the primary `gemini-native` backend (video upload + native understanding) and the `gemini-text` fallback (text-only when video upload fails or yt-dlp is unavailable). No other AI provider key is required.
 

@@ -1,0 +1,7 @@
+﻿.db-credentials.local.json
+prisma/*.db
+.env
+.env.*
+.agents
+.claude
+.mcp.json

@@ -4,6 +4,7 @@
 
 import { z } from 'zod/v4';
 import { db } from '../db.js';
+import { requireWorkspace } from '../context.js';
 import { loadAnalysisConfig, updateAnalysisConfig, DEFAULT_CONFIG, COST_ESTIMATES, BATCH_COST_ESTIMATES } from '../analysis/index.js';
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import { getApifyCapStatus } from '../lib/spend-cap.js';
@@ -18,8 +19,7 @@ export function registerSettingsTools(server: McpServer) {
       period: z.enum(['this_month', 'last_month', 'all']).default('this_month'),
     },
     async ({ period }) => {
-      const workspace = await db.workspace.findFirst();
-      if (!workspace) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No workspace' }) }], isError: true };
+      const workspace = await requireWorkspace();
 
       // Build date filter
       const now = new Date();
@@ -82,8 +82,7 @@ export function registerSettingsTools(server: McpServer) {
     'Get workspace settings including analysis config, auto-analyze rules, and budget.',
     {},
     async () => {
-      const workspace = await db.workspace.findFirst();
-      if (!workspace) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No workspace' }) }], isError: true };
+      const workspace = await requireWorkspace();
 
       const analysisConfig = await loadAnalysisConfig(workspace.id);
       const autoAnalyzeRules = JSON.parse(workspace.autoAnalyzeRulesJson);
@@ -121,8 +120,7 @@ export function registerSettingsTools(server: McpServer) {
       geminiModel: z.enum(['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro']).optional(),
     },
     async (params) => {
-      const workspace = await db.workspace.findFirst();
-      if (!workspace) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No workspace' }) }], isError: true };
+      const workspace = await requireWorkspace();
 
       // Update workspace fields
       const workspaceUpdate: any = {};
@@ -162,8 +160,12 @@ export function registerSettingsTools(server: McpServer) {
       limit: z.number().min(1).max(100).default(20),
     },
     async ({ sourceId, limit }) => {
+      const workspace = await requireWorkspace();
       const logs = await db.refreshRun.findMany({
-        where: { sourceId: sourceId ?? undefined },
+        where: {
+          sourceId: sourceId ?? undefined,
+          source: { workspaceId: workspace.id },
+        },
         include: { source: { select: { query: true, platform: true } } },
         orderBy: { ranAt: 'desc' },
         take: limit,
@@ -203,8 +205,7 @@ export function registerSettingsTools(server: McpServer) {
       limitOverride: z.number().min(1).max(100).optional().describe('Override dailyLimit for this run (e.g. to catch up after downtime).'),
     },
     async ({ dryRun, limitOverride }) => {
-      const workspace = await db.workspace.findFirst();
-      if (!workspace) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No workspace' }) }], isError: true };
+      const workspace = await requireWorkspace();
 
       // Parse rules with defaults
       const rawRules = JSON.parse(workspace.autoAnalyzeRulesJson || '{}');
@@ -221,6 +222,7 @@ export function registerSettingsTools(server: McpServer) {
       // because it's a derived field.
       const candidates = await db.video.findMany({
         where: {
+          source: { workspaceId: workspace.id },
           views: { gte: rules.minViews },
           score: { outlierScore: { gte: rules.minOutlierScore } },
           analyses: { none: {} },
@@ -339,8 +341,7 @@ export function registerSettingsTools(server: McpServer) {
     'Check Apify spend against the testing cap (default $5). Shows current monthly spend, cap, percent used, breach state, and recent cap_breach audit events. Useful before/after refresh_source to confirm spend is within bounds.',
     {},
     async () => {
-      const workspace = await db.workspace.findFirst();
-      if (!workspace) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No workspace' }) }], isError: true };
+      const workspace = await requireWorkspace();
 
       const status = await getApifyCapStatus(workspace.id);
 

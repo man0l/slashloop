@@ -4,6 +4,7 @@
 
 import { z } from 'zod/v4';
 import { db } from '../db.js';
+import { requireWorkspace } from '../context.js';
 import { scrapeSource } from '../lib/apify.js';
 import { assertApifyCap, getApifyCapStatus, SpendCapExceededError } from '../lib/spend-cap.js';
 import { batchScoreVideos } from '../scoring.js';
@@ -21,8 +22,15 @@ export function registerSourceTools(server: McpServer) {
       nicheTag: z.string().optional(),
     },
     async ({ platform, sourceType, isActive, nicheTag }) => {
+      const workspace = await requireWorkspace();
       const sources = await db.source.findMany({
-        where: { platform, sourceType, isActive, nicheTag: nicheTag || undefined },
+        where: {
+          workspaceId: workspace.id,
+          platform,
+          sourceType,
+          isActive,
+          nicheTag: nicheTag || undefined,
+        },
         include: {
           _count: { select: { videos: true, refreshRuns: true } },
         },
@@ -54,8 +62,9 @@ export function registerSourceTools(server: McpServer) {
     'Get details of a single tracked source by ID.',
     { sourceId: z.string().describe('Source ID') },
     async ({ sourceId }) => {
-      const source = await db.source.findUnique({
-        where: { id: sourceId },
+      const workspace = await requireWorkspace();
+      const source = await db.source.findFirst({
+        where: { id: sourceId, workspaceId: workspace.id },
         include: {
           videos: { take: 5, orderBy: { postedAt: 'desc' }, select: { id: true, views: true, postedAt: true } },
           refreshRuns: { take: 3, orderBy: { ranAt: 'desc' } },
@@ -79,9 +88,7 @@ export function registerSourceTools(server: McpServer) {
       nicheTag: z.string().optional().describe('Niche/workspace tag'),
     },
     async ({ platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag }) => {
-      // Get first workspace
-      const workspace = await db.workspace.findFirst();
-      if (!workspace) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No workspace found' }) }], isError: true };
+      const workspace = await requireWorkspace();
 
       const source = await db.source.create({
         data: {
@@ -91,7 +98,7 @@ export function registerSourceTools(server: McpServer) {
       });
 
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ message: 'Source created', source: { id: source.id, ...source } }, null, 2) }],
+        content: [{ type: 'text' as const, text: JSON.stringify({ message: 'Source created', source }, null, 2) }],
       };
     });
 
@@ -108,6 +115,10 @@ export function registerSourceTools(server: McpServer) {
       language: z.string().optional(),
     },
     async ({ sourceId, ...updates }) => {
+      const workspace = await requireWorkspace();
+      const owned = await db.source.findFirst({ where: { id: sourceId, workspaceId: workspace.id } });
+      if (!owned) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Source not found' }) }], isError: true };
+
       const source = await db.source.update({
         where: { id: sourceId },
         data: updates,
@@ -122,6 +133,10 @@ export function registerSourceTools(server: McpServer) {
     'Delete a tracked source and all its videos, scores, and analyses.',
     { sourceId: z.string() },
     async ({ sourceId }) => {
+      const workspace = await requireWorkspace();
+      const owned = await db.source.findFirst({ where: { id: sourceId, workspaceId: workspace.id } });
+      if (!owned) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Source not found' }) }], isError: true };
+
       // Delete in FK order
       await db.hook.deleteMany({ where: { video: { sourceId } } });
       await db.swipeEntry.deleteMany({ where: { video: { sourceId } } });
@@ -143,7 +158,8 @@ export function registerSourceTools(server: McpServer) {
       videoLimit: z.number().min(1).max(200).optional().describe('Override source video limit for this run'),
     },
     async ({ sourceId, videoLimit: limitOverride }) => {
-      const source = await db.source.findUnique({ where: { id: sourceId } });
+      const workspace = await requireWorkspace();
+      const source = await db.source.findFirst({ where: { id: sourceId, workspaceId: workspace.id } });
       if (!source) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Source not found' }) }], isError: true };
 
       const limit = limitOverride ?? source.videoLimit;

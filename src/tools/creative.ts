@@ -4,6 +4,7 @@
 
 import { z } from 'zod/v4';
 import { db } from '../db.js';
+import { requireWorkspace } from '../context.js';
 import { generateBrief } from '../analysis/briefs.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -15,7 +16,9 @@ export function registerCreativeTools(server: McpServer) {
     'List all swipe file boards.',
     {},
     async () => {
+      const workspace = await requireWorkspace();
       const boards = await db.board.findMany({
+        where: { workspaceId: workspace.id },
         include: { _count: { select: { swipeEntries: true } } },
         orderBy: { createdAt: 'desc' },
       });
@@ -46,8 +49,7 @@ export function registerCreativeTools(server: McpServer) {
     'Create a new swipe file board.',
     { name: z.string().describe('Board name') },
     async ({ name }) => {
-      const workspace = await db.workspace.findFirst();
-      if (!workspace) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No workspace' }) }], isError: true };
+      const workspace = await requireWorkspace();
 
       const board = await db.board.create({ data: { workspaceId: workspace.id, name } });
       return { content: [{ type: 'text' as const, text: JSON.stringify({ message: 'Board created', board }, null, 2) }] };

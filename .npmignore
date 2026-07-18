@@ -1,0 +1,22 @@
+# Keep the published slashloop-mcp package = local stdio MCP only.
+# Remote OAuth / Vercel host surface is repo-only (not on npm).
+
+remote/
+api/
+vercel.json
+scripts/
+.vercel/
+.agents/
+.claude/
+.mcp.json
+supabase/
+*.md
+!README.md
+.env
+.env.*
+.gitignore
+bun.lock
+skills-lock.json
+prisma/slashloop.db
+prisma/*.db
+!prisma/empty.db

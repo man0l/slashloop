@@ -1,14 +1,17 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
 model Workspace {
   id                   String   @id @default(uuid())
+  /// Supabase auth user id (JWT `sub`). Null = local single-tenant workspace.
+  ownerId              String?  @unique
   name                 String   @default("Default")
   monthlyBudgetCents   Int      @default(5000)
   autoAnalyzeRulesJson String   @default("{}")

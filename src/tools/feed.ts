@@ -4,6 +4,7 @@
 
 import { z } from 'zod/v4';
 import { db } from '../db.js';
+import { requireWorkspace } from '../context.js';
 import { formatNumber } from '../scoring.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -34,8 +35,10 @@ export function registerFeedTools(server: McpServer) {
         analyzedOnly, unanalyzedOnly, sortBy, limit, offset,
       } = params;
 
-      // Build where clause
-      const where: any = {};
+      const workspace = await requireWorkspace();
+
+      // Build where clause — always scoped to this user's workspace
+      const where: any = { source: { workspaceId: workspace.id } };
       if (platform) where.platform = platform;
       if (sourceId) where.sourceId = sourceId;
       if (search) where.OR = [
@@ -130,11 +133,13 @@ export function registerFeedTools(server: McpServer) {
       platform: z.enum(['tiktok', 'reels', 'shorts']).describe('Platform to search'),
     },
     async ({ query, platform }) => {
+      const workspace = await requireWorkspace();
       // In a full implementation, this would call the scraper APIs directly
       // For now, check if any existing videos match the search
       const existingVideos = await db.video.findMany({
         where: {
           platform,
+          source: { workspaceId: workspace.id },
           OR: [
             { caption: { contains: query.replace('#', '') } },
             { creatorHandle: { contains: query.replace('@', '') } },
@@ -179,20 +184,26 @@ export function registerFeedTools(server: McpServer) {
     'Get a summary of outlier activity across all tracked sources. Useful for weekly reviews.',
     {},
     async () => {
-      const totalVideos = await db.video.count();
+      const workspace = await requireWorkspace();
+      const wsFilter = { source: { workspaceId: workspace.id } };
+
+      const totalVideos = await db.video.count({ where: wsFilter });
       const outliers = await db.score.findMany({
-        where: { outlierScore: { gte: 5 } },
+        where: {
+          outlierScore: { gte: 5 },
+          video: wsFilter,
+        },
         include: {
-          video: { select: { creatorHandle: true, platform: true, views: true, postedAt: true, source: { select: { query: true } } } },
+          video: { select: { id: true, creatorHandle: true, platform: true, views: true, postedAt: true, source: { select: { query: true } } } },
         },
         orderBy: { outlierScore: 'desc' },
         take: 20,
       });
 
-      const analyzed = await db.analysis.count();
-      const hooks = await db.hook.count();
-      const ideas = await db.idea.count();
-      const briefs = await db.brief.count();
+      const analyzed = await db.analysis.count({ where: { video: wsFilter } });
+      const hooks = await db.hook.count({ where: { video: wsFilter } });
+      const ideas = await db.idea.count({ where: { video: wsFilter } });
+      const briefs = await db.brief.count({ where: { analysis: { video: wsFilter } } });
 
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
