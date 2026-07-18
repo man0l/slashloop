@@ -152,7 +152,7 @@ export function registerSourceTools(server: McpServer) {
 
   // ---- refresh_source ----
   server.tool('refresh_source',
-    'Trigger a manual refresh for a source. TikTok uses the apify/tiktok-scraper actor (live). Instagram Reels and YouTube Shorts are stubs for now. All Apify calls are subject to the APIFY_SPEND_CAP_CENTS guardrail (default $5) — if exceeded, the call is refused and a cap_breach event is logged.',
+    'Trigger a manual refresh for a source. TikTok uses the clockworks/tiktok-scraper actor (live). Instagram Reels and YouTube Shorts are stubs for now. All Apify calls are subject to the APIFY_SPEND_CAP_CENTS guardrail (default $5) — if exceeded, the call is refused and a cap_breach event is logged.',
     {
       sourceId: z.string(),
       videoLimit: z.number().min(1).max(200).optional().describe('Override source video limit for this run'),

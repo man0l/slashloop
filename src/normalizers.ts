@@ -61,25 +61,29 @@ function parseDuration(iso: string | null | undefined): number | null {
 // ---------------------------------------------------------------------------
 
 export function normalizeTikTok(raw: any): NormalizedVideo {
+  // clockworks/tiktok-scraper output shape: id, text, createTimeISO,
+  // webVideoUrl, diggCount/playCount/etc. at the top level, plus nested
+  // authorMeta and videoMeta objects. Fall back to the older TikAPI-style
+  // author/stats/video shape in case of a future actor change.
   const id = raw.id || raw.videoId || raw.item_id || '';
-  const author = raw.author || {};
+  const author = raw.authorMeta || raw.author || {};
   const stats = raw.stats || {};
-  const video = raw.video || {};
+  const video = raw.videoMeta || raw.video || {};
 
   return {
     platform: 'tiktok',
     externalId: String(id),
-    url: `https://www.tiktok.com/@${author.uniqueId || author.username || 'unknown'}/video/${id}`,
-    thumbnailUrl: video.cover || video.originCover || raw.thumbnailUrl || '',
-    creatorHandle: author.uniqueId || author.username || author.nickname || 'unknown',
-    creatorFollowers: author.followerCount != null ? toInt(author.followerCount) : null,
+    url: raw.webVideoUrl || `https://www.tiktok.com/@${author.name || author.uniqueId || author.username || 'unknown'}/video/${id}`,
+    thumbnailUrl: video.coverUrl || video.originalCoverUrl || video.cover || video.originCover || raw.thumbnailUrl || '',
+    creatorHandle: author.name || author.uniqueId || author.username || author.nickName || author.nickname || 'unknown',
+    creatorFollowers: author.fans != null ? toInt(author.fans) : (author.followerCount != null ? toInt(author.followerCount) : null),
     caption: raw.text || raw.desc || raw.title || '',
-    postedAt: raw.createTime ? unixToISO(raw.createTime) : new Date().toISOString(),
-    views: toInt(stats.playCount || raw.playCount),
-    likes: toInt(stats.diggCount || raw.diggCount || stats.heartCount),
-    comments: toInt(stats.commentCount || raw.commentCount),
-    shares: toInt(stats.shareCount || raw.shareCount) || null,
-    saves: toInt(stats.collectCount || raw.collectCount) || null,
+    postedAt: raw.createTimeISO || (raw.createTime ? unixToISO(raw.createTime) : new Date().toISOString()),
+    views: toInt(raw.playCount ?? stats.playCount),
+    likes: toInt(raw.diggCount ?? stats.diggCount ?? stats.heartCount),
+    comments: toInt(raw.commentCount ?? stats.commentCount),
+    shares: toInt(raw.shareCount ?? stats.shareCount) || null,
+    saves: toInt(raw.collectCount ?? stats.collectCount) || null,
     durationSec: video.duration ? toInt(video.duration) : null,
     transcript: null,
     transcriptSource: 'none',

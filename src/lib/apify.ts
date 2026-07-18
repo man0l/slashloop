@@ -1,12 +1,15 @@
 // ---------------------------------------------------------------------------
 // Apify client — minimal TikTok scraper integration.
 //
-// Uses the apify/tiktok-scraper actor in sync mode (run-sync-get-dataset-items).
+// Uses the clockworks/tiktok-scraper actor in sync mode (run-sync-get-dataset-items).
 // This is the simplest invocation: POST with the search query, block until
 // results are ready, return the dataset items.
 //
-// Cost: roughly $0.30 per 1000 results on the apify/tiktok-scraper actor.
-// All calls are subject to the spend cap in lib/spend-cap.ts.
+// Cost: PAY_PER_EVENT pricing — $0.0005-$0.0037 per result depending on the
+// calling account's usage tier, plus a flat $0.001 per actor run. We don't
+// know the account's tier from here, so we pre-authorize using the FREE-tier
+// (most expensive) rate to keep the cap check conservative rather than risk
+// under-authorizing. All calls are subject to the spend cap in lib/spend-cap.ts.
 //
 // For Reels and Shorts we fall back to the same experimental stub — Reels
 // needs a different actor (apify/instagram-scraper) and Shorts needs the
@@ -17,12 +20,13 @@ import { assertApifyCap, recordApifySpend } from './spend-cap.js';
 import { normalizeTikTok, type NormalizedVideo } from '../normalizers.js';
 
 const APIFY_API_BASE = 'https://api.apify.com/v2';
-const TIKTOK_ACTOR_ID = 'apify~tiktok-scraper';
+const TIKTOK_ACTOR_ID = 'clockworks~tiktok-scraper';
 
-// Estimated cost per result, in cents. apify/tiktok-scraper averages ~$0.0003
-// per result on the searchPosts endpoint. We pre-authorize this before each
-// call so the cap check is conservative.
-const ESTIMATED_COST_PER_RESULT_CENTS = 0.04; // ~$0.0004, slight pad
+// Estimated cost per result, in cents — FREE tier ($0.0037/result), the most
+// expensive tier, used as a conservative upper bound for the pre-auth check.
+const ESTIMATED_COST_PER_RESULT_CENTS = 0.37;
+// Flat per-run "actor start" fee, in cents — tier-independent at $0.001.
+const ESTIMATED_ACTOR_START_COST_CENTS = 0.1;
 
 export interface ApifyScrapeOptions {
   workspaceId: string;
@@ -39,7 +43,7 @@ export interface ApifyScrapeResult {
 }
 
 // ---------------------------------------------------------------------------
-// TikTok scraper — calls apify/tiktok-scraper
+// TikTok scraper — calls clockworks/tiktok-scraper
 // ---------------------------------------------------------------------------
 
 export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrapeResult> {
@@ -47,31 +51,29 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
   if (!apiKey) throw new Error('APIFY_API_KEY is not set. Add it to .env (or the MCP server env block in your client config).');
 
   // Pre-authorize cost
-  const estimatedCostCents = Math.ceil(opts.limit * ESTIMATED_COST_PER_RESULT_CENTS);
+  const estimatedCostCents = Math.ceil(opts.limit * ESTIMATED_COST_PER_RESULT_CENTS + ESTIMATED_ACTOR_START_COST_CENTS);
   await assertApifyCap(opts.workspaceId, estimatedCostCents);
 
-  // Build the actor input. apify/tiktok-scraper accepts:
-  //   - searchQueries: array of hashtags (without #) or keywords
-  //   - resultsPerPage: integer
+  // Build the actor input. clockworks/tiktok-scraper accepts:
+  //   - hashtags: array of hashtags (without #)
+  //   - searchQueries: array of keywords
   //   - profiles: array of usernames (for sourceType=creator)
-  // See https://apify.com/apify/tiktok-scraper/input-schema
-  const hashtags = opts.query.replace(/^#/, '').trim();
+  //   - resultsPerPage: integer
+  // See https://apify.com/clockworks/tiktok-scraper/input-schema
+  const hashtag = opts.query.replace(/^#/, '').trim();
   const input: Record<string, unknown> = {
     resultsPerPage: opts.limit,
     shouldDownloadCovers: false,
     shouldDownloadSlideshowImages: false,
-    shouldDownloadSubtitles: false,
   };
 
   if (opts.sourceType === 'creator') {
     input.profiles = [opts.query.replace(/^@/, '').trim()];
   } else if (opts.sourceType === 'hashtag') {
-    input.searchQueries = [hashtags];
-    input.isHashTag = true;
+    input.hashtags = [hashtag];
   } else {
     // keyword
     input.searchQueries = [opts.query.trim()];
-    input.isHashTag = false;
   }
 
   const url = `${APIFY_API_BASE}/acts/${TIKTOK_ACTOR_ID}/run-sync-get-dataset-items?token=${apiKey}`;

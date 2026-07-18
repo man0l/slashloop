@@ -133,7 +133,7 @@ The MCP `env` block overrides whatever is in `.env` — it's the canonical way t
 |---|---|---|
 | `DATABASE_URL` | yes | SQLite path. Use `file:` prefix + absolute path. |
 | `GEMINI_API_KEY` | **yes** (for AI) | The only AI provider key needed. Powers GeminiNativeAnalyzer (primary: video upload + native understanding) AND GeminiTextAnalyzer (fallback: text-only when video upload fails or yt-dlp is unavailable). Also powers hook-variation and brief generation. |
-| `APIFY_API_KEY` | for live TikTok scraping | apify/tiktok-scraper actor |
+| `APIFY_API_KEY` | for live TikTok scraping | clockworks/tiktok-scraper actor |
 | `YOUTUBE_API_KEY` | future | YouTube Shorts (not yet wired) |
 | `APIFY_SPEND_CAP_CENTS` | optional | Monthly Apify cap in cents. Default 500 ($5). Refuses calls + notifies on breach. |
 | `APIFY_CAP_NOTIFICATION_HOOK` | optional | URL (POST) or shell command fired on cap breach |
