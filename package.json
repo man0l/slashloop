@@ -1,28 +1,15 @@
 {
   "name": "slashloop-mcp",
   "version": "1.2.0",
-  "description": "Viral short-form video research MCP server — track sources, find outliers, run Gemini video analysis, generate hooks/briefs. Local stdio (Claude Code) or remote OAuth HTTP.",
+  "description": "Viral short-form video research MCP server — remote HTTP (Vercel + Supabase OAuth).",
   "license": "MIT",
+  "private": true,
   "type": "module",
-  "bin": {
-    "slashloop-mcp": "dist/index.js"
-  },
-  "files": [
-    "dist",
-    "prisma/schema.prisma",
-    "prisma/empty.db",
-    "prompts",
-    "README.md"
-  ],
   "scripts": {
-    "dev": "bun --hot src/index.ts",
-    "start": "bun src/index.ts",
-    "compile": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
     "remote:dev": "bun --watch remote/dev.ts",
     "seed": "bun src/seed.ts",
     "db:push": "prisma db push --schema prisma/schema.prisma",
     "db:generate": "prisma generate --schema prisma/schema.prisma",
-    "prepack": "npm run compile && node -e \"const p=require('./package.json'); if(p.name!=='slashloop-mcp') throw new Error('refuse publish: package name must be slashloop-mcp');\"",
     "postinstall": "prisma generate --schema prisma/schema.prisma || true"
   },
   "dependencies": {

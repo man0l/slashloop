@@ -1,9 +1,5 @@
-// Shared tool registration for both transports:
-//   - stdio  (src/index.ts)     — published as slashloop-mcp on npm
-//   - remote (remote/handlers)  — repo host only; imports this module in Stage 2
-//
-// Stage 2 will pass a per-user context (claims.sub / Supabase client) into
-// each register* function so remote sessions are multi-tenant.
+// Shared tool registration for the remote HTTP MCP (remote/handlers.ts).
+// Tools are scoped per-user via runWithUser (JWT sub) -> requireWorkspace().
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerSourceTools } from './tools/sources.js';

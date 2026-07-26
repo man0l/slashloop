@@ -18,8 +18,6 @@ dist/
 node_modules/
 
 # Local dev SQLite (regenerate with `bun run db:push && bun run seed`).
-# NOTE: prisma/empty.db is NOT ignored — it's the committed schema template
-# shipped in the npm package for first-run DB initialization.
 prisma/slashloop.db
 
 # Logs
