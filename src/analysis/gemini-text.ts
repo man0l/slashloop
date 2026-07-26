@@ -4,7 +4,7 @@
 // Same Gemini model as GeminiNativeAnalyzer, but with no `file_data` part —
 // it reads the transcript + caption + metadata + thumbnail URL as text.
 // This is the automatic fallback when native video upload fails (video too
-// large, yt-dlp timeout, no yt-dlp installed, etc.).
+// large, Apify download timeout, missing APIFY_API_KEY, etc.).
 //
 // With this backend you can run the whole slashloop pipeline using only
 // GEMINI_API_KEY — no other AI provider key is required.
@@ -57,7 +57,7 @@ export class GeminiTextAnalyzer implements VideoAnalyzer {
   private model: string;
 
   constructor(config?: AnalysisConfig) {
-    this.model = config?.geminiModel ?? 'gemini-2.5-flash-lite';
+    this.model = config?.geminiModel ?? 'gemini-3.5-flash';
   }
 
   async analyze(ctx: AnalysisContext): Promise<AnalysisOutput> {

@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "slashloop": {
-      "command": "bun",
-      "args": ["C:/Users/manol/Projects/slashloop/src/index.ts"],
+      "command": "npx",
+      "args": ["-y", "slashloop-mcp@latest"],
       "env": {
-        "DATABASE_URL": "file:C:/Users/manol/Projects/slashloop/prisma/slashloop.db",
+        "DATABASE_URL": "${user_config.databaseUrl}",
         "GEMINI_API_KEY": "${user_config.geminiApiKey}",
         "APIFY_API_KEY": "${user_config.apifyApiKey}",
         "APIFY_SPEND_CAP_CENTS": "${user_config.spendCapCents}"

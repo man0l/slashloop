@@ -25,7 +25,7 @@ Output raw JSON only:
 export async function generateBrief(
   analysisId: string,
   brandContext?: string,
-  model = 'gemini-2.5-flash-lite',
+  model = 'gemini-3.5-flash',
 ): Promise<BriefResult> {
   const analysis = await db.analysis.findUnique({
     where: { id: analysisId },

@@ -81,7 +81,7 @@ export function registerVideoTools(server: McpServer) {
 
   // ---- analyze_video ----
   server.tool('analyze_video',
-    'Run AI analysis on a video. Uses the configured backend (default: gemini-native, fallback: gemini-text). Auto-fallbacks on failure. gemini-native uploads the video file for native understanding (shots, audio, on-screen text); gemini-text does a text-only call on transcript + caption + metadata when video upload fails or yt-dlp is unavailable.',
+    'Run AI analysis on a video. Uses the configured backend (default: gemini-native, fallback: gemini-text). Auto-fallbacks on failure. gemini-native downloads the video via Apify then uploads it for native understanding (shots, audio, on-screen text); gemini-text does a text-only call on transcript + caption + metadata when video download or upload fails. Each native analysis costs ~1 cent against the Apify spend cap.',
     {
       videoId: z.string().describe('Video ID to analyze'),
       forceBackend: z.enum(['gemini-native', 'gemini-text']).optional().describe('Override the workspace default backend'),

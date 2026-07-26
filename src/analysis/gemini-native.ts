@@ -179,7 +179,7 @@ export class GeminiNativeAnalyzer implements VideoAnalyzer {
   private model: string;
 
   constructor(config?: AnalysisConfig) {
-    this.model = config?.geminiModel ?? 'gemini-2.5-flash-lite';
+    this.model = config?.geminiModel ?? 'gemini-3.5-flash';
   }
 
   async analyze(ctx: AnalysisContext): Promise<AnalysisOutput> {

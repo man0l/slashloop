@@ -2,12 +2,18 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "slashloop",
   "displayName": "Slashloop",
-  "version": "1.0.2",
+  "version": "1.2.0",
   "description": "Viral short-form video research: track sources, find outliers, run Gemini video analysis, and turn winners into hooks, ideas, and creative briefs.",
   "author": { "name": "Slashloop" },
   "license": "MIT",
   "keywords": ["tiktok", "reels", "shorts", "viral", "mcp", "content-research"],
   "userConfig": {
+    "databaseUrl": {
+      "type": "string",
+      "title": "Database location (optional)",
+      "description": "SQLite path for slashloop data. Leave BLANK to use ~/.slashloop/slashloop.db (recommended). To override, use the file: prefix with an absolute path, e.g. file:/Users/me/slashloop.db.",
+      "default": ""
+    },
     "geminiApiKey": {
       "type": "string",
       "title": "Gemini API key",

@@ -83,13 +83,15 @@ export interface AnalysisConfig {
   backend: 'gemini-native' | 'gemini-text';
   fallback: 'gemini-native' | 'gemini-text';
   /** Gemini model for both native video and text-only fallback */
-  geminiModel: 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-2.5-pro';
+  geminiModel:
+    | 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-2.5-pro'
+    | 'gemini-3.1-flash-lite' | 'gemini-3.5-flash' | 'gemini-3-pro-preview';
 }
 
 export const DEFAULT_CONFIG: AnalysisConfig = {
   backend: 'gemini-native',
   fallback: 'gemini-text',
-  geminiModel: 'gemini-2.5-flash-lite',
+  geminiModel: 'gemini-3.5-flash',
 };
 
 // ---- Cost estimates (cents) per 30s video ----
@@ -98,16 +100,25 @@ export const DEFAULT_CONFIG: AnalysisConfig = {
 // Batch rates apply when called from run_auto_analyze — Gemini's Batch API
 // provides a 50% discount on both native and text calls.
 // Costs are estimates for a ~30s short; longer videos cost more.
+// Legacy 2.5 models are retained for backward compatibility with historical
+// DB rows. New work should use 3.x models — 2.5 models are deprecated for
+// new Gemini API keys as of mid-2026.
 export const COST_ESTIMATES = {
   'gemini-native': {
-    'gemini-2.5-flash-lite': 0.2,   // ~$0.002 interactive
-    'gemini-2.5-flash': 0.5,        // ~$0.005
-    'gemini-2.5-pro': 4,            // ~$0.04
+    'gemini-2.5-flash-lite': 0.2,   // ~$0.002 interactive (legacy)
+    'gemini-2.5-flash': 0.5,        // ~$0.005 (legacy)
+    'gemini-2.5-pro': 4,            // ~$0.04 (legacy)
+    'gemini-3.1-flash-lite': 0.2,   // ~$0.002
+    'gemini-3.5-flash': 0.5,        // ~$0.005
+    'gemini-3-pro-preview': 4,      // ~$0.04
   },
   'gemini-text': {
-    'gemini-2.5-flash-lite': 0.1,   // ~$0.001 — text-only is much cheaper than native video
-    'gemini-2.5-flash': 0.25,        // ~$0.0025
-    'gemini-2.5-pro': 2,             // ~$0.02
+    'gemini-2.5-flash-lite': 0.1,   // ~$0.001 — text-only is much cheaper than native video (legacy)
+    'gemini-2.5-flash': 0.25,       // ~$0.0025 (legacy)
+    'gemini-2.5-pro': 2,            // ~$0.02 (legacy)
+    'gemini-3.1-flash-lite': 0.1,   // ~$0.001
+    'gemini-3.5-flash': 0.25,       // ~$0.0025
+    'gemini-3-pro-preview': 2,      // ~$0.02
   },
 } as const;
 
@@ -115,14 +126,20 @@ export const COST_ESTIMATES = {
 // Pass these when computing costCents for analyses invoked from run_auto_analyze.
 export const BATCH_COST_ESTIMATES = {
   'gemini-native': {
-    'gemini-2.5-flash-lite': 0.1,   // 50% off
-    'gemini-2.5-flash': 0.25,        // 50% off
-    'gemini-2.5-pro': 2,             // 50% off
+    'gemini-2.5-flash-lite': 0.1,   // 50% off (legacy)
+    'gemini-2.5-flash': 0.25,       // 50% off (legacy)
+    'gemini-2.5-pro': 2,            // 50% off (legacy)
+    'gemini-3.1-flash-lite': 0.1,   // 50% off
+    'gemini-3.5-flash': 0.25,       // 50% off
+    'gemini-3-pro-preview': 2,      // 50% off
   },
   'gemini-text': {
-    'gemini-2.5-flash-lite': 0.05,  // 50% off the already-cheap text rate
-    'gemini-2.5-flash': 0.125,       // 50% off
-    'gemini-2.5-pro': 1,             // 50% off
+    'gemini-2.5-flash-lite': 0.05,  // 50% off the already-cheap text rate (legacy)
+    'gemini-2.5-flash': 0.125,      // 50% off (legacy)
+    'gemini-2.5-pro': 1,            // 50% off (legacy)
+    'gemini-3.1-flash-lite': 0.05,  // 50% off
+    'gemini-3.5-flash': 0.125,      // 50% off
+    'gemini-3-pro-preview': 1,      // 50% off
   },
 } as const;
 

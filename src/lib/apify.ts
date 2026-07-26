@@ -119,6 +119,130 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
 }
 
 // ---------------------------------------------------------------------------
+// Single TikTok video download — fetches one video by URL via
+// clockworks/tiktok-scraper (with `videoUrls` input), then HTTP-GETs the MP4
+// binary from TikTok's CDN. Used by the gemini-native analysis backend to
+// obtain a local file for upload to Gemini. Replaces the prior yt-dlp
+// subprocess dependency so the MCP server needs no external binaries.
+//
+// Cost: same actor, same per-result pricing — ~$0.001-0.005 per video on
+// most tiers. Charged against the APIFY_SPEND_CAP_CENTS budget.
+// ---------------------------------------------------------------------------
+
+export interface ApifyDownloadOptions {
+  workspaceId: string;
+  videoUrl: string;     // TikTok watch URL (https://www.tiktok.com/@user/video/ID)
+  outputPath: string;   // Local file path to save the MP4
+}
+
+export interface ApifyDownloadResult {
+  costCents: number;
+  sizeBytes: number;
+  cdnUrl: string;       // The CDN URL the binary was fetched from
+  actorRunId: string | null;
+}
+
+// Conservative per-video cost ceiling (1 result × free-tier max + actor start).
+const ESTIMATED_DOWNLOAD_COST_CENTS = 1;
+
+export async function downloadTikTokVideo(opts: ApifyDownloadOptions): Promise<ApifyDownloadResult> {
+  const apiKey = process.env.APIFY_API_KEY;
+  if (!apiKey) throw new Error('APIFY_API_KEY is not set. Add it to .env (or the MCP server env block in your client config).');
+
+  if (!opts.workspaceId) throw new Error('workspaceId is required (needed for spend-cap accounting).');
+
+  // Pre-authorize against the spend cap
+  await assertApifyCap(opts.workspaceId, ESTIMATED_DOWNLOAD_COST_CENTS);
+
+  // Ask clockworks/tiktok-scraper for the actual video binary. We MUST set
+  // shouldDownloadVideos: true — without it, the actor only returns metadata
+  // (and `musicMeta.playUrl`, which is the audio-only MP3 stream — misleading
+  // name). With it, the actor downloads the real H264/AAC MP4 to its key-value
+  // store and exposes the KV-store URL via `mediaUrls[0]` and
+  // `videoMeta.downloadAddr`. We then HTTP-GET that URL (no Apify token
+  // required for public KV-store records).
+  const input = {
+    postURLs: [opts.videoUrl],
+    shouldDownloadVideos: true,
+    shouldDownloadCovers: false,
+    shouldDownloadSlideshowImages: false,
+  };
+
+  const url = `${APIFY_API_BASE}/acts/${TIKTOK_ACTOR_ID}/run-sync-get-dataset-items?token=${apiKey}`;
+  console.log(`[apify] fetching single video ${opts.videoUrl} (est cost: ${ESTIMATED_DOWNLOAD_COST_CENTS}c)`);
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Apify TikTok scraper failed (${res.status}): ${text.slice(0, 500)}`);
+  }
+
+  const rawItems = (await res.json()) as any[];
+  if (!Array.isArray(rawItems) || rawItems.length === 0) {
+    throw new Error(`Apify returned no items for video URL: ${opts.videoUrl}`);
+  }
+
+  const raw = rawItems[0];
+  const videoMeta = raw.videoMeta || raw.video || {};
+
+  // Pick the Apify key-value-store URL for the real video binary. Only
+  // present when shouldDownloadVideos=true was set in the input. NOTE:
+  // `musicMeta.playUrl` is the AUDIO-ONLY stream (misleading name) and
+  // MUST NOT be used — Gemini rejects it with code 13 "file failed to be
+  // processed". The KV-store URLs are public (no token needed to GET).
+  const cdnUrl: string | undefined =
+    (Array.isArray(raw.mediaUrls) && raw.mediaUrls[0]) ||
+    videoMeta.downloadAddr ||
+    (Array.isArray(videoMeta.playAddr) && videoMeta.playAddr[0]) ||
+    videoMeta.playAddr ||
+    raw.videoUrl ||
+    undefined;
+  if (!cdnUrl) {
+    throw new Error('No video CDN URL in Apify response (video may be deleted, restricted, or download failed)');
+  }
+
+  // HTTP GET the MP4 binary from Apify's key-value store. These records
+  // are public, but we send headers anyway in case we ever fall back to
+  // a TikTok CDN URL (which requires User-Agent + Referer or it 403s).
+  const videoRes = await fetch(cdnUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Referer': 'https://www.tiktok.com/',
+    },
+  });
+
+  if (!videoRes.ok) {
+    const errText = await videoRes.text().catch(() => '');
+    throw new Error(`TikTok CDN download failed (${videoRes.status}): ${errText.slice(0, 200)}`);
+  }
+
+  const arrayBuffer = await videoRes.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+
+  if (buffer.length < 1024) {
+    throw new Error(`Downloaded file too small (${buffer.length} bytes) — likely an error page`);
+  }
+
+  const { writeFileSync } = await import('node:fs');
+  writeFileSync(opts.outputPath, buffer);
+
+  // Record actual cost (estimated — real invoice lands later)
+  await recordApifySpend(opts.workspaceId, ESTIMATED_DOWNLOAD_COST_CENTS, null);
+
+  return {
+    costCents: ESTIMATED_DOWNLOAD_COST_CENTS,
+    sizeBytes: buffer.length,
+    cdnUrl,
+    actorRunId: null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Dispatcher — picks the right scraper per platform. Currently only TikTok
 // is wired up; Reels and Shorts return a clear error.
 // ---------------------------------------------------------------------------

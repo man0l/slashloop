@@ -286,30 +286,31 @@ export async function analyzeVideoWithDownload(
   const config = workspaceId ? await loadAnalysisConfig(workspaceId) : { ...DEFAULT_CONFIG };
   const backend = options?.forceBackend ?? config.backend;
 
-  // If the backend needs a video file, download it
+  // If the backend needs a video file, download it via Apify
   let videoFilePath: string | undefined;
-  if (backend === 'gemini-native' && video.url) {
+  if (backend === 'gemini-native' && video.url && workspaceId) {
     try {
-      const { execSync } = await import('node:child_process');
-      const { mkdtempSync, unlinkSync } = await import('node:fs');
+      const { mkdtempSync } = await import('node:fs');
       const { tmpdir } = await import('node:os');
       const { join } = await import('node:path');
+      const { downloadTikTokVideo } = await import('../lib/apify.js');
 
       const tmpDir = mkdtempSync(join(tmpdir(), 'slashloop-'));
       videoFilePath = join(tmpDir, `video_${videoId.slice(0, 8)}.mp4`);
 
-      console.log(`[analysis] Downloading video from ${video.url}...`);
-      execSync(`yt-dlp -f "best[filesize<50M]" -o "${videoFilePath}" "${video.url}"`, {
-        timeout: 120_000,
-        stdio: ['pipe', 'pipe', 'pipe'],
+      console.log(`[analysis] Downloading video via Apify: ${video.url}...`);
+      const dl = await downloadTikTokVideo({
+        workspaceId,
+        videoUrl: video.url,
+        outputPath: videoFilePath,
       });
 
-      // Check file exists and has content
+      // Sanity-check the file landed and has real content
       const { statSync } = await import('node:fs');
       const stat = statSync(videoFilePath);
       if (stat.size < 1024) throw new Error('Downloaded file too small');
 
-      console.log(`[analysis] Downloaded ${(stat.size / 1024 / 1024).toFixed(1)}MB`);
+      console.log(`[analysis] Downloaded ${(stat.size / 1024 / 1024).toFixed(2)}MB (Apify cost: ${dl.costCents}c)`);
     } catch (err) {
       console.warn(`[analysis] Video download failed, falling back to text-only: ${(err as Error).message}`);
       videoFilePath = undefined;

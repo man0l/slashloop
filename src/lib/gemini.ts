@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Gemini API Client — text-only mode (no video upload).
 // Used by GeminiTextAnalyzer as the fallback when GeminiNativeAnalyzer
-// can't run (e.g. video too large, upload timeout, no yt-dlp).
+// can't run (e.g. video too large, upload timeout, Apify download failure).
 //
 // Same model, same prompt format, just no `file_data` part — Gemini reads
 // the transcript + caption + thumbnail URL as text. Cost is much lower than
@@ -23,7 +23,7 @@ export interface GeminiTextCallOptions {
 export async function callGeminiText(
   systemPrompt: string,
   userMessage: string,
-  model = 'gemini-2.5-flash-lite',
+  model = 'gemini-3.5-flash',
   options?: GeminiTextCallOptions,
 ): Promise<{ parsed: unknown; inputTokens: number; outputTokens: number }> {
   const apiKey = process.env.GEMINI_API_KEY;

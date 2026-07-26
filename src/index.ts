@@ -1,9 +1,11 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 // ---------------------------------------------------------------------------
 // Slashloop — MCP Server
 // Exposes all viral content research tools via the Model Context Protocol.
 // Transport: stdio (for MCP clients: Cursor, Claude Desktop, etc.)
 // ---------------------------------------------------------------------------
+
+import './env-defaults.js';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
