@@ -2,36 +2,9 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "slashloop",
   "displayName": "Slashloop",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Viral short-form video research: track sources, find outliers, run Gemini video analysis, and turn winners into hooks, ideas, and creative briefs.",
   "author": { "name": "Slashloop" },
   "license": "MIT",
-  "keywords": ["tiktok", "reels", "shorts", "viral", "mcp", "content-research"],
-  "userConfig": {
-    "databaseUrl": {
-      "type": "string",
-      "title": "Database location (optional)",
-      "description": "SQLite path for slashloop data. Leave BLANK to use ~/.slashloop/slashloop.db (recommended). To override, use the file: prefix with an absolute path, e.g. file:/Users/me/slashloop.db.",
-      "default": ""
-    },
-    "geminiApiKey": {
-      "type": "string",
-      "title": "Gemini API key",
-      "description": "Powers AI analysis, hook variation, and brief generation. Get one at https://aistudio.google.com/apikey",
-      "sensitive": true,
-      "required": true
-    },
-    "apifyApiKey": {
-      "type": "string",
-      "title": "Apify API key",
-      "description": "Powers live TikTok scraping. Get one at https://console.apify.com/account/integrations. Optional for read-only/mock use.",
-      "sensitive": true
-    },
-    "spendCapCents": {
-      "type": "string",
-      "title": "Apify monthly spend cap (cents)",
-      "description": "Hard cap on Apify spend per month. Default 500 = $5.",
-      "default": "500"
-    }
-  }
+  "keywords": ["tiktok", "reels", "shorts", "viral", "mcp", "content-research"]
 }

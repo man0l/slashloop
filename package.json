@@ -17,12 +17,12 @@
   "scripts": {
     "dev": "bun --hot src/index.ts",
     "start": "bun src/index.ts",
-    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "compile": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
     "remote:dev": "bun --watch remote/dev.ts",
     "seed": "bun src/seed.ts",
     "db:push": "prisma db push --schema prisma/schema.prisma",
     "db:generate": "prisma generate --schema prisma/schema.prisma",
-    "prepack": "npm run build && node -e \"const p=require('./package.json'); if(p.name!=='slashloop-mcp') throw new Error('refuse publish: package name must be slashloop-mcp');\"",
+    "prepack": "npm run compile && node -e \"const p=require('./package.json'); if(p.name!=='slashloop-mcp') throw new Error('refuse publish: package name must be slashloop-mcp');\"",
     "postinstall": "prisma generate --schema prisma/schema.prisma || true"
   },
   "dependencies": {

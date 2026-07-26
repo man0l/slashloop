@@ -1,14 +1,8 @@
 {
   "mcpServers": {
     "slashloop": {
-      "command": "npx",
-      "args": ["-y", "slashloop-mcp@latest"],
-      "env": {
-        "DATABASE_URL": "${user_config.databaseUrl}",
-        "GEMINI_API_KEY": "${user_config.geminiApiKey}",
-        "APIFY_API_KEY": "${user_config.apifyApiKey}",
-        "APIFY_SPEND_CAP_CENTS": "${user_config.spendCapCents}"
-      }
+      "type": "http",
+      "url": "https://slashloop-connector-seven.vercel.app/mcp"
     }
   }
 }
