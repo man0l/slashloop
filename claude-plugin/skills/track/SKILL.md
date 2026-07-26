@@ -1,11 +1,12 @@
 ---
 name: track
-description: Track a new creator, keyword, or hashtag across TikTok, Reels, or YouTube Shorts. Use when the user wants to start monitoring a source for viral or outlier videos.
+description: Track a new creator, keyword, or hashtag on TikTok/Reels/Shorts and immediately pull its videos. Use when the user wants to start monitoring a source for viral or outlier videos.
 argument-hint: "<platform> <creator|keyword|hashtag> <query>"
-allowed-tools: mcp__plugin_slashloop_slashloop__create_source, mcp__plugin_slashloop_slashloop__list_sources
+allowed-tools: mcp__plugin_slashloop_slashloop__create_source, mcp__plugin_slashloop_slashloop__refresh_source, mcp__plugin_slashloop_slashloop__get_apify_spend_status, mcp__plugin_slashloop_slashloop__list_sources
 ---
 
-Track a new source using the `create_source` MCP tool.
+Start tracking a source with `create_source`, then **immediately refresh it** to
+pull videos — do not hand the next step back to the user.
 
 Parse $ARGUMENTS into:
 
@@ -13,12 +14,12 @@ Parse $ARGUMENTS into:
 - **sourceType**: creator | keyword | hashtag
 - **query**: the handle, keyword phrase, or hashtag (include the leading `#` for hashtags)
 
-Examples:
+If anything is ambiguous, ask one short question. Otherwise:
 
-- `/slashloop:track tiktok creator @charlidamelio`
-- `/slashloop:track reels hashtag #fyp`
-- `/slashloop:track shorts keyword ai tools`
+1. Call `create_source` and note the new source id.
+2. Warn once that the next step is a **live Apify scrape** (~cost, against the
+   $5/month cap), then call `refresh_source` on the new id to pull videos.
+3. Report the source id and how many videos landed.
 
-If anything is ambiguous, ask one short clarifying question. After creating,
-confirm the new source ID and mention `/slashloop:refresh <id>` to pull videos.
-Note: Reels and Shorts scraping are stubs — only TikTok is live.
+If the user clearly only wants to register the source without scraping now, skip
+step 2. Only TikTok is live; Reels and Shorts are stubs.
