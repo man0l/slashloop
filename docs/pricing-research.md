@@ -39,12 +39,12 @@ modelled ones. Do not re-price downward until real invoices confirm the delta.
 |---|---|---|
 | Light (solo creator) | 3 sources, weekly refresh, 10 analyses | **~$1.60** |
 | Medium (freelancer) | 10 sources, 2×/week, 50 analyses, briefs | **~$10.40** |
-| Heavy (agency) | 30 sources, daily refresh, 200 analyses | **~$110** |
+| Heavy (power user) | 30 sources, daily refresh, 200 analyses | **~$110** |
 
 **The heavy row is the whole pricing problem.** A 30-source daily refresh is
 $3.60/day of pure Apify spend. That is one sentence to an agent — *"refresh all
 my sources"* — and it can be repeated all day. At a flat $49/mo, a single
-motivated agency user is a **$60/month loss**.
+motivated heavy user is a **$60/month loss**.
 
 ---
 
@@ -179,12 +179,17 @@ often while orienting, and metering them would teach agents to avoid Slashloop.
 
 ### 4c. Plans
 
-| Plan | Price | Credits | Sources | Seats | Gates |
-|---|---|---|---|---|---|
-| **Free** | $0 | 300/mo | 2 | 1 | manual refresh only |
-| **Creator** | **$29/mo** | 3,000 | 10 | 1 | scheduled weekly refresh |
-| **Pro** | **$79/mo** | 10,000 | 30 | 3 | daily scheduled refresh, alerts |
-| **Agency** | **$199/mo** | 30,000 | unlimited | 10 | webhooks, direct API, priority |
+Three tiers for now, not four. **`Workspace.ownerId` is a unique 1:1 with the
+authenticated Supabase user** — there is no multi-user workspace, no seat
+model, no shared credit pool across teammates. An Agency/Team tier promising
+seats would be a promise the schema can't keep. Dropped until a
+`WorkspaceMember` join table exists; see the note at the end of this section.
+
+| Plan | Price | Credits | Sources | Gates |
+|---|---|---|---|---|
+| **Free** | $0 | 300/mo | 2 | manual refresh only |
+| **Creator** | **$29/mo** | 3,000 | 10 | scheduled weekly refresh |
+| **Pro** | **$79/mo** | 10,000 | 30 | daily scheduled refresh, alerts, API access |
 
 - **Top-up packs:** 5,000 credits for **$49**, never expire while the account
   is active (agent-media's pattern, and it is the right one — expiring packs
@@ -200,9 +205,18 @@ COGS on $29 revenue = 74% GM**. The floor holds even under adversarial usage,
 which is exactly the property flat-rate pricing lacks.
 
 Positioning: Free and Creator undercut every tool in the scan. Pro at $79 sits
-in the gap between Virlo's $49 and $199. Agency at $199 matches Virlo Pro while
-including the API access Virlo reserves for Enterprise — that is the sharpest
-wedge available.
+in the gap between Virlo's $49 and $199, and folds in the direct API access
+Virlo reserves for its custom-priced Enterprise tier — that's the sharpest
+wedge available at this size.
+
+**Multi-seat tier, deferred:** the market comparison in §2 shows agency-priced
+tiers ($129–459) exist because those competitors sell seats, not just volume.
+Re-adding that tier later needs, in order: (1) a `WorkspaceMember` table
+(many users → one workspace, one credit pool), (2) an invite/role flow, (3)
+the OAuth session resolving to a *member's* workspace rather than assuming
+`ownerId === caller`. Until then, a customer needing multiple people on one
+account is a Pro subscription per person — worth flagging to them directly
+rather than discovering it as a support ticket.
 
 ### 4d. Engineering work this implies
 

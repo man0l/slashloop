@@ -24,9 +24,11 @@ model Workspace {
   updatedAt            DateTime @updatedAt
 
   // --- billing ---
-  /// free | creator | pro | agency. Server-controlled — never set this from
-  /// a user-facing tool input. Changed only by the Stripe webhook (Phase 2)
-  /// or a trusted admin path.
+  /// free | creator | pro. Server-controlled — never set this from a
+  /// user-facing tool input. Changed only by the Stripe webhook (Phase 2)
+  /// or a trusted admin path. No multi-seat/"agency" tier yet — ownerId
+  /// is a unique 1:1 with the authenticated user, so there's no seat
+  /// model to sell one into (see docs/pricing-research.md §4c).
   planKey              String    @default("free")
   /// Resets to the plan's allotment on each billing-period renewal.
   planCredits          Int       @default(300)

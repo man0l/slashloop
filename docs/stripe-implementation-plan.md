@@ -88,9 +88,12 @@ metadata so plan changes don't require a deploy.
 | Creator | $290 | year | `plan_key=creator`, `credits=3000` |
 | Pro | $79 | month | `plan_key=pro`, `credits=10000` |
 | Pro | $790 | year | `plan_key=pro`, `credits=10000` |
-| Agency | $199 | month | `plan_key=agency`, `credits=30000` |
-| Agency | $1990 | year | `plan_key=agency`, `credits=30000` |
 | Credit pack | $49 | one-time | `pack_credits=5000` |
+
+No Agency/Team product yet — `Workspace.ownerId` is a unique 1:1 with the
+Supabase user, so there's no seat model to sell. See
+[`pricing-research.md` §4c](./pricing-research.md#4c-plans) for what a
+multi-seat tier would require before it can be re-added.
 
 Also configure:
 - **Billing Portal** — allow plan switching, payment-method update, cancellation.
@@ -111,7 +114,7 @@ model Workspace {
   // ... existing fields ...
 
   // --- billing ---
-  planKey              String    @default("free")    // free | creator | pro | agency
+  planKey              String    @default("free")    // free | creator | pro
   planCredits          Int       @default(300)       // resets each billing period
   packCredits          Int       @default(0)         // purchased, never expires
   billingStatus        String    @default("active")  // active | past_due | canceled
