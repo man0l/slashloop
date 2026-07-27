@@ -2,10 +2,12 @@
 // MCP Tools: Swipe Boards, Ideas, Briefs
 // ---------------------------------------------------------------------------
 
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
 import { generateBrief } from '../analysis/briefs.js';
+import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../lib/credits.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerCreativeTools(server: McpServer) {
@@ -169,24 +171,44 @@ export function registerCreativeTools(server: McpServer) {
   // ============ BRIEFS ============
 
   server.tool('create_brief',
-    'Generate a UGC/ad brief from an analysis. Includes concept, hook, talking points, visual beats, and deliverable specs.',
+    'Generate a UGC/ad brief from an analysis. Includes concept, hook, talking points, visual beats, and deliverable specs. Costs 2 credits.',
     {
       analysisId: z.string(),
       brandContext: z.string().optional().describe('Brand/product context for adaptation'),
     },
     async ({ analysisId, brandContext }) => {
+      const workspace = await requireWorkspace();
+      const opId = randomUUID();
+      try {
+        await debitCredits(workspace.id, CREDIT_COSTS.createBrief, 'create_brief', `${opId}:preauth`);
+      } catch (err) {
+        if (err instanceof InsufficientCreditsError) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify(insufficientCreditsPayload(err), null, 2) }], isError: true };
+        }
+        throw err;
+      }
+
       try {
         const result = await generateBrief(analysisId, brandContext);
+        const balance = await creditBalance(workspace.id);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
             message: 'Brief generated',
             id: result.id,
             brief: result.brief,
+            creditsCharged: CREDIT_COSTS.createBrief,
+            creditsRemaining: balance.total,
           }, null, 2) }],
         };
       } catch (err) {
+        const balance = await refundCredits(workspace.id, CREDIT_COSTS.createBrief, 'create_brief', `${opId}:fail`, 'call_failed');
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Brief generation failed', message: (err as Error).message }) }],
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            error: 'Brief generation failed',
+            message: (err as Error).message,
+            creditsCharged: 0,
+            creditsRemaining: balance.total,
+          }) }],
           isError: true,
         };
       }

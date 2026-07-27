@@ -2,9 +2,12 @@
 // MCP Tools: Video Detail + AI Analysis
 // ---------------------------------------------------------------------------
 
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
+import { requireWorkspace } from '../context.js';
 import { analyzeVideoWithDownload } from '../analysis/index.js';
+import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../lib/credits.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerVideoTools(server: McpServer) {
@@ -81,14 +84,35 @@ export function registerVideoTools(server: McpServer) {
 
   // ---- analyze_video ----
   server.tool('analyze_video',
-    'Run AI analysis on a video. Uses the configured backend (default: gemini-native, fallback: gemini-text). Auto-fallbacks on failure. gemini-native downloads the video via Apify then uploads it for native understanding (shots, audio, on-screen text); gemini-text does a text-only call on transcript + caption + metadata when video download or upload fails. Each native analysis costs ~1 cent against the Apify spend cap.',
+    'Run AI analysis on a video. Uses the configured backend (default: gemini-native, fallback: gemini-text). Auto-fallbacks on failure. gemini-native downloads the video via Apify then uploads it for native understanding (shots, audio, on-screen text); gemini-text does a text-only call on transcript + caption + metadata when video download or upload fails. Costs 5 credits.',
     {
       videoId: z.string().describe('Video ID to analyze'),
       forceBackend: z.enum(['gemini-native', 'gemini-text']).optional().describe('Override the workspace default backend'),
     },
     async ({ videoId, forceBackend }) => {
+      const workspace = await requireWorkspace();
+
+      // Scope to the caller's own workspace before spending their credits
+      // on someone else's video.
+      const owned = await db.video.findFirst({
+        where: { id: videoId, source: { workspaceId: workspace.id } },
+        select: { id: true },
+      });
+      if (!owned) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Video not found' }) }], isError: true };
+
+      const opId = randomUUID();
+      try {
+        await debitCredits(workspace.id, CREDIT_COSTS.analyzeVideo, 'analyze_video', `${opId}:preauth`);
+      } catch (err) {
+        if (err instanceof InsufficientCreditsError) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify(insufficientCreditsPayload(err), null, 2) }], isError: true };
+        }
+        throw err;
+      }
+
       try {
         const result = await analyzeVideoWithDownload(videoId, { forceBackend });
+        const balance = await creditBalance(workspace.id);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
             message: 'Analysis complete',
@@ -99,13 +123,18 @@ export function registerVideoTools(server: McpServer) {
             model: result.model,
             costCents: result.costCents,
             analysis: result.analysis,
+            creditsCharged: CREDIT_COSTS.analyzeVideo,
+            creditsRemaining: balance.total,
           }, null, 2) }],
         };
       } catch (err) {
+        const balance = await refundCredits(workspace.id, CREDIT_COSTS.analyzeVideo, 'analyze_video', `${opId}:fail`, 'call_failed');
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
             error: 'Analysis failed',
             message: (err as Error).message,
+            creditsCharged: 0,
+            creditsRemaining: balance.total,
           }) }],
           isError: true,
         };

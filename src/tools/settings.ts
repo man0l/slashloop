@@ -2,12 +2,14 @@
 // MCP Tools: Usage Tracking + Settings + Cost Controls
 // ---------------------------------------------------------------------------
 
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
 import { loadAnalysisConfig, updateAnalysisConfig, DEFAULT_CONFIG, COST_ESTIMATES, BATCH_COST_ESTIMATES } from '../analysis/index.js';
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import { getApifyCapStatus } from '../lib/spend-cap.js';
+import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from '../lib/credits.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerSettingsTools(server: McpServer) {
@@ -56,11 +58,16 @@ export function registerSettingsTools(server: McpServer) {
 
       const budgetUsed = (totalCost / workspace.monthlyBudgetCents * 100).toFixed(1);
       const budgetRemaining = workspace.monthlyBudgetCents - totalCost;
+      const credits = { planCredits: workspace.planCredits, packCredits: workspace.packCredits, total: workspace.planCredits + workspace.packCredits };
 
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           period,
-          workspace: { name: workspace.name, monthlyBudgetCents: workspace.monthlyBudgetCents },
+          workspace: { name: workspace.name, planKey: workspace.planKey, monthlyBudgetCents: workspace.monthlyBudgetCents },
+          // Credits are what the customer actually spends against (see
+          // src/lib/credits.ts). monthlyBudgetCents/budget* below is COGS
+          // (what we pay Apify/Google) and is informational only now.
+          credits,
           summary: {
             totalCostCents: totalCost,
             totalCostDisplay: `$${(totalCost / 100).toFixed(2)}`,
@@ -92,9 +99,17 @@ export function registerSettingsTools(server: McpServer) {
           workspace: {
             id: workspace.id,
             name: workspace.name,
-            monthlyBudgetCents: workspace.monthlyBudgetCents,
+            planKey: workspace.planKey,
+            billingStatus: workspace.billingStatus,
+            periodEnd: workspace.periodEnd?.toISOString() ?? null,
             createdAt: workspace.createdAt,
           },
+          credits: {
+            planCredits: workspace.planCredits,
+            packCredits: workspace.packCredits,
+            total: workspace.planCredits + workspace.packCredits,
+          },
+          creditCosts: CREDIT_COSTS,
           analysisConfig,
           costEstimates: COST_ESTIMATES,
           batchCostEstimates: BATCH_COST_ESTIMATES,
@@ -105,10 +120,9 @@ export function registerSettingsTools(server: McpServer) {
 
   // ---- update_settings ----
   server.tool('update_settings',
-    'Update workspace settings. Pass only fields you want to change.',
+    'Update workspace settings. Pass only fields you want to change. Note: credit balance and plan are billing-controlled and cannot be changed here — see get_billing status via get_apify_spend_status, or upgrade/buy credits at the billing URL.',
     {
       name: z.string().optional(),
-      monthlyBudgetCents: z.number().min(100).optional(),
       autoAnalyzeRules: z.object({
         minOutlierScore: z.number().default(5.0),
         minViews: z.number().default(10000),
@@ -125,10 +139,12 @@ export function registerSettingsTools(server: McpServer) {
     async (params) => {
       const workspace = await requireWorkspace();
 
-      // Update workspace fields
+      // Update workspace fields. Credits/plan/billing fields are deliberately
+      // not settable here — they're server-controlled (see planKey/planCredits
+      // comments in prisma/schema.prisma) and change only via the Stripe
+      // webhook or a trusted admin path, never a user-facing tool input.
       const workspaceUpdate: any = {};
       if (params.name) workspaceUpdate.name = params.name;
-      if (params.monthlyBudgetCents) workspaceUpdate.monthlyBudgetCents = params.monthlyBudgetCents;
       if (params.autoAnalyzeRules) workspaceUpdate.autoAnalyzeRulesJson = JSON.stringify(params.autoAnalyzeRules);
 
       if (Object.keys(workspaceUpdate).length > 0) {
@@ -149,7 +165,7 @@ export function registerSettingsTools(server: McpServer) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           message: 'Settings updated',
-          workspace: { name: params.name ?? workspace.name, monthlyBudgetCents: params.monthlyBudgetCents ?? workspace.monthlyBudgetCents },
+          workspace: { name: params.name ?? workspace.name, planKey: workspace.planKey },
           analysisConfig: config,
         }, null, 2) }],
       };
@@ -284,25 +300,45 @@ export function registerSettingsTools(server: McpServer) {
       let totalCostCents = 0;
       let analyzedCount = 0;
       let failedCount = 0;
+      let totalCreditsCharged = 0;
+      let stoppedForCredits = false;
 
       for (const v of capped) {
-        try {
-          // Double-check no analysis exists (could have changed during run)
-          const existing = await db.analysis.findFirst({ where: { videoId: v.id }, select: { id: true } });
-          if (existing) {
-            results.push({ videoId: v.id, status: 'skipped' });
-            continue;
-          }
+        // Double-check no analysis exists (could have changed during run)
+        const existing = await db.analysis.findFirst({ where: { videoId: v.id }, select: { id: true } });
+        if (existing) {
+          results.push({ videoId: v.id, status: 'skipped' });
+          continue;
+        }
 
+        const opId = randomUUID();
+        try {
+          await debitCredits(workspace.id, CREDIT_COSTS.analyzeVideo, 'run_auto_analyze', `${opId}:preauth`);
+        } catch (err) {
+          if (err instanceof InsufficientCreditsError) {
+            // Out of credits mid-batch: stop gracefully, report how far we
+            // got. Remaining candidates are simply not attempted — nothing
+            // to refund since nothing was charged for them.
+            stoppedForCredits = true;
+            break;
+          }
+          throw err;
+        }
+
+        try {
           const result = await analyzeVideoWithDownload(v.id, { batch: true });
           totalCostCents += result.costCents;
+          totalCreditsCharged += CREDIT_COSTS.analyzeVideo;
           analyzedCount++;
           results.push({ videoId: v.id, status: 'ok', costCents: result.costCents });
         } catch (err) {
+          await refundCredits(workspace.id, CREDIT_COSTS.analyzeVideo, 'run_auto_analyze', `${opId}:fail`, 'call_failed');
           failedCount++;
           results.push({ videoId: v.id, status: 'failed', error: (err as Error).message });
         }
       }
+
+      const balance = await creditBalance(workspace.id);
 
       // Persist AutoAnalyzeRun for audit
       const run = await db.autoAnalyzeRun.create({
@@ -320,17 +356,22 @@ export function registerSettingsTools(server: McpServer) {
 
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
-          message: 'Auto-analyze complete',
+          message: stoppedForCredits
+            ? `Auto-analyze stopped early — out of credits after ${analyzedCount} of ${capped.length} candidates`
+            : 'Auto-analyze complete',
           runId: run.id,
           rules,
           candidateCount: capped.length,
           analyzedCount,
           skippedCount: results.filter(r => r.status === 'skipped').length,
           failedCount,
+          stoppedForCredits,
           totalCostCents: Math.round(totalCostCents * 100) / 100,
           totalCostDisplay: `$${(totalCostCents / 100).toFixed(4)}`,
           estimatedCostCents,
           savingsFromBatchDiscountCents: Math.max(0, Math.round((estimatedCostCents - totalCostCents) * 100) / 100),
+          creditsCharged: totalCreditsCharged,
+          creditsRemaining: balance.total,
           results,
         }, null, 2) }],
       };
@@ -341,12 +382,13 @@ export function registerSettingsTools(server: McpServer) {
   // recent cap_breach events. Use this before/after refresh_source to
   // confirm you're still under the $5 testing cap.
   server.tool('get_apify_spend_status',
-    'Check Apify spend against the testing cap (default $5). Shows current monthly spend, cap, percent used, breach state, and recent cap_breach audit events. Useful before/after refresh_source to confirm spend is within bounds.',
+    'Check Apify spend against the platform-wide testing cap (default $5), and this workspace\'s own credit balance (what refresh_source/analyze_video/etc actually draw against). Shows current monthly spend, cap, percent used, breach state, and recent cap_breach audit events.',
     {},
     async () => {
       const workspace = await requireWorkspace();
 
       const status = await getApifyCapStatus(workspace.id);
+      const credits = { planCredits: workspace.planCredits, packCredits: workspace.packCredits, total: workspace.planCredits + workspace.packCredits, planKey: workspace.planKey };
 
       // Recent cap_breach events (last 30 days)
       const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -366,11 +408,13 @@ export function registerSettingsTools(server: McpServer) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           status,
+          credits,
           message: status.breached
             ? '⚠️  CAP BREACHED — refresh_source will refuse new Apify calls. Raise APIFY_SPEND_CAP_CENTS in .env to continue.'
             : status.warning
               ? `⚠️  Approaching cap (${status.percentUsed}% used). ${status.remainingDisplay} remaining.`
               : `OK — ${status.remainingDisplay} remaining of ${status.capDisplay} cap.`,
+          creditsMessage: `${credits.total} credits remaining (${credits.planCredits} plan + ${credits.packCredits} pack) on the ${credits.planKey} plan.`,
           recentCapBreaches: breaches.map(b => ({
             at: b.createdAt.toISOString(),
             attemptedCostCents: b.costCents,

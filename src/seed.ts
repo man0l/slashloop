@@ -403,6 +403,10 @@ export async function seedDatabase() {
       id: uuidv4(),
       name: 'Default',
       monthlyBudgetCents: 5000,
+      // Demo workspace gets a Pro-plan credit balance so seeded tools work
+      // without immediately hitting the free tier's 300-credit ceiling.
+      planKey: 'pro',
+      planCredits: 10000,
       autoAnalyzeRulesJson: JSON.stringify({
         minOutlierScore: 5.0,
         minViews: 10000,
