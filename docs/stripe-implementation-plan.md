@@ -296,20 +296,67 @@ orienting, and metering them just teaches agents to route around Slashloop.
 
 ## 7. What `slashloop-site` needs
 
-Assuming it stays the marketing surface and calls the MCP for everything:
+**What it is today** (read from the repo, not assumed): a **Vite + React 18
+SPA** with Tailwind v4, deployed on Vercel. Three source files —
+`src/App.jsx` (426 lines), `main.jsx`, `index.css`. No router, no auth, no
+Supabase client, no `vercel.json`, and **no server of any kind**. `App.jsx`
+imports exactly one thing: React. It is a pre-launch waitlist page.
 
-1. **Pricing page** — four tiers, credit counts, "what a credit buys" table.
-   Static.
-2. **Supabase auth** — same project as the MCP. Sign in / sign up.
-3. **Checkout button** → `POST {MCP_URL}/api/billing/checkout` with the
-   Supabase access token, then redirect to the returned Stripe URL.
-4. **`/billing/success` and `/billing/cancel`** landing routes. Success shows
-   "provisioning…" and polls `/api/billing/status` — because the webhook may
-   land a beat after the redirect. It must not itself grant anything.
-5. **Account page** — plan, credit balance, period end, "Manage billing" button
-   → `POST /api/billing/portal`.
-6. **CORS:** the MCP's billing routes need to allow the site's origin.
-   `/mcp` itself does not.
+Two consequences:
+
+- **It has no API routes, so it structurally cannot hold Stripe logic.**
+  Creating a Checkout Session needs the secret key server-side. This turns §1's
+  "MCP owns all Stripe logic" from a preference into the only option — which is
+  the right outcome anyway. Vercel *would* let you add `/api` functions next to
+  a Vite build; don't. That reintroduces the two-writers problem for no gain.
+- **The waitlist form is cosmetic.** `src/App.jsx:155` is
+  `onClick={() => email.includes("@") && setDone(true)}` — it shows a success
+  state and stores nothing, anywhere. Every address submitted so far is gone.
+  Unrelated to Stripe, worth fixing first: these are the people you'd sell the
+  paid tiers to.
+
+### Structural work (blocking everything else)
+
+1. **Add a router** (`react-router-dom`) — the site is literally one page today
+   and needs `/pricing`, `/login`, `/account`, `/billing/success`,
+   `/billing/cancel`.
+2. **Add `vercel.json` with an SPA rewrite** (`/(.*)` → `/index.html`).
+   Without it every client route 404s on refresh or direct link — which is
+   exactly how users arrive back from Stripe Checkout.
+3. **Add `@supabase/supabase-js`** pointed at the same project as the MCP, plus
+   a session provider. This is the shared identity that makes the MCP's
+   `verifySupabaseJwt()` work for billing calls.
+
+### Pages
+
+4. **Pricing page** — three tiers (Free / Creator $29 / Pro $79), credit counts,
+   and a "what a credit buys" table. Static.
+5. **Login / signup** — Supabase email+password, matching what the MCP's
+   `/login` already uses.
+6. **Checkout button** → `POST {MCP_URL}/api/billing/checkout` with the Supabase
+   access token as a Bearer header, then `window.location = url`.
+7. **`/billing/success`** — shows "provisioning…" and polls
+   `GET /api/billing/status` until `planKey` flips, because the webhook may land
+   a beat after the redirect. **It must not grant anything itself.**
+8. **`/billing/cancel`** — returns to pricing, no state change.
+9. **Account page** — plan, credit balance, period end, and a "Manage billing"
+   button → `POST /api/billing/portal`.
+
+### Config
+
+10. **Env vars** must use Vite's `VITE_` prefix to reach the client:
+    `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_MCP_URL`. Anything
+    without the prefix is silently undefined in the browser.
+11. **CORS** on the MCP's billing routes for the site's origin. `/mcp` itself
+    doesn't need it.
+
+### Copy
+
+12. The hero and final CTA currently promise *"Free during beta. Founding
+    loopers keep beta pricing when it ends"* (`src/App.jsx:407`). Launching paid
+    tiers needs a decision on what that promise converts into — grandfathered
+    Creator, a credit grant, or a discount — and the copy updated to match
+    before the pricing page goes live.
 
 Only the publishable Stripe key ever reaches the site, and only if it renders
 Stripe Elements — with hosted Checkout it needs no Stripe key at all.
