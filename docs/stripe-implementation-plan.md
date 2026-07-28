@@ -42,6 +42,42 @@ serverless invocation, and agents fire tool calls in parallel — so N concurren
 Harmless when it guards a $5 testing cap. Not harmless when it guards revenue.
 Credit debits must become a single atomic conditional update.
 
+### 0.4 Schema management moved to Supabase migrations
+
+**This reverses the earlier recommendation in this doc to stay on
+`prisma db push` until live Stripe keys.** That call was made on the
+assumption that deferring cost nothing — baselining is the same five-minute
+job whenever you do it, so it was worth paying at the moment it started
+buying something. Two things changed that:
+
+1. **The database already has real tables and real data**, applied by ad-hoc
+   `db push` runs during earlier development. There is no migration history
+   to reconstruct, and `db push` on a schema it doesn't fully recognize will
+   offer to *drop* columns to reconcile — which on `CreditLedger` is
+   unrecoverable (Stripe knows what someone paid; it cannot reconstruct what
+   you already debited them per tool call).
+2. **Supabase applies `supabase/migrations/*.sql` automatically** via its
+   GitHub integration. That gives tracked, reviewable, forward-only schema
+   changes for free — no new tooling to adopt, no CI job to maintain.
+
+The split from here:
+
+| Concern | Owner |
+|---|---|
+| Production schema | `supabase/migrations/*.sql` (applied on merge) |
+| Prisma client types / query builder | `prisma/schema.prisma` |
+
+The two must be kept in sync **by hand** — editing `schema.prisma` alone
+changes the generated client but not the database, and vice versa. Generate
+the SQL with `prisma migrate diff` (offline, no DB connection required; see
+the README's "Schema changes" section for the exact invocation), then harden
+it with `IF NOT EXISTS` guards.
+
+**`prisma migrate` must never be run against this project.** It maintains its
+own `_prisma_migrations` bookkeeping table that Supabase knows nothing about;
+the two would immediately disagree about what has been applied. `db:push`
+survives in `package.json` for throwaway local databases only.
+
 ---
 
 ## 1. Architecture: one writer for billing state
@@ -397,8 +433,11 @@ no way to apply the schema (§0's usual caveat: no `DATABASE_URL` here
 either). Before this is real:
 1. Create the products/prices in the Stripe dashboard (§2) with their
    `plan_key`/`credits`/`pack_credits` metadata.
-2. `bun run db:push` against the actual Supabase Postgres instance —
-   `CreditLedger` (Phase 1) and `StripeEvent` (Phase 2) both need to exist.
+2. ~~`bun run db:push`~~ — **superseded.** The schema now ships as a tracked
+   Supabase migration, `supabase/migrations/20260728000000_billing_credit_ledger_and_stripe.sql`,
+   applied by the Supabase GitHub integration on merge. It creates
+   `CreditLedger` (Phase 1), `StripeEvent` (Phase 2), and the `Workspace`
+   billing columns. See §0.4 below for why `db:push` is now off the table.
 3. Populate `.env`'s `STRIPE_*` / `SITE_URL` vars from that dashboard.
 4. Verify with `vercel dev` (**not** `bun run remote:dev` — that's a
    separate Node http server for the OAuth/MCP surface only, see
