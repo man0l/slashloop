@@ -73,10 +73,36 @@ cp .env.example .env
 ### 3. Run / deploy
 ```bash
 bun install
-bun run db:push          # apply schema to Postgres
 bun run remote:dev       # local: http://localhost:8788 (+ tunnel for OAuth)
 # or: vercel --prod
 ```
+
+### Schema changes
+
+**Production schema is managed by Supabase migrations, not Prisma.** SQL files
+in `supabase/migrations/` are applied by the Supabase GitHub integration on
+merge to the default branch. `prisma/schema.prisma` stays the source of truth
+for the *client* (types + query builder) — the two must be kept in sync by
+hand.
+
+To add a schema change:
+```bash
+# 1. Edit prisma/schema.prisma
+# 2. Generate the delta SQL (offline — no DB connection needed):
+bunx prisma migrate diff \
+  --from-schema-datamodel <schema.prisma before your change> \
+  --to-schema-datamodel   prisma/schema.prisma \
+  --script > supabase/migrations/$(date +%Y%m%d%H%M%S)_your_change.sql
+# 3. Harden it with IF NOT EXISTS guards (see the billing migration for the
+#    pattern), commit, and merge — Supabase applies it.
+bun run db:generate      # refresh the Prisma client
+```
+
+> ⚠️ **Do not run `bun run db:push` against production.** It bypasses the
+> migration history entirely and will drift from what Supabase has applied.
+> It exists only for throwaway local databases. Likewise, never run
+> `prisma migrate` — it maintains its own `_prisma_migrations` table that
+> Supabase knows nothing about.
 
 ### Routes
 | Route | Purpose |
@@ -102,7 +128,7 @@ from a browser.
 | Variable | Required? | Purpose |
 |---|---|---|
 | `DATABASE_URL` | yes | Supabase Postgres pooler (`?pgbouncer=true&connection_limit=1`) |
-| `DIRECT_URL` | yes (migrations) | Supabase session-mode URL for `db:push` |
+| `DIRECT_URL` | local only | Supabase session-mode URL (port 5432). Prisma's datasource declares it, but production schema changes go through `supabase/migrations/` — see "Schema changes" above |
 | `SUPABASE_URL` | yes (remote) | `https://YOUR-PROJECT.supabase.co` |
 | `SUPABASE_ANON_KEY` | yes (remote) | Supabase publishable key |
 | `GEMINI_API_KEY` | **yes** | Powers gemini-native (primary) + gemini-text (fallback) analysis, hook variations, briefs |
@@ -116,10 +142,9 @@ from a browser.
 | `STRIPE_PRICE_PACK` | yes (billing) | One-time credit-pack Price id, with `pack_credits` metadata |
 
 See `docs/stripe-implementation-plan.md` for the full Stripe dashboard setup
-(products, prices, webhook registration) and what's still manual after this
-code: applying the schema (`bun run db:push` — no tracked migrations yet,
-see that doc's note on when to switch), and populating the env vars above
-from a real Stripe account.
+(products, prices, webhook registration). Schema is applied by the Supabase
+migration in `supabase/migrations/` on merge; the remaining manual step is
+populating the env vars above from a real Stripe account.
 
 ---
 
@@ -163,6 +188,6 @@ from a real Stripe account.
 |---|---|
 | `bun run remote:dev` | Local remote host with watch (port 8788) |
 | `bun run seed` | Seed mock data |
-| `bun run db:push` | Apply Prisma schema to Postgres |
+| `bun run db:push` | ⚠️ Local/throwaway DBs only — never production (see "Schema changes") |
 | `bun run db:generate` | Generate Prisma client |
 | `bun src/scripts/auto_analyze_cron.ts` | External cron entry for nightly batch |
