@@ -9,6 +9,10 @@
     { "source": "/", "destination": "/api/health" }
   ],
   "functions": {
-    "api/mcp.ts": { "maxDuration": 60 }
-  }
+    "api/mcp.ts": { "maxDuration": 60 },
+    "api/cron/media-retention.ts": { "maxDuration": 60 }
+  },
+  "crons": [
+    { "path": "/api/cron/media-retention", "schedule": "0 3 * * *" }
+  ]
 }

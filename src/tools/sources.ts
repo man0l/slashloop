@@ -10,6 +10,7 @@ import { scrapeSource } from '../lib/apify.js';
 import { assertApifyCap, getApifyCapStatus, SpendCapExceededError } from '../lib/spend-cap.js';
 import { batchScoreVideos } from '../scoring.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload } from '../lib/credits.js';
+import { ingestThumbnails, type ThumbIngestTarget } from '../lib/media.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerSourceTools(server: McpServer) {
@@ -219,6 +220,7 @@ export function registerSourceTools(server: McpServer) {
         actualCredits = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * itemsPulled);
 
         // Persist videos (dedup by platform + externalId)
+        const thumbTargets: ThumbIngestTarget[] = [];
         for (const nv of result.items) {
           const existing = await db.video.findFirst({
             where: { platform: nv.platform, externalId: nv.externalId },
@@ -226,7 +228,7 @@ export function registerSourceTools(server: McpServer) {
           });
           if (existing) continue;
 
-          await db.video.create({
+          const created = await db.video.create({
             data: {
               sourceId,
               platform: nv.platform,
@@ -247,8 +249,21 @@ export function registerSourceTools(server: McpServer) {
               transcriptSource: nv.transcriptSource,
               rawJson: JSON.stringify(nv.raw),
             },
+            select: { id: true },
           });
           newVideos++;
+          thumbTargets.push({ videoId: created.id, platform: nv.platform, thumbnailUrl: nv.thumbnailUrl });
+        }
+
+        // Persist cover images to Supabase Storage. Deliberately after the
+        // insert loop and batched (see src/lib/media.ts) — 50 sequential
+        // round-trips would not fit the 60s function budget. Never throws:
+        // a missing thumbnail must not fail a refresh that already paid Apify.
+        if (thumbTargets.length > 0) {
+          const ingest = await ingestThumbnails(source.workspaceId, thumbTargets);
+          if (ingest.failed > 0) {
+            errors.push(`Thumbnail ingest: ${ingest.failed}/${ingest.stored + ingest.failed} failed`);
+          }
         }
 
         // Re-score the source's videos so outliers surface

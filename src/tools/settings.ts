@@ -10,6 +10,7 @@ import { loadAnalysisConfig, updateAnalysisConfig, DEFAULT_CONFIG, COST_ESTIMATE
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import { getApifyCapStatus } from '../lib/spend-cap.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from '../lib/credits.js';
+import { retentionCeiling, validateRetentionDays } from '../lib/retention.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerSettingsTools(server: McpServer) {
@@ -114,6 +115,14 @@ export function registerSettingsTools(server: McpServer) {
           costEstimates: COST_ESTIMATES,
           batchCostEstimates: BATCH_COST_ESTIMATES,
           autoAnalyzeRules,
+          mediaRetention: {
+            thumbRetentionDays: workspace.thumbRetentionDays,
+            mediaRetentionDays: workspace.mediaRetentionDays,
+            maxRetentionDays: retentionCeiling(workspace.planKey),
+            note: 'Stored cover images and videos are deleted after this many days. '
+              + 'Lowering it takes effect on the next daily sweep; raising it does not '
+              + 'restore anything already deleted.',
+          },
         }, null, 2) }],
       };
     });
@@ -135,6 +144,10 @@ export function registerSettingsTools(server: McpServer) {
         'gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro',
         'gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-3-pro-preview',
       ]).optional(),
+      thumbRetentionDays: z.number().int().optional()
+        .describe('Days to keep stored cover images. Capped by your plan — see mediaRetention.maxRetentionDays in get_settings.'),
+      mediaRetentionDays: z.number().int().optional()
+        .describe('Days to keep stored video files. Capped by your plan. Longer windows make re-analysis free but cost storage.'),
     },
     async (params) => {
       const workspace = await requireWorkspace();
@@ -146,6 +159,31 @@ export function registerSettingsTools(server: McpServer) {
       const workspaceUpdate: any = {};
       if (params.name) workspaceUpdate.name = params.name;
       if (params.autoAnalyzeRules) workspaceUpdate.autoAnalyzeRulesJson = JSON.stringify(params.autoAnalyzeRules);
+
+      // Retention IS user-writable, unlike credits/plan — customers legitimately
+      // differ. But it drives storage and egress, so it's validated against the
+      // plan ceiling and rejected (not clamped) when out of range: a user who
+      // asks for 365 and silently gets 3 files a bug about missing thumbnails.
+      for (const [key, label] of [
+        ['thumbRetentionDays', 'thumbRetentionDays'],
+        ['mediaRetentionDays', 'mediaRetentionDays'],
+      ] as const) {
+        const requested = params[key];
+        if (requested === undefined) continue;
+        const check = validateRetentionDays(workspace.planKey, requested, label);
+        if (!check.ok) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({
+              error: 'invalid_retention',
+              message: check.message,
+              maxRetentionDays: check.ceiling,
+              planKey: workspace.planKey,
+            }, null, 2) }],
+            isError: true,
+          };
+        }
+        workspaceUpdate[key] = check.value;
+      }
 
       if (Object.keys(workspaceUpdate).length > 0) {
         await db.workspace.update({ where: { id: workspace.id }, data: workspaceUpdate });
@@ -167,6 +205,11 @@ export function registerSettingsTools(server: McpServer) {
           message: 'Settings updated',
           workspace: { name: params.name ?? workspace.name, planKey: workspace.planKey },
           analysisConfig: config,
+          mediaRetention: {
+            thumbRetentionDays: workspaceUpdate.thumbRetentionDays ?? workspace.thumbRetentionDays,
+            mediaRetentionDays: workspaceUpdate.mediaRetentionDays ?? workspace.mediaRetentionDays,
+            maxRetentionDays: retentionCeiling(workspace.planKey),
+          },
         }, null, 2) }],
       };
     });

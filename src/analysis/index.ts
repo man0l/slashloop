@@ -317,6 +317,13 @@ export async function analyzeVideoWithDownload(
       if (stat.size < 1024) throw new Error('Downloaded file too small');
 
       console.log(`[analysis] Downloaded ${(stat.size / 1024 / 1024).toFixed(2)}MB (Apify cost: ${dl.costCents}c)`);
+
+      // Cache the MP4 so a re-analysis inside the retention window doesn't
+      // have to pay Apify again. Never throws — the download already
+      // succeeded and the analysis is about to run; losing the cache copy
+      // must not lose the analysis.
+      const { ingestVideoFile } = await import('../lib/media.js');
+      await ingestVideoFile(workspaceId, videoId, videoFilePath);
     } catch (err) {
       console.warn(`[analysis] Video download failed, falling back to text-only: ${(err as Error).message}`);
       videoFilePath = undefined;
