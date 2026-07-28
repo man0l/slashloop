@@ -117,12 +117,18 @@ enabled = true
 # The maximum file size allowed (e.g. "5MB", "500KB").
 file_size_limit = "50MiB"
 
-# Uncomment to configure local storage buckets
-# [storage.buckets.images]
-# public = false
-# file_size_limit = "50MiB"
-# allowed_mime_types = ["image/png", "image/jpeg"]
-# objects_path = "./images"
+# Media storage buckets. Mirrors what
+# supabase/migrations/20260728140000_media_storage_buckets.sql provisions on the
+# hosted project — keep the two in sync so `supabase start` matches production.
+[storage.buckets.thumbs]
+public = true
+file_size_limit = "5MiB"
+allowed_mime_types = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"]
+
+[storage.buckets.media]
+public = false
+file_size_limit = "100MiB"
+allowed_mime_types = ["video/mp4"]
 
 # Allow connections via S3 compatible clients
 [storage.s3_protocol]

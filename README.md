@@ -106,12 +106,20 @@ doesn't render broken images once the source CDN's signed URLs expire, and so
 re-analysis can skip a paid Apify call. Leave `SUPABASE_SECRET_KEY` unset and
 the entire path no-ops — everything else works as before.
 
-Setup: create two buckets in the Supabase dashboard — **`thumbs` (public)** and
-**`media` (private, 100MB file size limit)** — then set `SUPABASE_SECRET_KEY`
-and `CRON_SECRET`. Retention defaults to 3 days and is a per-workspace setting
-changed via the `update_settings` tool, capped per plan. Supabase has no object
-lifecycle rules, so expiry runs as a daily Vercel Cron
-(`/api/cron/media-retention`).
+Setup is one step: set `SUPABASE_SECRET_KEY` and `CRON_SECRET` in Vercel. The
+buckets — **`thumbs` (public)** and **`media` (private, 100MiB)** — are created
+by `supabase/migrations/*_media_storage_buckets.sql` on merge, so they're
+tracked in git rather than clicked into the dashboard.
+
+> That migration downgrades a permissions failure on `storage.buckets` to a
+> `NOTICE` so it can't block a deploy — meaning "migration applied" does not
+> guarantee "buckets exist". Check them in the dashboard after the first
+> deploy; if they're missing, create `thumbs` (public) and `media` (private,
+> 100MiB) by hand.
+
+Retention defaults to 3 days and is a per-workspace setting changed via the
+`update_settings` tool, capped per plan. Supabase has no object lifecycle
+rules, so expiry runs as a daily Vercel Cron (`/api/cron/media-retention`).
 
 Full design, including the later phases: [`docs/media-storage-plan.md`](./docs/media-storage-plan.md).
 

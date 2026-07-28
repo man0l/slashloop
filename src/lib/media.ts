@@ -29,6 +29,32 @@ function isApifyHosted(url: string): boolean {
   return /^https?:\/\/[^/]*\bapify\.com\//i.test(url);
 }
 
+/** What the `thumbs` bucket's allowed_mime_types accepts (see the buckets migration). */
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+
+/**
+ * Coerce an upstream Content-Type into something the bucket will accept.
+ *
+ * Apify's key-value store commonly serves stored records as
+ * application/octet-stream, and the bucket enforces an image allowlist — so
+ * passing the upstream header through blindly would 400 on exactly the source
+ * we want to be using. Falls back to the URL's extension, then to JPEG, which
+ * is what TikTok covers actually are.
+ */
+function imageContentType(headerValue: string | null, url: string): string {
+  const header = (headerValue ?? '').split(';')[0].trim().toLowerCase();
+  if (ALLOWED_IMAGE_TYPES.includes(header)) return header;
+
+  const ext = url.split('?')[0].split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'png': return 'image/png';
+    case 'webp': return 'image/webp';
+    case 'heic': return 'image/heic';
+    case 'heif': return 'image/heif';
+    default: return 'image/jpeg';
+  }
+}
+
 /** Only these platforms have a real scraper and real CDN URLs behind them. */
 export function isIngestablePlatform(platform: string): boolean {
   return platform === 'tiktok';
@@ -91,7 +117,7 @@ async function ingestOneThumb(
       bucket: thumbBucket(),
       path,
       body: buf,
-      contentType: res.headers.get('content-type') || 'image/jpeg',
+      contentType: imageContentType(res.headers.get('content-type'), source),
     });
     return path;
   } catch (err) {
