@@ -252,7 +252,12 @@ export function registerSourceTools(server: McpServer) {
             select: { id: true },
           });
           newVideos++;
-          thumbTargets.push({ videoId: created.id, platform: nv.platform, thumbnailUrl: nv.thumbnailUrl });
+          thumbTargets.push({
+            videoId: created.id,
+            platform: nv.platform,
+            thumbnailUrl: nv.thumbnailUrl,
+            coverDownloadUrl: nv.coverDownloadUrl,
+          });
         }
 
         // Persist cover images to Supabase Storage. Deliberately after the

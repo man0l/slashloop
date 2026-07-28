@@ -15,11 +15,19 @@ import {
   isStorageEnabled, putObject, publicUrl, thumbBucket, mediaBucket, thumbPath, mediaPath,
 } from './storage.js';
 
-/** TikTok's CDN 403s bare requests — same headers the video download already sends. */
+/**
+ * Only needed for the SOURCE-CDN fallback. TikTok's CDN 403s bare requests, so
+ * these mirror what the video download already sends. Apify's key-value store
+ * is public and needs no headers — and is the path we want to be on.
+ */
 const TIKTOK_FETCH_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   Referer: 'https://www.tiktok.com/',
 };
+
+function isApifyHosted(url: string): boolean {
+  return /^https?:\/\/[^/]*\bapify\.com\//i.test(url);
+}
 
 /** Only these platforms have a real scraper and real CDN URLs behind them. */
 export function isIngestablePlatform(platform: string): boolean {
@@ -37,29 +45,42 @@ const THUMB_CONCURRENCY = 10;
 export interface ThumbIngestTarget {
   videoId: string;
   platform: string;
+  /** Source-CDN URL. Fallback only — signed and short-lived on TikTok. */
   thumbnailUrl: string;
+  /** Apify key-value-store URL. Preferred: public, unsigned, no referer gate. */
+  coverDownloadUrl?: string | null;
 }
 
 /**
  * Fetch one cover image and store it. Returns the object key on success, null
  * on any failure — callers record 'failed' and move on. A thumbnail is never
  * worth failing a scrape over; the scrape is the expensive thing.
+ *
+ * Source preference: Apify's key-value store first (that's why the scrape sets
+ * `shouldDownloadCovers`), the platform CDN only as a fallback for when the
+ * actor returns no KV URL.
  */
 async function ingestOneThumb(
   workspaceId: string,
   target: ThumbIngestTarget,
 ): Promise<string | null> {
-  if (!target.thumbnailUrl) return null;
+  const source = target.coverDownloadUrl || target.thumbnailUrl;
+  if (!source) return null;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), THUMB_FETCH_TIMEOUT_MS);
 
   try {
-    const res = await fetch(target.thumbnailUrl, {
-      headers: TIKTOK_FETCH_HEADERS,
+    if (!target.coverDownloadUrl) {
+      console.warn(`[media] ${target.videoId}: no Apify cover URL, falling back to the source CDN`);
+    }
+
+    const res = await fetch(source, {
+      // Apify KV is public; the spoofed headers are only for the CDN fallback.
+      headers: isApifyHosted(source) ? {} : TIKTOK_FETCH_HEADERS,
       signal: controller.signal,
     });
-    if (!res.ok) throw new Error(`cover fetch ${res.status}`);
+    if (!res.ok) throw new Error(`cover fetch ${res.status} from ${isApifyHosted(source) ? 'apify' : 'source cdn'}`);
 
     const buf = new Uint8Array(await res.arrayBuffer());
     if (buf.byteLength < 512) throw new Error(`cover too small (${buf.byteLength}b) — likely an error page`);

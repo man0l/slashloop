@@ -63,7 +63,18 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
   const hashtag = opts.query.replace(/^#/, '').trim();
   const input: Record<string, unknown> = {
     resultsPerPage: opts.limit,
-    shouldDownloadCovers: false,
+    // Have the actor copy cover images into its key-value store and list the
+    // KV URLs in `mediaUrls`. Those are public, unsigned and not referer-gated,
+    // unlike videoMeta.coverUrl which points at TikTok's own CDN with a signed,
+    // short-lived URL that 403s bare requests. Media ingest reads the KV URL
+    // (src/lib/media.ts) and only falls back to the TikTok CDN when the actor
+    // returns none — `mediaUrls` is documented as sometimes empty.
+    //
+    // Costs a little more actor work per run. Videos are NOT downloaded here:
+    // that stays on the analyze path (downloadTikTokVideo), which pulls one
+    // video on demand rather than 50 speculatively.
+    shouldDownloadCovers: true,
+    shouldDownloadVideos: false,
     shouldDownloadSlideshowImages: false,
   };
 

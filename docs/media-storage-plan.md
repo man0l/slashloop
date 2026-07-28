@@ -277,8 +277,18 @@ billing migration. Additive only, no backfill.
 **Thumbnails — at scrape time.** In the persist loop in `src/tools/sources.ts:227-250`,
 after `db.video.create`, fetch the cover and upload. Rules:
 
-- Send `User-Agent` + `Referer: https://www.tiktok.com/` — TikTok's CDN 403s
-  bare requests, same as the video download already does (`src/lib/apify.ts:212-217`).
+- **Pull from Apify, not from TikTok.** The scrape sets
+  `shouldDownloadCovers: true`, so the actor copies each cover into its
+  key-value store and lists the KV URL in `mediaUrls`. Those URLs are public,
+  unsigned and not referer-gated, where `videoMeta.coverUrl` is TikTok's own
+  CDN with a signed, short-lived URL that 403s bare requests. This mirrors what
+  the video path already does — `downloadTikTokVideo` fetches the MP4 from the
+  KV store, never from TikTok. `mediaUrls` can hold both the cover and the MP4
+  with no guaranteed order, so pick by file extension, not by index.
+- Keep the source CDN as a **fallback only**, with `User-Agent` + `Referer`
+  spoofing, for when the actor returns no KV URL — `mediaUrls` is documented as
+  sometimes empty. Log when this happens; a rising fallback rate means the
+  actor input regressed.
 - Fire ingests **concurrently in batches** (10 at a time) after the insert loop,
   not serially inside it. A 50-video refresh must not become 50 sequential
   round-trips inside a 60s function.
@@ -379,6 +389,8 @@ for the single video being opened.
 ### 1.10 Acceptance
 
 - [ ] `refresh_source` on a TikTok source: every new row lands `thumbStatus='stored'` and a `thumbKey` that 200s publicly
+- [ ] **Covers are fetched from `api.apify.com`, not from `*.tiktokcdn.com`** — check the egress, not just the outcome; the CDN fallback succeeds too and would mask a regression
+- [ ] Confirm the real per-run Apify cost delta from `shouldDownloadCovers: true` against the pre-auth estimate in `scrapeTikTok`
 - [ ] A refresh with the thumbs bucket misconfigured still persists videos and scores — `thumbStatus='failed'`, no thrown error
 - [ ] **A user-created `reels` source's rows are never fetched** — all stay `thumbStatus='none'` (§0.3)
 - [ ] `analyze_video` with `gemini-native`: `mediaKey` set, `mediaBytes` matches the logged download size, tmpdir still cleaned
