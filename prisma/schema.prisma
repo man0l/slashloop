@@ -70,6 +70,19 @@ model CreditLedger {
   @@index([workspaceId, createdAt])
 }
 
+/// Idempotency gate for the Stripe webhook (id = Stripe event id). Inserted
+/// in the same transaction as the event's Workspace/CreditLedger mutation —
+/// if the insert fails on a duplicate id, the whole transaction (including
+/// the mutation) rolls back, so a Stripe retry after a transient failure
+/// reprocesses cleanly instead of silently no-op'ing. See
+/// api/stripe/webhook.ts.
+model StripeEvent {
+  id          String   @id
+  type        String
+  payloadJson String
+  processedAt DateTime @default(now())
+}
+
 model Source {
   id               String    @id @default(uuid())
   workspaceId      String

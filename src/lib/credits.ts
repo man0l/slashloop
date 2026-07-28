@@ -21,6 +21,7 @@
 // ---------------------------------------------------------------------------
 
 import { db } from '../db.js';
+import type { Prisma } from '@prisma/client';
 
 export class InsufficientCreditsError extends Error {
   constructor(
@@ -203,4 +204,134 @@ export function insufficientCreditsPayload(err: InsufficientCreditsError) {
     upgradeUrl,
     message: `This action needs ${err.required} credits; the workspace has ${err.remaining} remaining. Buy more credits or upgrade at ${upgradeUrl}.`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Stripe-driven mutations (Phase 2) — docs/stripe-implementation-plan.md §3-5
+//
+// These take a Prisma.TransactionClient rather than opening their own
+// transaction, unlike debitCredits/refundCredits above. The webhook handler
+// (api/stripe/webhook.ts) wraps the StripeEvent idempotency-gate insert and
+// exactly one of these calls in a single db.$transaction: if the gate insert
+// fails on a duplicate event id, the mutation rolls back with it, and if the
+// mutation throws, the gate insert rolls back too — so a transient failure
+// leaves nothing committed and a Stripe retry reprocesses cleanly instead of
+// silently no-op'ing against an already-seen event id.
+//
+// No separate idempotency check is needed inside these functions the way
+// debitCredits/refundCredits check CreditLedger[workspaceId, refId] first —
+// the caller's StripeEvent insert, in the same transaction, is the gate.
+// ---------------------------------------------------------------------------
+
+/** planKey -> the plan's monthly credit allotment (pricing-research.md §4c).
+ *  Source of truth lives here, not in Stripe Price metadata, so a renewal
+ *  reset can't drift from what the pricing page promises even if a Price's
+ *  metadata is edited inconsistently in the Stripe dashboard. */
+export const PLAN_CREDITS: Record<string, number> = {
+  free: FREE_TIER_PLAN_CREDITS,
+  creator: 3000,
+  pro: 10000,
+};
+
+export interface TxSetPlanOptions {
+  planKey: string;
+  planCredits: number; // a reset (SET), not a delta — pass the full new allotment
+  billingStatus?: 'active' | 'past_due' | 'canceled';
+  periodStart?: Date | null;
+  periodEnd?: Date | null;
+  stripeCustomerId?: string;
+  stripeSubscriptionId?: string | null;
+}
+
+/**
+ * Sets planKey/planCredits (a reset) plus whichever billing fields are
+ * provided, and records the ledger row. Used for: initial subscription grant
+ * (checkout.session.completed), renewal reset (invoice.paid, billing_reason
+ * = subscription_cycle), and cancellation downgrade (customer.subscription.
+ * deleted, with planKey: 'free').
+ */
+export async function txSetPlan(
+  tx: Prisma.TransactionClient,
+  workspaceId: string,
+  opts: TxSetPlanOptions,
+  refId: string,
+  reason: string,
+): Promise<void> {
+  const before = await tx.workspace.findUniqueOrThrow({
+    where: { id: workspaceId },
+    select: { planCredits: true },
+  });
+
+  const data: Prisma.WorkspaceUpdateInput = {
+    planKey: opts.planKey,
+    planCredits: opts.planCredits,
+  };
+  if (opts.billingStatus !== undefined) data.billingStatus = opts.billingStatus;
+  if (opts.periodStart !== undefined) data.periodStart = opts.periodStart;
+  if (opts.periodEnd !== undefined) data.periodEnd = opts.periodEnd;
+  if (opts.stripeCustomerId !== undefined) data.stripeCustomerId = opts.stripeCustomerId;
+  if (opts.stripeSubscriptionId !== undefined) data.stripeSubscriptionId = opts.stripeSubscriptionId;
+
+  const updated = await tx.workspace.update({
+    where: { id: workspaceId },
+    data,
+    select: { planCredits: true, packCredits: true },
+  });
+
+  await tx.creditLedger.create({
+    data: {
+      workspaceId,
+      delta: updated.planCredits - before.planCredits,
+      bucket: 'plan',
+      reason,
+      tool: null,
+      balanceAfter: updated.planCredits + updated.packCredits,
+      refId,
+    },
+  });
+}
+
+/** Additive packCredits grant (a purchased top-up pack). Never resets, never
+ *  expires — see the module header. Used by checkout.session.completed for
+ *  a mode:'payment' session. */
+export async function txAddPackCredits(
+  tx: Prisma.TransactionClient,
+  workspaceId: string,
+  credits: number,
+  refId: string,
+  reason: string,
+): Promise<void> {
+  const updated = await tx.workspace.update({
+    where: { id: workspaceId },
+    data: { packCredits: { increment: credits } },
+    select: { planCredits: true, packCredits: true },
+  });
+  await tx.creditLedger.create({
+    data: {
+      workspaceId,
+      delta: credits,
+      bucket: 'pack',
+      reason,
+      tool: null,
+      balanceAfter: updated.planCredits + updated.packCredits,
+      refId,
+    },
+  });
+}
+
+/** Plain field sync with no credit impact (subscription status/period
+ *  changes, a failed-invoice flag) — no ledger row, since nothing about the
+ *  balance changed. */
+export async function txUpdateBillingFields(
+  tx: Prisma.TransactionClient,
+  workspaceId: string,
+  fields: Partial<{
+    billingStatus: string;
+    periodStart: Date | null;
+    periodEnd: Date | null;
+    stripeCustomerId: string;
+    stripeSubscriptionId: string | null;
+  }>,
+): Promise<void> {
+  await tx.workspace.update({ where: { id: workspaceId }, data: fields });
 }

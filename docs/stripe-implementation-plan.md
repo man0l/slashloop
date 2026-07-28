@@ -380,16 +380,40 @@ Stripe Elements — with hosted Checkout it needs no Stripe key at all.
 
 Each phase is independently shippable and testable.
 
-**Phase 1 — credit ledger, no Stripe.** Schema, `debitCredits()`, per-tool
-charges, balance in responses, `monthlyBudgetCents` removed from
-`update_settings`. Seed everyone at the free tier. *This is the phase that
-actually protects margin — it is worth shipping alone even if Stripe slips.*
+**Phase 1 — credit ledger, no Stripe. ✅ shipped** (`15fc005`). Schema,
+`debitCredits()`/`refundCredits()`, per-tool charges, balance in responses,
+`monthlyBudgetCents` removed from `update_settings`'s input schema. Everyone
+seeds at the free tier. *This is the phase that actually protects
+margin — it was worth shipping alone even before Stripe existed.*
 
-**Phase 2 — Stripe test mode.** Products/prices, webhook route with idempotency,
-checkout + portal + status routes. Verify with `stripe listen --forward-to
-localhost:8788/api/stripe/webhook` and `stripe trigger`.
+**Phase 2 — Stripe test mode. ✅ code shipped, not yet configured or verified
+live.** `api/stripe/webhook.ts` (signature verify + one-transaction
+idempotency via `StripeEvent`, all five lifecycle events), `api/billing/
+checkout|portal|status.ts`, `src/lib/stripe.ts`, `src/lib/cors.ts`, the
+`txSetPlan`/`txAddPackCredits`/`txUpdateBillingFields` helpers in
+`src/lib/credits.ts`. Type-checked against the real Prisma client; **not**
+run against a live Stripe account — this sandbox has no Stripe test keys and
+no way to apply the schema (§0's usual caveat: no `DATABASE_URL` here
+either). Before this is real:
+1. Create the products/prices in the Stripe dashboard (§2) with their
+   `plan_key`/`credits`/`pack_credits` metadata.
+2. `bun run db:push` against the actual Supabase Postgres instance —
+   `CreditLedger` (Phase 1) and `StripeEvent` (Phase 2) both need to exist.
+3. Populate `.env`'s `STRIPE_*` / `SITE_URL` vars from that dashboard.
+4. Verify with `vercel dev` (**not** `bun run remote:dev` — that's a
+   separate Node http server for the OAuth/MCP surface only, see
+   `remote/dev.ts`'s own header comment; it has no route for anything under
+   `/api/`, so `stripe listen --forward-to localhost:8788/...` 404s against
+   it). Run `vercel dev`, then `stripe listen --forward-to
+   localhost:3000/api/stripe/webhook` and `stripe trigger
+   checkout.session.completed` (and the other four event types) — this is
+   the step that actually exercises the code above; it hasn't happened yet.
 
-**Phase 3 — site integration.** Pricing page, auth, checkout flow, account page.
+**Phase 3 — site integration. ✅ shipped**, ahead of this doc's original
+order — `man0l/slashloop-site` branch `claude/billing-scaffold`: router,
+Supabase auth, pricing/login/account/billing-success/cancel pages, all built
+against the `/api/billing/*` contract above. It was calling routes that
+didn't exist yet when it shipped; they exist now.
 
 **Phase 4 — lifecycle hardening.** Dunning and `past_due` grace, upgrade/
 downgrade proration, cancellation, top-up packs, auto-top-up opt-in.
