@@ -8,6 +8,7 @@ import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../lib/credits.js';
+import { resolveThumbUrl } from '../lib/media.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerVideoTools(server: McpServer) {
@@ -51,6 +52,8 @@ export function registerVideoTools(server: McpServer) {
           platform: video.platform,
           externalId: video.externalId,
           url: video.url,
+          thumbUrl: resolveThumbUrl(video),
+          thumbStatus: video.thumbStatus,
           thumbnailUrl: video.thumbnailUrl,
           creatorHandle: video.creatorHandle,
           creatorFollowers: video.creatorFollowers,

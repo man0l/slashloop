@@ -286,9 +286,15 @@ export async function analyzeVideoWithDownload(
   const config = workspaceId ? await loadAnalysisConfig(workspaceId) : { ...DEFAULT_CONFIG };
   const backend = options?.forceBackend ?? config.backend;
 
-  // If the backend needs a video file, download it via Apify
+  // If the backend needs a video file, download it via Apify.
+  //
+  // TikTok only: downloadTikTokVideo drives the clockworks/tiktok-scraper
+  // actor, so a reels/shorts URL would pre-authorize spend against the cap
+  // and then fail inside the actor. Those platforms have no scraper yet
+  // (scrapeSource throws for both), but create_source still accepts them —
+  // so the guard is on platform, not on whether a row can exist.
   let videoFilePath: string | undefined;
-  if (backend === 'gemini-native' && video.url && workspaceId) {
+  if (backend === 'gemini-native' && video.platform === 'tiktok' && video.url && workspaceId) {
     try {
       const { mkdtempSync } = await import('node:fs');
       const { tmpdir } = await import('node:os');
@@ -311,6 +317,13 @@ export async function analyzeVideoWithDownload(
       if (stat.size < 1024) throw new Error('Downloaded file too small');
 
       console.log(`[analysis] Downloaded ${(stat.size / 1024 / 1024).toFixed(2)}MB (Apify cost: ${dl.costCents}c)`);
+
+      // Cache the MP4 so a re-analysis inside the retention window doesn't
+      // have to pay Apify again. Never throws — the download already
+      // succeeded and the analysis is about to run; losing the cache copy
+      // must not lose the analysis.
+      const { ingestVideoFile } = await import('../lib/media.js');
+      await ingestVideoFile(workspaceId, videoId, videoFilePath);
     } catch (err) {
       console.warn(`[analysis] Video download failed, falling back to text-only: ${(err as Error).message}`);
       videoFilePath = undefined;

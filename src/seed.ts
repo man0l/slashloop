@@ -8,13 +8,19 @@ import { subDays, subHours } from 'date-fns';
 
 const NOW = new Date();
 
+// TikTok only, deliberately. `scrapeSource` throws for reels/shorts
+// (src/lib/apify.ts) and `downloadTikTokVideo` is the only downloader, so
+// seeding those platforms produced rows that could never be refreshed and
+// whose synthesized instagram.com/youtube.com URLs fed real code paths —
+// analyze_video handed them straight to the TikTok actor. Seed what the
+// product can actually do; add a platform here when its scraper lands.
 const sources = [
   { id: uuidv4(), platform: 'tiktok', sourceType: 'creator', query: '@skincarequeen', language: 'en', videoLimit: 50, refreshSchedule: 'manual', isActive: true, nicheTag: 'skincare' },
   { id: uuidv4(), platform: 'tiktok', sourceType: 'creator', query: '@fitnesshacks', language: 'en', videoLimit: 50, refreshSchedule: 'manual', isActive: true, nicheTag: 'fitness' },
   { id: uuidv4(), platform: 'tiktok', sourceType: 'keyword', query: 'retinol serum', language: 'en', videoLimit: 50, refreshSchedule: 'manual', isActive: true, nicheTag: 'skincare' },
-  { id: uuidv4(), platform: 'reels', sourceType: 'creator', query: '@glowup.official', language: 'en', videoLimit: 50, refreshSchedule: 'daily', isActive: true, nicheTag: 'beauty' },
-  { id: uuidv4(), platform: 'reels', sourceType: 'hashtag', query: '#peptideskincare', language: 'en', videoLimit: 50, refreshSchedule: 'manual', isActive: true, nicheTag: 'skincare' },
-  { id: uuidv4(), platform: 'shorts', sourceType: 'creator', query: '@labcoatbeauty', language: 'en', videoLimit: 50, refreshSchedule: 'weekly', isActive: true, nicheTag: 'skincare' },
+  { id: uuidv4(), platform: 'tiktok', sourceType: 'creator', query: '@glowup.official', language: 'en', videoLimit: 50, refreshSchedule: 'daily', isActive: true, nicheTag: 'beauty' },
+  { id: uuidv4(), platform: 'tiktok', sourceType: 'hashtag', query: '#peptideskincare', language: 'en', videoLimit: 50, refreshSchedule: 'manual', isActive: true, nicheTag: 'skincare' },
+  { id: uuidv4(), platform: 'tiktok', sourceType: 'creator', query: '@labcoatbeauty', language: 'en', videoLimit: 50, refreshSchedule: 'weekly', isActive: true, nicheTag: 'skincare' },
 ];
 
 // Video data: [sourceIdx, creatorHandle, followers, caption, views, likes, comments, shares, saves, durationSec, daysAgo, transcript?]
@@ -447,11 +453,7 @@ export async function seedDatabase() {
         sourceId,
         platform: sources[srcIdx].platform,
         externalId,
-        url: sources[srcIdx].platform === 'tiktok'
-          ? `https://www.tiktok.com/@${handle}/video/${externalId}`
-          : sources[srcIdx].platform === 'reels'
-            ? `https://www.instagram.com/reel/${externalId}/`
-            : `https://www.youtube.com/shorts/${externalId}`,
+        url: `https://www.tiktok.com/@${handle}/video/${externalId}`,
         thumbnailUrl: `https://placehold.co/400x700/1a1a2e/e94560?text=${encodeURIComponent(handle)}+${videoCount + 1}`,
         creatorHandle: handle,
         creatorFollowers: followers,
@@ -721,10 +723,15 @@ export async function seedDatabase() {
   console.log('  Creating usage logs...');
   await db.usageLog.createMany({
     data: [
-      { id: uuidv4(), workspaceId: workspace.id, kind: 'scrape', provider: 'tiktok', units: 45, costCents: 9, createdAt: subDays(NOW, 1) },
-      { id: uuidv4(), workspaceId: workspace.id, kind: 'scrape', provider: 'instagram', units: 32, costCents: 6, createdAt: subDays(NOW, 1) },
+      // provider MUST be 'apify' for scrapes — getMonthlyApifySpendCents and
+      // get_apify_spend_status both filter on it (src/lib/spend-cap.ts:58,
+      // src/tools/settings.ts:403). Seeding 'tiktok'/'instagram'/'youtube'
+      // here made every seeded scrape invisible to the spend dashboard, which
+      // reported $0.00 against a database that clearly had scrapes in it.
+      { id: uuidv4(), workspaceId: workspace.id, kind: 'scrape', provider: 'apify', units: 45, costCents: 9, createdAt: subDays(NOW, 1) },
+      { id: uuidv4(), workspaceId: workspace.id, kind: 'scrape', provider: 'apify', units: 32, costCents: 6, createdAt: subDays(NOW, 1) },
       { id: uuidv4(), workspaceId: workspace.id, kind: 'ai', provider: 'google', units: 3, costCents: 0.6, createdAt: subDays(NOW, 0.5) },
-      { id: uuidv4(), workspaceId: workspace.id, kind: 'scrape', provider: 'youtube', units: 28, costCents: 0, createdAt: subDays(NOW, 2) },
+      { id: uuidv4(), workspaceId: workspace.id, kind: 'scrape', provider: 'apify', units: 28, costCents: 3, createdAt: subDays(NOW, 2) },
       { id: uuidv4(), workspaceId: workspace.id, kind: 'ai', provider: 'google', units: 1, costCents: 0.2, createdAt: subDays(NOW, 0.2) },
     ],
   });

@@ -8,7 +8,16 @@ export interface NormalizedVideo {
   platform: 'tiktok' | 'reels' | 'shorts';
   externalId: string;
   url: string;
+  /** Source-CDN cover URL. Signed and short-lived on TikTok/IG; stable on YouTube. */
   thumbnailUrl: string;
+  /**
+   * Apify key-value-store URL for the cover image, when the actor was asked to
+   * download it (`shouldDownloadCovers`). Public, unsigned, and not
+   * referer-gated — always prefer this over `thumbnailUrl` for ingest.
+   * Null when the actor didn't return one (the field is documented as
+   * sometimes empty), in which case the source CDN is the only option.
+   */
+  coverDownloadUrl: string | null;
   creatorHandle: string;
   creatorFollowers: number | null;
   caption: string;
@@ -32,6 +41,26 @@ function toInt(val: any): number {
   if (val == null) return 0;
   const n = typeof val === 'string' ? parseInt(val.replace(/,/g, ''), 10) : Number(val);
   return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0;
+}
+
+/**
+ * Pick the Apify-hosted cover image out of an actor's `mediaUrls`.
+ *
+ * With `shouldDownloadCovers` the actor copies the cover into its key-value
+ * store and lists the KV URL here. `mediaUrls` can hold BOTH the cover and the
+ * MP4 when video download is also on, and the order isn't guaranteed — so
+ * discriminate on the file extension rather than taking [0]. Anything not on
+ * an Apify host is ignored: a TikTok CDN URL leaking in here would defeat the
+ * point of asking Apify to download it.
+ */
+function pickApifyCoverUrl(raw: any): string | null {
+  const urls: unknown[] = Array.isArray(raw?.mediaUrls) ? raw.mediaUrls : [];
+  for (const u of urls) {
+    if (typeof u !== 'string') continue;
+    if (!/^https?:\/\/[^/]*\bapify\.com\//i.test(u)) continue;
+    if (/\.(jpe?g|png|webp|heic)(\?|$)/i.test(u)) return u;
+  }
+  return null;
 }
 
 function toFloat(val: any): number {
@@ -75,6 +104,7 @@ export function normalizeTikTok(raw: any): NormalizedVideo {
     externalId: String(id),
     url: raw.webVideoUrl || `https://www.tiktok.com/@${author.name || author.uniqueId || author.username || 'unknown'}/video/${id}`,
     thumbnailUrl: video.coverUrl || video.originalCoverUrl || video.cover || video.originCover || raw.thumbnailUrl || '',
+    coverDownloadUrl: pickApifyCoverUrl(raw),
     creatorHandle: author.name || author.uniqueId || author.username || author.nickName || author.nickname || 'unknown',
     creatorFollowers: author.fans != null ? toInt(author.fans) : (author.followerCount != null ? toInt(author.followerCount) : null),
     caption: raw.text || raw.desc || raw.title || '',
@@ -104,6 +134,8 @@ export function normalizeReels(raw: any): NormalizedVideo {
     externalId: String(id),
     url: `https://www.instagram.com/reel/${id}/`,
     thumbnailUrl: raw.thumbnailUrl || raw.displayUrl || raw.imageVersions2?.candidates?.[0]?.url || '',
+    // No scraper feeds this normalizer yet — see docs/media-storage-plan.md §0.3.
+    coverDownloadUrl: pickApifyCoverUrl(raw),
     creatorHandle: raw.username || user.username || 'unknown',
     creatorFollowers: (raw.followerCount ?? user.followerCount ?? user.follower_count) != null
       ? toInt(raw.followerCount ?? user.followerCount ?? user.follower_count)
@@ -144,6 +176,9 @@ export function normalizeShorts(raw: any): NormalizedVideo {
       || snippet.thumbnails?.medium?.url
       || snippet.thumbnails?.default?.url
       || '',
+    // YouTube covers come from i.ytimg.com, which is stable and hotlinkable —
+    // there is nothing to download into a KV store.
+    coverDownloadUrl: null,
     creatorHandle: raw.channelTitle || snippet.channelTitle || raw.channel || 'unknown',
     creatorFollowers: raw.subscriberCount != null ? toInt(raw.subscriberCount) : null,
     caption: [snippet.title, snippet.description].filter(Boolean).join('\n\n'),

@@ -20,11 +20,12 @@ src/
   register-tools.ts  # 32 tools, shared with the remote host
   tools/             # sources, feed, video, hooks, creative, settings
   analysis/          # Gemini native + text analyzers
-  lib/               # apify, gemini, spend-cap
+  lib/               # apify, gemini, spend-cap, storage, media, retention
 remote/              # OAuth + Streamable HTTP handlers
 api/                 # Vercel entrypoints (/mcp, /login, /oauth/consent, /health)
 api/billing/         # Checkout, Billing Portal, status — called by slashloop-site
 api/stripe/          # Webhook — the only thing that grants/revokes credits
+api/cron/            # Scheduled jobs (media retention sweep)
 claude-plugin/       # Claude Code plugin (skills + bundled remote MCP)
 vercel.json
 ```
@@ -98,6 +99,22 @@ bunx prisma migrate diff \
 bun run db:generate      # refresh the Prisma client
 ```
 
+### Media storage (optional)
+
+TikTok cover images and MP4s are persisted to Supabase Storage so the feed
+doesn't render broken images once the source CDN's signed URLs expire, and so
+re-analysis can skip a paid Apify call. Leave `SUPABASE_SECRET_KEY` unset and
+the entire path no-ops — everything else works as before.
+
+Setup: create two buckets in the Supabase dashboard — **`thumbs` (public)** and
+**`media` (private, 100MB file size limit)** — then set `SUPABASE_SECRET_KEY`
+and `CRON_SECRET`. Retention defaults to 3 days and is a per-workspace setting
+changed via the `update_settings` tool, capped per plan. Supabase has no object
+lifecycle rules, so expiry runs as a daily Vercel Cron
+(`/api/cron/media-retention`).
+
+Full design, including the later phases: [`docs/media-storage-plan.md`](./docs/media-storage-plan.md).
+
 > ⚠️ **Do not run `bun run db:push` against production.** It bypasses the
 > migration history entirely and will drift from what Supabase has applied.
 > It exists only for throwaway local databases. Likewise, never run
@@ -140,6 +157,11 @@ from a browser.
 | `STRIPE_WEBHOOK_SECRET` | yes (billing) | Signs `/api/stripe/webhook` requests |
 | `STRIPE_PRICE_CREATOR_MONTH` / `_YEAR`, `STRIPE_PRICE_PRO_MONTH` / `_YEAR` | yes (billing) | Subscription Price ids, each with `plan_key`/`credits` metadata |
 | `STRIPE_PRICE_PACK` | yes (billing) | One-time credit-pack Price id, with `pack_credits` metadata |
+| `SUPABASE_SECRET_KEY` | optional | Enables media storage. Unset = the whole media path no-ops |
+| `STORAGE_THUMB_BUCKET` / `STORAGE_MEDIA_BUCKET` | optional | Bucket names (default `thumbs` public, `media` private) |
+| `THUMB_RETENTION_DAYS_DEFAULT` / `MEDIA_RETENTION_DAYS_DEFAULT` | optional | Seeds new workspaces only (default 3). Retention itself is a per-workspace setting |
+| `RETENTION_DAYS_MAX` | optional | Absolute ceiling above any plan's allowance (default 90) |
+| `CRON_SECRET` | yes (storage) | Guards `/api/cron/*`. The retention sweep deletes media — it must not be publicly invocable |
 
 See `docs/stripe-implementation-plan.md` for the full Stripe dashboard setup
 (products, prices, webhook registration). Schema is applied by the Supabase

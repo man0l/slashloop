@@ -6,6 +6,7 @@ import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
 import { formatNumber } from '../scoring.js';
+import { resolveThumbUrl } from '../lib/media.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerFeedTools(server: McpServer) {
@@ -93,6 +94,12 @@ export function registerFeedTools(server: McpServer) {
           creatorHandle: v.creatorHandle,
           creatorFollowers: v.creatorFollowers,
           caption: v.caption.slice(0, 200),
+          // thumbUrl is what a UI should render: the stored copy when we have
+          // one, the original source URL otherwise. thumbStatus lets a gallery
+          // show a placeholder instead of a broken image once the retention
+          // sweeper has removed the stored copy.
+          thumbUrl: resolveThumbUrl(v),
+          thumbStatus: v.thumbStatus,
           thumbnailUrl: v.thumbnailUrl,
           url: v.url,
           postedAt: v.postedAt.toISOString(),

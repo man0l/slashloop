@@ -43,6 +43,16 @@ model Workspace {
   stripeCustomerId     String?   @unique
   stripeSubscriptionId String?   @unique
 
+  // --- media retention ---
+  /// Days to keep stored cover images / MP4s before the retention sweeper
+  /// deletes them (api/cron/media-retention.ts). User-writable via
+  /// update_settings, but every write goes through validateRetentionDays()
+  /// in src/lib/retention.ts and is rejected above the plan ceiling —
+  /// retention is a COGS lever, same class of field as monthlyBudgetCents.
+  /// See docs/media-storage-plan.md §1.4.
+  thumbRetentionDays   Int       @default(3)
+  mediaRetentionDays   Int       @default(3)
+
   sources         Source[]
   boards          Board[]
   usageLogs       UsageLog[]
@@ -130,6 +140,21 @@ model Video {
   rawJson          String   @default("{}")
   scrapedAt        DateTime @default(now())
 
+  // --- stored media (docs/media-storage-plan.md) ---
+  /// Object key in the public `thumbs` bucket. Null = not stored; the feed
+  /// falls back to thumbnailUrl above, which stays as provenance and is the
+  /// only way to re-ingest.
+  thumbKey         String?
+  /// none | stored | expired | failed. 'none' means nothing was attempted
+  /// (storage off, or a non-TikTok platform); 'failed' means it was tried.
+  thumbStatus      String   @default("none")
+  thumbStoredAt    DateTime?
+  /// Object key in the private `media` bucket. Reached via signed URL only.
+  mediaKey         String?
+  mediaStatus      String   @default("none")
+  mediaBytes       Int?
+  mediaStoredAt    DateTime?
+
   source       Source       @relation(fields: [sourceId], references: [id])
   score        Score?
   analyses     Analysis[]
@@ -142,6 +167,9 @@ model Video {
   @@index([creatorHandle])
   @@index([postedAt])
   @@index([views])
+  // Retention sweeper scans by stored-at within status; both are covered.
+  @@index([thumbStatus, thumbStoredAt])
+  @@index([mediaStatus, mediaStoredAt])
 }
 
 model Baseline {
