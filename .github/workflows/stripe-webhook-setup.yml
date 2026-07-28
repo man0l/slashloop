@@ -1,0 +1,50 @@
+name: Stripe Webhook Setup (one-off)
+
+# Manual, one-shot: registers the Stripe webhook endpoint that
+# api/stripe/webhook.ts serves, subscribed to exactly the six events its
+# handleEvent() switch handles. Idempotent — reconciles an existing endpoint
+# on the same URL instead of creating a duplicate (duplicates would mean
+# every event delivered twice).
+#
+# The signing secret is NOT printed: Stripe returns it only on creation, and
+# Actions can't mask a runtime-generated value, so it would land in the logs
+# and job summary permanently. The job summary links straight to the endpoint
+# in the Stripe dashboard to reveal it there.
+#
+# Meant to be run once and this file deleted after — see
+# docs/stripe-implementation-plan.md.
+on:
+  workflow_dispatch:
+    inputs:
+      endpoint_url:
+        description: 'Full webhook URL (must end with /api/stripe/webhook)'
+        required: true
+        default: 'https://slashloop-connector-seven.vercel.app/api/stripe/webhook'
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    # Secrets live in the "production" GitHub Environment, not at repo level —
+    # a job only sees them if it declares the environment. The Stripe secret
+    # there is named STRIPE_SECRET_API_KEY (Vercel's runtime var uses a
+    # different name; the two systems are unrelated).
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - name: Check secret is visible to this job
+        run: |
+          echo "STRIPE_SECRET_API_KEY length: ${#STRIPE_SECRET_API_KEY}"
+        env:
+          STRIPE_SECRET_API_KEY: ${{ secrets.STRIPE_SECRET_API_KEY }}
+
+      - run: bun run src/scripts/stripe_webhook_setup.ts
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_API_KEY }}
+          ENDPOINT_URL: ${{ inputs.endpoint_url }}
