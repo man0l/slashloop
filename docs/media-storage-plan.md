@@ -5,6 +5,10 @@ per-workspace retention setting (**default 3 days**), so the feed renders
 reliably, re-analysis stops re-paying Apify, and the MCP App gallery (see the
 Claude Desktop UI work) has a stable origin to load media from.
 
+**TikTok only** — Reels and Shorts have no scraper, and the rows that exist for
+them are seed mocks with fabricated URLs. See §0.3; it constrains every write
+path in Phase 1.
+
 Companion to [`stripe-implementation-plan.md`](./stripe-implementation-plan.md).
 Same repo, same deploy, same migration discipline.
 
@@ -47,28 +51,51 @@ Consequence: **every re-analysis pays Apify again.** With
 entire corpus — and any video deleted from TikTok in the interim is
 unrecoverable.
 
-### 0.3 Scope: TikTok only
+### 0.3 Scope: TikTok only — and Reels/Shorts rows are mock data
 
-Reels and Shorts are not implemented. `scrapeSource` throws for both
-(`src/lib/apify.ts:253-262`), and `downloadTikTokVideo` is the only downloader
-that exists. The `src/normalizers.ts` branches for `imageVersions2` and
-`snippet.thumbnails` are shape-guesses against payloads no scraper has ever
-produced — they are unreachable, and their field paths are unverified.
+**This whole plan is TikTok-only.** Not a simplification for later expansion —
+a correctness requirement, because the non-TikTok rows that exist today contain
+fabricated URLs.
 
-So **this whole plan is TikTok-only**, and that is a simplification worth taking
-rather than designing around:
+Four distinct levels of "not implemented", which matter differently:
 
-- One cover-URL shape, one CDN, one set of anti-hotlink headers — all three
-  already proven by the existing video download.
-- One `mediaKey` producer, so Phase 3's queue has a single job kind.
-- No per-platform branching in the write paths.
+1. **No scraper.** `scrapeSource` throws for `reels` and `shorts`
+   (`src/lib/apify.ts:253-262`). `downloadTikTokVideo` is the only downloader.
+2. **Unverified normalizers.** `normalizeReels` and `normalizeShorts`
+   (`src/normalizers.ts:99,133`) are shape-guesses stacked with `||` fallbacks
+   against payloads no scraper has ever produced. Their field paths have never
+   been checked against a real response.
+3. **The seed inserts fake ones anyway.** `src/seed.ts:15-17` creates reels and
+   shorts *sources*, and `src/seed.ts:452-454` generates videos with synthesized
+   URLs — `https://www.instagram.com/reel/{randomId}/`,
+   `https://www.youtube.com/shorts/{randomId}`. Any seeded database therefore
+   holds non-TikTok `Video` rows pointing at URLs that resolve to nothing.
+4. **Users can still create them.** `create_source` accepts all three platforms
+   (`src/tools/sources.ts:84`) and only fails later, at refresh.
 
-The design stays platform-agnostic where it's free (`{workspaceId}/{videoId}`
-paths carry no platform, `thumbStatus` means the same thing everywhere), but
-nothing gets built or tested against Reels/Shorts until a real scraper exists.
-When one lands, the ingest hook is one call in that scraper's persist loop —
-and its normalizer field paths need verifying against a real payload at the same
-time, because storage will be the first thing that actually exercises them.
+Level 3 is the one that bites. An ungated thumbnail ingest walks straight into
+mock rows and fires requests at fabricated instagram.com URLs — slow, noisy,
+and every one lands `thumbStatus='failed'` for a reason that has nothing to do
+with storage. So the `platform === 'tiktok'` gate in §1.7 is load-bearing, not
+an optimization.
+
+**Latent bug this surfaced.** `analyzeVideoWithDownload`
+(`src/analysis/index.ts:291`) gates only on `backend === 'gemini-native' &&
+video.url` — never on platform. Run `analyze_video` against a seeded reels row
+today and it hands an instagram.com URL to the TikTok actor, spends the Apify
+pre-authorization, and fails. Phase 1 is already editing that function, so it
+gates on platform in the same pass (§1.7). Small fix, real budget leak.
+
+What TikTok-only buys, beyond avoiding the above: one cover-URL shape, one CDN,
+one set of anti-hotlink headers (all three already proven by the existing video
+download), and one `mediaKey` producer, so Phase 3's queue has a single job kind.
+
+**When a real scraper lands**, the extension is: verify that platform's
+normalizer against an actual payload, add the platform to the gate, and call the
+same ingest hook from its persist loop. Storage will be the first thing that
+genuinely exercises those normalizer field paths — expect to fix them then. The
+design stays platform-agnostic where that's free: `{workspaceId}/{videoId}`
+paths carry no platform, and `thumbStatus` means the same thing everywhere.
 
 ### 0.4 Supabase Storage has no lifecycle rules
 
@@ -259,16 +286,24 @@ after `db.video.create`, fetch the cover and upload. Rules:
   round-trips inside a 60s function.
 - **Never fail the refresh on a thumbnail miss.** Set `thumbStatus: 'failed'`
   and move on. Scrapes are the expensive thing; images are cosmetic.
-- Gate on `platform === 'tiktok'` (§0.3). Not defensive coding — it's the only
-  platform that produces rows. When Shorts lands, keep it excluded on purpose:
+- **Gate on `platform === 'tiktok'`** (§0.3). Load-bearing: without it the
+  ingest fires at the synthetic instagram.com URLs that `src/seed.ts` writes.
+  Non-TikTok rows keep `thumbStatus: 'none'` — not `'failed'`, because nothing
+  was attempted. When Shorts eventually lands, keep it excluded on purpose:
   `i.ytimg.com` is stable and free to hotlink, so `thumbKey: null` + fallback to
-  `thumbnailUrl` is strictly better than storing a copy.
+  `thumbnailUrl` beats storing a copy.
 
 **Video — on the analyze path.** In `analyzeVideoWithDownload`
 (`src/analysis/index.ts:290-317`), after the size sanity check and before the
 `finally` cleanup, upload the temp file to `media`. Phase 1 keeps the existing
 buffer-to-tmpfile flow untouched; streaming is Phase 3. Upload failure logs and
 continues — analysis has already succeeded by then and must not be lost.
+
+Same pass, same function: **add `video.platform === 'tiktok'` to the download
+condition at `src/analysis/index.ts:291`** (§0.3). Non-TikTok videos skip the
+download entirely and fall through to the `gemini-text` backend, which is the
+correct behavior for them anyway — instead of spending Apify budget handing an
+Instagram URL to a TikTok actor.
 
 ### 1.8 Retention sweeper — the part Supabase doesn't give you
 
@@ -349,6 +384,8 @@ for the single video being opened.
 
 - [ ] `refresh_source` on a TikTok source: every new row lands `thumbStatus='stored'` and a `thumbKey` that 200s publicly
 - [ ] A refresh with the thumbs bucket misconfigured still persists videos and scores — `thumbStatus='failed'`, no thrown error
+- [ ] **On a seeded database, no request is ever made for a `reels` or `shorts` row** — all stay `thumbStatus='none'` (§0.3)
+- [ ] `analyze_video` on a seeded `reels` row makes no Apify call and falls through to `gemini-text` — no budget spent
 - [ ] `analyze_video` with `gemini-native`: `mediaKey` set, `mediaBytes` matches the logged download size, tmpdir still cleaned
 - [ ] Retention endpoint deletes objects, nulls the keys, sets `expired` — verified by backdating `mediaStoredAt` past the workspace's 3 days
 - [ ] Retention endpoint returns 401 without `CRON_SECRET`
