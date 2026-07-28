@@ -15,6 +15,13 @@ on:
 jobs:
   setup:
     runs-on: ubuntu-latest
+    # Scoped to the "production" GitHub Environment, same as db-push.yml —
+    # see that file's comment. The secret there is named STRIPE_SECRET_API_KEY,
+    # not STRIPE_SECRET_KEY (that's Vercel's runtime env var name, in
+    # src/lib/stripe.ts — the two are unrelated systems and don't need to
+    # match names, only this workflow's reference needs to match what's
+    # actually in GitHub).
+    environment: production
     steps:
       - uses: actions/checkout@v4
 
@@ -25,10 +32,11 @@ jobs:
       - run: bun install
 
       - name: Check secret is visible to this job
-        run: echo "STRIPE_SECRET_KEY length: ${#STRIPE_SECRET_KEY}"
+        run: |
+          echo "STRIPE_SECRET_API_KEY length: ${#STRIPE_SECRET_API_KEY}"
         env:
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_SECRET_API_KEY: ${{ secrets.STRIPE_SECRET_API_KEY }}
 
       - run: bun run src/scripts/stripe_setup.ts
         env:
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_API_KEY }}
