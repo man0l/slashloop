@@ -286,9 +286,15 @@ export async function analyzeVideoWithDownload(
   const config = workspaceId ? await loadAnalysisConfig(workspaceId) : { ...DEFAULT_CONFIG };
   const backend = options?.forceBackend ?? config.backend;
 
-  // If the backend needs a video file, download it via Apify
+  // If the backend needs a video file, download it via Apify.
+  //
+  // TikTok only: downloadTikTokVideo drives the clockworks/tiktok-scraper
+  // actor, so a reels/shorts URL would pre-authorize spend against the cap
+  // and then fail inside the actor. Those platforms have no scraper yet
+  // (scrapeSource throws for both), but create_source still accepts them —
+  // so the guard is on platform, not on whether a row can exist.
   let videoFilePath: string | undefined;
-  if (backend === 'gemini-native' && video.url && workspaceId) {
+  if (backend === 'gemini-native' && video.platform === 'tiktok' && video.url && workspaceId) {
     try {
       const { mkdtempSync } = await import('node:fs');
       const { tmpdir } = await import('node:os');
