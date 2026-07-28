@@ -23,6 +23,8 @@ src/
   lib/               # apify, gemini, spend-cap
 remote/              # OAuth + Streamable HTTP handlers
 api/                 # Vercel entrypoints (/mcp, /login, /oauth/consent, /health)
+api/billing/         # Checkout, Billing Portal, status — called by slashloop-site
+api/stripe/          # Webhook — the only thing that grants/revokes credits
 claude-plugin/       # Claude Code plugin (skills + bundled remote MCP)
 vercel.json
 ```
@@ -84,6 +86,14 @@ bun run remote:dev       # local: http://localhost:8788 (+ tunnel for OAuth)
 | `GET /login` | Email/password sign-in |
 | `GET /oauth/consent` | Consent UI |
 | `GET /health` | Liveness |
+| `POST /api/billing/checkout` | Bearer JWT. Creates a Stripe Checkout Session, returns `{ url }` |
+| `POST /api/billing/portal` | Bearer JWT. Creates a Billing Portal session, returns `{ url }` |
+| `GET /api/billing/status` | Bearer JWT. Returns `{ planKey, planCredits, packCredits, periodEnd, billingStatus }` |
+| `POST /api/stripe/webhook` | Stripe signature, not JWT. The only thing that grants/revokes credits |
+
+The three `/api/billing/*` routes carry CORS for `SITE_URL` (the landing site's
+origin); `/mcp` and `/api/stripe/webhook` don't need it — neither is called
+from a browser.
 
 ---
 
@@ -99,6 +109,17 @@ bun run remote:dev       # local: http://localhost:8788 (+ tunnel for OAuth)
 | `APIFY_API_KEY` | for live TikTok | clockworks/tiktok-scraper + single-video download |
 | `APIFY_SPEND_CAP_CENTS` | optional | Monthly Apify cap in cents (default 500 = $5) |
 | `PUBLIC_URL` | yes (prod) | Public origin Claude reaches |
+| `SITE_URL` | yes (billing) | Origin of slashloop-site — Checkout/Portal redirects + CORS |
+| `STRIPE_SECRET_KEY` | yes (billing) | Stripe API key |
+| `STRIPE_WEBHOOK_SECRET` | yes (billing) | Signs `/api/stripe/webhook` requests |
+| `STRIPE_PRICE_CREATOR_MONTH` / `_YEAR`, `STRIPE_PRICE_PRO_MONTH` / `_YEAR` | yes (billing) | Subscription Price ids, each with `plan_key`/`credits` metadata |
+| `STRIPE_PRICE_PACK` | yes (billing) | One-time credit-pack Price id, with `pack_credits` metadata |
+
+See `docs/stripe-implementation-plan.md` for the full Stripe dashboard setup
+(products, prices, webhook registration) and what's still manual after this
+code: applying the schema (`bun run db:push` — no tracked migrations yet,
+see that doc's note on when to switch), and populating the env vars above
+from a real Stripe account.
 
 ---
 

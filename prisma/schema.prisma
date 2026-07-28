@@ -4,8 +4,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model Workspace {
@@ -13,6 +14,9 @@ model Workspace {
   /// Supabase auth user id (JWT `sub`). Null = local single-tenant workspace.
   ownerId              String?  @unique
   name                 String   @default("Default")
+  /// Legacy: reported by get_usage but no longer enforced. Superseded by the
+  /// planCredits/packCredits ledger below (see src/lib/credits.ts). Kept so
+  /// existing rows/tools don't break; do not wire new enforcement to this.
   monthlyBudgetCents   Int      @default(5000)
   autoAnalyzeRulesJson String   @default("{}")
   analysisConfigJson   String   @default("{\"backend\":\"gemini-native\",\"fallback\":\"gemini-text\",\"geminiModel\":\"gemini-2.5-flash-lite\"}")
@@ -20,17 +24,71 @@ model Workspace {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  sources       Source[]
-  boards        Board[]
-  usageLogs     UsageLog[]
+  // --- billing ---
+  /// free | creator | pro. Server-controlled — never set this from a
+  /// user-facing tool input. Changed only by the Stripe webhook (Phase 2)
+  /// or a trusted admin path. No multi-seat/"agency" tier yet — ownerId
+  /// is a unique 1:1 with the authenticated user, so there's no seat
+  /// model to sell one into (see docs/pricing-research.md §4c).
+  planKey              String    @default("free")
+  /// Resets to the plan's allotment on each billing-period renewal.
+  planCredits          Int       @default(300)
+  /// Purchased top-up credits. Never expire, never reset. Drained only after
+  /// planCredits is exhausted (see debitCredits in src/lib/credits.ts).
+  packCredits          Int       @default(0)
+  billingStatus        String    @default("active") // active | past_due | canceled
+  periodStart          DateTime?
+  periodEnd            DateTime?
+  autoTopUp            Boolean   @default(false)
+  stripeCustomerId     String?   @unique
+  stripeSubscriptionId String?   @unique
+
+  sources         Source[]
+  boards          Board[]
+  usageLogs       UsageLog[]
   autoAnalyzeRuns AutoAnalyzeRun[]
+  creditLedger    CreditLedger[]
+}
+
+/// Append-only audit trail for credit grants/debits. The Workspace row holds
+/// the live balance (for atomic conditional updates); this table explains
+/// how it got there. Unique on [workspaceId, refId] doubles as the
+/// idempotency check — see debitCredits/refundCredits in src/lib/credits.ts.
+model CreditLedger {
+  id           String   @id @default(uuid())
+  workspaceId  String
+  delta        Int // positive = grant, negative = debit
+  bucket       String // plan | pack
+  reason       String // tool_call | usage_settlement | call_failed | subscription_renewal | pack_purchase | adjustment
+  tool         String? // e.g. refresh_source, analyze_video
+  balanceAfter Int // planCredits + packCredits after this entry
+  refId        String // idempotency key (op id, or Stripe event id in Phase 2)
+  createdAt    DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@unique([workspaceId, refId])
+  @@index([workspaceId, createdAt])
+}
+
+/// Idempotency gate for the Stripe webhook (id = Stripe event id). Inserted
+/// in the same transaction as the event's Workspace/CreditLedger mutation —
+/// if the insert fails on a duplicate id, the whole transaction (including
+/// the mutation) rolls back, so a Stripe retry after a transient failure
+/// reprocesses cleanly instead of silently no-op'ing. See
+/// api/stripe/webhook.ts.
+model StripeEvent {
+  id          String   @id
+  type        String
+  payloadJson String
+  processedAt DateTime @default(now())
 }
 
 model Source {
   id               String    @id @default(uuid())
   workspaceId      String
-  platform         String    // tiktok | reels | shorts
-  sourceType       String    // creator | keyword | hashtag
+  platform         String // tiktok | reels | shorts
+  sourceType       String // creator | keyword | hashtag
   query            String
   language         String    @default("en")
   videoLimit       Int       @default(50)
@@ -41,9 +99,9 @@ model Source {
   lastRefreshedAt  DateTime?
   consecutiveFails Int       @default(0)
 
-  workspace    Workspace      @relation(fields: [workspaceId], references: [id])
-  videos       Video[]
-  refreshRuns  RefreshRun[]
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id])
+  videos      Video[]
+  refreshRuns RefreshRun[]
 
   @@index([workspaceId])
   @@index([platform])
@@ -51,33 +109,33 @@ model Source {
 }
 
 model Video {
-  id              String   @id @default(uuid())
-  sourceId        String
-  platform        String   // tiktok | reels | shorts
-  externalId      String
-  url             String
-  thumbnailUrl    String   @default("")
-  creatorHandle   String
+  id               String   @id @default(uuid())
+  sourceId         String
+  platform         String // tiktok | reels | shorts
+  externalId       String
+  url              String
+  thumbnailUrl     String   @default("")
+  creatorHandle    String
   creatorFollowers Int?
-  caption         String   @default("")
-  postedAt        DateTime
-  views           Int      @default(0)
-  likes           Int      @default(0)
-  comments        Int      @default(0)
-  shares          Int?
-  saves           Int?
-  durationSec     Int?
-  transcript      String?
-  transcriptSource String  @default("none") // captions | asr | none
-  rawJson         String   @default("{}")
-  scrapedAt       DateTime @default(now())
+  caption          String   @default("")
+  postedAt         DateTime
+  views            Int      @default(0)
+  likes            Int      @default(0)
+  comments         Int      @default(0)
+  shares           Int?
+  saves            Int?
+  durationSec      Int?
+  transcript       String?
+  transcriptSource String   @default("none") // captions | asr | none
+  rawJson          String   @default("{}")
+  scrapedAt        DateTime @default(now())
 
-  source    Source      @relation(fields: [sourceId], references: [id])
-  score     Score?
-  analyses  Analysis[]
-  hooks     Hook[]
+  source       Source       @relation(fields: [sourceId], references: [id])
+  score        Score?
+  analyses     Analysis[]
+  hooks        Hook[]
   swipeEntries SwipeEntry[]
-  ideas     Idea[]
+  ideas        Idea[]
 
   @@index([sourceId])
   @@index([platform])
@@ -99,11 +157,11 @@ model Baseline {
 }
 
 model Score {
-  videoId       String   @id
-  outlierScore  Float
-  scoreType     String   @default("actual") // actual | estimated
-  explanation   String
-  scoredAt      DateTime @default(now())
+  videoId      String   @id
+  outlierScore Float
+  scoreType    String   @default("actual") // actual | estimated
+  explanation  String
+  scoredAt     DateTime @default(now())
 
   video Video @relation(fields: [videoId], references: [id])
 
@@ -114,34 +172,34 @@ model Analysis {
   id            String   @id @default(uuid())
   videoId       String
   schemaVersion String   @default("v2")
-  analysisJson  String   // JSON string of the analysis
-  analysisBasis String   // video | video+transcript | frames+transcript | frames+caption | transcript+thumbnail | transcript-only | thumbnail+caption | caption+metadata-only
+  analysisJson  String // JSON string of the analysis
+  analysisBasis String // video | video+transcript | frames+transcript | frames+caption | transcript+thumbnail | transcript-only | thumbnail+caption | caption+metadata-only
   backend       String   @default("gemini-native") // gemini-native | frames | hybrid
   model         String   @default("gemini-2.5-flash-lite")
   costCents     Int      @default(0)
   createdAt     DateTime @default(now())
 
-  video Video       @relation(fields: [videoId], references: [id])
-  hooks Hook[]
-  ideas Idea[]
+  video  Video   @relation(fields: [videoId], references: [id])
+  hooks  Hook[]
+  ideas  Idea[]
   briefs Brief[]
 
   @@index([videoId])
 }
 
 model Hook {
-  id           String   @id @default(uuid())
-  analysisId   String?
-  videoId      String
-  text         String
-  hookType     String   // POV | curiosity_gap | bold_claim | pattern_interrupt | question | ...
-  placement    String   // spoken | on_screen | visual
-  origin       String   @default("extracted") // extracted | generated
-  nicheTag     String?
-  createdAt    DateTime @default(now())
+  id         String   @id @default(uuid())
+  analysisId String?
+  videoId    String
+  text       String
+  hookType   String // POV | curiosity_gap | bold_claim | pattern_interrupt | question | ...
+  placement  String // spoken | on_screen | visual
+  origin     String   @default("extracted") // extracted | generated
+  nicheTag   String?
+  createdAt  DateTime @default(now())
 
-  analysis Analysis?  @relation(fields: [analysisId], references: [id])
-  video    Video      @relation(fields: [videoId], references: [id])
+  analysis Analysis? @relation(fields: [analysisId], references: [id])
+  video    Video     @relation(fields: [videoId], references: [id])
 
   @@index([hookType])
   @@index([nicheTag])
@@ -154,19 +212,19 @@ model Board {
   name        String
   createdAt   DateTime @default(now())
 
-  workspace     Workspace     @relation(fields: [workspaceId], references: [id])
-  swipeEntries  SwipeEntry[]
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id])
+  swipeEntries SwipeEntry[]
 
   @@index([workspaceId])
 }
 
 model SwipeEntry {
-  id                 String   @id @default(uuid())
-  boardId            String
-  videoId            String
-  analysisSnapshotJson String  @default("{}")
-  notes              String   @default("")
-  savedAt            DateTime @default(now())
+  id                   String   @id @default(uuid())
+  boardId              String
+  videoId              String
+  analysisSnapshotJson String   @default("{}")
+  notes                String   @default("")
+  savedAt              DateTime @default(now())
 
   board Board @relation(fields: [boardId], references: [id])
   video Video @relation(fields: [videoId], references: [id])
@@ -185,7 +243,7 @@ model Idea {
   status              String   @default("new") // new | briefed | tested | archived
   createdAt           DateTime @default(now())
 
-  video    Video    @relation(fields: [videoId], references: [id])
+  video    Video     @relation(fields: [videoId], references: [id])
   analysis Analysis? @relation(fields: [analysisId], references: [id])
   briefs   Brief[]
 
@@ -193,12 +251,12 @@ model Idea {
 }
 
 model Brief {
-  id             String    @id @default(uuid())
-  ideaId         String?
-  analysisId     String
-  briefJson      String
-  exportedAt     DateTime?
-  createdAt      DateTime  @default(now())
+  id         String    @id @default(uuid())
+  ideaId     String?
+  analysisId String
+  briefJson  String
+  exportedAt DateTime?
+  createdAt  DateTime  @default(now())
 
   analysis Analysis? @relation(fields: [analysisId], references: [id])
   idea     Idea?     @relation(fields: [ideaId], references: [id])
@@ -207,7 +265,7 @@ model Brief {
 model UsageLog {
   id          String   @id @default(uuid())
   workspaceId String
-  kind        String   // scrape | ai
+  kind        String // scrape | ai
   provider    String
   units       Int      @default(1)
   costCents   Int      @default(0)
@@ -237,16 +295,16 @@ model RefreshRun {
 }
 
 model AutoAnalyzeRun {
-  id              String   @id @default(uuid())
-  workspaceId     String
-  candidateCount  Int      @default(0)
-  analyzedCount   Int      @default(0)
-  skippedCount    Int      @default(0)
-  failedCount     Int      @default(0)
-  totalCostCents  Int      @default(0)
-  batchMode       Boolean  @default(true)
-  resultsJson     String   @default("[]")
-  ranAt           DateTime @default(now())
+  id             String   @id @default(uuid())
+  workspaceId    String
+  candidateCount Int      @default(0)
+  analyzedCount  Int      @default(0)
+  skippedCount   Int      @default(0)
+  failedCount    Int      @default(0)
+  totalCostCents Int      @default(0)
+  batchMode      Boolean  @default(true)
+  resultsJson    String   @default("[]")
+  ranAt          DateTime @default(now())
 
   workspace Workspace @relation(fields: [workspaceId], references: [id])
 

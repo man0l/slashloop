@@ -2,12 +2,14 @@
 // MCP Tools: Source Management (CRUD + refresh)
 // ---------------------------------------------------------------------------
 
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
 import { scrapeSource } from '../lib/apify.js';
 import { assertApifyCap, getApifyCapStatus, SpendCapExceededError } from '../lib/spend-cap.js';
 import { batchScoreVideos } from '../scoring.js';
+import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload } from '../lib/credits.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerSourceTools(server: McpServer) {
@@ -152,7 +154,7 @@ export function registerSourceTools(server: McpServer) {
 
   // ---- refresh_source ----
   server.tool('refresh_source',
-    'Trigger a manual refresh for a source. TikTok uses the clockworks/tiktok-scraper actor (live). Instagram Reels and YouTube Shorts are stubs for now. All Apify calls are subject to the APIFY_SPEND_CAP_CENTS guardrail (default $5) — if exceeded, the call is refused and a cap_breach event is logged.',
+    'Trigger a manual refresh for a source. TikTok uses the clockworks/tiktok-scraper actor (live). Instagram Reels and YouTube Shorts are stubs for now. Costs 1.5 credits per video returned. All Apify calls are also subject to the platform-wide APIFY_SPEND_CAP_CENTS guardrail (default $5) — if exceeded, the call is refused and a cap_breach event is logged.',
     {
       sourceId: z.string(),
       videoLimit: z.number().min(1).max(200).optional().describe('Override source video limit for this run'),
@@ -169,7 +171,8 @@ export function registerSourceTools(server: McpServer) {
       let costCents = 0;
       const errors: string[] = [];
 
-      // Pre-flight: cap status check
+      // Pre-flight: platform-wide Apify cap (unrelated to this workspace's
+      // credit balance — a circuit breaker against a bug or runaway deploy).
       if (source.platform !== 'shorts') {
         const capStatus = await getApifyCapStatus(source.workspaceId);
         if (capStatus.breached) {
@@ -184,6 +187,21 @@ export function registerSourceTools(server: McpServer) {
         }
       }
 
+      // Pre-authorize credits for the worst case (full `limit` videos
+      // returned). Refunded down to actual usage below.
+      const opId = randomUUID();
+      const preAuthCredits = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * limit);
+      let creditBalance;
+      try {
+        creditBalance = await debitCredits(workspace.id, preAuthCredits, 'refresh_source', `${opId}:preauth`);
+      } catch (err) {
+        if (err instanceof InsufficientCreditsError) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify(insufficientCreditsPayload(err), null, 2) }], isError: true };
+        }
+        throw err;
+      }
+      let actualCredits = 0; // set as soon as we know how many videos Apify actually returned
+
       try {
         const result = await scrapeSource({
           workspaceId: source.workspaceId,
@@ -195,6 +213,10 @@ export function registerSourceTools(server: McpServer) {
 
         itemsPulled = result.items.length;
         costCents = result.costCents;
+        // Set as soon as the Apify cost is actually incurred — if DB
+        // persistence or scoring throws below, this still reflects the
+        // real COGS already spent, so the refund settlement stays correct.
+        actualCredits = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * itemsPulled);
 
         // Persist videos (dedup by platform + externalId)
         for (const nv of result.items) {
@@ -235,17 +257,27 @@ export function registerSourceTools(server: McpServer) {
         }
       } catch (err) {
         if (err instanceof SpendCapExceededError) {
-          // Cap breach — refuse and report
+          // Cap breach — refuse, refund the full pre-auth, and report.
+          creditBalance = await refundCredits(workspace.id, preAuthCredits, 'refresh_source', `${opId}:fail`, 'call_failed');
           return {
             content: [{ type: 'text' as const, text: JSON.stringify({
               error: 'SPEND CAP EXCEEDED',
               message: err.message,
               capStatus: await getApifyCapStatus(source.workspaceId),
+              creditsCharged: 0,
+              creditsRemaining: creditBalance.total,
             }, null, 2) }],
             isError: true,
           };
         }
         errors.push((err as Error).message);
+      }
+
+      // Settle: refund the unused portion of the pre-auth. actualCredits
+      // stays 0 if scrapeSource itself threw before returning any items.
+      const refundAmount = preAuthCredits - actualCredits;
+      if (refundAmount > 0) {
+        creditBalance = await refundCredits(workspace.id, refundAmount, 'refresh_source', `${opId}:settle`, 'usage_settlement');
       }
 
       // Log the refresh run regardless of outcome
@@ -272,6 +304,8 @@ export function registerSourceTools(server: McpServer) {
           durationMs: Date.now() - startTime,
           errors: errors.length ? errors : undefined,
           apifyCapStatus: capStatus,
+          creditsCharged: actualCredits,
+          creditsRemaining: creditBalance.total,
         }, null, 2) }],
       };
     });

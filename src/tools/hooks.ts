@@ -2,9 +2,12 @@
 // MCP Tools: Hook Vault + Hook Generator
 // ---------------------------------------------------------------------------
 
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
+import { requireWorkspace } from '../context.js';
 import { generateHookVariations } from '../analysis/hooks.js';
+import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../lib/credits.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerHookTools(server: McpServer) {
@@ -121,25 +124,45 @@ export function registerHookTools(server: McpServer) {
 
   // ---- generate_hook_variations ----
   server.tool('generate_hook_variations',
-    'Generate new hook variations from saved vault hooks. Preserves the MECHANISM of the original, not the words.',
+    'Generate new hook variations from saved vault hooks. Preserves the MECHANISM of the original, not the words. Costs 2 credits.',
     {
       hookIds: z.array(z.string()).min(1).max(5).describe('1-5 hook IDs from the vault to vary'),
       productDescription: z.string().describe('Your product/niche/offer description for contextual adaptation'),
     },
     async ({ hookIds, productDescription }) => {
+      const workspace = await requireWorkspace();
+      const opId = randomUUID();
+      try {
+        await debitCredits(workspace.id, CREDIT_COSTS.generateHookVariations, 'generate_hook_variations', `${opId}:preauth`);
+      } catch (err) {
+        if (err instanceof InsufficientCreditsError) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify(insufficientCreditsPayload(err), null, 2) }], isError: true };
+        }
+        throw err;
+      }
+
       try {
         const variations = await generateHookVariations(hookIds, productDescription);
+        const balance = await creditBalance(workspace.id);
 
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
             message: `${variations.length} hook variations generated and saved to vault`,
             variations,
             note: 'Variations are automatically saved to the Hook Vault with origin="generated".',
+            creditsCharged: CREDIT_COSTS.generateHookVariations,
+            creditsRemaining: balance.total,
           }, null, 2) }],
         };
       } catch (err) {
+        const balance = await refundCredits(workspace.id, CREDIT_COSTS.generateHookVariations, 'generate_hook_variations', `${opId}:fail`, 'call_failed');
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Hook generation failed', message: (err as Error).message }) }],
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            error: 'Hook generation failed',
+            message: (err as Error).message,
+            creditsCharged: 0,
+            creditsRemaining: balance.total,
+          }) }],
           isError: true,
         };
       }

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { db } from './db.js';
+import { freeTierGrant } from './lib/credits.js';
 
 export type RequestContext = {
   /** Supabase JWT `sub` when serving remote OAuth sessions; null for local stdio. */
@@ -31,6 +32,7 @@ export async function requireWorkspace() {
       data: {
         ownerId: userId,
         name: 'My workspace',
+        ...freeTierGrant(),
       },
     });
   }
@@ -43,7 +45,7 @@ export async function requireWorkspace() {
     workspace = await db.workspace.findFirst({ orderBy: { createdAt: 'asc' } });
   }
   if (!workspace) {
-    workspace = await db.workspace.create({ data: { name: 'Default' } });
+    workspace = await db.workspace.create({ data: { name: 'Default', ...freeTierGrant() } });
   }
   return workspace;
 }

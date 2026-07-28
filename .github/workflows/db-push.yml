@@ -1,0 +1,26 @@
+name: DB Push (one-off)
+
+# Manual, one-shot: applies prisma/schema.prisma to the real database via
+# `prisma db push` — no tracked migration history yet (see
+# docs/stripe-implementation-plan.md's note on when to switch to
+# `prisma migrate`). Meant to be deleted after use; see that doc for
+# what it's applying (CreditLedger, StripeEvent, Workspace billing columns).
+on:
+  workflow_dispatch: {}
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - run: bun run db:push
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
