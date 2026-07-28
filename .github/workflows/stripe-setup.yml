@@ -1,0 +1,29 @@
+name: Stripe Setup (one-off)
+
+# Manual, one-shot: creates the Creator/Pro subscription products+prices and
+# the credit-pack one-time price in Stripe, with the metadata
+# api/stripe/webhook.ts and api/billing/checkout.ts depend on. Idempotent
+# (src/scripts/stripe_setup.ts matches existing products/prices before
+# creating), but meant to be run once and this file deleted after — see
+# docs/stripe-implementation-plan.md §2.
+#
+# Prints the resulting Price IDs to the job summary; copy them into Vercel's
+# STRIPE_PRICE_* env vars.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - run: bun run src/scripts/stripe_setup.ts
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
