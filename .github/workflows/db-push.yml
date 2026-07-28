@@ -11,6 +11,11 @@ on:
 jobs:
   push:
     runs-on: ubuntu-latest
+    # DATABASE_URL/DIRECT_URL are scoped to the "production" GitHub
+    # Environment (Settings → Environments → production), not repository-
+    # level secrets — a job only sees an Environment's secrets if it
+    # declares that environment here.
+    environment: production
     steps:
       - uses: actions/checkout@v4
 
