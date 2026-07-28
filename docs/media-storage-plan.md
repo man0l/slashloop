@@ -1,9 +1,9 @@
 # Media Storage Plan
 
-Persisting thumbnails and video binaries in **Supabase Storage** with a 30-day
-retention window, so the feed renders reliably, re-analysis stops re-paying
-Apify, and the MCP App gallery (see the Claude Desktop UI work) has a stable
-origin to load media from.
+Persisting thumbnails and video binaries in **Supabase Storage** behind a
+per-workspace retention setting (**default 3 days**), so the feed renders
+reliably, re-analysis stops re-paying Apify, and the MCP App gallery (see the
+Claude Desktop UI work) has a stable origin to load media from.
 
 Companion to [`stripe-implementation-plan.md`](./stripe-implementation-plan.md).
 Same repo, same deploy, same migration discipline.
@@ -20,15 +20,15 @@ backfill — this is net-new, which makes Phase 1 unusually cheap.
 `Video.thumbnailUrl` stores a string pointing at the source CDN
 (`src/normalizers.ts:77,106,142`):
 
-| Platform | Source field | Durability |
-|---|---|---|
-| TikTok | `videoMeta.coverUrl` | Signed, expires in hours–days |
-| Reels | `imageVersions2.candidates[0].url` | Signed, expires |
-| Shorts | `snippet.thumbnails.*.url` (`i.ytimg.com`) | Stable indefinitely |
+| Platform | Source field | Durability | Reachable today |
+|---|---|---|---|
+| TikTok | `videoMeta.coverUrl` | Signed, expires in hours–days | **yes** |
+| Reels | `imageVersions2.candidates[0].url` | Signed, expires | no — §0.3 |
+| Shorts | `snippet.thumbnails.*.url` (`i.ytimg.com`) | Stable indefinitely | no — §0.3 |
 
-Two-thirds of the feed goes to broken images shortly after a scrape. Today
-nobody notices because the output is a markdown table. The moment a gallery
-renders `<img>` tags, it is the most visible bug in the product.
+Every image in the feed goes broken shortly after a scrape. Today nobody notices
+because the output is a markdown table. The moment a gallery renders `<img>`
+tags, it is the most visible bug in the product.
 
 ### 0.2 Video binaries are a temp handle, not storage
 
@@ -47,15 +47,38 @@ Consequence: **every re-analysis pays Apify again.** With
 entire corpus — and any video deleted from TikTok in the interim is
 unrecoverable.
 
-### 0.3 Supabase Storage has no lifecycle rules
+### 0.3 Scope: TikTok only
+
+Reels and Shorts are not implemented. `scrapeSource` throws for both
+(`src/lib/apify.ts:253-262`), and `downloadTikTokVideo` is the only downloader
+that exists. The `src/normalizers.ts` branches for `imageVersions2` and
+`snippet.thumbnails` are shape-guesses against payloads no scraper has ever
+produced — they are unreachable, and their field paths are unverified.
+
+So **this whole plan is TikTok-only**, and that is a simplification worth taking
+rather than designing around:
+
+- One cover-URL shape, one CDN, one set of anti-hotlink headers — all three
+  already proven by the existing video download.
+- One `mediaKey` producer, so Phase 3's queue has a single job kind.
+- No per-platform branching in the write paths.
+
+The design stays platform-agnostic where it's free (`{workspaceId}/{videoId}`
+paths carry no platform, `thumbStatus` means the same thing everywhere), but
+nothing gets built or tested against Reels/Shorts until a real scraper exists.
+When one lands, the ingest hook is one call in that scraper's persist loop —
+and its normalizer field paths need verifying against a real payload at the same
+time, because storage will be the first thing that actually exercises them.
+
+### 0.4 Supabase Storage has no lifecycle rules
 
 The one thing to know before designing retention. S3 and R2 expire objects with
 a bucket lifecycle policy; **Supabase does not expose one**. Objects accumulate
-until something deletes them. Retention is a job we own — see §1.7.
+until something deletes them. Retention is a job we own — see §1.8.
 
 ---
 
-## 1. Phase 1 — Supabase Storage, 30-day retention, both assets
+## 1. Phase 1 — Supabase Storage, configurable retention, both assets
 
 ### 1.1 Why Supabase over R2 for this phase
 
@@ -63,11 +86,14 @@ Storage cost is a rounding error either way at this volume (80GB of MP4s is
 ~$1.70/mo on Supabase, ~$1.20 on R2). The real difference is egress: Supabase
 meters it at ~$0.09/GB past the plan allowance, R2 charges nothing.
 
-The **30-day window is what makes Supabase the right call now** — it bounds the
-resident set and the traffic, which is precisely where Supabase is weak against
-R2. Against that, Supabase is already in the stack: same project, same dashboard,
-credentials one env var away, and `storage.objects` is a Postgres table the
-retention sweeper can query directly instead of paginating an S3 API.
+The **short retention window is what makes Supabase the right call now** — it
+bounds the resident set and the traffic, which is precisely where Supabase is
+weak against R2. At a 3-day default the resident set is roughly a tenth of what
+the original 30-day design would hold, which pushes the R2 decision point out
+correspondingly far. Against that, Supabase is already in the stack: same
+project, same dashboard, credentials one env var away, and `storage.objects` is
+a Postgres table the retention sweeper can query directly instead of paginating
+an S3 API.
 
 If egress ever shows up on the bill, §5 is the escape hatch and it touches one
 file.
@@ -89,7 +115,7 @@ thumbnail request to origin — exactly the egress we are trying not to pay.
 Video stays private and is reached only through short-lived signed URLs. Serving
 a public, permanent mirror of other people's copyrighted video is a materially
 different posture from linking to tiktok.com; private + signed + workspace-scoped
-+ 30-day expiry keeps this defensible as research tooling.
++ a few days' expiry keeps this defensible as research tooling.
 
 Set an explicit per-bucket file size limit (`media`: 100MB) — the default is
 50MB and a long Reel will 413 without a clear error.
@@ -104,16 +130,70 @@ server-side with the secret key; every private read is a signed URL.
 SUPABASE_SECRET_KEY=              # sb_secret_... — server-side only, NEVER shipped to a client
 STORAGE_THUMB_BUCKET=thumbs
 STORAGE_MEDIA_BUCKET=media
-THUMB_RETENTION_DAYS=30
-MEDIA_RETENTION_DAYS=30
 MEDIA_SIGNED_URL_TTL_SECONDS=86400
 CRON_SECRET=                      # guards /api/cron/* against public invocation
+
+# Seed values for NEW workspaces only. Retention itself is a per-workspace
+# setting (§1.4) — changing these does not touch existing rows.
+THUMB_RETENTION_DAYS_DEFAULT=3
+MEDIA_RETENTION_DAYS_DEFAULT=3
+# Absolute server-side ceiling, above any plan's allowance. Backstop only.
+RETENTION_DAYS_MAX=90
 ```
 
 `SUPABASE_URL` already exists. `SUPABASE_ANON_KEY` is the browser key used by
 the login page and must not be used here — Storage writes need the secret key.
 
-### 1.4 `src/lib/storage.ts` — no new dependency
+### 1.4 Retention is a per-workspace setting
+
+Two `Workspace` columns, surfaced through the existing settings tools rather
+than hardcoded or env-driven:
+
+```prisma
+  /// Days to keep cover images before the sweeper deletes them. User-writable
+  /// via update_settings, but clamped server-side to the plan ceiling — this
+  /// is a COGS lever, see docs/stripe-implementation-plan.md §0.2.
+  thumbRetentionDays   Int      @default(3)
+  mediaRetentionDays   Int      @default(3)
+```
+
+**Why a column and not just an env var.** Retention drives storage and egress —
+the same class of field as `monthlyBudgetCents`, and the Stripe plan's §0.2 is
+explicit about what happens when a cost lever is user-writable and uncapped: one
+`update_settings` call and the customer grants themselves unlimited COGS. So the
+value is per-workspace (customers legitimately differ), writable, and **clamped
+on write**:
+
+```
+effective = clamp(requested, 1, min(PLAN_RETENTION_MAX[planKey], RETENTION_DAYS_MAX))
+```
+
+Out-of-range requests are rejected with the ceiling named in the error, not
+silently clamped — a user who asks for 365 and gets 3 should be told why.
+
+Proposed plan ceilings, which also makes retention a real upgrade reason
+consistent with [`pricing-research.md`](./pricing-research.md):
+
+| Plan | Max retention days |
+|---|---|
+| `free` | 3 |
+| `creator` | 14 |
+| `pro` | 30 |
+
+Flatten this to a single `RETENTION_DAYS_MAX` if you'd rather not tie it to
+plans yet — the clamp is one function either way.
+
+**Reads.** `get_settings` returns both values plus the effective ceiling, so a
+client knows what it's allowed to ask for. `update_settings` gains
+`thumbRetentionDays` / `mediaRetentionDays` as optional integers.
+
+**Semantics of a change.** Lowering retention takes effect on the next sweep —
+objects already past the new cutoff are deleted within 24h. Raising it does not
+resurrect anything already deleted; it only extends the life of what's still
+resident. Both worth stating in the tool description, because "I set it to 30,
+where are my old thumbnails" is otherwise a support question.
+
+### 1.5 `src/lib/storage.ts` — no new dependency
 
 The repo has no `@supabase/supabase-js`, and doesn't need one. Storage is a REST
 API and the codebase already hand-rolls `fetch` clients for Apify and Gemini.
@@ -142,9 +222,10 @@ overwrite), `POST /storage/v1/object/sign/{bucket}/{path}` with
 
 This module is the entire vendor surface. §5 replaces it and nothing else.
 
-### 1.5 Schema
+### 1.6 Schema
 
-`prisma/schema.prisma`, `model Video` — purely additive:
+`prisma/schema.prisma` — purely additive. `model Workspace` gets the two
+retention columns from §1.4; `model Video` gets the object keys:
 
 ```prisma
   thumbnailUrl     String    @default("")     // unchanged: original source URL, provenance
@@ -166,7 +247,7 @@ Migration: `supabase/migrations/<ts>_media_storage.sql`, generated with
 `prisma migrate diff` and hardened with `ADD COLUMN IF NOT EXISTS`, same as the
 billing migration. Additive only, no backfill.
 
-### 1.6 Write paths
+### 1.7 Write paths
 
 **Thumbnails — at scrape time.** In the persist loop in `src/tools/sources.ts:227-250`,
 after `db.video.create`, fetch the cover and upload. Rules:
@@ -178,8 +259,10 @@ after `db.video.create`, fetch the cover and upload. Rules:
   round-trips inside a 60s function.
 - **Never fail the refresh on a thumbnail miss.** Set `thumbStatus: 'failed'`
   and move on. Scrapes are the expensive thing; images are cosmetic.
-- Skip YouTube. `i.ytimg.com` is stable and free to hotlink — store `thumbKey:
-  null`, let the feed fall back to `thumbnailUrl`. Saves a third of the writes.
+- Gate on `platform === 'tiktok'` (§0.3). Not defensive coding — it's the only
+  platform that produces rows. When Shorts lands, keep it excluded on purpose:
+  `i.ytimg.com` is stable and free to hotlink, so `thumbKey: null` + fallback to
+  `thumbnailUrl` is strictly better than storing a copy.
 
 **Video — on the analyze path.** In `analyzeVideoWithDownload`
 (`src/analysis/index.ts:290-317`), after the size sanity check and before the
@@ -187,7 +270,7 @@ after `db.video.create`, fetch the cover and upload. Rules:
 buffer-to-tmpfile flow untouched; streaming is Phase 3. Upload failure logs and
 continues — analysis has already succeeded by then and must not be lost.
 
-### 1.7 Retention sweeper — the part Supabase doesn't give you
+### 1.8 Retention sweeper — the part Supabase doesn't give you
 
 `api/cron/media-retention.ts`, daily at 03:00 UTC:
 
@@ -195,15 +278,33 @@ continues — analysis has already succeeded by then and must not be lost.
 "crons": [{ "path": "/api/cron/media-retention", "schedule": "0 3 * * *" }]
 ```
 
+Because the cutoff is now per-workspace (§1.4), the sweep can't compare against
+one constant — it joins through to the owning workspace and uses that row's
+value:
+
+```sql
+SELECT v.id, v."mediaKey"
+FROM "Video" v
+JOIN "Source" s   ON s.id = v."sourceId"
+JOIN "Workspace" w ON w.id = s."workspaceId"
+WHERE v."mediaStatus" = 'stored'
+  AND v."mediaStoredAt" < now() - (w."mediaRetentionDays" * INTERVAL '1 day')
+ORDER BY v."mediaStoredAt"
+LIMIT 1000;
+```
+
 Per run, per bucket:
 
-1. `SELECT` videos where `mediaStoredAt < now() - MEDIA_RETENTION_DAYS` and
-   `mediaStatus = 'stored'`, cap at 1000 per run.
-2. Bulk-delete those paths.
+1. Run the query above (`thumbStoredAt` / `thumbRetentionDays` for thumbs).
+2. Bulk-delete those paths, grouped by workspace prefix.
 3. `UPDATE` the rows to `mediaStatus: 'expired'`, `mediaKey: null`.
-4. Same for thumbs against `THUMB_RETENTION_DAYS`.
-5. **Orphan sweep:** objects present in `storage.objects` with no matching
+4. **Orphan sweep:** objects present in `storage.objects` with no matching
    `Video` row — from failed writes or deleted sources. Weekly is enough.
+
+The `LIMIT 1000` means a backlog drains over several days rather than in one
+run. That's fine at steady state, but the first sweep after someone *lowers*
+their retention can have a large backlog — order by `mediaStoredAt` so the
+oldest (and most certainly expired) go first, and let it catch up.
 
 Vercel Cron over pg_cron + pg_net deliberately: the DB and the bucket must go
 out of sync in one direction only (object deleted, then row updated), and a
@@ -213,14 +314,21 @@ keeps retention logic in TypeScript next to the code that wrote the objects.
 Guard the route with `CRON_SECRET` compared against the `Authorization` header —
 a public endpoint that deletes media is not acceptable.
 
-**Known consequence of 30-day thumbnails:** feed items older than 30 days lose
-their image. Re-ingest usually fails too, because the original TikTok/IG cover
-URL has expired by then. The UI degrades to a placeholder card driven by
-`thumbStatus = 'expired'` — deliberate, not a bug. If the gallery ends up
-looking thin, `THUMB_RETENTION_DAYS=365` is a one-variable change and costs
-~$0.02/mo per 10k thumbnails. Video retention should stay at 30.
+**Known consequence, sharper at 3 days than at 30.** A feed item older than the
+window loses its image, and re-ingest usually fails because the original
+TikTok/IG cover URL has expired too. At `thumbRetentionDays = 3` that means
+**most of the feed renders as placeholders** — anything scraped earlier in the
+week. The UI degrades gracefully via `thumbStatus = 'expired'`, so this is
+survivable and correct for testing the pipeline, but it is not a shippable
+default for a gallery.
 
-### 1.8 Read path
+The asymmetry is worth keeping in mind when you revisit it: thumbnails are ~60KB
+and the cheapest thing in the system, while video is 2–30MB and carries the
+storage cost, the egress, and the re-hosting exposure. They do not want the same
+number. My expectation is you land near `thumb: 90+, media: 3–7` once the
+gallery is real — which is exactly why this is a setting and not a constant.
+
+### 1.9 Read path
 
 `get_feed` (`src/tools/feed.ts:96`) and `get_video` (`src/tools/video.ts:54`)
 resolve in order:
@@ -237,14 +345,18 @@ Video signed URLs are **not** minted in `get_feed`. They cost a round-trip each
 and nothing in the current output plays video. Add them in Phase 4, on demand,
 for the single video being opened.
 
-### 1.9 Acceptance
+### 1.10 Acceptance
 
 - [ ] `refresh_source` on a TikTok source: every new row lands `thumbStatus='stored'` and a `thumbKey` that 200s publicly
 - [ ] A refresh with the thumbs bucket misconfigured still persists videos and scores — `thumbStatus='failed'`, no thrown error
 - [ ] `analyze_video` with `gemini-native`: `mediaKey` set, `mediaBytes` matches the logged download size, tmpdir still cleaned
-- [ ] Retention endpoint deletes objects, nulls the keys, sets `expired` — verified by backdating `mediaStoredAt`
+- [ ] Retention endpoint deletes objects, nulls the keys, sets `expired` — verified by backdating `mediaStoredAt` past the workspace's 3 days
 - [ ] Retention endpoint returns 401 without `CRON_SECRET`
-- [ ] `get_feed` returns a working `thumbUrl` for TikTok, falls back to `i.ytimg.com` for Shorts, `null` + `expired` after a sweep
+- [ ] **Two workspaces with different `mediaRetentionDays` sweep at different cutoffs in the same run** — the per-workspace join is the one genuinely new failure mode
+- [ ] `update_settings` with `thumbRetentionDays: 365` is rejected, error names the plan ceiling; `3` is accepted; `0` and negatives rejected
+- [ ] `get_settings` reports both retention values and the effective ceiling
+- [ ] Lowering retention then running the sweep deletes the newly-out-of-window objects
+- [ ] `get_feed` returns a working `thumbUrl` for TikTok, `null` + `expired` after a sweep
 - [ ] Cold `bun run remote:dev` with no storage env vars set: everything still works, all statuses `none`
 
 That last one matters — Phase 1 must be **additive and skippable**. If
@@ -260,7 +372,7 @@ Phase 1 is what makes this possible; this is where it starts paying.
 **2.1 Reuse the stored MP4.** `analyzeVideoWithDownload` checks `mediaKey`
 before calling Apify. On hit: sign a URL, download from Supabase, skip the actor
 call entirely — and skip `recordApifySpend`/`assertApifyCap`, because no Apify
-cost was incurred. Re-running analysis inside the 30-day window becomes free.
+cost was incurred. Re-running analysis inside the retention window becomes free.
 
 **2.2 Reuse the Gemini upload.** The Files API keeps an upload ~48h and returns
 a `fileUri` (`src/analysis/gemini-native.ts:74`), which is currently discarded.
@@ -271,7 +383,19 @@ re-analysis needs no download at all, from any source.
 becomes a batch job over stored media instead of a full re-scrape. Worth a
 `reanalyze_stale` tool once v3 is real — out of scope until then.
 
-Ordering note: 2.2 is ~20 lines and independent of everything. Ship it first.
+**What a 3-day default does to this phase.** 2.1's window shrinks to ~3 days,
+which is barely wider than 2.2's free 48h — so most of the Apify savings
+collapse into the cheaper change, and 2.1 stops being worth much on its own.
+2.3 stops working entirely: a `schemaVersion` bump lands weeks or months after
+the scrape, by which point every MP4 is gone and it's a full re-scrape again.
+
+None of that argues against 3 days for testing. It does mean **the retention
+setting is the lever that decides whether Phase 2 is worth building** — pick the
+`mediaRetentionDays` you actually want before scheduling 2.1, and if it stays at
+3, ship 2.2 and skip the rest.
+
+Ordering note: 2.2 is ~20 lines, independent of everything, and unaffected by
+retention. Ship it first regardless.
 
 ---
 
@@ -323,7 +447,7 @@ lever on the Supabase-vs-R2 cost gap.
 conversation — the only route to real playback, since Claude blocks
 `frameDomains` and a TikTok embed is therefore impossible. Verify before
 designing UI around it: the Claude host has a track record of dropping declared
-CSP fields. If it works, `get_video` mints the signed URL on demand (§1.8).
+CSP fields. If it works, `get_video` mints the signed URL on demand (§1.9).
 If not, the card opens the source URL externally and nothing else changes.
 
 ---
@@ -333,11 +457,11 @@ If not, the card opens the source URL externally and nothing else changes.
 Supabase Storage is S3-compatible. Switching means: point the S3 credentials at
 R2, reimplement the four functions in `src/lib/storage.ts` against R2's API,
 change one CSP origin in §4.1, and re-point `publicUrl` at the R2 custom domain.
-Stored objects can be mirrored with `rclone` or simply left to expire — the
-30-day window means a no-op migration if you just switch the write path and wait
-a month.
+Stored objects need no mirroring at all — at a 3-day window you switch the write
+path, wait out the retention period, and the old bucket is empty. The short
+default that makes the gallery worse (§1.8) makes this migration free.
 
-The retention sweeper gets *simpler*: R2 has native lifecycle rules, so §1.7
+The retention sweeper gets *simpler*: R2 has native lifecycle rules, so §1.8
 becomes a bucket setting and the cron job only reconciles DB columns.
 
 Triggers to watch: Supabase egress past the plan allowance two months running,
@@ -349,7 +473,7 @@ or Phase 4.3 succeeding and video playback becoming a load-bearing feature.
 
 | Phase | Ships | Blocked by |
 |---|---|---|
-| 1 | Buckets, `src/lib/storage.ts`, migration, both write paths, sweeper, feed read | — |
+| 1 | Buckets, `src/lib/storage.ts`, migration, retention setting, both TikTok write paths, sweeper, feed read | — |
 | 2.2 | Gemini `fileUri` reuse (~20 lines) | — |
 | 2.1 | Skip Apify when `mediaKey` exists | 1 |
 | 4 | Gallery reads Storage, playback spike | 1 |
