@@ -20,6 +20,20 @@ jobs:
 
       - run: bun install
 
+      # Proves whether the secrets are actually reaching this job, without
+      # ever printing the values themselves — GitHub Actions has no built-in
+      # "is this secret set" indicator, and the standard env: block preview
+      # at the top of a step's log renders empty either way (masked-to-blank
+      # for a real value, genuinely blank for an unset one), so it can't
+      # tell those two cases apart. A character count can.
+      - name: Check secrets are visible to this job
+        run: |
+          echo "DATABASE_URL length: ${#DATABASE_URL}"
+          echo "DIRECT_URL length: ${#DIRECT_URL}"
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+
       - run: bun run db:push
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

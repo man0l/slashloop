@@ -24,6 +24,11 @@ jobs:
 
       - run: bun install
 
+      - name: Check secret is visible to this job
+        run: echo "STRIPE_SECRET_KEY length: ${#STRIPE_SECRET_KEY}"
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+
       - run: bun run src/scripts/stripe_setup.ts
         env:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
