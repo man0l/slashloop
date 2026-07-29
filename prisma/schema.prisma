@@ -58,6 +58,7 @@ model Workspace {
   usageLogs       UsageLog[]
   autoAnalyzeRuns AutoAnalyzeRun[]
   creditLedger    CreditLedger[]
+  mediaJobs       MediaJob[]
 }
 
 /// Append-only audit trail for credit grants/debits. The Workspace row holds
@@ -338,4 +339,48 @@ model AutoAnalyzeRun {
 
   @@index([workspaceId])
   @@index([ranAt])
+}
+
+/// Work that cannot finish inside one request. See docs/media-storage-plan.md §3.3.
+///
+/// gemini-native has to download the MP4, upload it, wait for Gemini to process
+/// it and then generate — which does not fit the 60s function ceiling, and that
+/// ceiling is not raisable on the current Vercel plan. So analyze_video records
+/// the intent here and a worker invocation does the work on its own budget.
+///
+/// Claim protocol: the worker flips queued -> running with startedAt in a single
+/// conditional UPDATE, so two workers racing the same row cannot both win. A
+/// worker killed mid-flight leaves the row in `running` forever, so the daily
+/// sweeper returns rows stuck past a threshold to `queued`. attempts guards the
+/// resulting retry loop.
+model MediaJob {
+  id          String    @id @default(uuid())
+  workspaceId String
+  videoId     String
+  /// analyze — the only kind today. Named rather than implied so Phase 3.1's
+  /// ingest work can share this queue instead of growing a second one.
+  kind        String    @default("analyze")
+  /// queued | running | done | failed
+  status      String    @default("queued")
+  attempts    Int       @default(0)
+  lastError   String?
+  /// Call options captured at enqueue time (e.g. forceBackend), applied by the
+  /// worker. The request that chose them is long gone by the time it runs.
+  payloadJson String    @default("{}")
+  /// Credit pre-authorisation reference. The caller is debited at enqueue, so
+  /// the worker owns the refund when a job fails terminally.
+  opId        String?
+  /// Set on success, so get_video can point at the result without a join.
+  analysisId  String?
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  // The worker's claim query: oldest queued row first.
+  @@index([status, createdAt])
+  // get_video asks "is there a job for this video right now?"
+  @@index([videoId, status])
+  @@index([workspaceId])
 }

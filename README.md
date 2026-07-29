@@ -130,6 +130,26 @@ Retention defaults to 3 days and is a per-workspace setting changed via the
 `update_settings` tool, capped per plan. Supabase has no object lifecycle
 rules, so expiry runs as a daily Vercel Cron (`/api/cron/media-retention`).
 
+### Analysis runs off the request path
+
+`analyze_video` with the `gemini-native` backend **queues** rather than
+analysing inline, and returns a `jobId`. Poll `get_video` — `analysisJob`
+reports progress, `analysis` carries the result once it lands. `gemini-text`
+still returns its analysis directly; it is one text call and finishes in
+seconds.
+
+The reason is a hard ceiling, not a preference: a native analysis has to
+download the MP4, upload it to Gemini, wait for processing and then generate,
+which does not fit `api/mcp.ts`'s 60s `maxDuration` — and the Vercel plan
+cannot raise it. The MCP client applies its own timeout too, so a synchronous
+call could not be rescued by a bigger server budget anyway.
+
+Enqueueing fires a non-blocking call to `/api/jobs/analyze`, which runs the job
+on a fresh invocation with its own 60s. That dispatch is best-effort; the queue
+does not depend on it. Anything missed stays `queued` and the daily
+`/api/cron/media-jobs` sweep requeues abandoned jobs and drains the backlog.
+Daily is the plan's cron floor, so treat it as the worst case, not the norm.
+
 Full design, including the later phases: [`docs/media-storage-plan.md`](./docs/media-storage-plan.md).
 
 > ⚠️ **Do not run `bun run db:push` against production.** It bypasses the
@@ -150,6 +170,9 @@ Full design, including the later phases: [`docs/media-storage-plan.md`](./docs/m
 | `POST /api/billing/portal` | Bearer JWT. Creates a Billing Portal session, returns `{ url }` |
 | `GET /api/billing/status` | Bearer JWT. Returns `{ planKey, planCredits, packCredits, periodEnd, billingStatus }` |
 | `POST /api/stripe/webhook` | Stripe signature, not JWT. The only thing that grants/revokes credits |
+| `POST /api/jobs/analyze` | `CRON_SECRET`. Drains queued analyses off the request path |
+| `GET /api/cron/media-jobs` | `CRON_SECRET`. Daily. Requeues abandoned jobs, then drains |
+| `GET /api/cron/media-retention` | `CRON_SECRET`. Daily. Expires stored media |
 
 The three `/api/billing/*` routes carry CORS for `SITE_URL` (the landing site's
 origin); `/mcp` and `/api/stripe/webhook` don't need it — neither is called

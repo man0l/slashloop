@@ -10,9 +10,12 @@
   ],
   "functions": {
     "api/mcp.ts": { "maxDuration": 60 },
-    "api/cron/media-retention.ts": { "maxDuration": 60 }
+    "api/cron/media-retention.ts": { "maxDuration": 60 },
+    "api/cron/media-jobs.ts": { "maxDuration": 60 },
+    "api/jobs/analyze.ts": { "maxDuration": 60 }
   },
   "crons": [
-    { "path": "/api/cron/media-retention", "schedule": "0 3 * * *" }
+    { "path": "/api/cron/media-retention", "schedule": "0 3 * * *" },
+    { "path": "/api/cron/media-jobs", "schedule": "0 4 * * *" }
   ]
 }
