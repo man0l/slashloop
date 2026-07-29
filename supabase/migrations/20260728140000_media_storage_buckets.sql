@@ -12,6 +12,12 @@
 -- settings need to change, change them where they live, or write a migration
 -- that says so explicitly.
 --
+-- The corollary, which matters on any project whose buckets predate this file:
+-- a bucket created by hand in the dashboard has NO file_size_limit and NO
+-- allowed_mime_types unless someone set them there, and this migration will
+-- not add them. The limits below apply to fresh environments only. Treat them
+-- as the intended configuration, not as a guarantee about a running project.
+--
 --   thumbs  PUBLIC   cover images. Public so Supabase's CDN can cache them and
 --                    so get_feed can resolve N URLs without N round-trips — a
 --                    signed URL's per-call token defeats both.
@@ -22,15 +28,15 @@
 -- NO policies. The service/secret key bypasses RLS, so server-side writes work;
 -- anon and authenticated get nothing, which is exactly right — no browser talks
 -- to these buckets directly. Public reads on `thumbs` go through the public
--- object endpoint, which does not consult RLS. If someone later adds a
--- permissive policy on storage.objects, `bun run verify:media` will flag it.
+-- object endpoint, which does not consult RLS.
 --
 -- Permissions caveat: storage.buckets is owned by supabase_storage_admin. The
 -- migration runner usually has rights to write it, but not on every project
 -- configuration — so a failure here is caught and downgraded to a NOTICE
 -- rather than failing the migration and blocking an otherwise good deploy.
--- Verify with `bun run verify:media`; if the buckets are missing, create them
--- in the dashboard with the same settings.
+-- A green migration is therefore not proof the buckets exist. Check Storage in
+-- the dashboard once after the first deploy; if they are missing, create them
+-- there with the settings below.
 
 DO $$
 BEGIN

@@ -107,17 +107,24 @@ re-analysis can skip a paid Apify call. Leave `SUPABASE_SECRET_KEY` unset and
 the entire path no-ops — everything else works as before.
 
 Setup is one step: set `SUPABASE_SECRET_KEY` and `CRON_SECRET` in Vercel. Two
-buckets are needed — **`thumbs` (public)** and **`media` (private, 100MiB)**.
+buckets are needed — **`thumbs` (public, 5MiB, images only)** and **`media`
+(private, 100MiB, `video/mp4` only)**.
 `supabase/migrations/*_media_storage_buckets.sql` creates them if they're
 absent, so a fresh project or a local `supabase start` comes up ready.
 
 > That migration is **create-only** (`ON CONFLICT DO NOTHING`) — it never
 > reconciles a bucket that already exists, so dashboard settings are safe from
 > it. It also downgrades a permissions failure on `storage.buckets` to a
-> `NOTICE` rather than blocking a deploy. Between the two, a green migration
-> isn't proof the buckets exist with the right settings; check the dashboard
-> once. The one that matters is **`media` must be private** — public would
-> mean an open mirror of scraped video.
+> `NOTICE` rather than blocking a deploy.
+>
+> So on a project whose buckets were created by hand — which includes this
+> one — the size limits and mime allowlists above **do not exist and will not
+> be added by deploying**. A bucket made in the dashboard has no limit unless
+> someone typed one in. Nothing breaks without them; they are a ceiling, not a
+> requirement. To actually get them, set them in the dashboard.
+>
+> The setting that does matter is **`media` must be private** — public would
+> mean an open mirror of scraped video. Worth confirming once.
 
 Retention defaults to 3 days and is a per-workspace setting changed via the
 `update_settings` tool, capped per plan. Supabase has no object lifecycle

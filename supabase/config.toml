@@ -115,11 +115,20 @@ port = 54324
 [storage]
 enabled = true
 # The maximum file size allowed (e.g. "5MB", "500KB").
-file_size_limit = "50MiB"
+#
+# This is a global ceiling: a per-bucket file_size_limit below cannot exceed it,
+# it is silently clamped to this value. It must therefore stay >= the largest
+# bucket limit — at 50MiB the `media` bucket's 100MiB would be capped back to
+# 50MiB and longer video would 413 anyway.
+file_size_limit = "100MiB"
 
-# Media storage buckets. Mirrors what
-# supabase/migrations/20260728140000_media_storage_buckets.sql provisions on the
-# hosted project — keep the two in sync so `supabase start` matches production.
+# Media storage buckets, for `supabase start`. These mirror what
+# supabase/migrations/20260728140000_media_storage_buckets.sql creates in a
+# fresh environment — keep the two in sync.
+#
+# They do NOT necessarily describe an existing hosted project: buckets created
+# by hand in the dashboard keep whatever settings they were made with, and the
+# create-only migration never reconciles them.
 [storage.buckets.thumbs]
 public = true
 file_size_limit = "5MiB"
