@@ -9,7 +9,7 @@
 // With this backend you can run the whole slashloop pipeline using only
 // GEMINI_API_KEY — no other AI provider key is required.
 //
-// Cost: ~$0.0005–0.001 per call on gemini-2.5-flash-lite (text-only is much
+// Cost: ~$0.0005–0.001 per call on gemini-3.5-flash (text-only is much
 // cheaper than native video understanding).
 // ---------------------------------------------------------------------------
 

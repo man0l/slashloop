@@ -39,7 +39,7 @@ export interface AnalysisOutput {
   data: VideoAnalysisData;
   analysisBasis: string;       // from ANALYSIS_BASIS enum
   backend: string;             // gemini-native | gemini-text
-  model: string;               // e.g. "gemini-2.5-flash-lite"
+  model: string;               // e.g. "gemini-3.5-flash"
   costCents: number;
   provider: string;            // "google"
 }

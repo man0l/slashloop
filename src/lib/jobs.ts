@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 import { db } from '../db.js';
+import { CREDIT_COSTS, refundCredits } from './credits.js';
 
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 
@@ -160,15 +161,17 @@ export async function failJob(id: string, message: string): Promise<{ terminal: 
  * Rows that have also exhausted their attempts go to `failed` instead, so a job
  * whose worker dies every time cannot cycle forever.
  */
-export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: number }> {
+export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: number; refunded: number }> {
   const cutoff = new Date(Date.now() - STUCK_AFTER_MINUTES * 60_000);
   const stuck = await db.mediaJob.findMany({
     where: { status: 'running', startedAt: { lt: cutoff } },
-    select: { id: true, attempts: true },
+    select: { id: true, attempts: true, workspaceId: true, opId: true },
   });
 
   let requeued = 0;
   let failed = 0;
+  let refunded = 0;
+
   for (const job of stuck) {
     const exhausted = job.attempts >= MAX_ATTEMPTS;
     await db.mediaJob.update({
@@ -177,9 +180,35 @@ export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: nu
         ? { status: 'failed', finishedAt: new Date(), lastError: 'Worker did not report back; attempts exhausted' }
         : { status: 'queued', startedAt: null, lastError: 'Worker did not report back; requeued' },
     });
+
+    // Refund here too, not only in the worker's catch.
+    //
+    // The worker refunds when it catches a failure — but a job killed by the
+    // runtime timeout never reaches a catch block, so the process simply
+    // vanishes with the caller already debited. Reclaiming such a job to
+    // `failed` without refunding is how credits silently leak, and a timeout is
+    // precisely the failure this queue exists to handle.
+    //
+    // refundCredits is idempotent on refId (see src/lib/credits.ts), so the two
+    // paths cannot double-refund the same job.
+    if (exhausted && job.opId) {
+      try {
+        await refundCredits(
+          job.workspaceId,
+          CREDIT_COSTS.analyzeVideo,
+          'analyze_video',
+          `${job.opId}:fail`,
+          'call_failed',
+        );
+        refunded++;
+      } catch (err) {
+        console.warn(`[jobs] refund on reclaim failed for ${job.id}: ${(err as Error).message}`);
+      }
+    }
+
     if (exhausted) failed++; else requeued++;
   }
-  return { requeued, failed };
+  return { requeued, failed, refunded };
 }
 
 // ---------------------------------------------------------------------------

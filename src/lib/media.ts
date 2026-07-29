@@ -12,7 +12,8 @@
 
 import { db } from '../db.js';
 import {
-  isStorageEnabled, putObject, publicUrl, thumbBucket, mediaBucket, thumbPath, mediaPath,
+  isStorageEnabled, putObject, publicUrl, signUrl, signedUrlTtlSeconds,
+  thumbBucket, mediaBucket, thumbPath, mediaPath,
 } from './storage.js';
 
 /**
@@ -238,6 +239,42 @@ export async function ingestVideoFile(
   } catch (err) {
     console.warn(`[media] video ingest failed for ${videoId}: ${(err as Error).message}`);
     await db.video.update({ where: { id: videoId }, data: { mediaStatus: 'failed' } }).catch(() => {});
+    return null;
+  }
+}
+
+/**
+ * Pull a previously stored MP4 back down to a local path.
+ *
+ * The read side of ingestVideoFile, and the mechanism behind Phase 2.1: a
+ * re-analysis inside the retention window needs the bytes, not a fresh Apify
+ * run. Uses a short-lived signed URL because `media` is private.
+ *
+ * Returns null rather than throwing on any failure. The caller's fallback is to
+ * pay Apify, which is worse but correct — a stale key, an object swept by
+ * retention between the DB read and this fetch, or storage being disabled must
+ * degrade to the slow path, not lose the analysis.
+ */
+export async function fetchStoredVideo(
+  mediaKey: string,
+  outputPath: string,
+): Promise<{ bytes: number } | null> {
+  if (!isStorageEnabled()) return null;
+
+  try {
+    const url = await signUrl(mediaBucket(), mediaKey, signedUrlTtlSeconds());
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`signed GET ${res.status}`);
+
+    const buf = new Uint8Array(await res.arrayBuffer());
+    // Same floor ingestOneThumb uses: anything this small is an error page.
+    if (buf.byteLength < 1024) throw new Error(`stored object too small (${buf.byteLength}b)`);
+
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(outputPath, buf);
+    return { bytes: buf.byteLength };
+  } catch (err) {
+    console.warn(`[media] could not reuse stored MP4 ${mediaKey}: ${(err as Error).message}`);
     return null;
   }
 }
