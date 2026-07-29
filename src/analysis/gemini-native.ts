@@ -75,14 +75,19 @@ function filePollBudgetMs(): number {
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-async function deleteGeminiFile(fileName: string): Promise<void> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return;
-  try {
-    await fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${apiKey}`, {
-      method: 'DELETE',
-    });
-  } catch { /* best effort */ }
+/**
+ * How long a Files API upload is treated as reusable (Phase 2.2).
+ *
+ * Google keeps an upload ~48h. We claim less, deliberately: handing back a
+ * handle that expires mid-call turns a cheap reuse into a failed analysis, and
+ * the cost of being wrong in the other direction is one upload.
+ */
+const GEMINI_FILE_TTL_MS = 40 * 60 * 60 * 1000;
+
+/** Does this error mean the reused file handle is gone? */
+function isStaleFileError(err: unknown): boolean {
+  const m = (err as Error)?.message ?? '';
+  return /\b(403|404)\b/.test(m) && /file|permission|not found/i.test(m);
 }
 
 async function callGeminiGenerate(
@@ -167,48 +172,68 @@ export class GeminiNativeAnalyzer implements VideoAnalyzer {
   }
 
   async analyze(ctx: AnalysisContext): Promise<AnalysisOutput> {
-    if (!ctx.videoFilePath) {
-      throw new Error('Gemini native backend requires a video file path. Set ctx.videoFilePath.');
+    if (!ctx.videoFilePath && !ctx.geminiFile) {
+      throw new Error('Gemini native backend requires a video file path or a live Gemini file handle.');
     }
 
     const template = loadPromptTemplate();
     const userMessage = buildUserMessage(ctx, template);
 
-    // Upload video
-    console.log(`[gemini-native] Uploading video for ${ctx.videoId}...`);
-    const { fileUri, fileName } = await this.uploadWithFileName(ctx.videoFilePath);
+    // Phase 2.2: reuse a live Files API handle rather than re-uploading the
+    // same bytes. Google keeps an upload ~48h, and the upload plus its
+    // ACTIVE-polling is the slowest leg left now that Phase 2.1 removed the
+    // Apify download.
+    let file = ctx.geminiFile
+      ? { ...ctx.geminiFile, fresh: false }
+      : { ...(await this.uploadFor(ctx)), fresh: true };
 
+    let result;
     try {
-      // Generate analysis
-      console.log(`[gemini-native] Analyzing with ${this.model}...`);
-      const result = await callGeminiGenerate(this.model, fileUri, template, userMessage);
-
-      // Validate
-      const validated = VideoAnalysisDataSchema.safeParse(result.parsed);
-      if (!validated.success) {
-        console.error('[gemini-native] Schema validation errors:', validated.error?.issues);
-        throw new Error(`Gemini output failed schema validation: ${validated.error?.issues.map(i => i.message).join(', ')}`);
-      }
-
-      // Determine basis
-      const hasTranscript = !!(ctx.transcript?.trim());
-      const analysisBasis = hasTranscript ? 'video+transcript' : 'video';
-
-      // Estimate cost (batch discount applies if ctx.batch)
-      const costCents = getCostCents('gemini-native', this.model, ctx.batch ?? false) || 0.2;
-
-      return {
-        data: validated.data,
-        analysisBasis,
-        backend: this.backendId,
-        model: this.model,
-        costCents: Math.round(costCents * 100) / 100,
-        provider: this.provider,
-      };
-    } finally {
-      // Cleanup: delete the uploaded file
-      await deleteGeminiFile(fileName).catch(() => {});
+      console.log(`[gemini-native] Analyzing with ${this.model}${file.fresh ? '' : ' (reusing uploaded file)'}...`);
+      result = await callGeminiGenerate(this.model, file.uri, template, userMessage);
+    } catch (err) {
+      // A reused handle can be gone earlier than we predicted — Google's window
+      // is approximate and the file can be swept. Re-upload once rather than
+      // failing an analysis over a cache miss. Only worth trying if we did not
+      // just upload it ourselves.
+      if (file.fresh || !isStaleFileError(err) || !ctx.videoFilePath) throw err;
+      console.warn(`[gemini-native] stored file handle was stale, re-uploading: ${(err as Error).message}`);
+      file = { ...(await this.uploadFor(ctx)), fresh: true };
+      result = await callGeminiGenerate(this.model, file.uri, template, userMessage);
     }
+
+    // Validate
+    const validated = VideoAnalysisDataSchema.safeParse(result.parsed);
+    if (!validated.success) {
+      console.error('[gemini-native] Schema validation errors:', validated.error?.issues);
+      throw new Error(`Gemini output failed schema validation: ${validated.error?.issues.map(i => i.message).join(', ')}`);
+    }
+
+    // Determine basis
+    const hasTranscript = !!(ctx.transcript?.trim());
+    const analysisBasis = hasTranscript ? 'video+transcript' : 'video';
+
+    // Estimate cost (batch discount applies if ctx.batch)
+    const costCents = getCostCents('gemini-native', this.model, ctx.batch ?? false) || 0.2;
+
+    return {
+      // Hand the handle back so the caller can persist it. Expiry is ours,
+      // not Google's — see GEMINI_FILE_TTL_MS.
+      geminiFile: { uri: file.uri, name: file.name, expiresAt: new Date(Date.now() + GEMINI_FILE_TTL_MS) },
+      data: validated.data,
+      analysisBasis,
+      backend: this.backendId,
+      model: this.model,
+      costCents: Math.round(costCents * 100) / 100,
+      provider: this.provider,
+    };
+  }
+
+  /** Upload the local MP4 and wait for Gemini to finish processing it. */
+  private async uploadFor(ctx: AnalysisContext): Promise<{ uri: string; name: string }> {
+    console.log(`[gemini-native] Uploading video for ${ctx.videoId}...`);
+    const { fileUri, fileName } = await this.uploadWithFileName(ctx.videoFilePath!);
+    return { uri: fileUri, name: fileName };
   }
 
   private async uploadWithFileName(filePath: string): Promise<{ fileUri: string; fileName: string }> {

@@ -155,6 +155,14 @@ model Video {
   mediaStatus      String   @default("none")
   mediaBytes       Int?
   mediaStoredAt    DateTime?
+  /// Gemini Files API handle for this video's MP4 (docs/media-storage-plan.md
+  /// §2.2). The API keeps an upload ~48h; inside that window a re-analysis
+  /// needs no upload at all, which is the slowest leg after the Apify download.
+  /// Kept on Video rather than Analysis (as §2.2 sketched) because it describes
+  /// the video, not a run — exactly like mediaKey above, and queried the same way.
+  geminiFileUri       String?
+  geminiFileName      String?
+  geminiFileExpiresAt DateTime?
 
   source       Source       @relation(fields: [sourceId], references: [id])
   score        Score?

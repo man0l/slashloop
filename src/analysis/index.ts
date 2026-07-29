@@ -24,6 +24,25 @@ import { GeminiNativeAnalyzer } from './gemini-native.js';
 import { GeminiTextAnalyzer } from './gemini-text.js';
 import { loadAnalysisConfig, updateAnalysisConfig } from './config.js';
 import { basisToConfidence, getCostCents, type AnalysisConfig, type AnalysisContext, type AnalysisResult, type VideoAnalyzer, DEFAULT_CONFIG } from './types.js';
+import { resolveThumbUrl } from '../lib/media.js';
+
+/**
+ * A Gemini Files handle for this video that has not expired yet (Phase 2.2).
+ *
+ * The expiry stored is our own conservative window, not Google's — see
+ * GEMINI_FILE_TTL_MS. If it has passed we return null and the backend uploads
+ * again; if Google dropped the file earlier than we predicted, the backend
+ * catches that and re-uploads once.
+ */
+function liveGeminiFile(video: {
+  geminiFileUri: string | null;
+  geminiFileName: string | null;
+  geminiFileExpiresAt: Date | null;
+}): { uri: string; name: string } | null {
+  if (!video.geminiFileUri || !video.geminiFileName || !video.geminiFileExpiresAt) return null;
+  if (video.geminiFileExpiresAt.getTime() <= Date.now()) return null;
+  return { uri: video.geminiFileUri, name: video.geminiFileName };
+}
 
 // ---------------------------------------------------------------------------
 // Factory — create the right backend from config
@@ -151,6 +170,8 @@ export async function analyzeVideo(
     outlierScore: video.score?.outlierScore ?? null,
     outlierExplanation: video.score?.explanation ?? null,
     workspaceId,
+    thumbImageUrl: resolveThumbUrl(video),
+    geminiFile: liveGeminiFile(video),
     videoFilePath: options?.videoFilePath,
     batch,
   };
@@ -174,10 +195,13 @@ export async function analyzeVideo(
   let lastError: Error | null = null;
 
   for (const backendId of backendsToTry) {
-    // gemini-native requires a video file; if none was provided (yt-dlp failed
-    // or wasn't run), skip to gemini-text which works without one.
-    if (backendId === 'gemini-native' && !ctx.videoFilePath) {
-      console.log(`[analysis] ${backendId} requires video file, skipping to text-only fallback`);
+    // gemini-native needs the video to exist SOMEWHERE it can reach: either a
+    // local file to upload, or a live Files API handle from a previous run
+    // (Phase 2.2), in which case Gemini already holds it and no local copy is
+    // needed. Checking only videoFilePath would send every cache hit — the case
+    // 2.2 exists to create — straight to the text fallback.
+    if (backendId === 'gemini-native' && !ctx.videoFilePath && !ctx.geminiFile) {
+      console.log(`[analysis] ${backendId} has neither a video file nor a live Gemini file, skipping to text-only fallback`);
       continue;
     }
 
@@ -210,6 +234,19 @@ export async function analyzeVideo(
       // the end of the video renders a blank frame. Zod cannot bound them —
       // the limit is this row's duration, which the schema never sees.
       const clamped = clampTimestamps(output.data, video.durationSec);
+
+      // Phase 2.2: keep the Files API handle so the next analysis of this video
+      // skips the upload. Best-effort — losing the cache must not lose the run.
+      if (output.geminiFile) {
+        await db.video.update({
+          where: { id: videoId },
+          data: {
+            geminiFileUri: output.geminiFile.uri,
+            geminiFileName: output.geminiFile.name,
+            geminiFileExpiresAt: output.geminiFile.expiresAt,
+          },
+        }).catch(err => console.warn(`[analysis] could not persist Gemini file handle: ${(err as Error).message}`));
+      }
 
       const saved = await db.analysis.create({
         data: {
@@ -300,8 +337,16 @@ export async function analyzeVideoWithDownload(
   // and then fail inside the actor. Those platforms have no scraper yet
   // (scrapeSource throws for both), but create_source still accepts them —
   // so the guard is on platform, not on whether a row can exist.
+  // Phase 2.2: with a live Files API handle there is nothing to download OR
+  // upload — Gemini already holds the video. This is the case §2.2 called
+  // "needs no download at all, from any source", and it skips both the Apify
+  // call and the Storage read that Phase 2.1 added.
+  const cachedGeminiFile = liveGeminiFile(video);
+
   let videoFilePath: string | undefined;
-  if (backend === 'gemini-native' && video.platform === 'tiktok' && video.url && workspaceId) {
+  if (cachedGeminiFile) {
+    console.log(`[analysis] Gemini still holds ${videoId} — skipping download and upload`);
+  } else if (backend === 'gemini-native' && video.platform === 'tiktok' && video.url && workspaceId) {
     try {
       const { mkdtempSync } = await import('node:fs');
       const { tmpdir } = await import('node:os');

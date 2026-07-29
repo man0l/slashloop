@@ -26,6 +26,18 @@ export interface AnalysisContext {
   outlierScore: number | null;
   outlierExplanation: string | null;
   workspaceId: string;
+  /**
+   * Resolved, fetchable URL for the cover image — the stored copy when we have
+   * one. gemini-text sends these BYTES to the model (Phase: fallback images);
+   * it used to paste ctx.thumbnailUrl into the prompt as a string and ask the
+   * model to reason about a picture it had never seen.
+   */
+  thumbImageUrl?: string | null;
+  /**
+   * A live Gemini Files API handle for this video's MP4, if one is still valid
+   * (Phase 2.2). Present = gemini-native can skip the upload entirely.
+   */
+  geminiFile?: { uri: string; name: string } | null;
   // Optional: pre-downloaded video file path (required by gemini-native)
   videoFilePath?: string;
   // True when invoked from run_auto_analyze — backends use it to look up
@@ -42,6 +54,12 @@ export interface AnalysisOutput {
   model: string;               // e.g. "gemini-3.5-flash"
   costCents: number;
   provider: string;            // "google"
+  /**
+   * A Gemini Files handle worth keeping for next time (Phase 2.2), or null to
+   * clear a stale one. Only gemini-native produces this; the caller persists it
+   * on the Video so a re-analysis inside the window skips the upload.
+   */
+  geminiFile?: { uri: string; name: string; expiresAt: Date } | null;
 }
 
 export interface AnalysisResult {
