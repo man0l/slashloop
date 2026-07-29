@@ -568,7 +568,7 @@ export async function seedDatabase() {
         analysisJson: data.analysisJson,
         analysisBasis: data.analysisBasis,
         backend: data.analysisBasis === 'thumbnail+caption' ? 'gemini-text' : 'gemini-native',
-        model: 'gemini-2.5-flash-lite',
+        model: 'gemini-3.5-flash',
         costCents: data.analysisBasis === 'thumbnail+caption' ? 0.1 : 0.2,
       },
     });

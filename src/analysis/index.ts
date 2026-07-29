@@ -304,26 +304,46 @@ export async function analyzeVideoWithDownload(
       const tmpDir = mkdtempSync(join(tmpdir(), 'slashloop-'));
       videoFilePath = join(tmpDir, `video_${videoId.slice(0, 8)}.mp4`);
 
-      console.log(`[analysis] Downloading video via Apify: ${video.url}...`);
-      const dl = await downloadTikTokVideo({
-        workspaceId,
-        videoUrl: video.url,
-        outputPath: videoFilePath,
-      });
+      // Phase 2.1 (docs/media-storage-plan.md §2.1): if we already hold the
+      // MP4, pull it from Storage instead of paying Apify to fetch it again.
+      //
+      // This is not only a cost saving. Measured on 2026-07-29, the Apify actor
+      // leg is roughly 15-20s of the worker's 60s budget, and a gemini-native
+      // run was timing out inside generateContent with the download already
+      // behind it. Reclaiming that time is what gives the analysis room to
+      // finish, so treat this as part of the timeout fix, not just a discount.
+      //
+      // No spend is recorded and no cap is asserted on this path, because no
+      // Apify call is made.
+      const { fetchStoredVideo } = await import('../lib/media.js');
+      const cached = video.mediaKey && video.mediaStatus === 'stored'
+        ? await fetchStoredVideo(video.mediaKey, videoFilePath)
+        : null;
 
-      // Sanity-check the file landed and has real content
-      const { statSync } = await import('node:fs');
-      const stat = statSync(videoFilePath);
-      if (stat.size < 1024) throw new Error('Downloaded file too small');
+      if (cached) {
+        console.log(`[analysis] Reusing stored MP4 (${(cached.bytes / 1024 / 1024).toFixed(2)}MB) — skipped Apify`);
+      } else {
+        console.log(`[analysis] Downloading video via Apify: ${video.url}...`);
+        const dl = await downloadTikTokVideo({
+          workspaceId,
+          videoUrl: video.url,
+          outputPath: videoFilePath,
+        });
 
-      console.log(`[analysis] Downloaded ${(stat.size / 1024 / 1024).toFixed(2)}MB (Apify cost: ${dl.costCents}c)`);
+        // Sanity-check the file landed and has real content
+        const { statSync } = await import('node:fs');
+        const stat = statSync(videoFilePath);
+        if (stat.size < 1024) throw new Error('Downloaded file too small');
 
-      // Cache the MP4 so a re-analysis inside the retention window doesn't
-      // have to pay Apify again. Never throws — the download already
-      // succeeded and the analysis is about to run; losing the cache copy
-      // must not lose the analysis.
-      const { ingestVideoFile } = await import('../lib/media.js');
-      await ingestVideoFile(workspaceId, videoId, videoFilePath);
+        console.log(`[analysis] Downloaded ${(stat.size / 1024 / 1024).toFixed(2)}MB (Apify cost: ${dl.costCents}c)`);
+
+        // Cache the MP4 so a re-analysis inside the retention window doesn't
+        // have to pay Apify again. Never throws — the download already
+        // succeeded and the analysis is about to run; losing the cache copy
+        // must not lose the analysis.
+        const { ingestVideoFile } = await import('../lib/media.js');
+        await ingestVideoFile(workspaceId, videoId, videoFilePath);
+      }
     } catch (err) {
       console.warn(`[analysis] Video download failed, falling back to text-only: ${(err as Error).message}`);
       videoFilePath = undefined;

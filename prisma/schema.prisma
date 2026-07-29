@@ -19,7 +19,7 @@ model Workspace {
   /// existing rows/tools don't break; do not wire new enforcement to this.
   monthlyBudgetCents   Int      @default(5000)
   autoAnalyzeRulesJson String   @default("{}")
-  analysisConfigJson   String   @default("{\"backend\":\"gemini-native\",\"fallback\":\"gemini-text\",\"geminiModel\":\"gemini-2.5-flash-lite\"}")
+  analysisConfigJson   String   @default("{\"backend\":\"gemini-native\",\"fallback\":\"gemini-text\",\"geminiModel\":\"gemini-3.5-flash\"}")
   failureCountsJson    String   @default("{}")
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
@@ -204,7 +204,7 @@ model Analysis {
   analysisJson  String // JSON string of the analysis
   analysisBasis String // video | video+transcript | frames+transcript | frames+caption | transcript+thumbnail | transcript-only | thumbnail+caption | caption+metadata-only
   backend       String   @default("gemini-native") // gemini-native | frames | hybrid
-  model         String   @default("gemini-2.5-flash-lite")
+  model         String   @default("gemini-3.5-flash")
   costCents     Int      @default(0)
   createdAt     DateTime @default(now())
 

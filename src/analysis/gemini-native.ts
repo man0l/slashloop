@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Gemini Native Video Analyzer
 // Uploads the video file to Gemini Files API, runs a single generateContent call.
-// ~$0.001–0.002 per 30s video (gemini-2.5-flash-lite).
+// ~$0.001–0.002 per 30s video (gemini-3.5-flash).
 // Sees video + audio + on-screen text. No ffmpeg, no OCR, no Whisper needed.
 // ---------------------------------------------------------------------------
 
