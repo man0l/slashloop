@@ -126,33 +126,57 @@ export const OverallAssessmentSchema = z.object({
  * Every field is what a videographer who has not seen the video would have to
  * ask before they could shoot it.
  */
+/**
+ * An enum that degrades instead of failing.
+ *
+ * Recreation fields describe a continuum — a model asked for `lighting` will
+ * reach for "soft daylight from a window" long before it picks `window` off a
+ * list, and it is not wrong to. Under a strict enum that single word discarded
+ * the ENTIRE analysis: every other field the model got right, thrown away after
+ * the Gemini call was already paid for. Observed on the first real v3 run,
+ * where three key moments each failed on `lighting` alone.
+ *
+ * So these coerce to 'other' rather than reject. The enum still buys a stable
+ * vocabulary for the common cases and anything filterable; the free-text fields
+ * beside it (subjectAction, setting, wardrobeProps) carry the nuance. A
+ * descriptive field must never be able to fail an expensive analysis.
+ */
+function softEnum<const T extends readonly [string, ...string[]]>(values: T) {
+  return z.enum(values).nullable().catch('other' as T[number]);
+}
+
 export const KeyMomentSchema = z.object({
   /** Mid-shot, not the cut. See prompts/gemini-observe.v2.md — transition frames are usually motion-blurred. */
   timestampSec: z.number().min(0),
-  role: z.enum(['hook', 'setup', 'turn', 'payoff', 'cta', 'other'] as const)
+  role: z.enum(['hook', 'setup', 'turn', 'payoff', 'cta', 'other'] as const).catch('other')
     .describe('What this moment does for the video, not what it depicts'),
-  framing: z.enum(['extreme_close_up', 'close_up', 'medium', 'wide', 'other'] as const).nullable(),
-  cameraAngle: z.enum(['eye_level', 'low', 'high', 'overhead', 'dutch', 'other'] as const).nullable(),
-  cameraMovement: z.enum(['static', 'handheld', 'pan', 'push_in', 'pull_out', 'whip', 'other'] as const).nullable(),
+  framing: softEnum(['extreme_close_up', 'close_up', 'medium', 'wide', 'other'] as const),
+  cameraAngle: softEnum(['eye_level', 'low', 'high', 'overhead', 'dutch', 'other'] as const),
+  cameraMovement: softEnum(['static', 'handheld', 'pan', 'push_in', 'pull_out', 'whip', 'other'] as const),
   /** Imperative voice — an instruction to perform, not a description of what was performed. */
   subjectAction: z.string(),
-  wardrobeProps: z.string().nullable(),
-  setting: z.string().nullable(),
-  lighting: z.enum(['natural', 'window', 'ring_light', 'overhead', 'harsh', 'low_key', 'golden_hour', 'other'] as const).nullable(),
+  wardrobeProps: z.string().nullable().catch(null),
+  setting: z.string().nullable().catch(null),
+  /**
+   * Free text, not an enum. Lighting is the field a model most wants to
+   * describe rather than classify, and for someone about to reshoot, "soft
+   * window light from camera left" is strictly more useful than `window`.
+   */
+  lighting: z.string().nullable().catch(null),
   textOverlay: z.object({
     text: z.string(),
-    position: z.enum(['top', 'center', 'bottom', 'other'] as const).nullable(),
-    style: z.string().nullable(),
-  }).nullable().describe('Text on screen at this moment, null if none'),
-  transitionIn: z.enum(['cut', 'jump_cut', 'match_cut', 'whip', 'fade', 'none', 'other'] as const).nullable(),
-  audioAtMoment: z.string().nullable(),
+    position: softEnum(['top', 'center', 'bottom', 'other'] as const),
+    style: z.string().nullable().catch(null),
+  }).nullable().catch(null).describe('Text on screen at this moment, null if none'),
+  transitionIn: softEnum(['cut', 'jump_cut', 'match_cut', 'whip', 'fade', 'none', 'other'] as const),
+  audioAtMoment: z.string().nullable().catch(null),
 });
 
 // ---- Master schema ----
 
 export const VideoAnalysisDataSchema = z.object({
   // --- Recreation (video-native only; text-only analysis cannot see any of it) ---
-  keyMoments: z.array(KeyMomentSchema).nullable().default(null)
+  keyMoments: z.array(KeyMomentSchema).nullable().default(null).catch(null)
     .describe('3-6 moments worth restaging, as shot-list entries. null for text-only analysis.'),
 
   // --- Video-native observation fields (Gemini / frames) ---
