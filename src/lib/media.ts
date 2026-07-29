@@ -29,6 +29,42 @@ function isApifyHosted(url: string): boolean {
   return /^https?:\/\/[^/]*\bapify\.com\//i.test(url);
 }
 
+/** The image types the `thumbs` bucket is provisioned to allow (see the buckets migration). */
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+
+/**
+ * Coerce an upstream Content-Type into a real image type.
+ *
+ * Apify's key-value store commonly serves stored records as
+ * application/octet-stream, and whatever we pass here is what Supabase stores
+ * and later serves the object with. Two reasons that matters:
+ *
+ *   - The stored Content-Type is what the public thumb URL returns. Serving a
+ *     cover as application/octet-stream invites a download rather than a render.
+ *   - Where the bucket has an image allowlist — a fresh environment provisioned
+ *     by the buckets migration — passing octet-stream through would 400 the
+ *     upload outright, on exactly the source we prefer.
+ *
+ * Buckets created by hand have no allowlist, so the second only bites on new
+ * environments. The first applies everywhere.
+ *
+ * Falls back to the URL's extension, then to JPEG, which is what TikTok covers
+ * actually are.
+ */
+function imageContentType(headerValue: string | null, url: string): string {
+  const header = (headerValue ?? '').split(';')[0].trim().toLowerCase();
+  if (ALLOWED_IMAGE_TYPES.includes(header)) return header;
+
+  const ext = url.split('?')[0].split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'png': return 'image/png';
+    case 'webp': return 'image/webp';
+    case 'heic': return 'image/heic';
+    case 'heif': return 'image/heif';
+    default: return 'image/jpeg';
+  }
+}
+
 /** Only these platforms have a real scraper and real CDN URLs behind them. */
 export function isIngestablePlatform(platform: string): boolean {
   return platform === 'tiktok';
@@ -91,7 +127,7 @@ async function ingestOneThumb(
       bucket: thumbBucket(),
       path,
       body: buf,
-      contentType: res.headers.get('content-type') || 'image/jpeg',
+      contentType: imageContentType(res.headers.get('content-type'), source),
     });
     return path;
   } catch (err) {

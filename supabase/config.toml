@@ -115,14 +115,29 @@ port = 54324
 [storage]
 enabled = true
 # The maximum file size allowed (e.g. "5MB", "500KB").
-file_size_limit = "50MiB"
+#
+# This is a global ceiling: a per-bucket file_size_limit below cannot exceed it,
+# it is silently clamped to this value. It must therefore stay >= the largest
+# bucket limit — at 50MiB the `media` bucket's 100MiB would be capped back to
+# 50MiB and longer video would 413 anyway.
+file_size_limit = "100MiB"
 
-# Uncomment to configure local storage buckets
-# [storage.buckets.images]
-# public = false
-# file_size_limit = "50MiB"
-# allowed_mime_types = ["image/png", "image/jpeg"]
-# objects_path = "./images"
+# Media storage buckets, for `supabase start`. These mirror what
+# supabase/migrations/20260728140000_media_storage_buckets.sql creates in a
+# fresh environment — keep the two in sync.
+#
+# They do NOT necessarily describe an existing hosted project: buckets created
+# by hand in the dashboard keep whatever settings they were made with, and the
+# create-only migration never reconciles them.
+[storage.buckets.thumbs]
+public = true
+file_size_limit = "5MiB"
+allowed_mime_types = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"]
+
+[storage.buckets.media]
+public = false
+file_size_limit = "100MiB"
+allowed_mime_types = ["video/mp4"]
 
 # Allow connections via S3 compatible clients
 [storage.s3_protocol]
