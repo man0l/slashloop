@@ -201,9 +201,11 @@ function baseUrl(): string | null {
  * This is best-effort by design, and the system does not depend on it. If the
  * dispatch is dropped — the enqueuing instance frozen before the socket
  * flushed, a cold start that outlives the abort — the row simply stays
- * `queued` and the daily sweeper picks it up. That is the difference between
- * "slower than intended" and "lost", and it is why the sweeper exists rather
- * than being an optimisation.
+ * `queued` and the pg_cron drain picks it up within a minute
+ * (supabase/migrations/*_pgcron_drain_analyze_jobs.sql). That scheduler runs
+ * inside Postgres and is not subject to the Vercel plan's daily cron cap, which
+ * is what lets this call be an optimisation rather than the thing correctness
+ * rests on.
  */
 export async function dispatchWorker(): Promise<{ dispatched: boolean; reason?: string }> {
   const base = baseUrl();

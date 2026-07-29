@@ -145,10 +145,28 @@ cannot raise it. The MCP client applies its own timeout too, so a synchronous
 call could not be rescued by a bigger server budget anyway.
 
 Enqueueing fires a non-blocking call to `/api/jobs/analyze`, which runs the job
-on a fresh invocation with its own 60s. That dispatch is best-effort; the queue
-does not depend on it. Anything missed stays `queued` and the daily
-`/api/cron/media-jobs` sweep requeues abandoned jobs and drains the backlog.
-Daily is the plan's cron floor, so treat it as the worst case, not the norm.
+on a fresh invocation with its own 60s. That dispatch is best-effort and nothing
+depends on it.
+
+What makes the queue reliable is **`pg_cron`, running inside Postgres every
+minute** (`supabase/migrations/*_pgcron_drain_analyze_jobs.sql`). Vercel Cron is
+capped at one run per day on this plan and rejects sub-daily expressions at
+deploy time; pg_cron is not subject to that at all. Each minute it recovers jobs
+whose worker died, then POSTs `/api/jobs/analyze` — but only when something is
+actually `queued`, so an idle queue costs zero function invocations.
+
+Two secrets must exist in Supabase Vault or the job is a deliberate no-op:
+
+| Vault secret | Value |
+|---|---|
+| `cron_secret` | must equal the `CRON_SECRET` env var the worker checks |
+| `worker_base_url` | e.g. `https://mcp.slashloop.dev`, no trailing slash |
+
+They are read by name at run time and are not in the migration. If you rotate
+`CRON_SECRET` in Vercel, update the Vault copy too, or the drain silently 401s.
+
+`/api/cron/media-jobs` remains as a daily belt-and-braces sweep for the case
+where pg_cron is disabled.
 
 Full design, including the later phases: [`docs/media-storage-plan.md`](./docs/media-storage-plan.md).
 

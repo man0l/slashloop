@@ -1,14 +1,13 @@
 // GET /api/cron/media-jobs — daily backstop for the analyze queue.
 //
-// The fast path is the dispatch analyze_video fires at enqueue time
-// (src/lib/jobs.ts). This is what makes the queue reliable rather than merely
-// usually-working: it requeues jobs whose worker died without reporting, then
-// drains whatever is still waiting.
+// Not the primary drain. pg_cron does that job every minute from inside
+// Postgres (supabase/migrations/*_pgcron_drain_analyze_jobs.sql), which is not
+// subject to the Vercel plan's one-run-per-day cron cap.
 //
-// Daily is not a design choice — the Vercel plan caps cron at one run per day,
-// and sub-daily expressions fail deployment outright. That is precisely why the
-// dispatch exists: without it, an analysis would wait up to 24 hours. Read this
-// as the floor on how late a job can run, not the expected latency.
+// This stays as belt-and-braces for the case where pg_cron is disabled, the
+// extensions are dropped, or the Vault secrets go missing — all of which make
+// the in-database drain a silent no-op by design. Daily is the plan's floor,
+// so treat this as the worst case a job can wait, not the expected latency.
 //
 // Guarded by CRON_SECRET, which Vercel Cron sends automatically.
 
