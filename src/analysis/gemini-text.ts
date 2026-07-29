@@ -29,9 +29,14 @@ function loadPromptTemplate(): string {
   return readFileSync(PROMPT_PATH, 'utf-8');
 }
 
-function determineBasis(ctx: AnalysisContext): string {
+/**
+ * `hasThumbnail` means an image was actually attached, not that a URL existed.
+ * The distinction is new and load-bearing: the basis drives confidence language
+ * in the prompt and gates canExtractHook downstream, so claiming a thumbnail we
+ * failed to fetch would overstate what the model saw.
+ */
+function determineBasis(ctx: AnalysisContext, hasThumbnail: boolean): string {
   const hasTranscript = !!(ctx.transcript?.trim());
-  const hasThumbnail = !!(ctx.thumbnailUrl?.trim());
   const hasCaption = !!(ctx.caption?.trim());
 
   if (hasTranscript && hasThumbnail) return 'transcript+thumbnail';
@@ -42,12 +47,53 @@ function determineBasis(ctx: AnalysisContext): string {
 
 function basisDescription(basis: string): string {
   const map: Record<string, string> = {
-    'transcript+thumbnail': 'You have a full transcript AND a thumbnail image URL. High confidence on verbal content; medium confidence on visual techniques.',
+    'transcript+thumbnail': 'You have a full transcript AND the thumbnail image itself, attached. High confidence on verbal content; medium confidence on visual techniques — describe only what is visible in that one frame.',
     'transcript-only': 'You have a full transcript but no thumbnail. High confidence on verbal content; lower confidence on visuals.',
-    'thumbnail+caption': 'You have a thumbnail URL and caption but NO transcript. Medium confidence. Do NOT make claims about spoken content.',
+    'thumbnail+caption': 'You have the thumbnail image itself, attached, plus the caption, but NO transcript. Medium confidence. Describe only what is visible in that one frame, and do NOT make claims about spoken content.',
     'caption+metadata-only': 'You have only the caption and engagement metadata. Lowest confidence. Focus on metadata signals. Do NOT make claims about visual or audio content.',
   };
   return map[basis] ?? 'Unknown basis';
+}
+
+/** Cover images are ~60-600KB; this is a sanity ceiling, not a real limit. */
+const MAX_COVER_BYTES = 5 * 1024 * 1024;
+const COVER_FETCH_TIMEOUT_MS = 8_000;
+
+/**
+ * Fetch a cover image as base64 for an inline image part.
+ *
+ * Returns null on any failure — a missing cover degrades this backend to
+ * caption+metadata, which is what it did before images existed. It must never
+ * fail the analysis: this IS the fallback path, and the thing it falls back
+ * from has usually just failed too.
+ */
+async function fetchCoverImage(
+  url: string | null | undefined,
+): Promise<{ mimeType: string; dataBase64: string } | null> {
+  if (!url?.trim()) return null;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), COVER_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`cover fetch ${res.status}`);
+
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.byteLength < 512) throw new Error(`cover too small (${buf.byteLength}b)`);
+    if (buf.byteLength > MAX_COVER_BYTES) throw new Error(`cover too large (${buf.byteLength}b)`);
+
+    const header = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+    // Storage serves these as image/jpeg (see imageContentType in lib/media.ts),
+    // but fall back rather than send something Gemini will reject.
+    const mimeType = header.startsWith('image/') ? header : 'image/jpeg';
+
+    return { mimeType, dataBase64: buf.toString('base64') };
+  } catch (err) {
+    console.warn(`[gemini-text] no cover image (${(err as Error).message}) — analysing on text alone`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export class GeminiTextAnalyzer implements VideoAnalyzer {
@@ -62,7 +108,6 @@ export class GeminiTextAnalyzer implements VideoAnalyzer {
 
   async analyze(ctx: AnalysisContext): Promise<AnalysisOutput> {
     const template = loadPromptTemplate();
-    const analysisBasis = determineBasis(ctx);
 
     const followers = ctx.creatorFollowers?.toLocaleString() ?? 'unknown';
     const duration = ctx.durationSec ?? 'unknown';
@@ -76,10 +121,15 @@ export class GeminiTextAnalyzer implements VideoAnalyzer {
       transcriptSection = `\n- **Transcript**:\n\`\`\`\n${ctx.transcript}\n\`\`\``;
     }
 
-    let thumbnailSection = '';
-    if (ctx.thumbnailUrl?.trim()) {
-      thumbnailSection = `\n- **Thumbnail URL**: ${ctx.thumbnailUrl}`;
-    }
+    // Fetch the cover and send it as an image part, rather than pasting a URL
+    // into the prompt. The model cannot open URLs; the old version described a
+    // link and then asked for visual analysis, which is why this backend's
+    // output was thin whenever it ran.
+    const cover = await fetchCoverImage(ctx.thumbImageUrl ?? ctx.thumbnailUrl);
+    const analysisBasis = determineBasis(ctx, !!cover);
+    const thumbnailSection = cover
+      ? '\n- **Thumbnail**: attached as an image — describe only what you can actually see in it.'
+      : '';
 
     const userMessage = template
       .replace(/{platform}/g, ctx.platform)
@@ -102,7 +152,8 @@ export class GeminiTextAnalyzer implements VideoAnalyzer {
 
     console.log(`[gemini-text] Analyzing ${ctx.videoId} with ${this.model} (basis: ${analysisBasis})${ctx.batch ? ' (BATCH)' : ''}...`);
 
-    const result = await callGeminiText(template, userMessage, this.model);
+    const result = await callGeminiText(template, userMessage, this.model,
+      cover ? { images: [cover] } : undefined);
 
     const validated = VideoAnalysisDataSchema.safeParse(result.parsed);
     if (!validated.success) {

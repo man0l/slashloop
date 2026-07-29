@@ -18,6 +18,14 @@ export interface GeminiTextCallOptions {
   model?: string;
   maxTokens?: number;
   temperature?: number;
+  /**
+   * Images to send as real image parts, base64-encoded.
+   *
+   * Named "text" backend for what it lacks — video — not for what it may see.
+   * Passing a cover here is the difference between the model looking at the
+   * frame and being handed a URL string it cannot open.
+   */
+  images?: Array<{ mimeType: string; dataBase64: string }>;
 }
 
 export async function callGeminiText(
@@ -36,7 +44,16 @@ export async function callGeminiText(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         system_instruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ parts: [{ text: userMessage }] }],
+        contents: [{
+          parts: [
+            // Images first: the model reads parts in order, and the prompt
+            // refers to "the thumbnail" as something it can see.
+            ...(options?.images ?? []).map(img => ({
+              inline_data: { mime_type: img.mimeType, data: img.dataBase64 },
+            })),
+            { text: userMessage },
+          ],
+        }],
         generationConfig: {
           responseMimeType: 'application/json',
           temperature: options?.temperature ?? 0.3,
