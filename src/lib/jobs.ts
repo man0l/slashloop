@@ -11,7 +11,9 @@
 // does the work with a fresh budget of its own.
 //
 // This module owns the state machine only. The worker lives in
-// api/jobs/analyze.ts and the retry sweeper in api/cron/media-jobs.ts.
+// api/jobs/analyze.ts, which also applies the retry policy defined here; the
+// per-minute schedule that drives it is
+// supabase/migrations/*_pgcron_drain_analyze_jobs.sql.
 // ---------------------------------------------------------------------------
 
 import { db } from '../db.js';

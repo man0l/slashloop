@@ -151,9 +151,15 @@ depends on it.
 What makes the queue reliable is **`pg_cron`, running inside Postgres every
 minute** (`supabase/migrations/*_pgcron_drain_analyze_jobs.sql`). Vercel Cron is
 capped at one run per day on this plan and rejects sub-daily expressions at
-deploy time; pg_cron is not subject to that at all. Each minute it recovers jobs
-whose worker died, then POSTs `/api/jobs/analyze` — but only when something is
-actually `queued`, so an idle queue costs zero function invocations.
+deploy time; pg_cron is not subject to that at all. Each minute it POSTs
+`/api/jobs/analyze`, but only when a row is `queued` or `running` — so an idle
+queue costs zero function invocations.
+
+The job does nothing else: recovering abandoned claims is the worker's job, in
+TypeScript, so `MAX_ATTEMPTS` and `STUCK_AFTER_MINUTES` have exactly one
+definition (`src/lib/jobs.ts`) instead of a second copy in SQL that drifts.
+`running` is in the gate because only the worker can decide a claim is
+abandoned.
 
 Two secrets must exist in Supabase Vault or the job is a deliberate no-op:
 
@@ -165,8 +171,10 @@ Two secrets must exist in Supabase Vault or the job is a deliberate no-op:
 They are read by name at run time and are not in the migration. If you rotate
 `CRON_SECRET` in Vercel, update the Vault copy too, or the drain silently 401s.
 
-`/api/cron/media-jobs` remains as a daily belt-and-braces sweep for the case
-where pg_cron is disabled.
+There is deliberately no Vercel Cron fallback for this. A daily duplicate of a
+per-minute job is a third code path earning its keep only if pg_cron breaks, and
+it would mask that breakage rather than surface it. If the drain stops, jobs
+visibly pile up in `queued` — which is the signal you want.
 
 Full design, including the later phases: [`docs/media-storage-plan.md`](./docs/media-storage-plan.md).
 
@@ -189,7 +197,6 @@ Full design, including the later phases: [`docs/media-storage-plan.md`](./docs/m
 | `GET /api/billing/status` | Bearer JWT. Returns `{ planKey, planCredits, packCredits, periodEnd, billingStatus }` |
 | `POST /api/stripe/webhook` | Stripe signature, not JWT. The only thing that grants/revokes credits |
 | `POST /api/jobs/analyze` | `CRON_SECRET`. Drains queued analyses off the request path |
-| `GET /api/cron/media-jobs` | `CRON_SECRET`. Daily. Requeues abandoned jobs, then drains |
 | `GET /api/cron/media-retention` | `CRON_SECRET`. Daily. Expires stored media |
 
 The three `/api/billing/*` routes carry CORS for `SITE_URL` (the landing site's
