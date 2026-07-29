@@ -111,9 +111,50 @@ export const OverallAssessmentSchema = z.object({
   replicability: z.enum(REPLICABILITY),
 });
 
+// ---- Recreation ----
+
+/**
+ * One moment worth rebuilding, described as a shot-list entry.
+ *
+ * Deliberately NOT the same as ShotSchema. `shots` is the exhaustive
+ * analytical record of what happens; this is the small set (3-6) someone would
+ * actually restage, and it carries the production detail a shot needs to be
+ * reproduced rather than merely understood. A description like "creator makes
+ * an exaggerated fish face" tells you what happened; it does not tell you where
+ * the camera was, what the lighting looked like, or where the caption sat.
+ *
+ * Every field is what a videographer who has not seen the video would have to
+ * ask before they could shoot it.
+ */
+export const KeyMomentSchema = z.object({
+  /** Mid-shot, not the cut. See prompts/gemini-observe.v2.md — transition frames are usually motion-blurred. */
+  timestampSec: z.number().min(0),
+  role: z.enum(['hook', 'setup', 'turn', 'payoff', 'cta', 'other'] as const)
+    .describe('What this moment does for the video, not what it depicts'),
+  framing: z.enum(['extreme_close_up', 'close_up', 'medium', 'wide', 'other'] as const).nullable(),
+  cameraAngle: z.enum(['eye_level', 'low', 'high', 'overhead', 'dutch', 'other'] as const).nullable(),
+  cameraMovement: z.enum(['static', 'handheld', 'pan', 'push_in', 'pull_out', 'whip', 'other'] as const).nullable(),
+  /** Imperative voice — an instruction to perform, not a description of what was performed. */
+  subjectAction: z.string(),
+  wardrobeProps: z.string().nullable(),
+  setting: z.string().nullable(),
+  lighting: z.enum(['natural', 'window', 'ring_light', 'overhead', 'harsh', 'low_key', 'golden_hour', 'other'] as const).nullable(),
+  textOverlay: z.object({
+    text: z.string(),
+    position: z.enum(['top', 'center', 'bottom', 'other'] as const).nullable(),
+    style: z.string().nullable(),
+  }).nullable().describe('Text on screen at this moment, null if none'),
+  transitionIn: z.enum(['cut', 'jump_cut', 'match_cut', 'whip', 'fade', 'none', 'other'] as const).nullable(),
+  audioAtMoment: z.string().nullable(),
+});
+
 // ---- Master schema ----
 
 export const VideoAnalysisDataSchema = z.object({
+  // --- Recreation (video-native only; text-only analysis cannot see any of it) ---
+  keyMoments: z.array(KeyMomentSchema).nullable().default(null)
+    .describe('3-6 moments worth restaging, as shot-list entries. null for text-only analysis.'),
+
   // --- Video-native observation fields (Gemini / frames) ---
   shots: z.array(ShotSchema).nullable().describe('Individual shots with timestamps. null if text-only analysis.'),
   onScreenText: z.array(OnScreenTextEntrySchema).nullable().describe('Text visible in the video. null if unavailable.'),
@@ -165,3 +206,46 @@ export const BriefDataSchema = z.object({
 });
 
 export type BriefData = z.infer<typeof BriefDataSchema>;
+// ---- Timestamp sanity ----
+
+/**
+ * Clamp every timestamp in an analysis to the video's real duration.
+ *
+ * Zod cannot express this: the bound is the video's length, which is per-row
+ * data the schema never sees, so every timestampSec is only `.min(0)`. A model
+ * that drifts past the end therefore validates clean — harmless while these
+ * were just numbers to read, wrong the moment they became something we seek to.
+ * A key moment at 47s in a 40s video renders a blank frame.
+ *
+ * Clamps rather than rejects. A drifted timestamp is a slightly wrong frame;
+ * discarding the whole analysis over it would throw away everything else the
+ * model got right, and the analysis is the expensive part.
+ *
+ * A small tolerance is allowed past the end before clamping, because durationSec
+ * is itself scraped metadata and is routinely off by a frame or two.
+ */
+export function clampTimestamps<T>(data: T, durationSec: number | null | undefined): T {
+  if (!durationSec || durationSec <= 0) return data;
+  const max = durationSec + 0.5;
+
+  const walk = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(walk);
+    if (node && typeof node === 'object') {
+      const out: Record<string, unknown> = { ...(node as Record<string, unknown>) };
+      for (const [k, v] of Object.entries(out)) {
+        if (k === 'timestampSec' && typeof v === 'number') {
+          out[k] = Math.min(Math.max(v, 0), max);
+        } else if (k === 'durationSec' && typeof v === 'number') {
+          // A shot cannot run past the end of the video either.
+          out[k] = Math.min(Math.max(v, 0), durationSec);
+        } else {
+          out[k] = walk(v);
+        }
+      }
+      return out;
+    }
+    return node;
+  };
+
+  return walk(data) as T;
+}

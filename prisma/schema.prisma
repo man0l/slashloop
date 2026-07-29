@@ -200,7 +200,7 @@ model Score {
 model Analysis {
   id            String   @id @default(uuid())
   videoId       String
-  schemaVersion String   @default("v2")
+  schemaVersion String   @default("v3")
   analysisJson  String // JSON string of the analysis
   analysisBasis String // video | video+transcript | frames+transcript | frames+caption | transcript+thumbnail | transcript-only | thumbnail+caption | caption+metadata-only
   backend       String   @default("gemini-native") // gemini-native | frames | hybrid

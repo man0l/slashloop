@@ -8,7 +8,7 @@ import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../lib/credits.js';
-import { resolveThumbUrl } from '../lib/media.js';
+import { resolveThumbUrl, signedMediaUrl, frameUrlAt } from '../lib/media.js';
 import { enqueueAnalyzeJob, dispatchWorker, outstandingJobForVideo } from '../lib/jobs.js';
 import { loadAnalysisConfig } from '../analysis/config.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -51,6 +51,31 @@ export function registerVideoTools(server: McpServer) {
           }
         : null;
 
+      // Recreation view: the key moments, each seekable straight into the
+      // stored MP4. One signature, one fragment per moment (see signedMediaUrl).
+      // Emitted separately from `analysis` because this is the "go shoot this"
+      // surface, not the "why did it work" one.
+      let recreation: unknown = null;
+      if (video.analyses[0]) {
+        const parsed = JSON.parse(video.analyses[0].analysisJson) as { keyMoments?: unknown };
+        const moments = Array.isArray(parsed.keyMoments) ? parsed.keyMoments : null;
+        if (moments?.length) {
+          const media = await signedMediaUrl(video);
+          recreation = {
+            keyMoments: moments.map((m) => {
+              const ts = typeof (m as { timestampSec?: unknown }).timestampSec === 'number'
+                ? (m as { timestampSec: number }).timestampSec
+                : 0;
+              return { ...(m as object), frameUrl: media.url ? frameUrlAt(media.url, ts) : null };
+            }),
+            // Say why a frame is missing rather than emitting a silent null —
+            // 'media_expired' means retention swept it, which is recoverable by
+            // re-analysing, and that is worth distinguishing from a hard failure.
+            frameUrlsUnavailable: media.url ? undefined : media.reason,
+          };
+        }
+      }
+
       const latestAnalysis = video.analyses[0]
         ? {
             id: video.analyses[0].id,
@@ -90,6 +115,7 @@ export function registerVideoTools(server: McpServer) {
           score: video.score,
           source: video.source,
           analysis: latestAnalysis,
+          recreation,
           analysisJob,
           hooks: video.hooks,
           ideaCount: video.ideas?.length ?? 0,

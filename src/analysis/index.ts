@@ -19,7 +19,7 @@ export { generateBrief } from './briefs.js';
 export { generateHookVariations, type HookVariation } from './hooks.js';
 
 import { db } from '../db.js';
-import { VideoAnalysisDataSchema } from './schema.js';
+import { VideoAnalysisDataSchema, clampTimestamps } from './schema.js';
 import { GeminiNativeAnalyzer } from './gemini-native.js';
 import { GeminiTextAnalyzer } from './gemini-text.js';
 import { loadAnalysisConfig, updateAnalysisConfig } from './config.js';
@@ -204,11 +204,18 @@ export async function analyzeVideo(
       }
 
       // 6. Store in DB
+      //
+      // Clamp before persisting, not on read: these timestamps are now seeked
+      // to (get_video turns key moments into #t= fragments), and a value past
+      // the end of the video renders a blank frame. Zod cannot bound them —
+      // the limit is this row's duration, which the schema never sees.
+      const clamped = clampTimestamps(output.data, video.durationSec);
+
       const saved = await db.analysis.create({
         data: {
           videoId,
-          schemaVersion: 'v2',
-          analysisJson: JSON.stringify(output.data),
+          schemaVersion: 'v3',
+          analysisJson: JSON.stringify(clamped),
           analysisBasis: output.analysisBasis,
           backend: output.backend + (isFallback ? ' (fallback)' : '') + (batch ? ' (batch)' : ''),
           model: output.model,
