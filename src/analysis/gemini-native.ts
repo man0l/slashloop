@@ -52,44 +52,28 @@ function buildUserMessage(ctx: AnalysisContext, template: string): string {
 
 // ---- Gemini API helpers ----
 
-async function uploadFileToGemini(filePath: string, mimeType: string): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error('GEMINI_API_KEY environment variable is not set');
+/**
+ * How long to wait for an uploaded file to reach ACTIVE.
+ *
+ * This used to be a fixed `for (i < 60) { sleep(1000) }` — a 60-second budget
+ * inside a function whose TOTAL budget is 60 seconds (vercel.json), on a Vercel
+ * plan where that ceiling cannot be raised. Polling alone could consume the
+ * whole request before generateContent was ever called, so gemini-native could
+ * not complete and every analysis silently fell back to gemini-text.
+ *
+ * The budget is now explicit and overridable, because the right value depends
+ * on the caller: a request-path analysis has to leave room for the download,
+ * the upload and the generate call, while a queue worker draining jobs on its
+ * own invocation can afford to wait much longer.
+ */
+const DEFAULT_FILE_POLL_BUDGET_MS = 20_000;
 
-  const fileBlob = new Blob([readFileSync(filePath)], { type: mimeType });
-  const formData = new FormData();
-  formData.append('file', fileBlob, 'video.mp4');
-
-  const uploadRes = await fetch(
-    `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`,
-    { method: 'POST', body: formData },
-  );
-
-  if (!uploadRes.ok) {
-    const text = await uploadRes.text();
-    throw new Error(`Gemini upload failed (${uploadRes.status}): ${text}`);
-  }
-
-  const uploadData = (await uploadRes.json()) as { file: { name: string; uri: string } };
-  const fileUri = uploadData.file.uri;
-  const fileName = uploadData.file.name;
-
-  // Poll until ACTIVE
-  for (let i = 0; i < 60; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-    const statusRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${apiKey}`,
-    );
-    if (!statusRes.ok) continue;
-    const statusData = (await statusRes.json()) as { state: string; error?: any };
-    if (statusData.state === 'ACTIVE') return fileUri;
-    if (statusData.state === 'FAILED') {
-      throw new Error(`Gemini file processing failed: ${JSON.stringify(statusData.error)}`);
-    }
-  }
-
-  throw new Error('Gemini file processing timed out after 60s');
+function filePollBudgetMs(): number {
+  const n = Number(process.env.GEMINI_FILE_POLL_BUDGET_MS);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_FILE_POLL_BUDGET_MS;
 }
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 async function deleteGeminiFile(fileName: string): Promise<void> {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -247,22 +231,44 @@ export class GeminiNativeAnalyzer implements VideoAnalyzer {
 
     const uploadData = (await uploadRes.json()) as { file: { name: string; uri: string } };
 
-    // Poll until ACTIVE
-    for (let i = 0; i < 60; i++) {
-      await new Promise(r => setTimeout(r, 1000));
+    // Poll until ACTIVE, against a wall-clock deadline rather than a fixed
+    // iteration count. Checks immediately before sleeping — the old loop slept
+    // a full second before even asking, which is pure latency on a small file —
+    // then backs off, so a slow file costs a handful of requests instead of one
+    // per second.
+    const budgetMs = filePollBudgetMs();
+    const startedAt = Date.now();
+    const deadline = startedAt + budgetMs;
+    let delay = 400;
+    let lastState = 'UNKNOWN';
+
+    while (true) {
       const statusRes = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/${uploadData.file.name}?key=${apiKey}`,
       );
-      if (!statusRes.ok) continue;
-      const statusData = (await statusRes.json()) as { state: string };
-      if (statusData.state === 'ACTIVE') {
-        return { fileUri: uploadData.file.uri, fileName: uploadData.file.name };
+      if (statusRes.ok) {
+        const statusData = (await statusRes.json()) as { state?: string; error?: unknown };
+        lastState = statusData.state ?? lastState;
+        if (lastState === 'ACTIVE') {
+          return { fileUri: uploadData.file.uri, fileName: uploadData.file.name };
+        }
+        if (lastState === 'FAILED') {
+          throw new Error(`Gemini file processing failed: ${JSON.stringify(statusData.error ?? {})}`);
+        }
       }
-      if (statusData.state === 'FAILED') {
-        throw new Error('Gemini file processing failed');
-      }
+
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await sleep(Math.min(delay, remaining));
+      delay = Math.min(Math.round(delay * 1.5), 3_000);
     }
 
-    throw new Error('Gemini file processing timed out');
+    // Name the budget and the last state seen. "timed out" on its own sent
+    // callers looking at Gemini when the real constraint was the request budget.
+    throw new Error(
+      `Gemini file did not reach ACTIVE within ${Math.round((Date.now() - startedAt) / 1000)}s `
+      + `(budget ${Math.round(budgetMs / 1000)}s, last state: ${lastState}). `
+      + `Raise GEMINI_FILE_POLL_BUDGET_MS, or run this off the request path.`,
+    );
   }
 }
