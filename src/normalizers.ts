@@ -54,8 +54,19 @@ function toInt(val: any): number {
  * point of asking Apify to download it.
  */
 function pickApifyCoverUrl(raw: any): string | null {
-  const urls: unknown[] = Array.isArray(raw?.mediaUrls) ? raw.mediaUrls : [];
-  for (const u of urls) {
+  // Observed against clockworks/tiktok-scraper on 2026-07-29: with
+  // shouldDownloadCovers the actor returns `mediaUrls: []` and instead REWRITES
+  // videoMeta.coverUrl to its key-value store, moving the TikTok CDN URL to
+  // videoMeta.originalCoverUrl. Reading only mediaUrls therefore never matched,
+  // and every ingest logged a CDN-fallback warning while actually fetching from
+  // Apify via thumbnailUrl. Check both — mediaUrls first, since it stays the
+  // documented contract and would carry the cover if the actor repopulates it.
+  const candidates: unknown[] = [
+    ...(Array.isArray(raw?.mediaUrls) ? raw.mediaUrls : []),
+    raw?.videoMeta?.coverUrl,
+    raw?.video?.coverUrl,
+  ];
+  for (const u of candidates) {
     if (typeof u !== 'string') continue;
     if (!/^https?:\/\/[^/]*\bapify\.com\//i.test(u)) continue;
     if (/\.(jpe?g|png|webp|heic)(\?|$)/i.test(u)) return u;
@@ -103,7 +114,13 @@ export function normalizeTikTok(raw: any): NormalizedVideo {
     platform: 'tiktok',
     externalId: String(id),
     url: raw.webVideoUrl || `https://www.tiktok.com/@${author.name || author.uniqueId || author.username || 'unknown'}/video/${id}`,
-    thumbnailUrl: video.coverUrl || video.originalCoverUrl || video.cover || video.originCover || raw.thumbnailUrl || '',
+    // Prefer originalCoverUrl over coverUrl. This field is persisted and is what
+    // resolveThumbUrl() falls back to once thumbKey is null — after a retention
+    // sweep, say. With shouldDownloadCovers, coverUrl is an Apify key-value-store
+    // URL whose run storage Apify garbage-collects, so storing it would leave a
+    // fallback that rots faster than the platform CDN one it replaced. The Apify
+    // URL still gets used for ingest, via coverDownloadUrl below.
+    thumbnailUrl: video.originalCoverUrl || video.coverUrl || video.cover || video.originCover || raw.thumbnailUrl || '',
     coverDownloadUrl: pickApifyCoverUrl(raw),
     creatorHandle: author.name || author.uniqueId || author.username || author.nickName || author.nickname || 'unknown',
     creatorFollowers: author.fans != null ? toInt(author.fans) : (author.followerCount != null ? toInt(author.followerCount) : null),

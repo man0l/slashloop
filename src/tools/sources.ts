@@ -214,6 +214,14 @@ export function registerSourceTools(server: McpServer) {
 
         itemsPulled = result.items.length;
         costCents = result.costCents;
+
+        // The actor signals a bad query with an in-dataset record, not a failed
+        // run (see collectNotices in src/lib/apify.ts). Without this, a source
+        // whose handle or hashtag does not exist reports a successful refresh
+        // with errors: [] every time, while still costing a full scrape.
+        if (result.notices.length > 0) {
+          errors.push(...result.notices);
+        }
         // Set as soon as the Apify cost is actually incurred — if DB
         // persistence or scoring throws below, this still reflects the
         // real COGS already spent, so the refund settlement stays correct.

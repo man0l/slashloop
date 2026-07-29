@@ -107,8 +107,14 @@ async function ingestOneThumb(
   const timer = setTimeout(() => controller.abort(), THUMB_FETCH_TIMEOUT_MS);
 
   try {
+    // Report the host actually being fetched, not just which field was empty.
+    // The old wording claimed a CDN fallback whenever coverDownloadUrl was
+    // null — which was every run, while the fetch was in fact hitting Apify
+    // through thumbnailUrl. A warning that misreports the source is worse
+    // than none: it hid that pickApifyCoverUrl never matched.
     if (!target.coverDownloadUrl) {
-      console.warn(`[media] ${target.videoId}: no Apify cover URL, falling back to the source CDN`);
+      const host = isApifyHosted(source) ? 'apify' : 'source cdn';
+      console.warn(`[media] ${target.videoId}: no coverDownloadUrl, fetching cover from ${host}`);
     }
 
     const res = await fetch(source, {
