@@ -14,7 +14,7 @@ import { getCostCents } from './types.js';
 import type { AnalysisConfig } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROMPT_PATH = resolve(__dirname, '../../prompts/gemini-observe.v1.md');
+const PROMPT_PATH = resolve(__dirname, '../../prompts/gemini-observe.v2.md');
 
 function loadPromptTemplate(): string {
   return readFileSync(PROMPT_PATH, 'utf-8');

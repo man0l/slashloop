@@ -279,6 +279,44 @@ export async function fetchStoredVideo(
   }
 }
 
+/**
+ * A signed URL for the stored MP4, or the reason there isn't one.
+ *
+ * Signed ONCE per call even though callers fan it out across many key moments:
+ * a media fragment (`#t=12.5`) is evaluated by the client and never sent to the
+ * server, so it is not part of what gets signed. One signature serves every
+ * moment in the video — signing per timestamp would be N round-trips for
+ * identical URLs.
+ *
+ * This is what makes recreation frames free: no extraction, no second copy of
+ * the video, no decoder. The "screenshot" is the stored MP4 seeked to a point.
+ *
+ * The tradeoff is lifetime. `media` is swept on the workspace's retention
+ * window (3 days by default), so these URLs stop resolving once the object is
+ * gone — the analysis text survives, the imagery does not. Durable recreation
+ * stills would mean extracting keyframes at analysis time and keeping those
+ * instead; a handful of JPEGs outlives a 4MB MP4 far more cheaply.
+ */
+export async function signedMediaUrl(
+  video: { mediaKey: string | null; mediaStatus: string },
+): Promise<{ url: string | null; reason?: string }> {
+  if (!isStorageEnabled()) return { url: null, reason: 'storage_disabled' };
+  if (video.mediaStatus === 'expired') return { url: null, reason: 'media_expired' };
+  if (!video.mediaKey || video.mediaStatus !== 'stored') return { url: null, reason: 'media_not_stored' };
+
+  try {
+    return { url: await signUrl(mediaBucket(), video.mediaKey, signedUrlTtlSeconds()) };
+  } catch (err) {
+    console.warn(`[media] could not sign ${video.mediaKey}: ${(err as Error).message}`);
+    return { url: null, reason: 'sign_failed' };
+  }
+}
+
+/** Seek a signed media URL to a timestamp. Fragment only — never re-signs. */
+export function frameUrlAt(signedUrl: string, timestampSec: number): string {
+  return `${signedUrl}#t=${Math.max(0, timestampSec).toFixed(2)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Read helpers
 // ---------------------------------------------------------------------------
