@@ -4,10 +4,9 @@
 // a gemini-native analysis does not fit inside the MCP request's 60s, so
 // analyze_video enqueues and this invocation does the work with its own budget.
 //
-// Three callers, same handler, all authenticating with CRON_SECRET: the
-// enqueuing request pokes it immediately (best-effort), pg_cron pokes it every
-// minute from inside Postgres (the reliable path), and the daily Vercel cron
-// calls it if pg_cron is unavailable (belt and braces).
+// Two callers, both authenticating with CRON_SECRET: the enqueuing request
+// pokes it immediately (best-effort), and pg_cron pokes it every minute from
+// inside Postgres (the reliable path).
 //
 // It reclaims abandoned claims itself rather than trusting a caller to have
 // done so, which is what keeps the retry policy in one place.
@@ -36,14 +35,19 @@ function json(status: number, body: unknown): Response {
   });
 }
 
-function authorized(req: Request): boolean {
+function authorized(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
-  return req.headers.get('authorization') === `Bearer ${secret}`;
+  return request.headers.get('authorization') === `Bearer ${secret}`;
 }
 
-export default async function handler(req: Request): Promise<Response> {
-  if (!authorized(req)) return json(401, { error: 'Unauthorized' });
+// Named method exports, not `export default handler`. That is what selects
+// Vercel's Web-standard signature and hands us a real Request — the default
+// export gets Node's (IncomingMessage, ServerResponse) instead, where `headers`
+// is a plain object and `.get()` does not exist. Same convention as api/mcp.ts,
+// api/stripe/webhook.ts and api/cron/media-retention.ts.
+export async function POST(request: Request): Promise<Response> {
+  if (!authorized(request)) return json(401, { error: 'Unauthorized' });
 
   const startedAt = Date.now();
   const processed: Array<{ jobId: string; videoId: string; ok: boolean; error?: string }> = [];
@@ -102,4 +106,9 @@ export default async function handler(req: Request): Promise<Response> {
     durationMs: Date.now() - startedAt,
     jobs: processed,
   });
+}
+
+/** The queue is drained by POST only; a stray GET should say so, not 405-by-crash. */
+export async function GET(): Promise<Response> {
+  return json(405, { error: 'Method not allowed', hint: 'POST with Authorization: Bearer $CRON_SECRET' });
 }
