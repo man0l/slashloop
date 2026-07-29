@@ -106,16 +106,18 @@ doesn't render broken images once the source CDN's signed URLs expire, and so
 re-analysis can skip a paid Apify call. Leave `SUPABASE_SECRET_KEY` unset and
 the entire path no-ops — everything else works as before.
 
-Setup is one step: set `SUPABASE_SECRET_KEY` and `CRON_SECRET` in Vercel. The
-buckets — **`thumbs` (public)** and **`media` (private, 100MiB)** — are created
-by `supabase/migrations/*_media_storage_buckets.sql` on merge, so they're
-tracked in git rather than clicked into the dashboard.
+Setup is one step: set `SUPABASE_SECRET_KEY` and `CRON_SECRET` in Vercel. Two
+buckets are needed — **`thumbs` (public)** and **`media` (private, 100MiB)**.
+`supabase/migrations/*_media_storage_buckets.sql` creates them if they're
+absent, so a fresh project or a local `supabase start` comes up ready.
 
-> That migration downgrades a permissions failure on `storage.buckets` to a
-> `NOTICE` so it can't block a deploy — meaning "migration applied" does not
-> guarantee "buckets exist". Check them in the dashboard after the first
-> deploy; if they're missing, create `thumbs` (public) and `media` (private,
-> 100MiB) by hand.
+> That migration is **create-only** (`ON CONFLICT DO NOTHING`) — it never
+> reconciles a bucket that already exists, so dashboard settings are safe from
+> it. It also downgrades a permissions failure on `storage.buckets` to a
+> `NOTICE` rather than blocking a deploy. Between the two, a green migration
+> isn't proof the buckets exist with the right settings; check the dashboard
+> once. The one that matters is **`media` must be private** — public would
+> mean an open mirror of scraped video.
 
 Retention defaults to 3 days and is a per-workspace setting changed via the
 `update_settings` tool, capped per plan. Supabase has no object lifecycle
