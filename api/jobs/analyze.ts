@@ -4,16 +4,20 @@
 // a gemini-native analysis does not fit inside the MCP request's 60s, so
 // analyze_video enqueues and this invocation does the work with its own budget.
 //
-// Two callers, same handler: the enqueuing request dispatches here immediately
-// (the fast path), and the daily cron sweeper calls it after requeueing stuck
-// rows (the backstop). Both authenticate with CRON_SECRET.
+// Three callers, same handler, all authenticating with CRON_SECRET: the
+// enqueuing request pokes it immediately (best-effort), pg_cron pokes it every
+// minute from inside Postgres (the reliable path), and the daily Vercel cron
+// calls it if pg_cron is unavailable (belt and braces).
+//
+// It reclaims abandoned claims itself rather than trusting a caller to have
+// done so, which is what keeps the retry policy in one place.
 //
 // Processes jobs until the time budget runs low rather than exactly one, so a
 // backlog drains without waiting for N dispatches. It stops early and leaves
 // the rest queued — the next dispatch or the next sweep continues.
 
 import { analyzeVideoWithDownload } from '../../src/analysis/index.js';
-import { claimNextJob, completeJob, failJob, type AnalyzeJobPayload } from '../../src/lib/jobs.js';
+import { claimNextJob, completeJob, failJob, reclaimStuckJobs, type AnalyzeJobPayload } from '../../src/lib/jobs.js';
 import { CREDIT_COSTS, refundCredits } from '../../src/lib/credits.js';
 
 /**
@@ -43,6 +47,12 @@ export default async function handler(req: Request): Promise<Response> {
 
   const startedAt = Date.now();
   const processed: Array<{ jobId: string; videoId: string; ok: boolean; error?: string }> = [];
+
+  // Recover abandoned claims before taking new work. This is the single place
+  // the retry policy is applied — the pg_cron job deliberately does not do it in
+  // SQL, because a second copy of MAX_ATTEMPTS/STUCK_AFTER_MINUTES would drift
+  // from these constants the first time one was tuned and the other wasn't.
+  const reclaimed = await reclaimStuckJobs();
 
   while (Date.now() - startedAt < RESERVE_MS) {
     const job = await claimNextJob('analyze');
@@ -85,6 +95,7 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   return json(200, {
+    reclaimed,
     processed: processed.length,
     succeeded: processed.filter(p => p.ok).length,
     failed: processed.filter(p => !p.ok).length,

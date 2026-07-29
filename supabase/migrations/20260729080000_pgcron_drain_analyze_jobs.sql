@@ -7,13 +7,18 @@
 -- dispatch in src/lib/jobs.ts from the thing the system depends on into a
 -- latency optimisation, which is what a best-effort call should be.
 --
--- The job does two things every minute:
---   1. Reclaims abandoned `running` rows. This is pure SQL and mirrors
---      reclaimStuckJobs() in src/lib/jobs.ts — a worker killed mid-flight now
---      recovers within a minute instead of waiting for the daily sweep.
---   2. POSTs the worker endpoint, but ONLY when something is queued. An
---      unconditional per-minute POST would be 1440 idle function invocations a
---      day against a Hobby quota, to do nothing.
+-- The job POSTs the worker endpoint and does nothing else. It deliberately does
+-- NOT reclaim stuck rows itself: that policy (MAX_ATTEMPTS, STUCK_AFTER_MINUTES)
+-- lives in src/lib/jobs.ts, and a second copy here in SQL would silently
+-- diverge the first time someone tuned one and not the other. The worker
+-- reclaims in TypeScript before it claims, so there is exactly one definition.
+--
+-- The POST is gated on a row existing in 'queued' OR 'running'. 'queued' is the
+-- obvious case; 'running' is what lets an abandoned job get recovered at all,
+-- since only the worker can decide it is abandoned. An idle queue therefore
+-- costs zero function invocations rather than 1440 a day, and a genuinely
+-- running job costs at most an extra poke or two that claims nothing and
+-- returns immediately.
 --
 -- Secrets are read from Vault by name and are NOT in this file. Set them once
 -- per environment (see README); until then the job is a harmless no-op, because
@@ -41,17 +46,6 @@ SELECT cron.schedule(
   'drain-analyze-jobs',
   '* * * * *',
   $job$
-  -- 1. Recover jobs whose worker never reported back. Mirrors
-  --    STUCK_AFTER_MINUTES / MAX_ATTEMPTS in src/lib/jobs.ts.
-  UPDATE "MediaJob"
-     SET "status"     = CASE WHEN "attempts" >= 3 THEN 'failed' ELSE 'queued' END,
-         "startedAt"  = CASE WHEN "attempts" >= 3 THEN "startedAt" ELSE NULL END,
-         "finishedAt" = CASE WHEN "attempts" >= 3 THEN now() ELSE NULL END,
-         "lastError"  = 'Worker did not report back; recovered by pg_cron'
-   WHERE "status" = 'running'
-     AND "startedAt" < now() - INTERVAL '15 minutes';
-
-  -- 2. Poke the worker only if there is work and both secrets are configured.
   SELECT net.http_post(
     url := (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'worker_base_url')
            || '/api/jobs/analyze',
@@ -60,7 +54,7 @@ SELECT cron.schedule(
       'Content-Type', 'application/json'
     )
   )
-  WHERE EXISTS (SELECT 1 FROM "MediaJob" WHERE "status" = 'queued')
+  WHERE EXISTS (SELECT 1 FROM "MediaJob" WHERE "status" IN ('queued', 'running'))
     AND EXISTS (SELECT 1 FROM vault.decrypted_secrets WHERE name = 'cron_secret')
     AND EXISTS (SELECT 1 FROM vault.decrypted_secrets WHERE name = 'worker_base_url');
   $job$
