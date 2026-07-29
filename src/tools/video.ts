@@ -25,7 +25,14 @@ export function registerVideoTools(server: McpServer) {
         include: {
           score: true,
           source: { select: { id: true, query: true, platform: true, nicheTag: true, workspaceId: true } },
-          analyses: { include: { hooks: true } },
+          // Newest first. Without an explicit order Prisma returns whatever the
+          // database yields, which in practice was insertion order — so
+          // `analyses[0]`, named latestAnalysis and used for both the analysis
+          // payload and the recreation block, was actually the OLDEST row. A
+          // re-analysed video kept reporting its first result forever, and the
+          // recreation block read key moments from an analysis that predated
+          // the field and so was always null.
+          analyses: { include: { hooks: true }, orderBy: { createdAt: 'desc' } },
           hooks: true,
           ideas: true,
         },

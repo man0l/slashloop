@@ -55,7 +55,13 @@ export function registerFeedTools(server: McpServer) {
         include: {
           score: true,
           source: { select: { id: true, query: true, nicheTag: true, platform: true } },
-          analyses: { select: { id: true, analysisBasis: true, backend: true } },
+          // Newest first — lines below read analyses[0] as "the" analysis, and
+          // unordered that is the oldest row, so a re-analysed video reports
+          // its first basis/backend forever. Same bug as get_video had.
+          analyses: {
+            select: { id: true, analysisBasis: true, backend: true },
+            orderBy: { createdAt: 'desc' },
+          },
           _count: { select: { hooks: true } },
         },
         orderBy: sortBy === 'newest' ? { postedAt: 'desc' }
