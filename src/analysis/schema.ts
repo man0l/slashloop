@@ -7,19 +7,32 @@
 import { z } from 'zod/v4';
 
 // ---- Enums ----
+//
+// Every enum below that a model FILLS IN carries `.catch(...)`, and the closed
+// vocabularies carry an explicit 'other'. This is not defensive styling; it is
+// a rule learned twice in production. A single off-list word — `lighting`, then
+// `storytellingBeats[].type` — discarded an entire analysis: hook, angle,
+// beats, transferable patterns, all of it, after the Gemini call was paid for
+// and with the fallback then producing a worse result while reporting success.
+//
+// A classification the model guesses at must never be able to sink the run. The
+// enum still buys a stable vocabulary for the common cases; anything outside it
+// lands on 'other' rather than taking the analysis down.
 
 export const HOOK_TYPES = [
   'POV', 'curiosity_gap', 'bold_claim', 'pattern_interrupt', 'question',
   'us_vs_them', 'social_proof', 'transformation', 'listicle', 'challenge', 'testimonial',
+  'other',
 ] as const;
 
 export const ANGLE_TYPES = [
   'transformation', 'myth_busting', 'us_vs_them', 'insider_secret', 'social_proof',
-  'educational', 'entertainment', 'emotional', 'FOMO', 'authority',
+  'educational', 'entertainment', 'emotional', 'FOMO', 'authority', 'other',
 ] as const;
 
 export const BEAT_TYPES = [
   'hook', 'setup', 'conflict', 'escalation', 'reveal', 'proof', 'cta', 'callback', 'twist',
+  'other',
 ] as const;
 
 export const REPLICABILITY = ['high', 'medium', 'low'] as const;
@@ -42,7 +55,7 @@ export const BACKENDS = ['gemini-native', 'gemini-text'] as const;
 export const ShotSchema = z.object({
   timestampSec: z.number().min(0),
   durationSec: z.number().min(0),
-  type: z.enum(['talking_head', 'b_roll', 'product_closeup', 'text_overlay', 'split_screen', 'transition', 'reaction', 'demonstration', 'other'] as const),
+  type: z.enum(['talking_head', 'b_roll', 'product_closeup', 'text_overlay', 'split_screen', 'transition', 'reaction', 'demonstration', 'other'] as const).catch('other'),
   description: z.string(),
   onScreenText: z.string().nullable().describe('Text visible in frame, null if none'),
 });
@@ -50,12 +63,12 @@ export const ShotSchema = z.object({
 export const OnScreenTextEntrySchema = z.object({
   timestampSec: z.number().min(0),
   text: z.string(),
-  style: z.enum(['overlay', 'subtitle', 'caption_packed', 'title_card', 'watermark'] as const).nullable(),
+  style: z.enum(['overlay', 'subtitle', 'caption_packed', 'title_card', 'watermark'] as const).nullable().catch(null),
 });
 
 export const AudioAnalysisSchema = z.object({
   speechDetected: z.boolean(),
-  speechType: z.enum(['direct_address', 'voiceover', 'conversation', 'none'] as const).nullable(),
+  speechType: z.enum(['direct_address', 'voiceover', 'conversation', 'none'] as const).nullable().catch(null),
   musicDescription: z.string().describe('Type of music or trending sound, if detected'),
   soundEffects: z.array(z.string()).describe('Notable sound effects'),
   tone: z.string().describe('Overall audio mood/atmosphere'),
@@ -72,18 +85,18 @@ export const EmotionalArcPointSchema = z.object({
 
 export const HookSchema = z.object({
   text: z.string().describe('Exact hook text or visual description'),
-  type: z.enum(HOOK_TYPES),
-  placement: z.enum(['spoken', 'on_screen', 'visual', 'audio', 'text_overlay'] as const),
+  type: z.enum(HOOK_TYPES).catch('other'),
+  placement: z.enum(['spoken', 'on_screen', 'visual', 'audio', 'text_overlay', 'other'] as const).catch('other'),
   mechanism: z.string().describe('Why this hook works psychologically'),
 });
 
 export const AngleSchema = z.object({
-  type: z.enum(ANGLE_TYPES),
+  type: z.enum(ANGLE_TYPES).catch('other'),
   description: z.string(),
 });
 
 export const StorytellingBeatSchema = z.object({
-  type: z.enum(BEAT_TYPES),
+  type: z.enum(BEAT_TYPES).catch('other'),
   timestampSec: z.number().min(0),
   description: z.string(),
 });
@@ -108,7 +121,7 @@ export const TransferablePatternSchema = z.object({
 export const OverallAssessmentSchema = z.object({
   summary: z.string(),
   viralityScore: z.number().min(1).max(10),
-  replicability: z.enum(REPLICABILITY),
+  replicability: z.enum(REPLICABILITY).catch('medium'),
 });
 
 // ---- Recreation ----
