@@ -130,6 +130,52 @@ Retention defaults to 3 days and is a per-workspace setting changed via the
 `update_settings` tool, capped per plan. Supabase has no object lifecycle
 rules, so expiry runs as a daily Vercel Cron (`/api/cron/media-retention`).
 
+### Analysis runs off the request path
+
+`analyze_video` with the `gemini-native` backend **queues** rather than
+analysing inline, and returns a `jobId`. Poll `get_video` — `analysisJob`
+reports progress, `analysis` carries the result once it lands. `gemini-text`
+still returns its analysis directly; it is one text call and finishes in
+seconds.
+
+The reason is a hard ceiling, not a preference: a native analysis has to
+download the MP4, upload it to Gemini, wait for processing and then generate,
+which does not fit `api/mcp.ts`'s 60s `maxDuration` — and the Vercel plan
+cannot raise it. The MCP client applies its own timeout too, so a synchronous
+call could not be rescued by a bigger server budget anyway.
+
+Enqueueing fires a non-blocking call to `/api/jobs/analyze`, which runs the job
+on a fresh invocation with its own 60s. That dispatch is best-effort and nothing
+depends on it.
+
+What makes the queue reliable is **`pg_cron`, running inside Postgres every
+minute** (`supabase/migrations/*_pgcron_drain_analyze_jobs.sql`). Vercel Cron is
+capped at one run per day on this plan and rejects sub-daily expressions at
+deploy time; pg_cron is not subject to that at all. Each minute it POSTs
+`/api/jobs/analyze`, but only when a row is `queued` or `running` — so an idle
+queue costs zero function invocations.
+
+The job does nothing else: recovering abandoned claims is the worker's job, in
+TypeScript, so `MAX_ATTEMPTS` and `STUCK_AFTER_MINUTES` have exactly one
+definition (`src/lib/jobs.ts`) instead of a second copy in SQL that drifts.
+`running` is in the gate because only the worker can decide a claim is
+abandoned.
+
+Two secrets must exist in Supabase Vault or the job is a deliberate no-op:
+
+| Vault secret | Value |
+|---|---|
+| `cron_secret` | must equal the `CRON_SECRET` env var the worker checks |
+| `worker_base_url` | e.g. `https://mcp.slashloop.dev`, no trailing slash |
+
+They are read by name at run time and are not in the migration. If you rotate
+`CRON_SECRET` in Vercel, update the Vault copy too, or the drain silently 401s.
+
+There is deliberately no Vercel Cron fallback for this. A daily duplicate of a
+per-minute job is a third code path earning its keep only if pg_cron breaks, and
+it would mask that breakage rather than surface it. If the drain stops, jobs
+visibly pile up in `queued` — which is the signal you want.
+
 Full design, including the later phases: [`docs/media-storage-plan.md`](./docs/media-storage-plan.md).
 
 > ⚠️ **Do not run `bun run db:push` against production.** It bypasses the
@@ -150,6 +196,8 @@ Full design, including the later phases: [`docs/media-storage-plan.md`](./docs/m
 | `POST /api/billing/portal` | Bearer JWT. Creates a Billing Portal session, returns `{ url }` |
 | `GET /api/billing/status` | Bearer JWT. Returns `{ planKey, planCredits, packCredits, periodEnd, billingStatus }` |
 | `POST /api/stripe/webhook` | Stripe signature, not JWT. The only thing that grants/revokes credits |
+| `POST /api/jobs/analyze` | `CRON_SECRET`. Drains queued analyses off the request path |
+| `GET /api/cron/media-retention` | `CRON_SECRET`. Daily. Expires stored media |
 
 The three `/api/billing/*` routes carry CORS for `SITE_URL` (the landing site's
 origin); `/mcp` and `/api/stripe/webhook` don't need it — neither is called

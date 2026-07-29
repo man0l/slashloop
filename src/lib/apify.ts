@@ -40,6 +40,37 @@ export interface ApifyScrapeResult {
   costCents: number; // actual cost charged (estimate for now)
   rawCount: number;
   actorRunId: string | null;
+  /**
+   * Human-readable reasons the actor returned no usable videos.
+   *
+   * The actor reports a bad input by putting a record IN the dataset rather
+   * than failing the run — `{error, errorCode, url, input}` for a missing
+   * profile/hashtag, `{authorMeta, note}` for a profile with no videos. Those
+   * records carry no `id`, so normalization drops them and the run looks like
+   * a clean scrape that happened to find nothing. It isn't: it is Apify telling
+   * us the query is wrong, and it costs the same as a real scrape. Surfacing
+   * them is the difference between "no new videos this run" and "this source
+   * has never been valid".
+   */
+  notices: string[];
+}
+
+/** Pull the actor's own explanation out of records that aren't videos. */
+function collectNotices(rawItems: any[]): string[] {
+  const notices: string[] = [];
+  for (const r of rawItems) {
+    if (!r || typeof r !== 'object') continue;
+    if (r.id || r.videoId || r.item_id) continue; // a real video record
+    const input = typeof r.input === 'string' ? ` (input: ${r.input})` : '';
+    if (typeof r.error === 'string') {
+      notices.push(`Apify: ${r.error}${r.errorCode ? ` [${r.errorCode}]` : ''}${input}`);
+    } else if (typeof r.note === 'string') {
+      notices.push(`Apify: ${r.note}${input}`);
+    } else {
+      notices.push(`Apify returned an unrecognized record with keys: ${Object.keys(r).slice(0, 8).join(', ')}`);
+    }
+  }
+  return notices;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +148,11 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
     })
     .filter((v): v is NormalizedVideo => v !== null && !!v.externalId);
 
+  const notices = collectNotices(rawItems);
+  if (items.length === 0 && rawItems.length > 0) {
+    console.warn(`[apify] ${rawItems.length} record(s) returned, 0 usable videos: ${notices.join(' | ')}`);
+  }
+
   // Record actual cost (we use the estimate since Apify's per-call billing
   // is not returned in the response — the real invoice lands later).
   await recordApifySpend(opts.workspaceId, estimatedCostCents, null);
@@ -126,6 +162,7 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
     costCents: estimatedCostCents,
     rawCount: rawItems.length,
     actorRunId: null,
+    notices,
   };
 }
 
