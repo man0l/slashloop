@@ -71,8 +71,7 @@ export function buildRemoteMcp(claims: Claims) {
   mcp.server.oninitialized = () => {
     const caps = mcp.server.getClientCapabilities() as
       (Record<string, unknown> & { extensions?: Record<string, unknown> }) | undefined;
-    console.log(`[mcp-apps] client capabilities: ${JSON.stringify(caps)}`);
-    console.log(`[mcp-apps] declares io.modelcontextprotocol/ui: ${!!caps?.extensions?.['io.modelcontextprotocol/ui']}`);
+    console.log(`mcp-apps oninit ui=${!!caps?.extensions?.['io.modelcontextprotocol/ui']}`);
   };
 
   return mcp;

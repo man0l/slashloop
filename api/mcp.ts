@@ -63,19 +63,27 @@ export async function POST(request: Request): Promise<Response> {
     // show_gallery arrives with no initialize in the same body, this request
     // never had the chance to see capabilities at all, regardless of what the
     // client declared minutes earlier.
+    let methods: (string | undefined)[] = [];
     try {
       const cloned = request.clone();
       const body = await cloned.text();
       const parsed: unknown = JSON.parse(body);
-      const methods = Array.isArray(parsed)
+      methods = Array.isArray(parsed)
         ? parsed.map(m => (m as { method?: string }).method)
         : [(parsed as { method?: string }).method];
-      console.log(`[mcp-apps] request method(s): ${JSON.stringify(methods)}`);
     } catch (err) {
-      console.log(`[mcp-apps] could not inspect request body: ${(err as Error).message}`);
+      // empty/non-JSON body (e.g. an SSE accept) — nothing to inspect
     }
 
     response = await transport.handleRequest(request);
+
+    // Post-handleRequest: if `initialize` ran inside THIS request, the client's
+    // declared capabilities are now on the server instance. One short,
+    // trunc-proof line settles the open §4.3 question — does this host declare
+    // io.modelcontextprotocol/ui at all? (Vercel ingests ~50 chars of message.)
+    const caps = mcp.server.getClientCapabilities() as
+      (Record<string, unknown> & { extensions?: Record<string, unknown> }) | undefined;
+    console.log(`mcp-apps ui=${!!caps?.extensions?.['io.modelcontextprotocol/ui']} m=${JSON.stringify(methods)}`);
   });
   return response;
 }
