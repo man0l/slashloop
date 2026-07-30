@@ -8,6 +8,7 @@
   "scripts": {
     "remote:dev": "bun --watch remote/dev.ts",
     "seed": "bun src/seed.ts",
+    "preview:gallery": "bun src/scripts/preview_gallery.ts",
     "db:push": "prisma db push --schema prisma/schema.prisma",
     "db:generate": "prisma generate --schema prisma/schema.prisma",
     "postinstall": "prisma generate --schema prisma/schema.prisma || true"

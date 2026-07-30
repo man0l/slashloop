@@ -12,7 +12,7 @@
 import type Stripe from 'stripe';
 import { Prisma } from '@prisma/client';
 import { db } from '../../src/db.js';
-import { requireStripe } from '../../src/lib/stripe.js';
+import { requireStripe, stripeWebhookSecret, stripeMode } from '../../src/lib/stripe.js';
 import { PLAN_CREDITS, FREE_TIER_PLAN_CREDITS, txSetPlan, txAddPackCredits, txUpdateBillingFields } from '../../src/lib/credits.js';
 
 function json(status: number, body: unknown): Response {
@@ -191,8 +191,11 @@ async function handleEvent(tx: Prisma.TransactionClient, event: Stripe.Event) {
 
 export async function POST(request: Request): Promise<Response> {
   const stripe = requireStripe();
-  const secret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!secret) return json(500, { error: 'STRIPE_WEBHOOK_SECRET is not set' });
+  const secret = stripeWebhookSecret();
+  if (!secret) {
+    const expected = stripeMode() === 'test' ? 'STRIPE_TEST_WEBHOOK_SECRET' : 'STRIPE_WEBHOOK_SECRET';
+    return json(500, { error: `${expected} is not set (STRIPE_MODE=${stripeMode()})` });
+  }
 
   const raw = await request.text();
   const sig = request.headers.get('stripe-signature');

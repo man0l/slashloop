@@ -218,10 +218,10 @@ from a browser.
 | `APIFY_SPEND_CAP_CENTS` | optional | Monthly Apify cap in cents (default 500 = $5) |
 | `PUBLIC_URL` | yes (prod) | Public origin Claude reaches |
 | `SITE_URL` | yes (billing) | Origin of slashloop-site — Checkout/Portal redirects + CORS |
-| `STRIPE_SECRET_KEY` | yes (billing) | Stripe API key |
-| `STRIPE_WEBHOOK_SECRET` | yes (billing) | Signs `/api/stripe/webhook` requests |
-| `STRIPE_PRICE_CREATOR_MONTH` / `_YEAR`, `STRIPE_PRICE_PRO_MONTH` / `_YEAR` | yes (billing) | Subscription Price ids, each with `plan_key`/`credits` metadata |
-| `STRIPE_PRICE_PACK` | yes (billing) | One-time credit-pack Price id, with `pack_credits` metadata |
+| `STRIPE_MODE` | no (default `live`) | `live` or `test` — which key set the app uses |
+| `STRIPE_SECRET_KEY` / `STRIPE_TEST_SECRET_KEY` | yes (billing) | Live / test Stripe API keys |
+| `STRIPE_WEBHOOK_SECRET` / `STRIPE_TEST_WEBHOOK_SECRET` | yes (billing) | Live / test signing secrets for `/api/stripe/webhook` |
+| `STRIPE_PRICE_*` / `STRIPE_TEST_PRICE_*` | yes (billing) | Live / test Price ids (`CREATOR_MONTH`, `CREATOR_YEAR`, `PRO_MONTH`, `PRO_YEAR`, `PACK`) |
 | `SUPABASE_SECRET_KEY` | optional | Enables media storage. Unset = the whole media path no-ops |
 | `STORAGE_THUMB_BUCKET` / `STORAGE_MEDIA_BUCKET` | optional | Bucket names (default `thumbs` public, `media` private) |
 | `THUMB_RETENTION_DAYS_DEFAULT` / `MEDIA_RETENTION_DAYS_DEFAULT` | optional | Seeds new workspaces only (default 3). Retention itself is a per-workspace setting |

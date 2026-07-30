@@ -1,38 +1,84 @@
 // ---------------------------------------------------------------------------
 // Stripe client + Price resolution.
 //
-// null when STRIPE_SECRET_KEY isn't set (local/dev without billing configured)
-// so the rest of the app can import this module without crashing — routes
-// that actually need Stripe call requireStripe() and get a clear error
-// instead of the whole deployment failing to boot.
+// Dual-mode config: set STRIPE_MODE=live|test (default live). Live reads
+// STRIPE_* vars; test reads STRIPE_TEST_*. Both sets can live on Vercel so you
+// flip mode without rotating secrets. null client when the active secret key
+// isn't set (local/dev without billing) so imports don't crash — routes that
+// need Stripe call requireStripe().
 // ---------------------------------------------------------------------------
 
 import Stripe from 'stripe';
 
-export const stripe: Stripe | null = process.env.STRIPE_SECRET_KEY
-  ? new Stripe(process.env.STRIPE_SECRET_KEY)
-  : null;
+export type StripeMode = 'live' | 'test';
+
+export function stripeMode(): StripeMode {
+  const raw = (process.env.STRIPE_MODE ?? 'live').trim().toLowerCase();
+  if (raw === 'test' || raw === 'prod' || raw === 'live') {
+    // Accept "prod" as an alias for live.
+    return raw === 'test' ? 'test' : 'live';
+  }
+  return 'live';
+}
+
+function env(name: string): string | undefined {
+  const v = process.env[name];
+  return v && v.trim() ? v.trim() : undefined;
+}
+
+/** Active secret key for the current STRIPE_MODE. */
+export function stripeSecretKey(): string | undefined {
+  return stripeMode() === 'test' ? env('STRIPE_TEST_SECRET_KEY') : env('STRIPE_SECRET_KEY');
+}
+
+/** Active webhook signing secret for the current STRIPE_MODE. */
+export function stripeWebhookSecret(): string | undefined {
+  return stripeMode() === 'test' ? env('STRIPE_TEST_WEBHOOK_SECRET') : env('STRIPE_WEBHOOK_SECRET');
+}
+
+/**
+ * Resolve a price env var for the active mode.
+ * Live:  STRIPE_PRICE_*
+ * Test:  STRIPE_TEST_PRICE_*
+ */
+function priceEnv(suffix: string): string | undefined {
+  const prefix = stripeMode() === 'test' ? 'STRIPE_TEST_PRICE_' : 'STRIPE_PRICE_';
+  return env(`${prefix}${suffix}`);
+}
+
+export const stripe: Stripe | null = (() => {
+  const key = stripeSecretKey();
+  return key ? new Stripe(key) : null;
+})();
 
 export function requireStripe(): Stripe {
-  if (!stripe) throw new Error('STRIPE_SECRET_KEY is not set.');
+  if (!stripe) {
+    const mode = stripeMode();
+    const expected = mode === 'test' ? 'STRIPE_TEST_SECRET_KEY' : 'STRIPE_SECRET_KEY';
+    throw new Error(`${expected} is not set (STRIPE_MODE=${mode}).`);
+  }
   return stripe;
 }
 
 /**
  * planKey ("creator" | "pro") + interval ("month" | "year") -> Stripe Price
- * id, via env vars (docs/stripe-implementation-plan.md §8): e.g.
- * STRIPE_PRICE_CREATOR_MONTH. One-time credit packs use STRIPE_PRICE_PACK
- * directly (no interval).
+ * id via env vars. One-time credit packs use packPriceId().
  */
 export function priceIdFor(planKey: string, interval: string): string {
-  const envKey = `STRIPE_PRICE_${planKey.toUpperCase()}_${interval.toUpperCase()}`;
-  const id = process.env[envKey];
-  if (!id) throw new Error(`${envKey} is not set — add the Stripe Price id for ${planKey}/${interval}.`);
+  const suffix = `${planKey.toUpperCase()}_${interval.toUpperCase()}`;
+  const id = priceEnv(suffix);
+  if (!id) {
+    const prefix = stripeMode() === 'test' ? 'STRIPE_TEST_PRICE_' : 'STRIPE_PRICE_';
+    throw new Error(`${prefix}${suffix} is not set — add the Stripe Price id for ${planKey}/${interval} (${stripeMode()} mode).`);
+  }
   return id;
 }
 
 export function packPriceId(): string {
-  const id = process.env.STRIPE_PRICE_PACK;
-  if (!id) throw new Error('STRIPE_PRICE_PACK is not set — add the Stripe Price id for the credit top-up pack.');
+  const id = priceEnv('PACK');
+  if (!id) {
+    const name = stripeMode() === 'test' ? 'STRIPE_TEST_PRICE_PACK' : 'STRIPE_PRICE_PACK';
+    throw new Error(`${name} is not set — add the Stripe Price id for the credit top-up pack (${stripeMode()} mode).`);
+  }
   return id;
 }

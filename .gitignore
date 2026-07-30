@@ -33,6 +33,9 @@ server.log
 # MCP client temp files
 .mcp-cache/
 
+# Local gallery HTML preview (bun run preview:gallery)
+.preview/
+
 # Third-party Supabase agent skills (fetched by opencode/claude, not project source)
 .agents/skills/supabase/
 .agents/skills/supabase-postgres-best-practices/

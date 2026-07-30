@@ -218,7 +218,9 @@ export function scoreVideo(
       explanation = `📉 Below average — ${formattedViews} views vs. this creator's typical ~${formattedBaseline} — ${outlierScore}x their normal performance`;
     }
   } else {
-    explanation = `📊 Estimated score — ${formattedViews} views vs. batch median of ~${formattedBaseline} — ${outlierScore}x (limited creator history)`;
+    // baseline here is the source/batch median (see batchScoreVideos), not the
+    // creator's own single video — otherwise every one-off scrape scores ~1.0x.
+    explanation = `📊 Estimated score — ${formattedViews} views vs. this source's median of ~${formattedBaseline} — ${outlierScore}x (limited creator history)`;
   }
 
   return { videoId, outlierScore, scoreType, explanation };
@@ -227,6 +229,14 @@ export function scoreVideo(
 // ---------------------------------------------------------------------------
 // batchScoreVideos — score all videos for a source
 // ---------------------------------------------------------------------------
+
+/**
+ * Minimum creator-history sample size before we trust a per-creator baseline.
+ * Below this, views/creatorMedian collapses to ~1.0x for one-off hashtag hits
+ * (baseline ≈ the video itself). We fall back to the source batch median so
+ * discovery scrapes still surface true niche outliers.
+ */
+const CREATOR_BASELINE_MIN_SAMPLE = 5;
 
 export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]> {
   const videos = await db.video.findMany({
@@ -260,11 +270,14 @@ export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]>
     baselines.set(key, { median: info.medianViews, sampleSize: info.sampleSize });
   }
 
+  // Source-level median: what "normal" looks like in this scrape/source.
+  // Used when a creator has too little history for a meaningful personal baseline.
+  const sourceBatchBaseline = computeSearchBatchBaseline(videos.map(v => v.views));
+
   // Score each video
   for (const video of videos) {
     const key = `${video.creatorHandle}__${video.platform}`;
     const baselineInfo = baselines.get(key) ?? { median: 500, sampleSize: 0 };
-    const baseline = baselineInfo.median;
 
     if (isTooFresh(video.postedAt)) {
       const result: ScoreResult = {
@@ -294,13 +307,13 @@ export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]>
       continue;
     }
 
-    // Confidence label MUST match the baseline's scope. The baseline is built
-    // from the creator's global (cross-source) history, so we decide actual vs
-    // estimated from that same sampleSize. The old per-source-group check
-    // mislabeled creators with strong global history as "estimated" when they
-    // had <5 videos in THIS source — surfacing their viral videos as
-    // high-multiple "estimated" noise instead of real, attributed outliers.
-    const scoreType: 'actual' | 'estimated' = baselineInfo.sampleSize >= 5 ? 'actual' : 'estimated';
+    // actual  = enough creator history → score vs that creator's trimmed median
+    // estimated = thin history → score vs THIS SOURCE's view median so hashtag/
+    // keyword discovery still ranks true niche outliers (not a wall of 1.0x).
+    const scoreType: 'actual' | 'estimated' =
+      baselineInfo.sampleSize >= CREATOR_BASELINE_MIN_SAMPLE ? 'actual' : 'estimated';
+    const baseline =
+      scoreType === 'actual' ? baselineInfo.median : sourceBatchBaseline;
 
     const result = scoreVideo(video.id, video.views, baseline, scoreType);
     results.push(result);

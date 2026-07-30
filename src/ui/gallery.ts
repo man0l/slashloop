@@ -11,11 +11,14 @@
 // every origin has to be declared; declaring only Supabase keeps that surface
 // to one entry and means a bundler is never needed.
 //
+// Filters (outlier threshold, min views, sort) and Prev/Next pagination run
+// entirely client-side over the cards already inlined into the HTML — no
+// fetch, so they work inside Claude's sandbox without connect-src. Load a
+// larger pool server-side so filtering + paging still has material to show.
+//
 // §4.3, the playback spike: `resourceDomains` maps to media-src as well as
 // img-src (per the extension's own spec types), so a <video> pointing at a
-// signed Supabase URL *should* play inline. That is the open question this
-// gallery exists to answer — Claude's host has a track record of dropping
-// declared CSP fields, and there is no way to know but to look.
+// signed Supabase URL *should* play inline.
 // ---------------------------------------------------------------------------
 
 export interface GalleryCard {
@@ -37,6 +40,16 @@ export interface GalleryCard {
     framing: string | null;
     lighting: string | null;
   }>;
+}
+
+/** Initial filter state baked into the HTML (tool args or resource query). */
+export interface GalleryFilters {
+  /** Minimum outlier score, 0 = any. */
+  minOutlier?: number;
+  /** Minimum views, 0 = any. */
+  minViews?: number;
+  /** Sort key for the visible set. */
+  sortBy?: 'outlier_score' | 'views' | 'newest';
 }
 
 function esc(s: unknown): string {
@@ -68,8 +81,16 @@ function cardHtml(c: GalleryCard): string {
               src="${esc(c.mediaUrl)}"></video>`
     : `<p class="nomedia">No stored video — expired or never analysed. Frames unavailable.</p>`;
 
+  const score = c.outlierScore ?? 0;
+  // data-* drives client-side filters (no network). postedAt omitted — sort
+  // "newest" uses data-views-as-proxy only if we lack a timestamp; we embed
+  // scraped order via data-score/views and optional data-i for stable order.
   return `
-  <article class="card">
+  <article class="card"
+           data-score="${score}"
+           data-views="${c.views}"
+           data-has-media="${c.mediaUrl ? '1' : '0'}"
+           data-handle="${esc(c.creatorHandle.toLowerCase())}">
     ${c.thumbUrl ? `<img class="thumb" src="${esc(c.thumbUrl)}" alt="" loading="lazy"/>`
                  : `<div class="thumb placeholder"></div>`}
     <div class="body">
@@ -77,7 +98,7 @@ function cardHtml(c: GalleryCard): string {
         <strong>@${esc(c.creatorHandle)}</strong>
         <span>${compact(c.views)} views</span>
         <span>${esc(c.engagementRate)} eng</span>
-        ${c.outlierScore != null ? `<span>${c.outlierScore.toFixed(1)}x</span>` : ''}
+        ${c.outlierScore != null ? `<span class="score-badge">${c.outlierScore.toFixed(1)}x</span>` : ''}
         ${c.durationSec != null ? `<span>${c.durationSec}s</span>` : ''}
       </div>
       <p class="caption">${esc(c.caption) || '<em>no caption</em>'}</p>
@@ -88,10 +109,71 @@ function cardHtml(c: GalleryCard): string {
   </article>`;
 }
 
-export function renderGallery(cards: GalleryCard[], note?: string): string {
+function selectedAttr(current: number | string, value: number | string): string {
+  return String(current) === String(value) ? ' selected' : '';
+}
+
+/** Cards shown per page in the Claude iframe (client-side only). */
+const PAGE_SIZE = 12;
+
+function toolbarHtml(filters: GalleryFilters): string {
+  const minOutlier = filters.minOutlier ?? 0;
+  const minViews = filters.minViews ?? 0;
+  const sortBy = filters.sortBy ?? 'outlier_score';
+
+  return `
+<header class="toolbar" role="region" aria-label="Gallery filters">
+  <div class="filters">
+    <label class="field">
+      <span class="field-label">Outlier score</span>
+      <select id="f-outlier" aria-label="Minimum outlier score">
+        <option value="0"${selectedAttr(minOutlier, 0)}>Any</option>
+        <option value="2"${selectedAttr(minOutlier, 2)}>≥ 2×</option>
+        <option value="5"${selectedAttr(minOutlier, 5)}>≥ 5×</option>
+        <option value="10"${selectedAttr(minOutlier, 10)}>≥ 10×</option>
+        <option value="25"${selectedAttr(minOutlier, 25)}>≥ 25×</option>
+        <option value="50"${selectedAttr(minOutlier, 50)}>≥ 50×</option>
+        <option value="100"${selectedAttr(minOutlier, 100)}>≥ 100×</option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">Min views</span>
+      <select id="f-views" aria-label="Minimum views">
+        <option value="0"${selectedAttr(minViews, 0)}>Any</option>
+        <option value="10000"${selectedAttr(minViews, 10000)}>≥ 10K</option>
+        <option value="100000"${selectedAttr(minViews, 100000)}>≥ 100K</option>
+        <option value="1000000"${selectedAttr(minViews, 1000000)}>≥ 1M</option>
+        <option value="10000000"${selectedAttr(minViews, 10000000)}>≥ 10M</option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">Sort</span>
+      <select id="f-sort" aria-label="Sort cards">
+        <option value="outlier_score"${selectedAttr(sortBy, 'outlier_score')}>Outlier score</option>
+        <option value="views"${selectedAttr(sortBy, 'views')}>Most views</option>
+      </select>
+    </label>
+    <label class="field check">
+      <input type="checkbox" id="f-media" />
+      <span class="field-label">Has stored video</span>
+    </label>
+  </div>
+  <div class="pager" role="navigation" aria-label="Gallery pages">
+    <button type="button" class="page-btn" id="f-prev" aria-label="Previous page">← Prev</button>
+    <p class="count" id="f-count" aria-live="polite"></p>
+    <button type="button" class="page-btn" id="f-next" aria-label="Next page">Next →</button>
+  </div>
+</header>`;
+}
+
+export function renderGallery(
+  cards: GalleryCard[],
+  note?: string,
+  filters: GalleryFilters = {},
+): string {
   const body = cards.length
     ? cards.map(cardHtml).join('')
-    : `<p class="empty">No videos yet. Track a source and run <code>refresh_source</code>.</p>`;
+    : `<p class="empty" id="empty-pool">No videos yet. Track a source and run <code>refresh_source</code>.</p>`;
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
@@ -100,12 +182,33 @@ export function renderGallery(cards: GalleryCard[], note?: string): string {
 <style>
   :root { color-scheme: light dark; --line: color-mix(in srgb, currentColor 14%, transparent); }
   body { font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; margin: 0; padding: 12px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-end;
+             justify-content: space-between; margin-bottom: 12px;
+             padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+  .filters { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+  .field.check { flex-direction: row; align-items: center; gap: 6px; padding-bottom: 2px; }
+  .field-label { opacity: .75; font-weight: 500; }
+  select { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--line);
+           border-radius: 8px; background: transparent; color: inherit; min-width: 7.5rem;
+           max-width: 100%; }
+  select:focus, .field.check input:focus { outline: 2px solid color-mix(in srgb, currentColor 35%, transparent);
+           outline-offset: 1px; }
+  .pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .page-btn { font: inherit; font-size: 13px; padding: 5px 12px; border: 1px solid var(--line);
+              border-radius: 8px; background: none; color: inherit; cursor: pointer; }
+  .page-btn:hover:not(:disabled) { border-color: currentColor; }
+  .page-btn:disabled { opacity: .35; cursor: not-allowed; }
+  .page-btn:focus { outline: 2px solid color-mix(in srgb, currentColor 35%, transparent); outline-offset: 1px; }
+  .count { margin: 0; font-size: 12px; opacity: .7; white-space: nowrap; min-width: 9rem; text-align: center; }
   .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
   .card { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .card[hidden] { display: none !important; }
   .thumb { width: 100%; aspect-ratio: 9/16; object-fit: cover; display: block; background: var(--line); }
   .thumb.placeholder { display: grid; place-items: center; }
   .body { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
   .meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; opacity: .8; }
+  .score-badge { font-weight: 600; opacity: 1; }
   .caption { margin: 0; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .player { width: 100%; border-radius: 6px; background: #000; }
   .nomedia { margin: 0; font-size: 12px; opacity: .6; }
@@ -117,14 +220,119 @@ export function renderGallery(cards: GalleryCard[], note?: string): string {
   .src { font-size: 12px; opacity: .7; }
   .empty, .note { opacity: .7; }
   .note { font-size: 12px; margin: 0 0 10px; }
+  .empty-filter { display: none; opacity: .7; margin: 24px 0; text-align: center; }
+  .empty-filter.show { display: block; }
 </style></head>
 <body>
 ${note ? `<p class="note">${esc(note)}</p>` : ''}
-<div class="grid">${body}</div>
+${cards.length ? toolbarHtml(filters) : ''}
+<div class="grid" id="grid">${body}</div>
+<p class="empty-filter" id="empty-filter">No videos match these filters. Lower the outlier threshold or min views.</p>
 <script>
-  // Seeking is the whole point of the key-moment chips: one signed URL, one
-  // fragment per moment. currentTime is set directly rather than reloading with
-  // #t= so an already-buffered video does not re-fetch.
+(function () {
+  var PAGE_SIZE = ${PAGE_SIZE};
+  var grid = document.getElementById('grid');
+  var outlierEl = document.getElementById('f-outlier');
+  var viewsEl = document.getElementById('f-views');
+  var sortEl = document.getElementById('f-sort');
+  var mediaEl = document.getElementById('f-media');
+  var countEl = document.getElementById('f-count');
+  var emptyEl = document.getElementById('empty-filter');
+  var prevEl = document.getElementById('f-prev');
+  var nextEl = document.getElementById('f-next');
+  if (!grid || !outlierEl) return;
+
+  var page = 0;
+
+  function allCards() {
+    return Array.prototype.slice.call(grid.querySelectorAll('.card'));
+  }
+
+  function matches(card, minScore, minViews, needMedia) {
+    var score = parseFloat(card.getAttribute('data-score')) || 0;
+    var views = parseInt(card.getAttribute('data-views'), 10) || 0;
+    var hasMedia = card.getAttribute('data-has-media') === '1';
+    return score >= minScore && views >= minViews && (!needMedia || hasMedia);
+  }
+
+  function sortCards(list, sortBy) {
+    return list.slice().sort(function (a, b) {
+      var av = parseFloat(a.getAttribute('data-score')) || 0;
+      var bv = parseFloat(b.getAttribute('data-score')) || 0;
+      var aw = parseInt(a.getAttribute('data-views'), 10) || 0;
+      var bw = parseInt(b.getAttribute('data-views'), 10) || 0;
+      if (sortBy === 'views') return bw - aw || bv - av;
+      return bv - av || bw - aw;
+    });
+  }
+
+  function apply(resetPage) {
+    if (resetPage) page = 0;
+
+    var minScore = parseFloat(outlierEl.value) || 0;
+    var minViews = parseInt(viewsEl && viewsEl.value, 10) || 0;
+    var sortBy = (sortEl && sortEl.value) || 'outlier_score';
+    var needMedia = mediaEl && mediaEl.checked;
+    var list = allCards();
+
+    // Partition: matching first (sorted), then non-matching.
+    var matched = [];
+    var rest = [];
+    list.forEach(function (card) {
+      if (matches(card, minScore, minViews, needMedia)) matched.push(card);
+      else rest.push(card);
+    });
+    matched = sortCards(matched, sortBy);
+
+    var totalPages = Math.max(1, Math.ceil(matched.length / PAGE_SIZE) || 1);
+    if (page >= totalPages) page = totalPages - 1;
+    if (page < 0) page = 0;
+
+    var start = page * PAGE_SIZE;
+    var end = start + PAGE_SIZE;
+
+    // Hide everyone, then show only this page of matches. Re-append so DOM order
+    // matches sort (matched page slice first).
+    list.forEach(function (card) { card.hidden = true; });
+    matched.forEach(function (card, i) {
+      card.hidden = !(i >= start && i < end);
+      grid.appendChild(card);
+    });
+    rest.forEach(function (card) { grid.appendChild(card); });
+
+    var shown = matched.length === 0 ? 0 : Math.min(end, matched.length) - start;
+    var from = matched.length === 0 ? 0 : start + 1;
+    var to = matched.length === 0 ? 0 : start + shown;
+
+    if (countEl) {
+      if (matched.length === 0) {
+        countEl.textContent = '0 of ' + list.length + ' match';
+      } else {
+        countEl.textContent =
+          from + '–' + to + ' of ' + matched.length +
+          ' · p.' + (page + 1) + '/' + totalPages;
+      }
+    }
+    if (prevEl) prevEl.disabled = page <= 0 || matched.length === 0;
+    if (nextEl) nextEl.disabled = page >= totalPages - 1 || matched.length === 0;
+
+    if (emptyEl) {
+      if (matched.length === 0 && list.length > 0) emptyEl.classList.add('show');
+      else emptyEl.classList.remove('show');
+    }
+  }
+
+  function onFilterChange() { apply(true); }
+
+  outlierEl.addEventListener('change', onFilterChange);
+  if (viewsEl) viewsEl.addEventListener('change', onFilterChange);
+  if (sortEl) sortEl.addEventListener('change', onFilterChange);
+  if (mediaEl) mediaEl.addEventListener('change', onFilterChange);
+  if (prevEl) prevEl.addEventListener('click', function () { page -= 1; apply(false); });
+  if (nextEl) nextEl.addEventListener('click', function () { page += 1; apply(false); });
+  apply(true);
+
+  // Key-moment seek: one signed URL, seek without re-fetch.
   document.addEventListener('click', function (e) {
     var btn = e.target.closest ? e.target.closest('.moment') : null;
     if (!btn) return;
@@ -135,6 +343,7 @@ ${note ? `<p class="note">${esc(note)}</p>` : ''}
     if (v.readyState >= 1) go();
     else { v.addEventListener('loadedmetadata', go, { once: true }); v.load(); }
   });
+})();
 </script>
 </body></html>`;
 }
