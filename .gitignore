@@ -41,3 +41,27 @@ server.log
 .agents/skills/supabase-postgres-best-practices/
 .claude/skills/supabase/
 .claude/skills/supabase-postgres-best-practices/
+
+# Third-party Stripe agent skills (fetched via `npx skills add`, not project source)
+.agents/skills/connect-recommend/
+.agents/skills/stripe-best-practices/
+.agents/skills/stripe-directory/
+.agents/skills/stripe-docs/
+.agents/skills/stripe-projects/
+.agents/skills/upgrade-stripe/
+
+# Local scratch / temp scripts and diagnostics (never commit)
+_tmp_*
+_rescore*
+
+# Local screenshots and gallery snapshots (root only)
+/gallery-*.png
+/gallery-*.md
+
+# Secret-bearing env backups (safety net beyond .env / .env.*.local)
+.env.bak
+.env.bak.*
+.env.vercel.*
+
+# Tooling caches
+.playwright-mcp/
