@@ -50,6 +50,11 @@ export interface GalleryFilters {
   minViews?: number;
   /** Sort key for the visible set. */
   sortBy?: 'outlier_score' | 'views' | 'newest';
+  /**
+   * Thumbnail density in the Claude iframe:
+   * large / medium / small grids, or list (smallest thumbs, one row each).
+   */
+  density?: 'large' | 'medium' | 'small' | 'list';
 }
 
 function esc(s: unknown): string {
@@ -113,13 +118,14 @@ function selectedAttr(current: number | string, value: number | string): string 
   return String(current) === String(value) ? ' selected' : '';
 }
 
-/** Cards shown per page in the Claude iframe (client-side only). */
-const PAGE_SIZE = 12;
+/** Default cards per page for the medium grid (client-side only). */
+const PAGE_SIZE_MEDIUM = 12;
 
 function toolbarHtml(filters: GalleryFilters): string {
   const minOutlier = filters.minOutlier ?? 0;
   const minViews = filters.minViews ?? 0;
   const sortBy = filters.sortBy ?? 'outlier_score';
+  const density = filters.density ?? 'medium';
 
   return `
 <header class="toolbar" role="region" aria-label="Gallery filters">
@@ -151,6 +157,15 @@ function toolbarHtml(filters: GalleryFilters): string {
       <select id="f-sort" aria-label="Sort cards">
         <option value="outlier_score"${selectedAttr(sortBy, 'outlier_score')}>Outlier score</option>
         <option value="views"${selectedAttr(sortBy, 'views')}>Most views</option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">Thumbnails</span>
+      <select id="f-density" aria-label="Thumbnail size and layout">
+        <option value="large"${selectedAttr(density, 'large')}>Large</option>
+        <option value="medium"${selectedAttr(density, 'medium')}>Medium</option>
+        <option value="small"${selectedAttr(density, 'small')}>Small</option>
+        <option value="list"${selectedAttr(density, 'list')}>List (smallest)</option>
       </select>
     </label>
     <label class="field check">
@@ -201,12 +216,14 @@ export function renderGallery(
   .page-btn:disabled { opacity: .35; cursor: not-allowed; }
   .page-btn:focus { outline: 2px solid color-mix(in srgb, currentColor 35%, transparent); outline-offset: 1px; }
   .count { margin: 0; font-size: 12px; opacity: .7; white-space: nowrap; min-width: 9rem; text-align: center; }
+
+  /* ---- density: medium (default) ---- */
   .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
   .card { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
   .card[hidden] { display: none !important; }
   .thumb { width: 100%; aspect-ratio: 9/16; object-fit: cover; display: block; background: var(--line); }
   .thumb.placeholder { display: grid; place-items: center; }
-  .body { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .body { padding: 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
   .meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; opacity: .8; }
   .score-badge { font-weight: 600; opacity: 1; }
   .caption { margin: 0; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -218,23 +235,54 @@ export function renderGallery(
   .moment:hover { border-color: currentColor; }
   .moment .t { opacity: .6; }
   .src { font-size: 12px; opacity: .7; }
+
+  /* large thumbs — fewer columns, bigger cover */
+  .density-large .grid { gap: 14px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .density-large .body { padding: 12px; gap: 10px; }
+  .density-large .caption { font-size: 14px; -webkit-line-clamp: 3; }
+
+  /* small thumbs — denser grid */
+  .density-small .grid { gap: 8px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  .density-small .body { padding: 6px; gap: 4px; }
+  .density-small .meta { gap: 4px 6px; font-size: 11px; }
+  .density-small .caption { font-size: 11px; -webkit-line-clamp: 1; }
+  .density-small .nomedia,
+  .density-small .moments,
+  .density-small .player { display: none; }
+  .density-small .src { font-size: 11px; }
+
+  /* list — smallest thumbs, one row per video */
+  .density-list .grid { display: flex; flex-direction: column; gap: 6px; }
+  .density-list .card { flex-direction: row; align-items: stretch; border-radius: 8px; }
+  .density-list .thumb { width: 48px; min-width: 48px; max-width: 48px; aspect-ratio: 9/16;
+                         height: auto; max-height: 72px; align-self: center; margin-left: 6px;
+                         border-radius: 4px; }
+  .density-list .body { padding: 6px 10px; gap: 2px; flex: 1; justify-content: center; }
+  .density-list .meta { gap: 4px 8px; font-size: 12px; }
+  .density-list .caption { font-size: 12px; -webkit-line-clamp: 1; }
+  .density-list .nomedia,
+  .density-list .moments,
+  .density-list .player { display: none; }
+  .density-list .src { font-size: 11px; }
+
   .empty, .note { opacity: .7; }
   .note { font-size: 12px; margin: 0 0 10px; }
   .empty-filter { display: none; opacity: .7; margin: 24px 0; text-align: center; }
   .empty-filter.show { display: block; }
 </style></head>
-<body>
+<body class="density-${esc(filters.density ?? 'medium')}">
 ${note ? `<p class="note">${esc(note)}</p>` : ''}
 ${cards.length ? toolbarHtml(filters) : ''}
 <div class="grid" id="grid">${body}</div>
 <p class="empty-filter" id="empty-filter">No videos match these filters. Lower the outlier threshold or min views.</p>
 <script>
 (function () {
-  var PAGE_SIZE = ${PAGE_SIZE};
+  var PAGE_SIZES = { large: 6, medium: ${PAGE_SIZE_MEDIUM}, small: 24, list: 24 };
   var grid = document.getElementById('grid');
   var outlierEl = document.getElementById('f-outlier');
   var viewsEl = document.getElementById('f-views');
   var sortEl = document.getElementById('f-sort');
+  var densityEl = document.getElementById('f-density');
   var mediaEl = document.getElementById('f-media');
   var countEl = document.getElementById('f-count');
   var emptyEl = document.getElementById('empty-filter');
@@ -243,6 +291,20 @@ ${cards.length ? toolbarHtml(filters) : ''}
   if (!grid || !outlierEl) return;
 
   var page = 0;
+
+  function pageSize() {
+    var d = (densityEl && densityEl.value) || 'medium';
+    return PAGE_SIZES[d] || PAGE_SIZES.medium;
+  }
+
+  function setDensity(d) {
+    var body = document.body;
+    body.className = body.className
+      .replace(/\\bdensity-\\w+/g, '')
+      .replace(/\\s+/g, ' ')
+      .trim();
+    body.classList.add('density-' + (d || 'medium'));
+  }
 
   function allCards() {
     return Array.prototype.slice.call(grid.querySelectorAll('.card'));
@@ -272,8 +334,12 @@ ${cards.length ? toolbarHtml(filters) : ''}
     var minScore = parseFloat(outlierEl.value) || 0;
     var minViews = parseInt(viewsEl && viewsEl.value, 10) || 0;
     var sortBy = (sortEl && sortEl.value) || 'outlier_score';
+    var density = (densityEl && densityEl.value) || 'medium';
     var needMedia = mediaEl && mediaEl.checked;
+    var ps = pageSize();
     var list = allCards();
+
+    setDensity(density);
 
     // Partition: matching first (sorted), then non-matching.
     var matched = [];
@@ -284,12 +350,12 @@ ${cards.length ? toolbarHtml(filters) : ''}
     });
     matched = sortCards(matched, sortBy);
 
-    var totalPages = Math.max(1, Math.ceil(matched.length / PAGE_SIZE) || 1);
+    var totalPages = Math.max(1, Math.ceil(matched.length / ps) || 1);
     if (page >= totalPages) page = totalPages - 1;
     if (page < 0) page = 0;
 
-    var start = page * PAGE_SIZE;
-    var end = start + PAGE_SIZE;
+    var start = page * ps;
+    var end = start + ps;
 
     // Hide everyone, then show only this page of matches. Re-append so DOM order
     // matches sort (matched page slice first).
@@ -327,6 +393,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
   outlierEl.addEventListener('change', onFilterChange);
   if (viewsEl) viewsEl.addEventListener('change', onFilterChange);
   if (sortEl) sortEl.addEventListener('change', onFilterChange);
+  if (densityEl) densityEl.addEventListener('change', onFilterChange);
   if (mediaEl) mediaEl.addEventListener('change', onFilterChange);
   if (prevEl) prevEl.addEventListener('click', function () { page -= 1; apply(false); });
   if (nextEl) nextEl.addEventListener('click', function () { page += 1; apply(false); });

@@ -22,7 +22,7 @@ import { ResourceTemplate, type McpServer } from '@modelcontextprotocol/sdk/serv
 
 const GALLERY_URI = 'ui://slashloop/gallery.html';
 /** RFC 6570 template so hosts can resources/read a source-scoped gallery. */
-const GALLERY_URI_TEMPLATE = 'ui://slashloop/gallery.html{?sourceId,minOutlier}';
+const GALLERY_URI_TEMPLATE = 'ui://slashloop/gallery.html{?sourceId,minOutlier,density}';
 
 /**
  * Cards inlined into the HTML for client-side filters. Larger than the old
@@ -40,6 +40,8 @@ export interface BuildCardsOptions {
   minOutlier?: number;
   /** Initial min views for the toolbar dropdown (0 = any). */
   minViews?: number;
+  /** Initial thumbnail density for the toolbar dropdown. */
+  density?: GalleryFilters['density'];
 }
 
 /**
@@ -93,6 +95,7 @@ export async function buildCards(
     minOutlier: opts.minOutlier && opts.minOutlier > 0 ? opts.minOutlier : 0,
     minViews: opts.minViews && opts.minViews > 0 ? opts.minViews : 0,
     sortBy: 'outlier_score',
+    density: opts.density,
   };
 
   const cards: GalleryCard[] = [];
@@ -217,22 +220,28 @@ export function registerGalleryApp(server: McpServer) {
           .max(60)
           .optional()
           .describe('Max cards in the filter pool (default 48)'),
+        density: z
+          .enum(['large', 'medium', 'small', 'list'])
+          .optional()
+          .describe('Initial thumbnail layout: large, medium (default), small, or list (smallest, one row each)'),
       },
       // Hosts read this from the tool *definition*. Result-level resourceUri is
       // also set below so hosts that honour call-time overrides can apply sourceId.
       _meta: { ui: { resourceUri: GALLERY_URI } },
     },
-    async ({ sourceId, minOutlierScore, minViews, limit }) => {
+    async ({ sourceId, minOutlierScore, minViews, limit, density }) => {
       const { cards, filters } = await buildCards({
         sourceId,
         limit,
         minOutlier: minOutlierScore,
         minViews,
+        density,
       });
       // Prefer a query-scoped URI when filtering so resources/read can match.
       const qs = new URLSearchParams();
       if (sourceId) qs.set('sourceId', sourceId);
       if (minOutlierScore && minOutlierScore > 0) qs.set('minOutlier', String(minOutlierScore));
+      if (density) qs.set('density', density);
       const q = qs.toString();
       const resourceUri = q ? `${GALLERY_URI}?${q}` : GALLERY_URI;
 
@@ -307,9 +316,13 @@ export function registerGalleryApp(server: McpServer) {
       const rawMin = variables.minOutlier;
       const minRaw = Array.isArray(rawMin) ? rawMin[0] : rawMin;
       const minOutlier = minRaw != null && minRaw !== '' ? Number(minRaw) : undefined;
+      const rawDensity = variables.density;
+      const dRaw = Array.isArray(rawDensity) ? rawDensity[0] : rawDensity;
+      const density = dRaw === 'large' || dRaw === 'medium' || dRaw === 'small' || dRaw === 'list' ? dRaw : undefined;
       const { html, cspOrigin } = await buildGalleryHtml({
         sourceId: typeof sourceId === 'string' ? sourceId : undefined,
         minOutlier: Number.isFinite(minOutlier) ? minOutlier : undefined,
+        density,
       });
       return {
         contents: [{
