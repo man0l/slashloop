@@ -19,7 +19,7 @@ on:
       endpoint_url:
         description: 'Full webhook URL (must end with /api/stripe/webhook)'
         required: true
-        default: 'https://slashloop-connector-seven.vercel.app/api/stripe/webhook'
+        default: 'https://mcp.slashloop.dev/api/stripe/webhook'
 
 jobs:
   setup:

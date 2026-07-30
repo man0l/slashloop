@@ -13,7 +13,7 @@ so installers never handle them.
 | **Claude plugin** | `claude-plugin/` | `/plugin marketplace add man0l/slashloop` | Claude Code |
 | **Connector** | deployed host | add `…/mcp` as a custom connector | Claude Desktop, Cowork, claude.ai |
 
-Live endpoint: **https://slashloop-connector-seven.vercel.app/mcp**
+Live endpoint: **https://mcp.slashloop.dev/mcp**
 
 ```
 src/
@@ -44,7 +44,7 @@ On first tool call, complete the Supabase OAuth login in the browser.
 
 ### Claude Desktop / Cowork / claude.ai (connector)
 Settings → Connectors → Add custom connector →
-`https://slashloop-connector-seven.vercel.app/mcp` → log in → consent.
+`https://mcp.slashloop.dev/mcp` → log in → consent.
 All 32 tools are then available; ask in plain language
 ("track tiktok creator @x", "find outlier videos about Y").
 

@@ -2,7 +2,7 @@
   "mcpServers": {
     "slashloop": {
       "type": "http",
-      "url": "https://slashloop-connector-seven.vercel.app/mcp"
+      "url": "https://mcp.slashloop.dev/mcp"
     }
   }
 }
