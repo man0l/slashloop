@@ -51,6 +51,30 @@ export async function POST(request: Request): Promise<Response> {
   await runWithUser(claims.sub, async () => {
     const mcp = buildRemoteMcp(claims!);
     await mcp.connect(transport);
+
+    // Temporary, alongside the oninitialized log in remote/handlers.ts: that log
+    // fired with capabilities undefined on every call, which is consistent with
+    // TWO different explanations — (a) Claude Desktop genuinely never declares
+    // capabilities for this connector, or (b) this deployment builds a fresh
+    // McpServer per HTTP request (see the comment below), so oninitialized fires
+    // on an instance that never itself received the initialize params — the real
+    // negotiation happened on an earlier, already-discarded instance. Logging the
+    // raw JSON-RPC method(s) in THIS request settles it: if a tools/call for
+    // show_gallery arrives with no initialize in the same body, this request
+    // never had the chance to see capabilities at all, regardless of what the
+    // client declared minutes earlier.
+    try {
+      const cloned = request.clone();
+      const body = await cloned.text();
+      const parsed: unknown = JSON.parse(body);
+      const methods = Array.isArray(parsed)
+        ? parsed.map(m => (m as { method?: string }).method)
+        : [(parsed as { method?: string }).method];
+      console.log(`[mcp-apps] request method(s): ${JSON.stringify(methods)}`);
+    } catch (err) {
+      console.log(`[mcp-apps] could not inspect request body: ${(err as Error).message}`);
+    }
+
     response = await transport.handleRequest(request);
   });
   return response;
