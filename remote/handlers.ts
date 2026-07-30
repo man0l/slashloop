@@ -59,6 +59,22 @@ export function buildRemoteMcp(claims: Claims) {
   );
 
   registerAllTools(mcp);
+
+  // Temporary diagnostic for the MCP Apps gallery (src/tools/gallery.ts): the
+  // spec requires the CLIENT to declare `extensions: { "io.modelcontextprotocol/ui": {...} }`
+  // during initialize before a host will render a ui:// resource at all — a
+  // client that never declares it still gets a working text-only tool result,
+  // with nothing that looks like an error. That is indistinguishable, from the
+  // tool-call side, from a client that supports MCP Apps but chose not to
+  // render this particular one. Logging what was actually declared settles
+  // which case we're in without guessing. Remove once §4.3 is answered.
+  mcp.server.oninitialized = () => {
+    const caps = mcp.server.getClientCapabilities() as
+      (Record<string, unknown> & { extensions?: Record<string, unknown> }) | undefined;
+    console.log(`[mcp-apps] client capabilities: ${JSON.stringify(caps)}`);
+    console.log(`[mcp-apps] declares io.modelcontextprotocol/ui: ${!!caps?.extensions?.['io.modelcontextprotocol/ui']}`);
+  };
+
   return mcp;
 }
 
