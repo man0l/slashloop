@@ -6,6 +6,7 @@
 //
 // Usage:
 //   bun src/scripts/preview_gallery.ts
+//   bun src/scripts/preview_gallery.ts --userId <supabase uid> --serve
 //   bun src/scripts/preview_gallery.ts --sourceId <uuid>
 //   bun src/scripts/preview_gallery.ts --serve
 //   bun src/scripts/preview_gallery.ts --serve --port 8790 --open
@@ -31,6 +32,7 @@ function hasFlag(flag: string): boolean {
 }
 
 async function main() {
+  const userId = argValue('--userId');
   const sourceId = argValue('--sourceId');
   const limitRaw = argValue('--limit');
   const limit = limitRaw ? Number(limitRaw) : undefined;
@@ -38,8 +40,9 @@ async function main() {
   const openBrowser = hasFlag('--open') || serve;
   const port = Number(argValue('--port') ?? 8790);
 
-  // Local/default workspace (stdio path): no OAuth user.
-  const { html, cards, note, cspOrigin } = await runWithUser(null, () =>
+  // Optional --userId targets a real user's workspace (ownerId = Supabase uid);
+  // null falls back to the local/default single-tenant workspace.
+  const { html, cards, note, cspOrigin } = await runWithUser(userId ?? null, () =>
     buildGalleryHtml({ sourceId, limit }),
   );
 
