@@ -15,8 +15,9 @@
 import { z } from 'zod/v4';
 import { registerAppTool, registerAppResource, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { db } from '../db.js';
-import { requireWorkspace } from '../context.js';
+import { requireWorkspace, currentUserId } from '../context.js';
 import { resolveThumbUrl, signedMediaUrl } from '../lib/media.js';
+import { signGalleryUrl, ttlHumanized } from '../lib/gallery-link.js';
 import { renderGallery, type GalleryCard, type GalleryFilters } from '../ui/gallery.js';
 import { ResourceTemplate, type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -197,6 +198,9 @@ export function registerGalleryApp(server: McpServer) {
         + 'browse, or look at their outliers/videos. Sorted by outlier score by default. '
         + 'Pass minOutlierScore (e.g. 5 or 10) to pre-select the outlier filter. '
         + 'Pass sourceId after refreshing a specific source to scope the gallery to that scrape. '
+        + 'Returns a galleryUrl as well: if the gallery does not render inline in this host, '
+        + 'surface that URL to the user as a clickable link — it opens the same interactive '
+        + 'gallery in their browser. '
         + 'get_feed remains the text-only answer.',
       inputSchema: {
         sourceId: z
@@ -248,22 +252,58 @@ export function registerGalleryApp(server: McpServer) {
       const minO = filters.minOutlier ?? 0;
       const visible = cards.filter(c => (c.outlierScore ?? 0) >= minO).length;
 
+      // Second delivery route (api/gallery.ts). MCP Apps are opt-in on the
+      // client: a host renders the ui:// resource above only if it declared
+      // `io.modelcontextprotocol/ui` at initialize. Claude Cowork and other
+      // Claude Code / Agent SDK hosts do not, and the drop is silent — the
+      // user gets this JSON where a gallery should be. A signed URL renders
+      // the identical HTML in a browser, so the tool is useful in every host
+      // instead of only the ones that speak SEP-1865.
+      const galleryUrl = await signGalleryUrl(currentUserId(), {
+        sourceId,
+        minOutlier: minOutlierScore,
+        minViews,
+        density,
+      });
+
+      const content: Array<
+        | { type: 'text'; text: string }
+        | { type: 'resource_link'; uri: string; name: string; description: string; mimeType: string }
+      > = [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          message: 'Gallery rendered',
+          videosInPool: cards.length,
+          visibleWithInitialFilter: visible,
+          sourceId: sourceId ?? null,
+          filters,
+          withStoredVideo: cards.filter(c => c.mediaUrl).length,
+          withKeyMoments: cards.filter(c => c.keyMoments.length > 0).length,
+          topOutlierScores: cards
+            .slice(0, 5)
+            .map(c => ({ id: c.id, handle: c.creatorHandle, outlierScore: c.outlierScore })),
+          galleryUrl,
+          // Addressed to the model, not the user: hosts that never render the
+          // ui:// resource have no other way to know a real gallery exists.
+          hostNote: galleryUrl
+            ? `If the interactive gallery did not appear in this conversation, this host does not render MCP Apps. Give the user the galleryUrl above as a clickable link — it opens the same interactive gallery in their browser and is valid for ${ttlHumanized()}.`
+            : 'No gallery link available (no signing secret or public origin configured). If the interactive gallery did not render, summarise topOutlierScores as text instead.',
+        }, null, 2),
+      }];
+
+      // A first-class link block for hosts that surface resource_link content.
+      if (galleryUrl) {
+        content.push({
+          type: 'resource_link' as const,
+          uri: galleryUrl,
+          name: 'Open the outlier gallery',
+          description: `Interactive gallery of ${cards.length} videos — thumbnails, filters, and playback where media is stored. Link valid for ${ttlHumanized()}.`,
+          mimeType: 'text/html',
+        });
+      }
+
       return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            message: 'Gallery rendered',
-            videosInPool: cards.length,
-            visibleWithInitialFilter: visible,
-            sourceId: sourceId ?? null,
-            filters,
-            withStoredVideo: cards.filter(c => c.mediaUrl).length,
-            withKeyMoments: cards.filter(c => c.keyMoments.length > 0).length,
-            topOutlierScores: cards
-              .slice(0, 5)
-              .map(c => ({ id: c.id, handle: c.creatorHandle, outlierScore: c.outlierScore })),
-          }, null, 2),
-        }],
+        content,
         _meta: {
           ui: { resourceUri },
           'ui/resourceUri': resourceUri,

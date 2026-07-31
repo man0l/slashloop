@@ -494,6 +494,38 @@ designing UI around it: the Claude host has a track record of dropping declared
 CSP fields. If it works, `get_video` mints the signed URL on demand (§1.9).
 If not, the card opens the source URL externally and nothing else changes.
 
+**4.4 Answered: some hosts never render the app at all.** The spike above
+assumed the failure mode was CSP. It is not — in Claude Cowork the gallery does
+not appear in any form.
+
+MCP Apps are opt-in on the **client**. A host fetches and renders a `ui://`
+resource only if it declared `extensions: { "io.modelcontextprotocol/ui": … }`
+during `initialize`. Cowork — and any Claude Code / Agent SDK host — does not:
+tool results arrive at the model as plain text and `_meta.ui.resourceUri` is
+dropped with no error. The user gets the JSON summary where a gallery should be,
+and nothing in the tool result says otherwise.
+
+**Detection is not available to us.** `api/mcp.ts` is stateless — a fresh
+`McpServer` per HTTP request — so `initialize` and a later `tools/call` land on
+different instances. By the time a tool runs, `getClientCapabilities()` has
+never seen the client's extensions. The temporary logging that chased this is
+removed; the constraint is documented at both call sites instead.
+
+**Resolution: a second delivery route, always present.** `show_gallery` keeps
+`_meta.ui.resourceUri` for hosts that do render apps, and additionally returns
+`galleryUrl` — a signed, short-lived link to `/gallery` (`api/gallery.ts`),
+which serves the *same* `buildGalleryHtml()` output as an ordinary web page.
+Auth is a narrow, audience-pinned token (`src/lib/gallery-link.ts`) that
+authorises only "render this user's gallery" and cannot be replayed against
+`/mcp`; the workspace is still resolved from the token's `sub` through
+`requireWorkspace()`, so query params cannot widen what is visible. The tool
+result also carries a `hostNote` telling the model to surface the link when the
+inline gallery did not appear.
+
+This makes the gallery host-independent rather than conditional, which is the
+right shape given detection is impossible. It also means §4.3's playback answer
+only ever gated the *inline* experience — in a real browser tab, `<video>` plays.
+
 ---
 
 ## 5. Escape hatch — R2, if egress shows up on the bill

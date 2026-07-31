@@ -22,6 +22,10 @@
       "destination": "/api/health"
     },
     {
+      "source": "/gallery",
+      "destination": "/api/gallery"
+    },
+    {
       "source": "/",
       "destination": "/api/health"
     }
@@ -29,6 +33,9 @@
   "functions": {
     "api/mcp.ts": {
       "maxDuration": 60
+    },
+    "api/gallery.ts": {
+      "maxDuration": 30
     },
     "api/cron/media-retention.ts": {
       "maxDuration": 60

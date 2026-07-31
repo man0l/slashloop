@@ -52,38 +52,15 @@ export async function POST(request: Request): Promise<Response> {
     const mcp = buildRemoteMcp(claims!);
     await mcp.connect(transport);
 
-    // Temporary, alongside the oninitialized log in remote/handlers.ts: that log
-    // fired with capabilities undefined on every call, which is consistent with
-    // TWO different explanations — (a) Claude Desktop genuinely never declares
-    // capabilities for this connector, or (b) this deployment builds a fresh
-    // McpServer per HTTP request (see the comment below), so oninitialized fires
-    // on an instance that never itself received the initialize params — the real
-    // negotiation happened on an earlier, already-discarded instance. Logging the
-    // raw JSON-RPC method(s) in THIS request settles it: if a tools/call for
-    // show_gallery arrives with no initialize in the same body, this request
-    // never had the chance to see capabilities at all, regardless of what the
-    // client declared minutes earlier.
-    let methods: (string | undefined)[] = [];
-    try {
-      const cloned = request.clone();
-      const body = await cloned.text();
-      const parsed: unknown = JSON.parse(body);
-      methods = Array.isArray(parsed)
-        ? parsed.map(m => (m as { method?: string }).method)
-        : [(parsed as { method?: string }).method];
-    } catch (err) {
-      // empty/non-JSON body (e.g. an SSE accept) — nothing to inspect
-    }
-
+    // NOTE on client-capability detection, since it looks tempting here and is
+    // not available: this deployment is stateless, so `initialize` and a later
+    // `tools/call` land on DIFFERENT McpServer instances. By the time a tool
+    // runs, `getClientCapabilities()` on THIS instance has never seen the
+    // client's declared extensions — the negotiation happened on an instance
+    // that was already discarded. That is why show_gallery cannot branch on
+    // whether the host supports MCP Apps, and instead always returns both an
+    // inline ui:// resource and a signed /gallery link (src/tools/gallery.ts).
     response = await transport.handleRequest(request);
-
-    // Post-handleRequest: if `initialize` ran inside THIS request, the client's
-    // declared capabilities are now on the server instance. One short,
-    // trunc-proof line settles the open §4.3 question — does this host declare
-    // io.modelcontextprotocol/ui at all? (Vercel ingests ~50 chars of message.)
-    const caps = mcp.server.getClientCapabilities() as
-      (Record<string, unknown> & { extensions?: Record<string, unknown> }) | undefined;
-    console.log(`mcp-apps ui=${!!caps?.extensions?.['io.modelcontextprotocol/ui']} m=${JSON.stringify(methods)}`);
   });
   return response;
 }
