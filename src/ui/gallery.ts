@@ -267,12 +267,26 @@ export function renderGallery(
 
   .empty, .note { opacity: .7; }
   .note { font-size: 12px; margin: 0 0 10px; }
+  .fetch-banner { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 0 0 10px;
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: color-mix(in srgb, currentColor 6%, transparent); font-size: 12px; }
+  .fetch-banner[hidden] { display: none; }
+  .fetch-banner strong { font-weight: 600; }
+  .card.fetch-eligible { border-color: color-mix(in srgb, currentColor 40%, transparent); position: relative; }
+  .card.fetch-eligible .thumb { outline: 2px solid color-mix(in srgb, currentColor 45%, transparent); outline-offset: -2px; }
+  .card.fetch-eligible::after { content: 'fetch ≥50×'; position: absolute; top: 6px; right: 6px;
+    font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
+    background: color-mix(in srgb, currentColor 18%, transparent); border: 1px solid var(--line); }
   .empty-filter { display: none; opacity: .7; margin: 24px 0; text-align: center; }
   .empty-filter.show { display: block; }
 </style></head>
 <body class="density-${esc(filters.density ?? 'medium')}">
 ${note ? `<p class="note">${esc(note)}</p>` : ''}
 ${cards.length ? toolbarHtml(filters) : ''}
+<div class="fetch-banner" id="fetch-banner" hidden>
+  <strong><span class="fetch-count">0</span> outliers ≥50× have no stored video.</strong>
+  To play &amp; scrub them here, ask: “fetch videos for outliers ≥50×”.
+</div>
 <div class="grid" id="grid">${body}</div>
 <p class="empty-filter" id="empty-filter">No videos match these filters. Lower the outlier threshold or min views.</p>
 <script>
@@ -288,6 +302,8 @@ ${cards.length ? toolbarHtml(filters) : ''}
   var emptyEl = document.getElementById('empty-filter');
   var prevEl = document.getElementById('f-prev');
   var nextEl = document.getElementById('f-next');
+  var bannerEl = document.getElementById('fetch-banner');
+  var FETCH_THRESHOLD = 50;
   if (!grid || !outlierEl) return;
 
   var page = 0;
@@ -349,6 +365,26 @@ ${cards.length ? toolbarHtml(filters) : ''}
       else rest.push(card);
     });
     matched = sortCards(matched, sortBy);
+
+    // Tag fetch-eligible cards (outlier >= threshold, no stored video) and show
+    // a banner so the caller can offer to download them. The banner count
+    // respects the active filter (eligible within matched); the tag goes on
+    // every eligible card so it appears whenever that card is paged into view.
+    allCards().forEach(function (card) {
+      var isElig = (parseFloat(card.getAttribute('data-score')) || 0) >= FETCH_THRESHOLD
+        && card.getAttribute('data-has-media') !== '1';
+      card.classList.toggle('fetch-eligible', isElig);
+    });
+    var eligibleShown = matched.filter(function (card) {
+      return card.classList.contains('fetch-eligible');
+    }).length;
+    if (bannerEl) {
+      bannerEl.hidden = eligibleShown === 0;
+      if (eligibleShown > 0) {
+        var c = bannerEl.querySelector('.fetch-count');
+        if (c) c.textContent = String(eligibleShown);
+      }
+    }
 
     var totalPages = Math.max(1, Math.ceil(matched.length / ps) || 1);
     if (page >= totalPages) page = totalPages - 1;

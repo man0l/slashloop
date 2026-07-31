@@ -18,6 +18,7 @@
 import { analyzeVideoWithDownload } from '../../src/analysis/index.js';
 import { claimNextJob, completeJob, failJob, reclaimStuckJobs, type AnalyzeJobPayload } from '../../src/lib/jobs.js';
 import { CREDIT_COSTS, refundCredits } from '../../src/lib/credits.js';
+import { db } from '../../src/db.js';
 
 /**
  * Stop claiming new work with this much of the budget left.
@@ -59,8 +60,31 @@ export async function POST(request: Request): Promise<Response> {
   const reclaimed = await reclaimStuckJobs();
 
   while (Date.now() - startedAt < RESERVE_MS) {
-    const job = await claimNextJob('analyze');
+    // Drain both queues from this one endpoint so the existing pg_cron schedule
+    // (which POSTs here every minute) picks up fetch jobs too — no new route.
+    const job = (await claimNextJob('fetch')) ?? (await claimNextJob('analyze'));
     if (!job) break;
+
+    // fetch jobs: download + store the MP4 only, no Gemini. Cost is Apify spend
+    // (asserted inside downloadTikTokVideo), not AI credits, so these rows
+    // carry no opId and reclaimStuckJobs never tries to refund them.
+    if (job.kind === 'fetch') {
+      try {
+        const v = await db.video.findUnique({ where: { id: job.videoId }, select: { url: true, platform: true } });
+        if (!v || v.platform !== 'tiktok' || !v.url) throw new Error('no downloadable TikTok URL');
+        const { downloadAndStoreVideo } = await import('../../src/lib/media.js');
+        const res = await downloadAndStoreVideo(job.workspaceId, job.videoId, v.url);
+        if (!res) throw new Error('download/store returned no result');
+        await completeJob(job.id, null);
+        processed.push({ jobId: job.id, videoId: job.videoId, ok: true });
+      } catch (err) {
+        const message = (err as Error).message;
+        const { terminal } = await failJob(job.id, message);
+        console.warn(`[jobs] fetch job ${job.id} failed (terminal=${terminal}): ${message}`);
+        processed.push({ jobId: job.id, videoId: job.videoId, ok: false, error: message });
+      }
+      continue;
+    }
 
     let payload: AnalyzeJobPayload = {};
     try {

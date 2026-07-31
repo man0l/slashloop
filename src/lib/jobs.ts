@@ -60,6 +60,30 @@ export interface AnalyzeJobPayload {
   forceBackend?: 'gemini-native' | 'gemini-text';
 }
 
+/**
+ * A fetch job downloads + stores the MP4 only (no Gemini analysis), so the
+ * gallery can play a video and seek key moments without a full analysis run.
+ * Fetch is charged against the Apify spend cap inside downloadTikTokVideo, not
+ * AI credits, so these rows carry no opId and reclaimStuckJobs skips refunding
+ * them (its `if (exhausted && job.opId)` guard).
+ */
+export interface FetchJobPayload {}
+
+export async function enqueueFetchJob(opts: {
+  workspaceId: string;
+  videoId: string;
+}): Promise<MediaJobRow> {
+  return db.mediaJob.create({
+    data: {
+      workspaceId: opts.workspaceId,
+      videoId: opts.videoId,
+      kind: 'fetch',
+      status: 'queued',
+      payloadJson: JSON.stringify({}),
+    },
+  }) as unknown as Promise<MediaJobRow>;
+}
+
 // ---------------------------------------------------------------------------
 // Enqueue
 // ---------------------------------------------------------------------------

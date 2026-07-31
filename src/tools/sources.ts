@@ -314,6 +314,26 @@ export function registerSourceTools(server: McpServer) {
       });
       await db.source.update({ where: { id: sourceId }, data: { lastRefreshedAt: new Date() } });
 
+      // Surface standout outliers so the caller can OFFER to fetch their videos
+      // (download + store the MP4 without a full analysis). Fixed at 50x: the
+      // handful of winners per scrape, not the whole pool — that is what makes
+      // fetching videos affordable. Counts only videos without stored media.
+      const FETCH_SUGGEST_THRESHOLD = 50;
+      const fetchCandidates = await db.video.count({
+        where: {
+          sourceId,
+          mediaStatus: { not: 'stored' },
+          score: { outlierScore: { gte: FETCH_SUGGEST_THRESHOLD } },
+        },
+      });
+      const fetchSuggestion = fetchCandidates > 0
+        ? {
+            threshold: FETCH_SUGGEST_THRESHOLD,
+            count: fetchCandidates,
+            hint: `${fetchCandidates} video(s) scored >= ${FETCH_SUGGEST_THRESHOLD}x and have no stored video yet. Ask the user if they want to see them play, then call fetch_videos with minOutlierScore ${FETCH_SUGGEST_THRESHOLD} (est ~${fetchCandidates}c Apify).`,
+          }
+        : null;
+
       const capStatus = source.platform !== 'shorts'
         ? await getApifyCapStatus(source.workspaceId)
         : null;
@@ -334,6 +354,7 @@ export function registerSourceTools(server: McpServer) {
           apifyCapStatus: capStatus,
           creditsCharged: actualCredits,
           creditsRemaining: creditBalance.total,
+          fetchSuggestion,
         }, null, 2) }],
       };
     });

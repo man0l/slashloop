@@ -244,6 +244,51 @@ export async function ingestVideoFile(
 }
 
 /**
+ * Download a video's MP4 via Apify and store it — WITHOUT running Gemini.
+ *
+ * This is the "fetch video" path: it makes a TikTok playable in the gallery
+ * (mediaKey / mediaStatus='stored') so the inline <video> and key-moment
+ * seeking work, independent of an analysis run. Reuses the exact download +
+ * ingest legs as the analyze path (analyzeVideoWithDownload), minus Gemini.
+ *
+ * TikTok only — downloadTikTokVideo drives the clockworks/tiktok-scraper
+ * actor. Apify spend is asserted + recorded inside downloadTikTokVideo, so the
+ * fetch flow is governed by the Apify spend cap, not AI credits. Returns the
+ * stored bytes, or null on any failure; callers record 'failed' and move on.
+ */
+export async function downloadAndStoreVideo(
+  workspaceId: string,
+  videoId: string,
+  videoUrl: string,
+): Promise<{ bytes: number } | null> {
+  if (!isStorageEnabled()) return null;
+
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { downloadTikTokVideo } = await import('./apify.js');
+
+  const tmpDir = mkdtempSync(join(tmpdir(), 'slashloop-fetch-'));
+  const filePath = join(tmpDir, `video_${videoId.slice(0, 8)}.mp4`);
+
+  try {
+    const dl = await downloadTikTokVideo({ workspaceId, videoUrl, outputPath: filePath });
+    const { statSync } = await import('node:fs');
+    if (statSync(filePath).size < 1024) throw new Error('downloaded file too small');
+
+    const stored = await ingestVideoFile(workspaceId, videoId, filePath);
+    return stored ? { bytes: dl.sizeBytes } : null;
+  } catch (err) {
+    console.warn(`[media] fetch failed for ${videoId}: ${(err as Error).message}`);
+    await db.video.update({ where: { id: videoId }, data: { mediaStatus: 'failed' } }).catch(() => {});
+    return null;
+  } finally {
+    const { rmSync } = await import('node:fs');
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+/**
  * Pull a previously stored MP4 back down to a local path.
  *
  * The read side of ingestVideoFile, and the mechanism behind Phase 2.1: a
