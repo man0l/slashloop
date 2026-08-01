@@ -15,13 +15,22 @@ import { withNextSteps, apifyCostLabel, analyzeCostLabel, refreshCreditLabel } f
 import { enqueueRefreshJob, outstandingJobForSource, dispatchWorker } from '../lib/jobs.js';
 
 /**
- * Largest refresh still run inline, in videos.
+ * Largest refresh still run inline, in videos. Zero = always queue.
  *
- * Chosen from what actually fits: a 10-video creator scrape completed in ~35s
- * of a 60s budget, and the cross-source rescore after it was still killed. Ten
- * is therefore already near the edge, so anything above it goes to the queue.
+ * This was 10, on the reasoning that a 10-video scrape "fits". It does not.
+ * Two separate 10-video creator refreshes both timed the MCP client out at
+ * 180s, and both had their cross-source rescore killed after the scrape had
+ * already been billed — the precise half-completion the queue exists to stop.
+ *
+ * Worse, the threshold silently disabled the queue altogether: deepen_baselines
+ * creates sources with videoLimit 10, and the test is `limit > 10`, so every
+ * source it made missed the queue by one video.
+ *
+ * A scrape is an opaque call to a third party. Nothing about it is reliably
+ * bounded, so there is no honest number here other than zero. `async: false`
+ * remains available to force the old path when debugging.
  */
-const INLINE_REFRESH_MAX_VIDEOS = 10;
+const INLINE_REFRESH_MAX_VIDEOS = 0;
 
 /** How long callers should be willing to wait on a queued refresh. */
 const REFRESH_JOB_DEADLINE_MS = 5 * 60_000;
@@ -188,7 +197,7 @@ export function registerSourceTools(server: McpServer) {
       sourceId: z.string(),
       videoLimit: z.number().min(1).max(200).optional().describe('Override source video limit for this run'),
       async: z.boolean().optional()
-        .describe(`Force queued (true) or inline (false). Default: queued when the limit exceeds ${INLINE_REFRESH_MAX_VIDEOS} videos.`),
+        .describe('Force inline (false) or queued (true). Default: queued — a scrape does not fit inside a tool call. Only pass false for debugging.'),
     },
     async ({ sourceId, videoLimit: limitOverride, async: asyncMode }) => {
       const workspace = await requireWorkspace();
