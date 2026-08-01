@@ -179,10 +179,27 @@ export async function enqueueRescoreJob(opts: {
   }) as unknown as Promise<MediaJobRow>;
 }
 
-/** Outstanding job for a source, so a caller is not told to pay twice. */
-export async function outstandingJobForSource(sourceId: string): Promise<MediaJobRow | null> {
+/**
+ * Outstanding job for a source, so a caller is not told to pay twice.
+ *
+ * `kind` matters and defaults to 'refresh'. Several kinds now target a source —
+ * a rescore is attached to one too — and rescores are free. Without the filter
+ * a queued rescore makes the source look busy, and refresh_due_sources skips a
+ * genuinely overdue paid refresh: a scheduled task that quietly does nothing.
+ * Observed live, with a workspace-wide rescore in flight.
+ *
+ * Pass null to ask "any job at all", which is what a UI would want.
+ */
+export async function outstandingJobForSource(
+  sourceId: string,
+  kind: string | null = 'refresh',
+): Promise<MediaJobRow | null> {
   return db.mediaJob.findFirst({
-    where: { sourceId, status: { in: ['queued', 'running'] } },
+    where: {
+      sourceId,
+      status: { in: ['queued', 'running'] },
+      ...(kind ? { kind } : {}),
+    },
     orderBy: { createdAt: 'desc' },
   }) as unknown as Promise<MediaJobRow | null>;
 }
