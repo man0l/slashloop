@@ -57,8 +57,11 @@ export function registerBaselineTools(server: McpServer) {
         .describe(`Videos to pull per creator (min ${CREATOR_BASELINE_MIN_SAMPLE}, default ${DEFAULT_VIDEOS_PER_CREATOR}).`),
       dryRun: z.boolean().default(true)
         .describe('true (default) = report candidates and cost only. false = create the creator sources.'),
+      screenOnly: z.boolean().default(false)
+        .describe('Free triage: score EVERY estimated outlier for suspicion and report, ignoring `limit`. '
+          + 'Spends nothing and creates nothing. Use first when there are more candidates than credits.'),
     },
-    async ({ minOutlierScore, limit, videosPerCreator, dryRun }) => {
+    async ({ minOutlierScore, limit, videosPerCreator, dryRun, screenOnly }) => {
       const workspace = await requireWorkspace();
       const wsFilter = { source: { workspaceId: workspace.id } };
 
@@ -107,7 +110,7 @@ export function registerBaselineTools(server: McpServer) {
 
       // One entry per creator, keeping their single best estimated outlier.
       const seen = new Set<string>();
-      const candidates: Array<{
+      const scored: Array<{
         creatorHandle: string;
         platform: string;
         topOutlierScore: number;
@@ -115,6 +118,8 @@ export function registerBaselineTools(server: McpServer) {
         views: number;
         followers: number | null;
         viewsPerFollower: number | null;
+        suspicion: number | null;
+        verdict: string;
         source: string;
         videosHeld: number;
         alreadyTrackedSourceId: string | null;
@@ -130,25 +135,111 @@ export function registerBaselineTools(server: McpServer) {
         seen.add(key);
 
         const followers: number | null = s.video.creatorFollowers ?? null;
-        candidates.push({
+        const vpf = followers && followers > 0
+          ? Math.round((s.video.views / followers) * 10) / 10
+          : null;
+
+        // Rank by DISAGREEMENT between the two signals, not by score.
+        //
+        // Measured on four paid checks: wherever the estimated score and the
+        // follower ratio agreed, the score survived being re-measured against
+        // the creator's own median (510->563, 273->295, 169->167). The one case
+        // where they disagreed was the only false positive, and the only
+        // purchase that taught anything: @mikaylanogueira, 438x estimated on a
+        // ratio of 0.3, collapsed to 1.3x — 17.4M followers reaching 5.7M
+        // views, which is normal for her.
+        //
+        // So a high estimated score on a creator who UNDER-reaches their own
+        // audience is the shape of a score that is lying. Ranking by score
+        // alone spends credits confirming things the free ratio already
+        // implied.
+        const suspicion = vpf != null && vpf > 0
+          ? Math.round((s.outlierScore / vpf) * 10) / 10
+          : null;
+
+        const verdict = vpf == null
+          ? 'unknown — no follower count, ratio cannot be computed'
+          : vpf < 1
+            ? 'LIKELY FALSE POSITIVE — reaches fewer viewers than they have followers'
+            : vpf < 10
+              ? 'suspect — modest reach relative to audience size'
+              : 'probably real — reach far exceeds follower count';
+
+        scored.push({
           creatorHandle: s.video.creatorHandle,
           platform: s.video.platform,
           topOutlierScore: s.outlierScore,
           topVideoId: s.video.id,
           views: s.video.views,
           followers,
-          viewsPerFollower: followers && followers > 0
-            ? Math.round((s.video.views / followers) * 10) / 10
-            : null,
+          viewsPerFollower: vpf,
+          suspicion,
+          verdict,
           source: s.video.source.query,
           videosHeld: held,
           alreadyTrackedSourceId: tracked.get(key) ?? null,
         });
-        if (candidates.length >= limit) break;
       }
+
+      // Most suspicious first. Nulls (no follower data) sort last: without a
+      // ratio there is nothing to disagree with, so they are the weakest use of
+      // credits, not the strongest.
+      scored.sort((a, b) => (b.suspicion ?? -1) - (a.suspicion ?? -1));
+
+      const candidates = scored.slice(0, limit);
 
       const perCreatorCost = `${apifyCostLabel(videosPerCreator)} + ${refreshCreditLabel(videosPerCreator)}`;
       const totalCredits = Math.ceil(videosPerCreator * 1.5) * candidates.length;
+
+      // Free triage. With 43 estimated outliers and a 15-credit check each,
+      // brute force costs 645 credits — so the useful question is not "which is
+      // the biggest score" but "which scores should I not believe". This
+      // answers that for nothing.
+      if (screenOnly) {
+        const likelyFalse = scored.filter(c => c.viewsPerFollower != null && c.viewsPerFollower < 1);
+        const suspect = scored.filter(c => c.viewsPerFollower != null && c.viewsPerFollower >= 1 && c.viewsPerFollower < 10);
+        const probablyReal = scored.filter(c => c.viewsPerFollower != null && c.viewsPerFollower >= 10);
+        const unknown = scored.filter(c => c.viewsPerFollower == null);
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
+            message: `Screened ${scored.length} estimated outlier(s) for free. Nothing spent, nothing created.`,
+            screenOnly: true,
+            howToRead:
+              'viewsPerFollower is reach measured against the creator\'s own audience, and it costs nothing. '
+              + 'Below 1 means the video reached fewer people than the creator has followers — a high estimated '
+              + 'score on top of that is almost certainly an artefact of the source median, not a breakout. '
+              + 'Verified on four paid checks: the three where both signals agreed all held up when re-measured; '
+              + 'the one that disagreed (438x estimated, 0.3 ratio) collapsed to 1.3x.',
+            spendGuidance:
+              'Spend on the likelyFalsePositive group first — those are the scores distorting the ranking, and '
+              + 'confirming them is the only thing the free signal cannot do. Creators in probablyReal can be '
+              + 'left alone: paying to confirm what the ratio already implies buys very little.',
+            counts: {
+              likelyFalsePositive: likelyFalse.length,
+              suspect: suspect.length,
+              probablyReal: probablyReal.length,
+              noFollowerData: unknown.length,
+            },
+            costToCheckAll: `${Math.ceil(videosPerCreator * 1.5) * scored.length} credits`,
+            costToCheckLikelyFalseOnly: `${Math.ceil(videosPerCreator * 1.5) * likelyFalse.length} credits`,
+            likelyFalsePositive: likelyFalse,
+            suspect,
+            probablyReal: probablyReal.slice(0, 10),
+            noFollowerData: unknown.slice(0, 10),
+          }, [
+            likelyFalse.length > 0 ? {
+              label: `Check the ${likelyFalse.length} likely false positive(s)`,
+              tool: 'deepen_baselines',
+              args: { minOutlierScore, limit: likelyFalse.length, videosPerCreator, dryRun: true },
+              cost: `${Math.ceil(videosPerCreator * 1.5) * likelyFalse.length} credits if you proceed past the dry run`,
+              spendsMoney: true,
+              why: 'These are ranked most-suspicious-first, so the default order already targets them. '
+                + 'Quote the total and confirm before running any refresh.',
+            } : null,
+          ]), null, 2) }],
+        };
+      }
 
       if (candidates.length === 0) {
         return {
