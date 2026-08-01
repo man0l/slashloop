@@ -29,6 +29,16 @@ import { db } from '../../src/db.js';
  */
 const RESERVE_MS = 45_000;
 
+/**
+ * Budget a refresh needs before it is worth starting.
+ *
+ * A scrape is one opaque, uninterruptible call. Started with less than this
+ * left it gets killed mid-flight — billed, half-applied, and only recovered by
+ * the stuck sweeper 15 minutes later. Better to leave the row queued for the
+ * next drain a minute away.
+ */
+const REFRESH_MIN_BUDGET_MS = 30_000;
+
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body, null, 2), {
     status,
@@ -51,7 +61,7 @@ export async function POST(request: Request): Promise<Response> {
   if (!authorized(request)) return json(401, { error: 'Unauthorized' });
 
   const startedAt = Date.now();
-  const processed: Array<{ jobId: string; videoId: string; ok: boolean; error?: string }> = [];
+  const processed: Array<{ jobId: string; videoId: string | null; ok: boolean; error?: string }> = [];
 
   // Recover abandoned claims before taking new work. This is the single place
   // the retry policy is applied — the pg_cron job deliberately does not do it in
@@ -60,28 +70,89 @@ export async function POST(request: Request): Promise<Response> {
   const reclaimed = await reclaimStuckJobs();
 
   while (Date.now() - startedAt < RESERVE_MS) {
-    // Drain both queues from this one endpoint so the existing pg_cron schedule
-    // (which POSTs here every minute) picks up fetch jobs too — no new route.
-    const job = (await claimNextJob('fetch')) ?? (await claimNextJob('analyze'));
+    // Drain all three queues from this one endpoint so the existing pg_cron
+    // schedule (which POSTs here every minute) picks them all up — no new
+    // route. That is not just tidiness: the Hobby plan caps a deployment at 12
+    // Serverless Functions, and this project is at the limit. A dedicated
+    // /api/jobs/refresh route was written, hit the cap, and failed the build.
+    //
+    // refresh is claimed LAST because it is the longest job — a scrape can use
+    // most of the budget on its own, and claiming one first would leave quick
+    // analyze/fetch rows waiting a full minute for the next drain.
+    const job = (await claimNextJob('fetch'))
+      ?? (await claimNextJob('analyze'))
+      ?? (await claimNextJob('refresh'));
     if (!job) break;
+
+    // refresh jobs: scrape + persist + score a whole SOURCE. Credits are
+    // pre-authorised and settled inside runRefresh, so these rows carry no
+    // opId and the reclaim path has nothing to refund.
+    if (job.kind === 'refresh') {
+      if (!job.sourceId) {
+        await failJob(job.id, 'refresh job has no sourceId');
+        processed.push({ jobId: job.id, videoId: null, ok: false, error: 'no sourceId' });
+        continue;
+      }
+      // Do not start a scrape that cannot finish. Unlike analyze, this call is
+      // opaque and uninterruptible: begun with too little budget it is killed
+      // mid-flight, which is the exact half-completion this queue exists to
+      // prevent. Leave it queued for the next drain instead.
+      if (Date.now() - startedAt > RESERVE_MS - REFRESH_MIN_BUDGET_MS) {
+        await failJob(job.id, 'insufficient budget remaining; requeued for next drain');
+        break;
+      }
+      try {
+        const { runRefresh } = await import('../../src/lib/refresh.js');
+        const result = await runRefresh({
+          workspaceId: job.workspaceId,
+          sourceId: job.sourceId,
+          limitOverride: (JSON.parse(job.payloadJson || '{}') as { limitOverride?: number }).limitOverride,
+        });
+        if (!result.ok) {
+          const message = result.errors.join('; ') || result.refusal || 'refresh refused';
+          const { terminal } = await failJob(job.id, message);
+          console.warn(`[jobs] refresh job ${job.id} refused (terminal=${terminal}): ${message}`);
+          processed.push({ jobId: job.id, videoId: null, ok: false, error: message });
+          continue;
+        }
+        await completeJob(job.id, null);
+        processed.push({ jobId: job.id, videoId: null, ok: true });
+      } catch (err) {
+        const message = (err as Error).message;
+        const { terminal } = await failJob(job.id, message);
+        console.warn(`[jobs] refresh job ${job.id} failed (terminal=${terminal}): ${message}`);
+        processed.push({ jobId: job.id, videoId: null, ok: false, error: message });
+      }
+      continue;
+    }
+
+    // Everything below is video-scoped. videoId is nullable on the row now that
+    // source-scoped kinds share the table, so narrow it once here rather than
+    // asserting at each use.
+    const videoId = job.videoId;
+    if (!videoId) {
+      await failJob(job.id, `${job.kind} job has no videoId`);
+      processed.push({ jobId: job.id, videoId: null, ok: false, error: 'no videoId' });
+      continue;
+    }
 
     // fetch jobs: download + store the MP4 only, no Gemini. Cost is Apify spend
     // (asserted inside downloadTikTokVideo), not AI credits, so these rows
     // carry no opId and reclaimStuckJobs never tries to refund them.
     if (job.kind === 'fetch') {
       try {
-        const v = await db.video.findUnique({ where: { id: job.videoId }, select: { url: true, platform: true } });
+        const v = await db.video.findUnique({ where: { id: videoId }, select: { url: true, platform: true } });
         if (!v || v.platform !== 'tiktok' || !v.url) throw new Error('no downloadable TikTok URL');
         const { downloadAndStoreVideo } = await import('../../src/lib/media.js');
-        const res = await downloadAndStoreVideo(job.workspaceId, job.videoId, v.url);
+        const res = await downloadAndStoreVideo(job.workspaceId, videoId, v.url);
         if (!res) throw new Error('download/store returned no result');
         await completeJob(job.id, null);
-        processed.push({ jobId: job.id, videoId: job.videoId, ok: true });
+        processed.push({ jobId: job.id, videoId, ok: true });
       } catch (err) {
         const message = (err as Error).message;
         const { terminal } = await failJob(job.id, message);
         console.warn(`[jobs] fetch job ${job.id} failed (terminal=${terminal}): ${message}`);
-        processed.push({ jobId: job.id, videoId: job.videoId, ok: false, error: message });
+        processed.push({ jobId: job.id, videoId, ok: false, error: message });
       }
       continue;
     }
@@ -95,11 +166,11 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     try {
-      const result = await analyzeVideoWithDownload(job.videoId, {
+      const result = await analyzeVideoWithDownload(videoId, {
         forceBackend: payload.forceBackend,
       });
       await completeJob(job.id, result.id ?? null);
-      processed.push({ jobId: job.id, videoId: job.videoId, ok: true });
+      processed.push({ jobId: job.id, videoId, ok: true });
     } catch (err) {
       const message = (err as Error).message;
       const { terminal } = await failJob(job.id, message);
@@ -118,7 +189,7 @@ export async function POST(request: Request): Promise<Response> {
       }
 
       console.warn(`[jobs] analyze job ${job.id} failed (terminal=${terminal}): ${message}`);
-      processed.push({ jobId: job.id, videoId: job.videoId, ok: false, error: message });
+      processed.push({ jobId: job.id, videoId, ok: false, error: message });
     }
   }
 

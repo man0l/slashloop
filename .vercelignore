@@ -5,3 +5,12 @@ prisma/*.db
 .agents
 .claude
 .mcp.json
+
+# Superseded — delete the file and this line together.
+#
+# A dedicated refresh worker was written here, then folded back into
+# api/jobs/analyze.ts: the Hobby plan caps a deployment at 12 Serverless
+# Functions and this project sits exactly on that limit, so a 13th route fails
+# the build outright ("No more than 12 Serverless Functions can be added").
+# Ignoring it keeps the build green until the file is actually removed.
+api/jobs/refresh.ts

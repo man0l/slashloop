@@ -309,7 +309,13 @@ function baseUrl(): string | null {
  * is what lets this call be an optimisation rather than the thing correctness
  * rests on.
  */
-export async function dispatchWorker(kind: 'analyze' | 'refresh' = 'analyze'): Promise<{ dispatched: boolean; reason?: string }> {
+/**
+ * `kind` is accepted for call-site clarity but every kind drains through the
+ * same endpoint. api/jobs/analyze.ts claims fetch, analyze and refresh in turn,
+ * because the Hobby plan's 12-function cap leaves no room for a second worker
+ * route — see the comment there.
+ */
+export async function dispatchWorker(_kind: 'analyze' | 'refresh' = 'analyze'): Promise<{ dispatched: boolean; reason?: string }> {
   const base = baseUrl();
   if (!base) return { dispatched: false, reason: 'no PUBLIC_URL or VERCEL_URL' };
 
@@ -319,7 +325,7 @@ export async function dispatchWorker(kind: 'analyze' | 'refresh' = 'analyze'): P
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1500);
   try {
-    await fetch(`${base}/api/jobs/${kind}`, {
+    await fetch(`${base}/api/jobs/analyze`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${secret}` },
       signal: controller.signal,
