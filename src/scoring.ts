@@ -196,11 +196,30 @@ export async function computeCreatorBaselinesBatch(
 // scoreVideo
 // ---------------------------------------------------------------------------
 
+/**
+ * Reach relative to the creator's own audience, below which an `estimated`
+ * score should not be presented as a breakout.
+ *
+ * A video that reaches fewer people than the creator has followers has, by
+ * definition, under-performed for that creator — whatever it looks like against
+ * a hashtag median. Measured against four paid verifications: the three
+ * creators above this line all held up when re-scored against their own median
+ * (510→563x, 273→295x, 169→167x); the one below it collapsed from 438x to 1.3x.
+ * @mikaylanogueira has 17.4M followers and that video reached 5.7M — utterly
+ * normal for her, and the product was calling it a 438x OUTLIER.
+ */
+const UNDER_REACH_RATIO = 1;
+
 export function scoreVideo(
   videoId: string,
   views: number,
   baseline: number,
   scoreType: 'actual' | 'estimated',
+  /**
+   * Creator follower count, when known. Already on every Video row, so this
+   * confidence check costs nothing — no extra query, no scrape, no credits.
+   */
+  creatorFollowers?: number | null,
 ): ScoreResult {
   const outlierScore = Math.round((views / baseline) * 10) / 10;
   const formattedViews = formatNumber(views);
@@ -220,7 +239,27 @@ export function scoreVideo(
   } else {
     // baseline here is the source/batch median (see batchScoreVideos), not the
     // creator's own single video — otherwise every one-off scrape scores ~1.0x.
-    explanation = `📊 Estimated score — ${formattedViews} views vs. this source's median of ~${formattedBaseline} — ${outlierScore}x (limited creator history)`;
+    //
+    // The confidence check below is the difference between a useful number and
+    // a misleading one. An estimated score compares a video to its SOURCE, so a
+    // large account posting normally into a niche hashtag scores in the
+    // hundreds. Presenting that with the same 🚀 language as a real breakout is
+    // how the product ended up ranking a 1.3x video second overall.
+    const ratio = creatorFollowers && creatorFollowers > 0 ? views / creatorFollowers : null;
+
+    if (ratio !== null && ratio < UNDER_REACH_RATIO) {
+      explanation =
+        `⚠️ Unverified — ${formattedViews} views is ${outlierScore}x this source's median of `
+        + `~${formattedBaseline}, but this creator has ${formatNumber(creatorFollowers!)} followers, so the `
+        + `video reached FEWER people than follow them. That is normal performance for an account this size, `
+        + `not a breakout — the high multiple reflects the hashtag being small. `
+        + `Treat with suspicion; deepen_baselines can confirm against their own median.`;
+    } else {
+      const reach = ratio !== null ? ` (reached ${Math.round(ratio * 10) / 10}x their follower count)` : '';
+      explanation =
+        `📊 Estimated score — ${formattedViews} views vs. this source's median of ~${formattedBaseline} — `
+        + `${outlierScore}x (limited creator history)${reach}`;
+    }
   }
 
   return { videoId, outlierScore, scoreType, explanation };
@@ -315,7 +354,7 @@ export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]>
     const baseline =
       scoreType === 'actual' ? baselineInfo.median : sourceBatchBaseline;
 
-    const result = scoreVideo(video.id, video.views, baseline, scoreType);
+    const result = scoreVideo(video.id, video.views, baseline, scoreType, video.creatorFollowers);
     results.push(result);
 
     // Upsert score

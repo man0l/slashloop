@@ -214,14 +214,29 @@ export function registerFeedTools(server: McpServer) {
       };
     });
 
-  // ---- discover_search ----
-  server.tool('discover_search',
-    '[EXPERIMENTAL] One-off search across platforms. Live search (Apify for TikTok/Reels, YouTube Data API v3 for Shorts) is NOT yet wired up — this tool only filters existing videos already in the DB. To find new content, use create_source to track a creator/keyword/hashtag and wait for refresh_source to become live.',
-    {
+  // ---- search_library (was discover_search) ----
+  //
+  // Renamed because the old name was the product's most misleading moment. It
+  // reads like live search; it only queries videos already scraped into this
+  // workspace. A new user searches a term with an empty library, gets nothing,
+  // and reasonably concludes the product is broken — when the real answer is
+  // "track it, then refresh".
+  //
+  // `discover_search` stays registered below as a deprecated alias so existing
+  // skills, saved prompts and habits keep working.
+  const searchLibrary = {
+    description:
+      'Search videos ALREADY pulled into this workspace by keyword, hashtag or creator handle. '
+      + 'This does NOT hit the network and cannot find new content — an empty result means nothing '
+      + 'matching has been scraped yet, not that nothing exists. To bring in new videos use create_source '
+      + 'then refresh_source.',
+    schema: {
       query: z.string().describe('Search query (keyword, hashtag, or creator handle)'),
       platform: z.enum(['tiktok', 'reels', 'shorts']).describe('Platform to search'),
     },
-    async ({ query, platform }) => {
+  };
+
+  const searchLibraryHandler = async ({ query, platform }: { query: string; platform: 'tiktok' | 'reels' | 'shorts' }) => {
       const workspace = await requireWorkspace();
       // In a full implementation, this would call the scraper APIs directly
       // For now, check if any existing videos match the search
@@ -282,7 +297,15 @@ export function registerFeedTools(server: McpServer) {
           },
         ]), null, 2) }],
       };
-    });
+  };
+
+  server.tool('search_library', searchLibrary.description, searchLibrary.schema, searchLibraryHandler);
+
+  // Deprecated alias. Same handler, so behaviour cannot drift between the two.
+  server.tool('discover_search',
+    `[DEPRECATED — use search_library] ${searchLibrary.description}`,
+    searchLibrary.schema,
+    searchLibraryHandler);
 
   // ---- get_outlier_summary ----
   server.tool('get_outlier_summary',
@@ -299,7 +322,7 @@ export function registerFeedTools(server: McpServer) {
           video: wsFilter,
         },
         include: {
-          video: { select: { id: true, creatorHandle: true, platform: true, views: true, postedAt: true, source: { select: { query: true } } } },
+          video: { select: { id: true, creatorHandle: true, creatorFollowers: true, platform: true, views: true, postedAt: true, source: { select: { query: true } } } },
         },
         orderBy: { outlierScore: 'desc' },
         take: 50, // over-fetch so we can rank actual-first after the cut
@@ -310,10 +333,23 @@ export function registerFeedTools(server: McpServer) {
       // rank them below actual in the displayed top list.
       const actualCount = await db.score.count({ where: { outlierScore: { gte: 5 }, scoreType: 'actual', video: wsFilter } });
       const estimatedCount = await db.score.count({ where: { outlierScore: { gte: 5 }, scoreType: 'estimated', video: wsFilter } });
+
+      // Third tier: estimated scores on creators who reached fewer people than
+      // follow them. An honest explanation is not enough on its own — a video
+      // labelled "unverified" that still sits second in the list is still being
+      // recommended. @mikaylanogueira ranked #2 at 438x and was actually 1.3x.
+      //
+      // Free: creatorFollowers is selected above, no extra query.
+      const underReaches = (s: typeof outliers[number]) => {
+        const f = s.video.creatorFollowers;
+        return s.scoreType === 'estimated' && !!f && f > 0 && s.video.views / f < 1;
+      };
       const ranked = [
         ...outliers.filter(s => s.scoreType === 'actual'),
-        ...outliers.filter(s => s.scoreType === 'estimated'),
+        ...outliers.filter(s => s.scoreType === 'estimated' && !underReaches(s)),
+        ...outliers.filter(underReaches),
       ].slice(0, 20);
+      const underReachCount = outliers.filter(underReaches).length;
 
       const analyzed = await db.analysis.count({ where: { video: wsFilter } });
       const hooks = await db.hook.count({ where: { video: wsFilter } });
@@ -352,6 +388,13 @@ export function registerFeedTools(server: McpServer) {
             + '`estimated` = measured against the source\'s median, which largely tracks account size — '
             + 'a huge account posting normally into a tracked hashtag scores high. '
             + 'Lead with actual scores when summarising or recommending.',
+          ...(underReachCount > 0 ? {
+            underReachWarning:
+              `${underReachCount} estimated outlier(s) are ranked LAST because the creator reached fewer people `
+              + 'than follow them — normal performance for their audience size, not a breakout. Their explanation '
+              + 'starts with ⚠️. Do not recommend analysing these ahead of the actual-score ones; verified example: '
+              + 'a 438x estimated score in this workspace turned out to be 1.3x.',
+          } : {}),
           topOutliers: ranked.map(s => ({
             videoId: s.video.id,
             creator: s.video.creatorHandle,
