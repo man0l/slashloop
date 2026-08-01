@@ -18,6 +18,7 @@ import { db } from '../db.js';
 import { requireWorkspace, currentUserId } from '../context.js';
 import { resolveThumbUrl, signedMediaUrl } from '../lib/media.js';
 import { signGalleryUrl, ttlHumanized } from '../lib/gallery-link.js';
+import { withNextSteps, analyzeCostLabel } from '../lib/next-steps.js';
 import { renderGallery, type GalleryCard, type GalleryFilters } from '../ui/gallery.js';
 import { ResourceTemplate, type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -273,13 +274,16 @@ export function registerGalleryApp(server: McpServer) {
       const minO = filters.minOutlier ?? 0;
       const visible = cards.filter(c => (c.outlierScore ?? 0) >= minO).length;
 
-      // Second delivery route (api/gallery.ts). MCP Apps are opt-in on the
-      // client: a host renders the ui:// resource above only if it declared
-      // `io.modelcontextprotocol/ui` at initialize. Claude Cowork and other
-      // Claude Code / Agent SDK hosts do not, and the drop is silent — the
-      // user gets this JSON where a gallery should be. A signed URL renders
-      // the identical HTML in a browser, so the tool is useful in every host
-      // instead of only the ones that speak SEP-1865.
+      // Second delivery route (api/gallery.ts).
+      //
+      // Measured, not assumed: the host DOES negotiate MCP Apps. The
+      // capability log in api/mcp.ts records, on every initialize,
+      //   mcp-apps host="claude-ai" ui=true mimeTypes=["text/html;profile=mcp-app"]
+      // — the exact MIME type this resource serves. Capability, tool _meta and
+      // resource type are all correct, and the iframe still never appears.
+      // That is ext-apps#671, a host-side rendering bug, not something fixable
+      // from here. So the signed URL is the reliable path to the same HTML and
+      // stays regardless of what the host claims to support.
       const galleryUrl = await signGalleryUrl(currentUserId(), {
         sourceId,
         minOutlier: minOutlierScore,
@@ -287,12 +291,33 @@ export function registerGalleryApp(server: McpServer) {
         density,
       });
 
+      // The forward edge out of the gallery. Viewing is where this product's
+      // funnel historically stopped dead — plenty of scored outliers, zero
+      // analyses — so the result carries the analysis move, aimed at the
+      // videos actually worth spending on.
+      //
+      // `actual` scores compare a creator to their own baseline; `estimated`
+      // compares a video to its source's median, which mostly rewards large
+      // accounts posting normally into a tracked hashtag. Suggest the former.
+      const ws = await requireWorkspace();
+      const candidates = await db.video.findMany({
+        where: {
+          source: { workspaceId: ws.id },
+          ...(sourceId ? { sourceId } : {}),
+          analyses: { none: {} },
+          score: { scoreType: 'actual', outlierScore: { gte: 5 } },
+        },
+        include: { score: true },
+        orderBy: { score: { outlierScore: 'desc' } },
+        take: 5,
+      });
+
       const content: Array<
         | { type: 'text'; text: string }
         | { type: 'resource_link'; uri: string; name: string; description: string; mimeType: string }
       > = [{
         type: 'text' as const,
-        text: JSON.stringify({
+        text: JSON.stringify(withNextSteps({
           message: 'Gallery rendered',
           videosInPool: cards.length,
           visibleWithInitialFilter: visible,
@@ -307,9 +332,29 @@ export function registerGalleryApp(server: McpServer) {
           // Addressed to the model, not the user: hosts that never render the
           // ui:// resource have no other way to know a real gallery exists.
           hostNote: galleryUrl
-            ? `If the interactive gallery did not appear in this conversation, this host does not render MCP Apps. Give the user the galleryUrl above as a clickable link — it opens the same interactive gallery in their browser and is valid for ${ttlHumanized()}.`
+            ? `If the interactive gallery did not appear in this conversation, this host did not render the MCP App. Give the user the galleryUrl above as a clickable link — it opens the same interactive gallery in their browser and is valid for ${ttlHumanized()}.`
             : 'No gallery link available (no signing secret or public origin configured). If the interactive gallery did not render, summarise topOutlierScores as text instead.',
-        }, null, 2),
+        }, [
+          candidates.length > 0 ? {
+            label: candidates.length === 1
+              ? `Analyze @${candidates[0]!.creatorHandle}'s ${candidates[0]!.score?.outlierScore.toFixed(0)}× breakout`
+              : `Analyze the ${candidates.length} real outliers`,
+            tool: 'analyze_video',
+            args: { videoId: candidates[0]!.id },
+            cost: analyzeCostLabel(candidates.length),
+            spendsMoney: true,
+            why: `These are the only unanalyzed videos scored against their creator's own baseline (${candidates
+              .map(c => `@${c.creatorHandle} ${c.score?.outlierScore.toFixed(0)}×`)
+              .join(', ')}). Analysis is per-video — call analyze_video once per id, and confirm the total first.`,
+          } : null,
+          candidates.length === 0 ? {
+            label: 'Pull fresh videos for these sources',
+            tool: 'refresh_source',
+            cost: 'live Apify scrape — quote the source before running',
+            spendsMoney: true,
+            why: 'Every scored outlier here is already analyzed, or none has a creator-relative score yet. More history per creator turns estimated scores into actual ones.',
+          } : null,
+        ]), null, 2),
       }];
 
       // A first-class link block for hosts that surface resource_link content.

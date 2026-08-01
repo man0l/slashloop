@@ -7,6 +7,7 @@ import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
 import { formatNumber } from '../scoring.js';
 import { resolveThumbUrl } from '../lib/media.js';
+import { withNextSteps, analyzeCostLabel } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerFeedTools(server: McpServer) {
@@ -166,8 +167,15 @@ export function registerFeedTools(server: McpServer) {
         };
       });
 
+      // Best value for analysis credits in the current result set: unanalyzed,
+      // and scored against the creator's own baseline rather than a source
+      // median. Drawn from the page the user is actually looking at.
+      const analyzeCandidates = paginated
+        .filter(v => v.analyses.length === 0 && v.score?.scoreType === 'actual')
+        .slice(0, 5);
+
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({
+        content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
           feed,
           pagination: {
             limit,
@@ -180,7 +188,29 @@ export function registerFeedTools(server: McpServer) {
             ...(minEngagementRate != null ? { totalIsUpperBound: true } : {}),
           },
           filters: { platform, sourceId, search, minViews, minOutlierScore, minEngagementRate, sortBy },
-        }, null, 2) }],
+        }, [
+          feed.length > 0 ? {
+            label: 'View these as a gallery',
+            tool: 'show_gallery',
+            args: { ...(sourceId ? { sourceId } : {}), ...(minOutlierScore ? { minOutlierScore } : {}) },
+            why: 'Free. Thumbnails instead of JSON, with filters.',
+          } : null,
+          analyzeCandidates.length > 0 ? {
+            label: `Analyze ${analyzeCandidates.length === 1 ? 'the one real outlier' : `the ${analyzeCandidates.length} real outliers`} here`,
+            tool: 'analyze_video',
+            args: { videoId: analyzeCandidates[0]!.id },
+            cost: analyzeCostLabel(analyzeCandidates.length),
+            spendsMoney: true,
+            why: `Creator-relative scores: ${analyzeCandidates
+              .map(v => `@${v.creatorHandle} ${v.score?.outlierScore.toFixed(0)}×`)
+              .join(', ')}. Everything else on this page is scored against a source median, which mostly reflects account size.`,
+          } : null,
+          feed.length === 0 ? {
+            label: 'Loosen the filters',
+            tool: 'get_feed',
+            why: `No videos matched. total=${totalCount} for these filters — try a lower minOutlierScore or minViews before assuming there is no data.`,
+          } : null,
+        ]), null, 2) }],
       };
     });
 
@@ -214,7 +244,7 @@ export function registerFeedTools(server: McpServer) {
         : !!process.env.APIFY_API_KEY;
 
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({
+        content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
           query,
           platform,
           results: existingVideos.length > 0 ? existingVideos.map(v => ({
@@ -228,13 +258,29 @@ export function registerFeedTools(server: McpServer) {
             isAlreadyTracked: true,
           })) : [],
           note: hasApiKey
-            ? `Live search available for ${platform}. Found ${existingVideos.length} matching videos already in DB.`
-            : `No API key configured for ${platform}. Showing ${existingVideos.length} matching videos from existing data. Set APIFY_API_KEY or YOUTUBE_API_KEY for live search.`,
-          actions: {
-            trackSource: `Use create_source with platform="${platform}", sourceType="keyword" or "hashtag", query="${query}" to track this search permanently.`,
-            trackCreator: `Use create_source with sourceType="creator" and the specific @handle to track a creator.`,
+            ? `Searched videos already pulled into this workspace — this tool does NOT hit the network. Found ${existingVideos.length} match(es).`
+            : `No API key configured for ${platform}. Searched existing data only; found ${existingVideos.length} match(es).`,
+          // The empty result here is the product's most misleading moment: the
+          // tool is named like live search but only queries what has already
+          // been scraped, so a new workspace searches, gets nothing, and
+          // concludes the product is broken. Never let that be the last word.
+          emptyResultMeaning: existingVideos.length === 0
+            ? `Zero matches does NOT mean nothing exists for "${query}" — it means nothing matching has been pulled into this workspace yet. Say that plainly, then offer to track it.`
+            : undefined,
+        }, [
+          {
+            label: `Track ${query} on ${platform}`,
+            tool: 'create_source',
+            args: {
+              platform,
+              sourceType: query.startsWith('#') ? 'hashtag' : query.startsWith('@') ? 'creator' : 'keyword',
+              query,
+            },
+            why: existingVideos.length === 0
+              ? 'Free. Nothing matching has been scraped yet — tracking it, then refreshing, is the only way to get results.'
+              : 'Free. Keeps this search fed with new videos instead of a one-off look at old data.',
           },
-        }, null, 2) }],
+        ]), null, 2) }],
       };
     });
 
@@ -274,8 +320,21 @@ export function registerFeedTools(server: McpServer) {
       const ideas = await db.idea.count({ where: { video: wsFilter } });
       const briefs = await db.brief.count({ where: { analysis: { video: wsFilter } } });
 
+      // The unanalyzed, creator-relative outliers — what credits are best spent
+      // on. Read off `ranked`, which already puts actual before estimated.
+      const analyzedIds = new Set(
+        (await db.analysis.findMany({
+          where: { video: wsFilter },
+          select: { videoId: true },
+          distinct: ['videoId'],
+        })).map(a => a.videoId),
+      );
+      const unanalyzedActual = ranked
+        .filter(s => s.scoreType === 'actual' && !analyzedIds.has(s.video.id))
+        .slice(0, 5);
+
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({
+        content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
           overview: {
             totalVideos,
             analyzedVideos: analyzed,
@@ -286,6 +345,13 @@ export function registerFeedTools(server: McpServer) {
             ideasCreated: ideas,
             briefsGenerated: briefs,
           },
+          // Without this, a 272× estimated score reads as more impressive than
+          // a 686× actual one purely because it sits on a bigger view count.
+          scoreTypeNote:
+            '`actual` = measured against that creator\'s own median, the trustworthy signal. '
+            + '`estimated` = measured against the source\'s median, which largely tracks account size — '
+            + 'a huge account posting normally into a tracked hashtag scores high. '
+            + 'Lead with actual scores when summarising or recommending.',
           topOutliers: ranked.map(s => ({
             videoId: s.video.id,
             creator: s.video.creatorHandle,
@@ -297,7 +363,30 @@ export function registerFeedTools(server: McpServer) {
             postedAt: s.video.postedAt.toISOString(),
             explanation: s.explanation,
           })),
-        }, null, 2) }],
+        }, [
+          unanalyzedActual.length > 0 ? {
+            label: `Analyze the ${unanalyzedActual.length} real outlier${unanalyzedActual.length === 1 ? '' : 's'}`,
+            tool: 'analyze_video',
+            args: { videoId: unanalyzedActual[0]!.video.id },
+            cost: analyzeCostLabel(unanalyzedActual.length),
+            spendsMoney: true,
+            why: `${unanalyzedActual.map(s => `@${s.video.creatorHandle} ${s.outlierScore.toFixed(0)}×`).join(', ')}`
+              + ` — creator-relative and not yet analyzed. ${analyzed === 0
+                ? 'Nothing in this workspace has been analyzed yet, so hooks, ideas and briefs are all still empty.'
+                : ''}`,
+          } : null,
+          totalVideos > 0 ? {
+            label: 'Browse the outliers visually',
+            tool: 'show_gallery',
+            args: { minOutlierScore: 10 },
+            why: 'Free.',
+          } : null,
+          totalVideos === 0 ? {
+            label: 'Track your first source',
+            tool: 'create_source',
+            why: 'Free. Nothing is tracked yet — this workspace is empty.',
+          } : null,
+        ]), null, 2) }],
       };
     });
 }

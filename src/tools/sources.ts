@@ -11,6 +11,7 @@ import { assertApifyCap, getApifyCapStatus, SpendCapExceededError } from '../lib
 import { batchScoreVideos } from '../scoring.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload } from '../lib/credits.js';
 import { ingestThumbnails, type ThumbIngestTarget } from '../lib/media.js';
+import { withNextSteps, apifyCostLabel, analyzeCostLabel, refreshCreditLabel } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerSourceTools(server: McpServer) {
@@ -100,8 +101,22 @@ export function registerSourceTools(server: McpServer) {
         },
       });
 
+      // A source with lastRefreshedAt: null holds nothing. Leaving the user
+      // here is the single most common dead end in the product — the thing
+      // they asked for looks done and produces no videos.
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ message: 'Source created', source }, null, 2) }],
+        content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps(
+          { message: 'Source created', source },
+          [{
+            label: `Pull videos for ${query} now`,
+            tool: 'refresh_source',
+            args: { sourceId: source.id },
+            cost: `${apifyCostLabel(videoLimit)} + ${refreshCreditLabel(videoLimit)}`,
+            spendsMoney: true,
+            why: 'This source has no videos yet — it stays empty until refreshed. '
+              + `Estimate assumes the full ${videoLimit}-video limit; a smaller scrape costs proportionally less.`,
+          }],
+        ), null, 2) }],
       };
     });
 
@@ -338,8 +353,23 @@ export function registerSourceTools(server: McpServer) {
         ? await getApifyCapStatus(source.workspaceId)
         : null;
 
+      // Videos worth paying to analyse: creator-relative ("actual") scores
+      // only. An "estimated" score compares a video to its source's median,
+      // which mostly flags big accounts posting normally — poor value for
+      // credits. Prefer the ones that beat their own creator's baseline.
+      const analyzeCandidates = await db.video.findMany({
+        where: {
+          sourceId,
+          analyses: { none: {} },
+          score: { scoreType: 'actual', outlierScore: { gte: 5 } },
+        },
+        include: { score: true },
+        orderBy: { score: { outlierScore: 'desc' } },
+        take: 5,
+      });
+
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({
+        content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
           message: errors.length ? 'Refresh completed with errors' : 'Refresh successful',
           sourceId,
           platform: source.platform,
@@ -355,7 +385,29 @@ export function registerSourceTools(server: McpServer) {
           creditsCharged: actualCredits,
           creditsRemaining: creditBalance.total,
           fetchSuggestion,
-        }, null, 2) }],
+        }, [
+          newVideos > 0 ? {
+            label: `See what came back from ${source.query}`,
+            tool: 'show_gallery',
+            args: { sourceId },
+            why: 'Free. Thumbnails and filters for just this scrape.',
+          } : null,
+          analyzeCandidates.length > 0 ? {
+            label: `Analyze ${analyzeCandidates.length === 1 ? 'the standout' : `the ${analyzeCandidates.length} standouts`}`,
+            tool: 'analyze_video',
+            args: { videoId: analyzeCandidates[0]!.id },
+            cost: analyzeCostLabel(analyzeCandidates.length),
+            spendsMoney: true,
+            why: `Beat their own creator's baseline: ${analyzeCandidates
+              .map(c => `@${c.creatorHandle} ${c.score?.outlierScore.toFixed(0)}×`)
+              .join(', ')}. One call per videoId; confirm the total before starting.`,
+          } : null,
+          newVideos === 0 && itemsPulled > 0 ? {
+            label: 'Track something new instead',
+            tool: 'create_source',
+            why: `All ${itemsPulled} videos were already known — this source has gone stale. Free to track; refreshing it later is what costs.`,
+          } : null,
+        ]), null, 2) }],
       };
     });
 }
