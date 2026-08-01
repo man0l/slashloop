@@ -49,48 +49,85 @@ export function registerFeedTools(server: McpServer) {
       if (postedAfter) where.postedAt = { ...where.postedAt, gte: new Date(postedAfter) };
       if (postedBefore) where.postedAt = { ...where.postedAt, lte: new Date(postedBefore) };
 
-      // Base query with score join
-      const videos = await db.video.findMany({
-        where,
-        include: {
-          score: true,
-          source: { select: { id: true, query: true, nicheTag: true, platform: true } },
-          // Newest first — lines below read analyses[0] as "the" analysis, and
-          // unordered that is the oldest row, so a re-analysed video reports
-          // its first basis/backend forever. Same bug as get_video had.
-          analyses: {
-            select: { id: true, analysisBasis: true, backend: true },
-            orderBy: { createdAt: 'desc' },
-          },
-          _count: { select: { hooks: true } },
+      // Filters that the DB can express belong in the DB.
+      //
+      // These used to run in memory over a `take: limit + 50` slice, which made
+      // the result depend on whatever arbitrary order Postgres returned — and
+      // when sortBy was 'outlier_score' there was no orderBy at all, so the
+      // slice was effectively random. `minOutlierScore: 10` then reported 9
+      // videos where show_gallery (which ranks in the DB) found 38: the filter
+      // was scoring a random 74 rows, not the workspace.
+      if (minViews) where.views = { gte: minViews };
+      if (minOutlierScore) where.score = { outlierScore: { gte: minOutlierScore } };
+      if (analyzedOnly) where.analyses = { some: {} };
+      if (unanalyzedOnly) where.analyses = { none: {} };
+
+      // Engagement rate is computed from two columns, so it stays in memory.
+      // It is applied AFTER the DB has narrowed and ordered the set, so it only
+      // ever trims the page — it can no longer silently redefine it.
+      const inMemoryFilter = minEngagementRate != null;
+
+      // True total for the filter set, not the size of an over-fetched window.
+      const totalCount = await db.video.count({ where });
+
+      const include = {
+        score: true,
+        source: { select: { id: true, query: true, nicheTag: true, platform: true } },
+        // Newest first — lines below read analyses[0] as "the" analysis, and
+        // unordered that is the oldest row, so a re-analysed video reports
+        // its first basis/backend forever. Same bug as get_video had.
+        analyses: {
+          select: { id: true, analysisBasis: true, backend: true },
+          orderBy: { createdAt: 'desc' as const },
         },
-        orderBy: sortBy === 'newest' ? { postedAt: 'desc' }
-          : sortBy === 'most_views' ? { views: 'desc' }
-          : undefined,
-        take: limit + 50, // Over-fetch for client-side filtering
-        skip: offset,
-      });
+        _count: { select: { hooks: true } },
+      };
 
-      // Client-side filters (engagement rate, min views, min score, analysis status)
+      // Over-fetch only for the one filter that cannot be pushed down.
+      const take = inMemoryFilter ? limit + 50 : limit;
+
+      let videos;
+      if (sortBy === 'newest' || sortBy === 'most_views') {
+        videos = await db.video.findMany({
+          where, include, take, skip: offset,
+          orderBy: sortBy === 'newest' ? { postedAt: 'desc' } : { views: 'desc' },
+        });
+      } else {
+        // Ranking by outlier score needs NULLS LAST — a video with no Score row
+        // must not outrank a scored one. Postgres defaults DESC to NULLS FIRST,
+        // and Prisma cannot express nulls ordering through a relation, so the
+        // read is split: scored rows first (hitting @@index([outlierScore])),
+        // unscored appended newest-first only if the page still has room.
+        const hasScoreFilter = where.score !== undefined;
+        const scoredWhere = hasScoreFilter ? where : { ...where, score: { isNot: null } };
+
+        const scoredTotal = await db.video.count({ where: scoredWhere });
+        const scored = offset < scoredTotal
+          ? await db.video.findMany({
+              where: scoredWhere, include, take, skip: offset,
+              orderBy: { score: { outlierScore: 'desc' } },
+            })
+          : [];
+
+        videos = scored;
+        if (!hasScoreFilter && scored.length < take) {
+          const unscored = await db.video.findMany({
+            where: { ...where, score: { is: null } }, include,
+            take: take - scored.length,
+            skip: Math.max(0, offset - scoredTotal),
+            orderBy: { postedAt: 'desc' },
+          });
+          videos = [...scored, ...unscored];
+        }
+      }
+
       let filtered = videos;
-
-      if (minViews) filtered = filtered.filter(v => v.views >= minViews);
-      if (minOutlierScore) filtered = filtered.filter(v => v.score && v.score.outlierScore >= minOutlierScore);
-      if (minEngagementRate) {
+      if (minEngagementRate != null) {
         const rate = minEngagementRate / 100;
         filtered = filtered.filter(v => v.views > 0 && (v.likes / v.views) >= rate);
       }
-      if (analyzedOnly) filtered = filtered.filter(v => v.analyses.length > 0);
-      if (unanalyzedOnly) filtered = filtered.filter(v => v.analyses.length === 0);
 
-      // Sort by outlier score if that's the default
-      if (sortBy === 'outlier_score') {
-        filtered.sort((a, b) => (b.score?.outlierScore ?? 0) - (a.score?.outlierScore ?? 0));
-      }
-
-      // Paginate after filtering
       const paginated = filtered.slice(0, limit);
-      const totalCount = filtered.length;
 
       const feed = paginated.map(v => {
         const engRate = v.views > 0 ? ((v.likes + v.comments + (v.shares ?? 0)) / v.views * 100).toFixed(1) : '0';
@@ -132,7 +169,16 @@ export function registerFeedTools(server: McpServer) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           feed,
-          pagination: { limit, offset, total: totalCount, hasMore: totalCount > offset + limit },
+          pagination: {
+            limit,
+            offset,
+            total: totalCount,
+            hasMore: totalCount > offset + limit,
+            // `total` counts the DB-side filters. minEngagementRate is computed
+            // per row and trims the page after the fact, so the true count is
+            // at most this when it is set. Flagged rather than silently wrong.
+            ...(minEngagementRate != null ? { totalIsUpperBound: true } : {}),
+          },
           filters: { platform, sourceId, search, minViews, minOutlierScore, minEngagementRate, sortBy },
         }, null, 2) }],
       };

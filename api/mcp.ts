@@ -8,6 +8,7 @@ import { verifySupabaseJwt } from '../remote/auth.js';
 import { buildRemoteMcp, type Claims } from '../remote/handlers.js';
 import { runWithUser } from '../src/context.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
+import { getUiCapability } from '@modelcontextprotocol/ext-apps/server';
 
 function originFromWeb(request: Request): string {
   if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/$/, '');
@@ -61,6 +62,23 @@ export async function POST(request: Request): Promise<Response> {
     // whether the host supports MCP Apps, and instead always returns both an
     // inline ui:// resource and a signed /gallery link (src/tools/gallery.ts).
     response = await transport.handleRequest(request);
+
+    // The one moment the client's declared capabilities are visible: the
+    // request that carried `initialize`. Per SEP-1865 the negotiation is
+    // one-directional — the HOST advertises `io.modelcontextprotocol/ui` here
+    // and servers only check it; there is nothing for us to advertise back. So
+    // this line is the only way to tell "the host will not render MCP Apps"
+    // apart from "the host tried and failed" (ext-apps#671), which otherwise
+    // look identical from the tool side.
+    //
+    // Cheap by construction: getClientCapabilities() returns undefined on every
+    // non-initialize request, so this logs roughly once per connection.
+    const ui = getUiCapability(mcp.server.getClientCapabilities());
+    if (ui !== undefined) {
+      console.log(`mcp-apps host=${JSON.stringify(mcp.server.getClientVersion()?.name ?? '?')} ui=true mimeTypes=${JSON.stringify(ui.mimeTypes ?? [])}`);
+    } else if (mcp.server.getClientCapabilities() !== undefined) {
+      console.log(`mcp-apps host=${JSON.stringify(mcp.server.getClientVersion()?.name ?? '?')} ui=false (no io.modelcontextprotocol/ui at initialize — gallery will not render inline; /gallery link is the path)`);
+    }
   });
   return response;
 }

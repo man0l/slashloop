@@ -79,15 +79,36 @@ export async function buildCards(
 
   // Rank by Score.outlierScore in the DB so the pool is the true top-N
   // workspace outliers — not "top of an arbitrary unpaged slice".
+  //
+  // Split scored from unscored rather than relying on a single ORDER BY:
+  // Postgres defaults DESC to NULLS FIRST and Prisma cannot express nulls
+  // ordering through a relation, so an unsplit query can hand back a pool
+  // made entirely of unscored videos. An in-memory re-sort cannot repair
+  // that — the wrong rows were already selected. Same fix as get_feed.
+  const include = { score: true, analyses: { orderBy: { createdAt: 'desc' as const }, take: 1 } };
+
   const videos = await db.video.findMany({
-    where,
-    include: { score: true, analyses: { orderBy: { createdAt: 'desc' }, take: 1 } },
+    where: { ...where, score: { isNot: null } },
+    include,
     orderBy: { score: { outlierScore: 'desc' } },
     take: limit,
   });
 
-  // Defensive re-sort: null scores (no Score row) can land first depending on
-  // the nulls-ordering of the dialect; treat missing as 0.
+  // Only backfill with unscored videos if the workspace has too few scored
+  // ones to fill the pool — otherwise a fresh workspace renders an empty
+  // gallery while it clearly has videos.
+  if (videos.length < limit) {
+    const unscored = await db.video.findMany({
+      where: { ...where, score: { is: null } },
+      include,
+      orderBy: { postedAt: 'desc' },
+      take: limit - videos.length,
+    });
+    videos.push(...unscored);
+  }
+
+  // Scores are non-null by construction above, but the backfill rows are not;
+  // treat missing as 0 so they sort last.
   const ranked = [...videos].sort(
     (a, b) => (b.score?.outlierScore ?? 0) - (a.score?.outlierScore ?? 0),
   );
