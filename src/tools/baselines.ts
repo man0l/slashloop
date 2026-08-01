@@ -89,8 +89,11 @@ export function registerBaselineTools(server: McpServer) {
             _count: { _all: true },
           })
         : [];
-      const historyCount = new Map(
-        historyRows.map(r => [`${r.creatorHandle}__${r.platform}`, r._count._all]),
+      // Explicitly typed and coerced: Prisma's groupBy _count widens to `{}`
+      // under some client generations, which silently poisons every comparison
+      // downstream.
+      const historyCount = new Map<string, number>(
+        historyRows.map(r => [`${r.creatorHandle}__${r.platform}`, Number(r._count?._all ?? 0)] as const),
       );
 
       // Creators we already track — re-creating those would just duplicate.
@@ -98,8 +101,8 @@ export function registerBaselineTools(server: McpServer) {
         where: { workspaceId: workspace.id, sourceType: 'creator' },
         select: { id: true, query: true, platform: true },
       });
-      const tracked = new Map(
-        existingCreatorSources.map(s => [`${s.query}__${s.platform}`, s.id]),
+      const tracked = new Map<string, string>(
+        existingCreatorSources.map(s => [`${s.query}__${s.platform}`, s.id] as const),
       );
 
       // One entry per creator, keeping their single best estimated outlier.
@@ -126,7 +129,7 @@ export function registerBaselineTools(server: McpServer) {
         if (held >= CREATOR_BASELINE_MIN_SAMPLE) continue;
         seen.add(key);
 
-        const followers = s.video.creatorFollowers;
+        const followers: number | null = s.video.creatorFollowers ?? null;
         candidates.push({
           creatorHandle: s.video.creatorHandle,
           platform: s.video.platform,

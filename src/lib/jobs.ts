@@ -141,6 +141,39 @@ export async function enqueueRefreshJob(opts: {
   }) as unknown as Promise<MediaJobRow>;
 }
 
+/**
+ * Rescoring a creator's videos across OTHER sources, as its own job.
+ *
+ * Split out of runRefresh because it was the step that kept getting killed.
+ * Measured on a real run: the scrape, persist and in-source scoring finished
+ * 48.2s into a 60s worker, leaving 11.3s for a cross-source rescore that had to
+ * score 30 videos. It never completed, so the refresh was billed and the
+ * outlier it was bought to re-measure kept its stale `estimated` score.
+ *
+ * Free to run — no Apify, no credits — so a retry costs nothing and it needs no
+ * pre-authorisation.
+ */
+export interface RescoreJobPayload {
+  creatorHandle: string;
+}
+
+export async function enqueueRescoreJob(opts: {
+  workspaceId: string;
+  /** The creator source that triggered this; satisfies the one-target CHECK. */
+  sourceId: string;
+  payload: RescoreJobPayload;
+}): Promise<MediaJobRow> {
+  return db.mediaJob.create({
+    data: {
+      workspaceId: opts.workspaceId,
+      sourceId: opts.sourceId,
+      kind: 'rescore',
+      status: 'queued',
+      payloadJson: JSON.stringify(opts.payload),
+    },
+  }) as unknown as Promise<MediaJobRow>;
+}
+
 /** Outstanding job for a source, so a caller is not told to pay twice. */
 export async function outstandingJobForSource(sourceId: string): Promise<MediaJobRow | null> {
   return db.mediaJob.findFirst({
@@ -232,7 +265,10 @@ export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: nu
   const cutoff = new Date(Date.now() - STUCK_AFTER_MINUTES * 60_000);
   const stuck = await db.mediaJob.findMany({
     where: { status: 'running', startedAt: { lt: cutoff } },
-    select: { id: true, attempts: true, workspaceId: true, opId: true, kind: true, preAuthCredits: true },
+    select: {
+      id: true, attempts: true, workspaceId: true, opId: true, kind: true,
+      preAuthCredits: true, sourceId: true, startedAt: true,
+    },
   });
 
   let requeued = 0;
@@ -240,6 +276,36 @@ export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: nu
   let refunded = 0;
 
   for (const job of stuck) {
+    // A refresh whose work actually landed must never be retried.
+    //
+    // The failure this guards is not hypothetical: a scrape takes ~2.5 minutes
+    // and the worker caps at 60s, so runRefresh routinely finishes the scrape,
+    // writes its RefreshRun and updates the source, then dies before
+    // completeJob. The row stays `running`, looks abandoned, and gets requeued
+    // — re-paying Apify for videos already in the database, up to MAX_ATTEMPTS
+    // times.
+    //
+    // Source.lastRefreshedAt is written at the END of runRefresh, so a
+    // timestamp later than the job's claim proves the pipeline completed. Mark
+    // it done rather than retrying.
+    if (job.kind === 'refresh' && job.sourceId) {
+      const src = await db.source.findUnique({
+        where: { id: job.sourceId },
+        select: { lastRefreshedAt: true },
+      });
+      if (src?.lastRefreshedAt && job.startedAt && src.lastRefreshedAt > job.startedAt) {
+        await db.mediaJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'done',
+            finishedAt: new Date(),
+            lastError: 'Worker died after completing the refresh; recovered without re-scraping.',
+          },
+        });
+        continue;
+      }
+    }
+
     const exhausted = job.attempts >= MAX_ATTEMPTS;
     await db.mediaJob.update({
       where: { id: job.id },

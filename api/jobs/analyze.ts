@@ -79,10 +79,39 @@ export async function POST(request: Request): Promise<Response> {
     // refresh is claimed LAST because it is the longest job — a scrape can use
     // most of the budget on its own, and claiming one first would leave quick
     // analyze/fetch rows waiting a full minute for the next drain.
+    // rescore before refresh: it is free, fast, and it is the step a user is
+    // actually waiting on after paying for a scrape.
     const job = (await claimNextJob('fetch'))
       ?? (await claimNextJob('analyze'))
+      ?? (await claimNextJob('rescore'))
       ?? (await claimNextJob('refresh'));
     if (!job) break;
+
+    // rescore jobs: recompute scores for every source holding a creator's
+    // videos. Split out of runRefresh because it was the step that kept dying —
+    // it ran with ~11s of budget left after a 48s scrape. No Apify, no credits,
+    // so a retry is free.
+    if (job.kind === 'rescore') {
+      try {
+        const { creatorHandle } = JSON.parse(job.payloadJson || '{}') as { creatorHandle?: string };
+        if (!creatorHandle) throw new Error('rescore job has no creatorHandle');
+        const { batchScoreVideos } = await import('../../src/scoring.js');
+        const rows = await db.video.findMany({
+          where: { creatorHandle, source: { workspaceId: job.workspaceId } },
+          select: { sourceId: true },
+          distinct: ['sourceId'],
+        });
+        for (const r of rows) await batchScoreVideos(r.sourceId);
+        await completeJob(job.id, null);
+        processed.push({ jobId: job.id, videoId: null, ok: true });
+      } catch (err) {
+        const message = (err as Error).message;
+        const { terminal } = await failJob(job.id, message);
+        console.warn(`[jobs] rescore job ${job.id} failed (terminal=${terminal}): ${message}`);
+        processed.push({ jobId: job.id, videoId: null, ok: false, error: message });
+      }
+      continue;
+    }
 
     // refresh jobs: scrape + persist + score a whole SOURCE. Credits are
     // pre-authorised and settled inside runRefresh, so these rows carry no

@@ -21,6 +21,7 @@ import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
 import { batchScoreVideos } from '../scoring.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } from './credits.js';
 import { ingestThumbnails, type ThumbIngestTarget } from './media.js';
+import { enqueueRescoreJob } from './jobs.js';
 
 export interface RunRefreshResult {
   ok: boolean;
@@ -37,8 +38,8 @@ export interface RunRefreshResult {
   creditsCharged: number;
   creditsRemaining: number;
   errors: string[];
-  /** Other sources rescored because this refresh deepened a creator baseline. */
-  rescoredSources: string[];
+  /** True when a follow-up rescore job was queued (creator refreshes only). */
+  rescoreQueued: boolean;
   durationMs: number;
 }
 
@@ -63,7 +64,7 @@ export async function runRefresh(opts: {
     return {
       ok: false, refusal: 'source_not_found', sourceId, query: '', platform: '', sourceType: '',
       itemsPulled: 0, newVideos: 0, costCents: 0, creditsCharged: 0, creditsRemaining: 0,
-      errors: ['Source not found'], rescoredSources: [], durationMs: Date.now() - startTime,
+      errors: ['Source not found'], rescoreQueued: false, durationMs: Date.now() - startTime,
     };
   }
 
@@ -72,7 +73,7 @@ export async function runRefresh(opts: {
   let newVideos = 0;
   let costCents = 0;
   const errors: string[] = [];
-  const rescoredSources: string[] = [];
+  let rescoreQueued = false;
 
   const base = {
     sourceId, query: source.query, platform: source.platform, sourceType: source.sourceType,
@@ -85,7 +86,7 @@ export async function runRefresh(opts: {
       return {
         ok: false, refusal: 'cap_breached', refusalDetail: capStatus, ...base,
         itemsPulled: 0, newVideos: 0, costCents: 0, creditsCharged: 0, creditsRemaining: 0,
-        errors: ['Apify spend cap already breached'], rescoredSources: [],
+        errors: ['Apify spend cap already breached'], rescoreQueued: false,
         durationMs: Date.now() - startTime,
       };
     }
@@ -103,7 +104,7 @@ export async function runRefresh(opts: {
         ok: false, refusal: 'insufficient_credits',
         refusalDetail: { required: preAuthCredits, message: err.message }, ...base,
         itemsPulled: 0, newVideos: 0, costCents: 0, creditsCharged: 0, creditsRemaining: 0,
-        errors: [err.message], rescoredSources: [], durationMs: Date.now() - startTime,
+        errors: [err.message], rescoreQueued: false, durationMs: Date.now() - startTime,
       };
     }
     throw err;
@@ -190,7 +191,7 @@ export async function runRefresh(opts: {
         refusalDetail: await getApifyCapStatus(workspaceId), ...base,
         itemsPulled: 0, newVideos: 0, costCents: 0, creditsCharged: 0,
         creditsRemaining: creditBalance.total,
-        errors: [err.message], rescoredSources: [], durationMs: Date.now() - startTime,
+        errors: [err.message], rescoreQueued: false, durationMs: Date.now() - startTime,
       };
     }
     errors.push((err as Error).message);
@@ -210,29 +211,26 @@ export async function runRefresh(opts: {
   // Refreshing a CREATOR source is the moment their history can cross
   // CREATOR_BASELINE_MIN_SAMPLE, which changes the score of their videos in
   // OTHER sources (the hashtag scrape that surfaced them). batchScoreVideos
-  // above is scoped to this source only, so without this those rows keep a
+  // above is scoped to this source only, so those rows would otherwise keep a
   // stale `estimated` score computed against a source median.
   //
-  // This is the step the 60s request budget used to kill. In the worker it has
-  // the whole invocation to itself.
+  // ENQUEUED rather than run here. Doing it inline is what kept failing: on a
+  // measured run the scrape, persist and scoring finished 48.2s into the 60s
+  // worker, leaving 11.3s to rescore a 30-video hashtag source. It was killed
+  // every time, so the refresh was billed and the score never moved.
+  //
+  // As its own job it gets a full invocation, and because rescoring is free
+  // (no Apify, no credits) a retry costs nothing.
   if (source.sourceType === 'creator' && itemsPulled > 0) {
     try {
-      const siblings = await db.video.findMany({
-        where: {
-          creatorHandle: source.query,
-          platform: source.platform,
-          sourceId: { not: sourceId },
-          source: { workspaceId },
-        },
-        select: { sourceId: true },
-        distinct: ['sourceId'],
+      await enqueueRescoreJob({
+        workspaceId,
+        sourceId,
+        payload: { creatorHandle: source.query },
       });
-      for (const s of siblings) {
-        await batchScoreVideos(s.sourceId);
-        rescoredSources.push(s.sourceId);
-      }
+      rescoreQueued = true;
     } catch (err) {
-      errors.push(`sibling rescore: ${(err as Error).message}`);
+      errors.push(`could not queue rescore: ${(err as Error).message}`);
     }
   }
 
@@ -241,7 +239,7 @@ export async function runRefresh(opts: {
     itemsPulled, newVideos, costCents,
     creditsCharged: actualCredits,
     creditsRemaining: creditBalance?.total ?? 0,
-    errors, rescoredSources,
+    errors, rescoreQueued,
     durationMs: Date.now() - startTime,
   };
 }

@@ -12,7 +12,7 @@ import { batchScoreVideos } from '../scoring.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload } from '../lib/credits.js';
 import { ingestThumbnails, type ThumbIngestTarget } from '../lib/media.js';
 import { withNextSteps, apifyCostLabel, analyzeCostLabel, refreshCreditLabel } from '../lib/next-steps.js';
-import { enqueueRefreshJob, outstandingJobForSource, dispatchWorker } from '../lib/jobs.js';
+import { enqueueRefreshJob, enqueueRescoreJob, outstandingJobForSource, dispatchWorker } from '../lib/jobs.js';
 
 /**
  * Largest refresh still run inline, in videos. Zero = always queue.
@@ -405,27 +405,24 @@ export function registerSourceTools(server: McpServer) {
       // scoped to this source, so without this they keep a stale `estimated`
       // score computed against a source median. See deepen_baselines.
       //
-      // Free: pure DB work, no scrape. Best-effort — a failure here must not
-      // fail a refresh the user has already paid for.
-      const rescoredSources: string[] = [];
+      // Queued, not run here. Doing it inline is what kept dying: measured on a
+      // real run, the scrape and scoring finished 48.2s into a 60s budget,
+      // leaving 11.3s to rescore a 30-video hashtag source. It was killed every
+      // time, so the refresh was billed and the score never moved.
+      //
+      // This inline path is now debug-only (async: false), but it must not
+      // reintroduce the bug it was written around.
+      let rescoreQueued = false;
       if (source.sourceType === 'creator' && itemsPulled > 0) {
         try {
-          const siblings = await db.video.findMany({
-            where: {
-              creatorHandle: source.query,
-              platform: source.platform,
-              sourceId: { not: sourceId },
-              source: { workspaceId: workspace.id },
-            },
-            select: { sourceId: true },
-            distinct: ['sourceId'],
+          await enqueueRescoreJob({
+            workspaceId: workspace.id,
+            sourceId,
+            payload: { creatorHandle: source.query },
           });
-          for (const s of siblings) {
-            await batchScoreVideos(s.sourceId);
-            rescoredSources.push(s.sourceId);
-          }
+          rescoreQueued = true;
         } catch (err) {
-          errors.push(`sibling rescore: ${(err as Error).message}`);
+          errors.push(`could not queue rescore: ${(err as Error).message}`);
         }
       }
 
@@ -487,12 +484,12 @@ export function registerSourceTools(server: McpServer) {
           fetchSuggestion,
           // Present only when this refresh gave a creator enough history to be
           // scored against themselves, which restates their videos elsewhere.
-          ...(rescoredSources.length > 0 ? {
-            rescoredOtherSources: rescoredSources.length,
-            rescoreNote: `@${source.query} now has enough history for an 'actual' baseline, so their videos in `
-              + `${rescoredSources.length} other source(s) were rescored against their own median instead of a `
-              + 'source median. Check whether the outlier score held up or collapsed — that is the answer to '
-              + 'whether it was a real breakout.',
+          ...(rescoreQueued ? {
+            rescoreQueued: true,
+            rescoreNote: `@${source.query} may now have enough history for an 'actual' baseline, so a rescore of `
+              + 'their videos in other sources has been QUEUED — it runs within a minute, or immediately via '
+              + 'rescore_sources. Once it lands, check whether the outlier score held up or collapsed: that is '
+              + 'the answer to whether it was a real breakout.',
           } : {}),
         }, [
           newVideos > 0 ? {
