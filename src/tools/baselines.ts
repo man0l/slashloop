@@ -26,7 +26,7 @@
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
-import { CREATOR_BASELINE_MIN_SAMPLE } from '../scoring.js';
+import { CREATOR_BASELINE_MIN_SAMPLE, batchScoreVideos } from '../scoring.js';
 import { withNextSteps, apifyCostLabel, refreshCreditLabel } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -229,6 +229,107 @@ export function registerBaselineTools(server: McpServer) {
           why: `Builds @${c.creatorHandle}'s baseline so their outlier is scored against their own median. `
             + 'Confirm each refresh separately.',
         }))), null, 2) }],
+      };
+    });
+
+  // -------------------------------------------------------------------------
+  // rescore_sources — recompute scores without scraping.
+  //
+  // Exists because the automatic rescore inside refresh_source is not reliable.
+  // That path runs at the END of a request whose Apify scrape has already
+  // consumed most of the function's 60s maxDuration, so Vercel kills the
+  // invocation before it fires: observed live, with the refresh billed and
+  // completed (10 pulled, 9 new) while the outlier it was bought to re-measure
+  // kept its stale `estimated` score.
+  //
+  // Recovering from that must not require paying for the scrape again, so this
+  // is a separate, free, scrape-free tool. The inline rescore stays as a
+  // best-effort fast path for small scrapes; this is the one to rely on.
+  // -------------------------------------------------------------------------
+  server.tool('rescore_sources',
+    'Recompute outlier scores for tracked sources WITHOUT scraping. Free and fast — no Apify, no credits. '
+    + 'Use after a refresh that added creator history (scores elsewhere go stale), after deepen_baselines, '
+    + 'or whenever a video still reads `estimated` though its creator now has enough videos. '
+    + 'Pass creatorHandle to rescore only the sources holding that creator\'s videos, sourceIds for specific '
+    + 'ones, or neither to rescore every source in the workspace.',
+    {
+      creatorHandle: z.string().optional()
+        .describe('Rescore only sources containing this creator\'s videos. Cheapest targeted option.'),
+      sourceIds: z.array(z.string()).optional()
+        .describe('Explicit source ids to rescore.'),
+    },
+    async ({ creatorHandle, sourceIds }) => {
+      const workspace = await requireWorkspace();
+
+      let targets: string[];
+      if (sourceIds?.length) {
+        const owned = await db.source.findMany({
+          where: { id: { in: sourceIds }, workspaceId: workspace.id },
+          select: { id: true },
+        });
+        targets = owned.map(s => s.id);
+      } else if (creatorHandle) {
+        const rows = await db.video.findMany({
+          where: { creatorHandle, source: { workspaceId: workspace.id } },
+          select: { sourceId: true },
+          distinct: ['sourceId'],
+        });
+        targets = rows.map(r => r.sourceId);
+      } else {
+        const all = await db.source.findMany({
+          where: { workspaceId: workspace.id },
+          select: { id: true },
+        });
+        targets = all.map(s => s.id);
+      }
+
+      if (targets.length === 0) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            message: 'Nothing to rescore — no matching sources in this workspace.',
+            creatorHandle: creatorHandle ?? null,
+          }, null, 2) }],
+        };
+      }
+
+      const rescored: Array<{ sourceId: string; scored: number; actual: number; estimated: number }> = [];
+      const errors: string[] = [];
+      for (const id of targets) {
+        try {
+          const results = await batchScoreVideos(id);
+          rescored.push({
+            sourceId: id,
+            scored: results.length,
+            actual: results.filter(r => r.scoreType === 'actual').length,
+            estimated: results.filter(r => r.scoreType === 'estimated').length,
+          });
+        } catch (err) {
+          errors.push(`${id}: ${(err as Error).message}`);
+        }
+      }
+
+      const totalActual = rescored.reduce((a, r) => a + r.actual, 0);
+      const totalEstimated = rescored.reduce((a, r) => a + r.estimated, 0);
+
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
+          message: `Rescored ${rescored.length} source(s). No spend.`,
+          sourcesRescored: rescored.length,
+          videosScored: rescored.reduce((a, r) => a + r.scored, 0),
+          nowActual: totalActual,
+          stillEstimated: totalEstimated,
+          perSource: rescored,
+          errors: errors.length ? errors : undefined,
+          note: 'A video that moved from estimated to actual is now measured against its own creator\'s '
+            + 'median. Compare the new score with the old one: holding up means a real breakout, collapsing '
+            + 'toward 1x means the creator is simply large.',
+        }, [
+          totalActual > 0 ? {
+            label: 'See the updated ranking',
+            tool: 'get_outlier_summary',
+            why: 'Free. Shows which scores survived being re-measured against their own creator.',
+          } : null,
+        ]), null, 2) }],
       };
     });
 }
