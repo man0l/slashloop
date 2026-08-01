@@ -12,6 +12,19 @@ import { batchScoreVideos } from '../scoring.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload } from '../lib/credits.js';
 import { ingestThumbnails, type ThumbIngestTarget } from '../lib/media.js';
 import { withNextSteps, apifyCostLabel, analyzeCostLabel, refreshCreditLabel } from '../lib/next-steps.js';
+import { enqueueRefreshJob, outstandingJobForSource, dispatchWorker } from '../lib/jobs.js';
+
+/**
+ * Largest refresh still run inline, in videos.
+ *
+ * Chosen from what actually fits: a 10-video creator scrape completed in ~35s
+ * of a 60s budget, and the cross-source rescore after it was still killed. Ten
+ * is therefore already near the edge, so anything above it goes to the queue.
+ */
+const INLINE_REFRESH_MAX_VIDEOS = 10;
+
+/** How long callers should be willing to wait on a queued refresh. */
+const REFRESH_JOB_DEADLINE_MS = 5 * 60_000;
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerSourceTools(server: McpServer) {
@@ -174,13 +187,60 @@ export function registerSourceTools(server: McpServer) {
     {
       sourceId: z.string(),
       videoLimit: z.number().min(1).max(200).optional().describe('Override source video limit for this run'),
+      async: z.boolean().optional()
+        .describe(`Force queued (true) or inline (false). Default: queued when the limit exceeds ${INLINE_REFRESH_MAX_VIDEOS} videos.`),
     },
-    async ({ sourceId, videoLimit: limitOverride }) => {
+    async ({ sourceId, videoLimit: limitOverride, async: asyncMode }) => {
       const workspace = await requireWorkspace();
       const source = await db.source.findFirst({ where: { id: sourceId, workspaceId: workspace.id } });
       if (!source) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Source not found' }) }], isError: true };
 
       const limit = limitOverride ?? source.videoLimit;
+
+      // Queue anything big enough to risk the 60s request budget. A scrape that
+      // outlives it is killed after the Apify spend but before the rescore —
+      // the user pays and the scoring never updates. Small scrapes stay inline
+      // because a synchronous answer is nicer when it genuinely fits.
+      const shouldQueue = asyncMode ?? limit > INLINE_REFRESH_MAX_VIDEOS;
+      if (shouldQueue) {
+        const existing = await outstandingJobForSource(sourceId);
+        if (existing) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({
+            message: 'A refresh is already queued or running for this source — not enqueuing a second one.',
+            jobId: existing.id, status: existing.status, sourceId,
+            note: 'Wait on the existing job with await_job rather than paying for a duplicate scrape.',
+          }, null, 2) }] };
+        }
+
+        const deadlineAt = new Date(Date.now() + REFRESH_JOB_DEADLINE_MS);
+        const job = await enqueueRefreshJob({
+          workspaceId: workspace.id,
+          sourceId,
+          payload: { limitOverride },
+          deadlineAt,
+        });
+        // Best-effort poke; pg_cron drains within a minute regardless.
+        const dispatch = await dispatchWorker('refresh');
+
+        return { content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
+          message: `Refresh queued for ${source.query}. Credits are charged by the worker when it runs, not now.`,
+          jobId: job.id,
+          sourceId,
+          query: source.query,
+          videoLimit: limit,
+          estimatedCost: `${apifyCostLabel(limit)} + ${refreshCreditLabel(limit)} (worst case — settled down to actual videos returned)`,
+          deadlineAt: deadlineAt.toISOString(),
+          workerDispatched: dispatch.dispatched,
+          note: 'Queued rather than run inline because a scrape this size can outlive the request budget, '
+            + 'which previously billed the user and then killed the rescore. Wait with await_job.',
+        }, [{
+          label: 'Wait for it to finish',
+          tool: 'await_job',
+          args: { jobId: job.id },
+          why: 'Free. Blocks server-side ~25s per call and returns as soon as the job is done or failed. '
+            + 'Keep calling only while shouldKeepPolling is true.',
+        }]), null, 2) }] };
+      }
       const startTime = Date.now();
       let itemsPulled = 0;
       let newVideos = 0;

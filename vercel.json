@@ -42,6 +42,9 @@
     },
     "api/jobs/analyze.ts": {
       "maxDuration": 60
+    },
+    "api/jobs/refresh.ts": {
+      "maxDuration": 60
     }
   },
   "crons": [

@@ -364,10 +364,23 @@ model AutoAnalyzeRun {
 model MediaJob {
   id          String    @id @default(uuid())
   workspaceId String
-  videoId     String
-  /// analyze — the only kind today. Named rather than implied so Phase 3.1's
-  /// ingest work can share this queue instead of growing a second one.
+  /// Null for source-scoped kinds (refresh). Exactly one of videoId/sourceId
+  /// is set — enforced by a CHECK constraint in the migration, since Prisma
+  /// cannot express "one of these two".
+  videoId     String?
+  /// Set for source-scoped kinds. A refresh targets a Source, not a Video.
+  sourceId    String?
+  /// analyze | fetch | refresh. Named rather than implied so work like this
+  /// shares the queue instead of growing a second one.
   kind        String    @default("analyze")
+  /// Hard wall clock for callers waiting on this job. await_job refuses to
+  /// report shouldKeepPolling once past it, so a waiter terminates even if the
+  /// worker never reports back. Null means no deadline.
+  deadlineAt  DateTime?
+  /// Credits debited at enqueue. reclaimStuckJobs refunds THIS amount rather
+  /// than assuming the analyze price — a refresh pre-auth scales with
+  /// videoLimit, so a fixed refund would be wrong in both directions.
+  preAuthCredits Int?
   /// queued | running | done | failed
   status      String    @default("queued")
   attempts    Int       @default(0)

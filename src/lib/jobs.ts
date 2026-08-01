@@ -43,7 +43,10 @@ export const STUCK_AFTER_MINUTES = 15;
 export interface MediaJobRow {
   id: string;
   workspaceId: string;
-  videoId: string;
+  videoId: string | null;
+  sourceId: string | null;
+  deadlineAt: Date | null;
+  preAuthCredits: number | null;
   kind: string;
   status: string;
   attempts: number;
@@ -104,6 +107,46 @@ export async function enqueueAnalyzeJob(opts: {
       opId: opts.opId,
     },
   }) as unknown as Promise<MediaJobRow>;
+}
+
+/**
+ * A refresh job scrapes a SOURCE. It carries preAuthCredits because the
+ * pre-authorisation scales with videoLimit — unlike analyze, which is a fixed
+ * price — so the reclaim path cannot infer the refund from the kind alone.
+ */
+export interface RefreshJobPayload {
+  limitOverride?: number;
+}
+
+export async function enqueueRefreshJob(opts: {
+  workspaceId: string;
+  sourceId: string;
+  payload: RefreshJobPayload;
+  /** Wall clock after which await_job stops telling callers to keep waiting. */
+  deadlineAt: Date;
+}): Promise<MediaJobRow> {
+  return db.mediaJob.create({
+    data: {
+      workspaceId: opts.workspaceId,
+      sourceId: opts.sourceId,
+      kind: 'refresh',
+      status: 'queued',
+      payloadJson: JSON.stringify(opts.payload ?? {}),
+      deadlineAt: opts.deadlineAt,
+      // Credits are debited inside runRefresh, not at enqueue, so there is no
+      // pre-auth for the reclaim path to refund. runRefresh settles its own
+      // debit within the worker invocation; a worker killed before it debits
+      // has cost the user nothing.
+    },
+  }) as unknown as Promise<MediaJobRow>;
+}
+
+/** Outstanding job for a source, so a caller is not told to pay twice. */
+export async function outstandingJobForSource(sourceId: string): Promise<MediaJobRow | null> {
+  return db.mediaJob.findFirst({
+    where: { sourceId, status: { in: ['queued', 'running'] } },
+    orderBy: { createdAt: 'desc' },
+  }) as unknown as Promise<MediaJobRow | null>;
 }
 
 /** The job a caller should be told about for this video, if any is outstanding. */
@@ -189,7 +232,7 @@ export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: nu
   const cutoff = new Date(Date.now() - STUCK_AFTER_MINUTES * 60_000);
   const stuck = await db.mediaJob.findMany({
     where: { status: 'running', startedAt: { lt: cutoff } },
-    select: { id: true, attempts: true, workspaceId: true, opId: true },
+    select: { id: true, attempts: true, workspaceId: true, opId: true, kind: true, preAuthCredits: true },
   });
 
   let requeued = 0;
@@ -215,12 +258,16 @@ export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: nu
     //
     // refundCredits is idempotent on refId (see src/lib/credits.ts), so the two
     // paths cannot double-refund the same job.
+    // Refund what was actually pre-authorised. preAuthCredits is written at
+    // enqueue; the fallback covers analyze rows created before that column
+    // existed. Assuming the analyze price for every kind would refund the wrong
+    // amount the moment a second priced kind joined the queue.
     if (exhausted && job.opId) {
       try {
         await refundCredits(
           job.workspaceId,
-          CREDIT_COSTS.analyzeVideo,
-          'analyze_video',
+          job.preAuthCredits ?? CREDIT_COSTS.analyzeVideo,
+          job.kind === 'refresh' ? 'refresh_source' : 'analyze_video',
           `${job.opId}:fail`,
           'call_failed',
         );
@@ -262,7 +309,7 @@ function baseUrl(): string | null {
  * is what lets this call be an optimisation rather than the thing correctness
  * rests on.
  */
-export async function dispatchWorker(): Promise<{ dispatched: boolean; reason?: string }> {
+export async function dispatchWorker(kind: 'analyze' | 'refresh' = 'analyze'): Promise<{ dispatched: boolean; reason?: string }> {
   const base = baseUrl();
   if (!base) return { dispatched: false, reason: 'no PUBLIC_URL or VERCEL_URL' };
 
@@ -272,7 +319,7 @@ export async function dispatchWorker(): Promise<{ dispatched: boolean; reason?: 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1500);
   try {
-    await fetch(`${base}/api/jobs/analyze`, {
+    await fetch(`${base}/api/jobs/${kind}`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${secret}` },
       signal: controller.signal,
