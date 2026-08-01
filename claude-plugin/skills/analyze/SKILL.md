@@ -2,7 +2,7 @@
 name: analyze
 description: Analyze hand-picked outlier videos with Gemini, then turn what worked into hooks, ideas, and briefs. Use after viewing the gallery or feed, when the user wants to know WHY a video performed — or says "analyze", "break this down", "what's the hook", "why did this pop".
 argument-hint: "<videoId | creator handle | 'the top outliers'>"
-allowed-tools: mcp__plugin_slashloop_slashloop__get_outlier_summary, mcp__plugin_slashloop_slashloop__get_feed, mcp__plugin_slashloop_slashloop__get_video, mcp__plugin_slashloop_slashloop__analyze_video, mcp__plugin_slashloop_slashloop__extract_hook, mcp__plugin_slashloop_slashloop__generate_hook_variations, mcp__plugin_slashloop_slashloop__create_idea, mcp__plugin_slashloop_slashloop__create_brief, mcp__plugin_slashloop_slashloop__save_to_board, mcp__plugin_slashloop_slashloop__get_usage, mcp__plugin_slashloop_slashloop__deepen_baselines, mcp__plugin_slashloop_slashloop__rescore_sources, mcp__plugin_slashloop_slashloop__get_job_status
+allowed-tools: mcp__plugin_slashloop_slashloop__get_outlier_summary, mcp__plugin_slashloop_slashloop__get_feed, mcp__plugin_slashloop_slashloop__get_video, mcp__plugin_slashloop_slashloop__analyze_video, mcp__plugin_slashloop_slashloop__extract_hook, mcp__plugin_slashloop_slashloop__generate_hook_variations, mcp__plugin_slashloop_slashloop__create_idea, mcp__plugin_slashloop_slashloop__create_brief, mcp__plugin_slashloop_slashloop__save_to_board, mcp__plugin_slashloop_slashloop__get_usage, mcp__plugin_slashloop_slashloop__deepen_baselines, mcp__plugin_slashloop_slashloop__rescore_sources, mcp__plugin_slashloop_slashloop__await_job, mcp__plugin_slashloop_slashloop__get_job_status
 ---
 
 Turn a scored outlier into something the user can act on. This is the half of
@@ -62,6 +62,10 @@ Rules:
 - Check `get_usage` when the balance might not cover it, and say what's left.
 - `analyze_video` handles one video per call. Loop, and report as you go rather
   than in silence.
+- A gemini-native analysis is QUEUED and returns a `jobId`, not a result. Wait
+  with `await_job`, calling it again only while `shouldKeepPolling` is true and
+  stopping the moment it is false. Do not poll `get_video` in a loop — that
+  burns a round-trip per check and has no stop condition.
 
 ## 3. Report what actually transfers
 

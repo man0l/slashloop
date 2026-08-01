@@ -10,6 +10,7 @@ import { analyzeVideoWithDownload } from '../analysis/index.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../lib/credits.js';
 import { resolveThumbUrl, signedMediaUrl, frameUrlAt } from '../lib/media.js';
 import { enqueueAnalyzeJob, dispatchWorker, outstandingJobForVideo } from '../lib/jobs.js';
+import { withNextSteps } from '../lib/next-steps.js';
 import { loadAnalysisConfig } from '../analysis/config.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -138,7 +139,7 @@ export function registerVideoTools(server: McpServer) {
 
   // ---- analyze_video ----
   server.tool('analyze_video',
-    'Run AI analysis on a video. Uses the configured backend (default: gemini-native, fallback: gemini-text). gemini-native downloads the video via Apify then uploads it for native understanding (shots, audio, on-screen text); gemini-text does a text-only call on transcript + caption + metadata. Costs 5 credits. gemini-native is QUEUED rather than run inline — it cannot finish inside one request — so the response is a jobId and status, not an analysis; poll get_video, whose analysisJob field reports progress and whose analysis field carries the result once done. gemini-text returns its analysis directly.',
+    'Run AI analysis on a video. Uses the configured backend (default: gemini-native, fallback: gemini-text). gemini-native downloads the video via Apify then uploads it for native understanding (shots, audio, on-screen text); gemini-text does a text-only call on transcript + caption + metadata. Costs 5 credits. gemini-native is QUEUED rather than run inline — it cannot finish inside one request — so the response is a jobId and status, not an analysis. Wait for it with await_job (blocks server-side and returns the moment it finishes) rather than polling get_video in a loop; the analysisJob field on get_video still reports progress for a one-off check. gemini-text returns its analysis directly.',
     {
       videoId: z.string().describe('Video ID to analyze'),
       forceBackend: z.enum(['gemini-native', 'gemini-text']).optional().describe('Override the workspace default backend'),
@@ -187,21 +188,28 @@ export function registerVideoTools(server: McpServer) {
         const dispatch = await dispatchWorker();
         const balance = await creditBalance(workspace.id);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({
+          content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
             message: 'Analysis queued',
             jobId: job.id,
             videoId,
             status: job.status,
             backend: effectiveBackend,
             // Surfaced because it changes what to expect: a dropped dispatch
-            // still runs, just on the daily sweeper instead of within seconds.
+            // still runs, just on the next sweep instead of within seconds.
             dispatched: dispatch.dispatched,
             dispatchNote: dispatch.dispatched
-              ? 'Worker invoked; poll get_video for the result.'
-              : `Worker not reached (${dispatch.reason}); the job stays queued and the daily sweeper will run it.`,
+              ? 'Worker invoked. Wait with await_job rather than polling get_video in a loop.'
+              : `Worker not reached (${dispatch.reason}); the job stays queued and the sweeper will run it.`,
             creditsCharged: CREDIT_COSTS.analyzeVideo,
             creditsRemaining: balance.total,
-          }, null, 2) }],
+          }, [{
+            label: 'Wait for the analysis',
+            tool: 'await_job',
+            args: { jobId: job.id },
+            why: 'Free. Blocks server-side ~25s per call and returns the moment the job is done or failed. '
+              + 'Keep calling only while shouldKeepPolling is true. This replaces polling get_video in a loop, '
+              + 'which burns a round-trip per check and has no stop condition.',
+          }]), null, 2) }],
         };
       }
 
