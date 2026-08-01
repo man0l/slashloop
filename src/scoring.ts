@@ -236,7 +236,7 @@ export function scoreVideo(
  * (baseline ≈ the video itself). We fall back to the source batch median so
  * discovery scrapes still surface true niche outliers.
  */
-const CREATOR_BASELINE_MIN_SAMPLE = 5;
+export const CREATOR_BASELINE_MIN_SAMPLE = 5;
 
 export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]> {
   const videos = await db.video.findMany({
@@ -337,4 +337,4 @@ export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]>
   }
 
   return results;
-}
+}

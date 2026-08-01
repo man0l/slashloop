@@ -329,6 +329,37 @@ export function registerSourceTools(server: McpServer) {
       });
       await db.source.update({ where: { id: sourceId }, data: { lastRefreshedAt: new Date() } });
 
+      // Refreshing a CREATOR source is the moment that creator's history can
+      // cross CREATOR_BASELINE_MIN_SAMPLE — which changes the score of their
+      // videos sitting in OTHER sources (the hashtag scrape that surfaced them).
+      // Those rows are not touched by the batchScoreVideos call above, which is
+      // scoped to this source, so without this they keep a stale `estimated`
+      // score computed against a source median. See deepen_baselines.
+      //
+      // Free: pure DB work, no scrape. Best-effort — a failure here must not
+      // fail a refresh the user has already paid for.
+      const rescoredSources: string[] = [];
+      if (source.sourceType === 'creator' && itemsPulled > 0) {
+        try {
+          const siblings = await db.video.findMany({
+            where: {
+              creatorHandle: source.query,
+              platform: source.platform,
+              sourceId: { not: sourceId },
+              source: { workspaceId: workspace.id },
+            },
+            select: { sourceId: true },
+            distinct: ['sourceId'],
+          });
+          for (const s of siblings) {
+            await batchScoreVideos(s.sourceId);
+            rescoredSources.push(s.sourceId);
+          }
+        } catch (err) {
+          errors.push(`sibling rescore: ${(err as Error).message}`);
+        }
+      }
+
       // Surface standout outliers so the caller can OFFER to fetch their videos
       // (download + store the MP4 without a full analysis). Fixed at 50x: the
       // handful of winners per scrape, not the whole pool — that is what makes
@@ -385,6 +416,15 @@ export function registerSourceTools(server: McpServer) {
           creditsCharged: actualCredits,
           creditsRemaining: creditBalance.total,
           fetchSuggestion,
+          // Present only when this refresh gave a creator enough history to be
+          // scored against themselves, which restates their videos elsewhere.
+          ...(rescoredSources.length > 0 ? {
+            rescoredOtherSources: rescoredSources.length,
+            rescoreNote: `@${source.query} now has enough history for an 'actual' baseline, so their videos in `
+              + `${rescoredSources.length} other source(s) were rescored against their own median instead of a `
+              + 'source median. Check whether the outlier score held up or collapsed — that is the answer to '
+              + 'whether it was a real breakout.',
+          } : {}),
         }, [
           newVideos > 0 ? {
             label: `See what came back from ${source.query}`,
