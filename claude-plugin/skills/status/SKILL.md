@@ -1,7 +1,7 @@
 ---
 name: status
 description: Dashboard view of your slashloop account — tracked sources, Apify spend vs cap, and top outlier videos. Use when the user wants an overview, a status check, or asks "what am I tracking", "how much did I spend", "show me outliers", or "dashboard".
-allowed-tools: mcp__plugin_slashloop_slashloop__list_sources, mcp__plugin_slashloop_slashloop__get_apify_spend_status, mcp__plugin_slashloop_slashloop__get_outlier_summary, mcp__plugin_slashloop_slashloop__get_feed, mcp__plugin_slashloop_slashloop__show_gallery
+allowed-tools: mcp__plugin_slashloop_slashloop__list_sources, mcp__plugin_slashloop_slashloop__get_apify_spend_status, mcp__plugin_slashloop_slashloop__get_outlier_summary, mcp__plugin_slashloop_slashloop__get_feed, mcp__plugin_slashloop_slashloop__show_gallery, mcp__plugin_slashloop_slashloop__deepen_baselines
 ---
 
 Render a concise, scannable dashboard by calling tools, then formatting the

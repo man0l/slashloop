@@ -2,7 +2,7 @@
 name: track
 description: Track a new creator, keyword, or hashtag on TikTok/Reels/Shorts and immediately pull its videos. Use when the user wants to start monitoring a source for viral or outlier videos.
 argument-hint: "<platform> <creator|keyword|hashtag> <query>"
-allowed-tools: mcp__plugin_slashloop_slashloop__create_source, mcp__plugin_slashloop_slashloop__refresh_source, mcp__plugin_slashloop_slashloop__get_apify_spend_status, mcp__plugin_slashloop_slashloop__list_sources, mcp__plugin_slashloop_slashloop__show_gallery
+allowed-tools: mcp__plugin_slashloop_slashloop__create_source, mcp__plugin_slashloop_slashloop__refresh_source, mcp__plugin_slashloop_slashloop__get_apify_spend_status, mcp__plugin_slashloop_slashloop__list_sources, mcp__plugin_slashloop_slashloop__show_gallery, mcp__plugin_slashloop_slashloop__await_job, mcp__plugin_slashloop_slashloop__get_job_status
 ---
 
 Start tracking a source with `create_source`, then **immediately refresh it** to

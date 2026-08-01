@@ -2,7 +2,7 @@
 name: analyze
 description: Analyze hand-picked outlier videos with Gemini, then turn what worked into hooks, ideas, and briefs. Use after viewing the gallery or feed, when the user wants to know WHY a video performed — or says "analyze", "break this down", "what's the hook", "why did this pop".
 argument-hint: "<videoId | creator handle | 'the top outliers'>"
-allowed-tools: mcp__plugin_slashloop_slashloop__get_outlier_summary, mcp__plugin_slashloop_slashloop__get_feed, mcp__plugin_slashloop_slashloop__get_video, mcp__plugin_slashloop_slashloop__analyze_video, mcp__plugin_slashloop_slashloop__extract_hook, mcp__plugin_slashloop_slashloop__generate_hook_variations, mcp__plugin_slashloop_slashloop__create_idea, mcp__plugin_slashloop_slashloop__create_brief, mcp__plugin_slashloop_slashloop__save_to_board, mcp__plugin_slashloop_slashloop__get_usage
+allowed-tools: mcp__plugin_slashloop_slashloop__get_outlier_summary, mcp__plugin_slashloop_slashloop__get_feed, mcp__plugin_slashloop_slashloop__get_video, mcp__plugin_slashloop_slashloop__analyze_video, mcp__plugin_slashloop_slashloop__extract_hook, mcp__plugin_slashloop_slashloop__generate_hook_variations, mcp__plugin_slashloop_slashloop__create_idea, mcp__plugin_slashloop_slashloop__create_brief, mcp__plugin_slashloop_slashloop__save_to_board, mcp__plugin_slashloop_slashloop__get_usage, mcp__plugin_slashloop_slashloop__deepen_baselines, mcp__plugin_slashloop_slashloop__rescore_sources, mcp__plugin_slashloop_slashloop__get_job_status
 ---
 
 Turn a scored outlier into something the user can act on. This is the half of
@@ -26,6 +26,22 @@ naturally read the bigger view count as the bigger signal.
 
 Skip anything already analyzed (`hasAnalysis: true`); re-analysis costs the
 same and returns the same schema version.
+
+**If everything on offer is `estimated`, you can fix that instead of settling
+for it.** A hashtag or keyword scrape returns one video per creator, which can
+never reach the 5 videos needed for a creator baseline — so those scores are
+measured against the source's median and largely track account size.
+
+- `deepen_baselines` (dry run is free) lists which creators behind the biggest
+  estimated outliers lack history, with the cost to fill it in. Its
+  `viewsPerFollower` column is a useful advance hint: a huge ratio on a small
+  account usually survives the recheck, and a ratio below 1 means the creator
+  underperformed their own audience no matter how high the estimated score.
+- After the refreshes land, `rescore_sources` (free) re-measures them.
+
+Spending ~15 credits to learn whether a score is real is often better value
+than spending 5 to analyse a video that was never an outlier. Say so when the
+top of the list is all estimated.
 
 ## 2. Confirm the spend — every time
 

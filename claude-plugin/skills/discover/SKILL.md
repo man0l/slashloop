@@ -2,7 +2,7 @@
 name: discover
 description: Search already-pulled videos by keyword, creator, or hashtag to find outlier/viral hits. Use to find videos that are already in the database.
 argument-hint: "<query> [platform]"
-allowed-tools: mcp__plugin_slashloop_slashloop__discover_search, mcp__plugin_slashloop_slashloop__create_source, mcp__plugin_slashloop_slashloop__refresh_source, mcp__plugin_slashloop_slashloop__list_sources
+allowed-tools: mcp__plugin_slashloop_slashloop__discover_search, mcp__plugin_slashloop_slashloop__create_source, mcp__plugin_slashloop_slashloop__refresh_source, mcp__plugin_slashloop_slashloop__list_sources, mcp__plugin_slashloop_slashloop__await_job, mcp__plugin_slashloop_slashloop__get_job_status
 ---
 
 Search pulled videos with the `discover_search` MCP tool. Pass the user's query
