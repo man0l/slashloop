@@ -154,7 +154,12 @@ export async function enqueueRefreshJob(opts: {
  * pre-authorisation.
  */
 export interface RescoreJobPayload {
-  creatorHandle: string;
+  /**
+   * Rescore every source holding this creator's videos. Omit to rescore only
+   * the job's own sourceId — which is how a whole-workspace rescore is split
+   * into one job per source.
+   */
+  creatorHandle?: string;
 }
 
 export async function enqueueRescoreJob(opts: {
@@ -381,7 +386,7 @@ function baseUrl(): string | null {
  * because the Hobby plan's 12-function cap leaves no room for a second worker
  * route — see the comment there.
  */
-export async function dispatchWorker(_kind: 'analyze' | 'refresh' = 'analyze'): Promise<{ dispatched: boolean; reason?: string }> {
+export async function dispatchWorker(_kind: 'analyze' | 'refresh' | 'rescore' = 'analyze'): Promise<{ dispatched: boolean; reason?: string }> {
   const base = baseUrl();
   if (!base) return { dispatched: false, reason: 'no PUBLIC_URL or VERCEL_URL' };
 

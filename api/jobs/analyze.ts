@@ -94,14 +94,24 @@ export async function POST(request: Request): Promise<Response> {
     if (job.kind === 'rescore') {
       try {
         const { creatorHandle } = JSON.parse(job.payloadJson || '{}') as { creatorHandle?: string };
-        if (!creatorHandle) throw new Error('rescore job has no creatorHandle');
         const { batchScoreVideos } = await import('../../src/scoring.js');
-        const rows = await db.video.findMany({
-          where: { creatorHandle, source: { workspaceId: job.workspaceId } },
-          select: { sourceId: true },
-          distinct: ['sourceId'],
-        });
-        for (const r of rows) await batchScoreVideos(r.sourceId);
+
+        if (creatorHandle) {
+          // Creator-scoped: every source holding their videos.
+          const rows = await db.video.findMany({
+            where: { creatorHandle, source: { workspaceId: job.workspaceId } },
+            select: { sourceId: true },
+            distinct: ['sourceId'],
+          });
+          for (const r of rows) await batchScoreVideos(r.sourceId);
+        } else {
+          // Source-scoped: one source only. This is how a whole-workspace
+          // rescore is split — one job per source — so no single invocation
+          // has to score every video in the workspace. Doing that inline timed
+          // out at ~450 videos and applied only partially.
+          if (!job.sourceId) throw new Error('rescore job has neither creatorHandle nor sourceId');
+          await batchScoreVideos(job.sourceId);
+        }
         await completeJob(job.id, null);
         processed.push({ jobId: job.id, videoId: null, ok: true });
       } catch (err) {

@@ -28,6 +28,7 @@ import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
 import { CREATOR_BASELINE_MIN_SAMPLE, batchScoreVideos } from '../scoring.js';
 import { withNextSteps, apifyCostLabel, refreshCreditLabel } from '../lib/next-steps.js';
+import { enqueueRescoreJob, dispatchWorker } from '../lib/jobs.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 /**
@@ -382,6 +383,36 @@ export function registerBaselineTools(server: McpServer) {
           content: [{ type: 'text' as const, text: JSON.stringify({
             message: 'Nothing to rescore — no matching sources in this workspace.',
             creatorHandle: creatorHandle ?? null,
+          }, null, 2) }],
+        };
+      }
+
+      // Above this many sources, rescoring inline does not fit the request
+      // budget. Measured: a 15-source workspace (~450 videos, each a baseline
+      // lookup plus an upsert) timed the client out at 180s and applied only
+      // partially — the same wall-clock failure this tool exists to recover
+      // from. Past the threshold it queues one job per source instead.
+      const INLINE_RESCORE_MAX_SOURCES = 3;
+
+      if (targets.length > INLINE_RESCORE_MAX_SOURCES) {
+        const queued: string[] = [];
+        for (const id of targets) {
+          const job = await enqueueRescoreJob({
+            workspaceId: workspace.id,
+            sourceId: id,
+            payload: {}, // no creatorHandle → the worker rescores just this source
+          });
+          queued.push(job.id);
+        }
+        await dispatchWorker('rescore');
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            message: `Queued ${queued.length} rescore job(s) — one per source. Free, no spend.`,
+            queuedJobs: queued.length,
+            sources: targets.length,
+            note: `More than ${INLINE_RESCORE_MAX_SOURCES} sources cannot be rescored inside one request, so they `
+              + 'run on the queue instead. They drain within a minute or two. Re-read get_outlier_summary after '
+              + 'that rather than immediately — an early read reports the old scores.',
           }, null, 2) }],
         };
       }
