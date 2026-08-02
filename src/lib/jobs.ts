@@ -298,32 +298,52 @@ export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: nu
   let refunded = 0;
 
   for (const job of stuck) {
-    // A refresh whose work actually landed must never be retried.
+    // A refresh whose scrape actually landed must never be retried.
     //
-    // The failure this guards is not hypothetical: a scrape takes ~2.5 minutes
-    // and the worker caps at 60s, so runRefresh routinely finishes the scrape,
-    // writes its RefreshRun and updates the source, then dies before
-    // completeJob. The row stays `running`, looks abandoned, and gets requeued
-    // — re-paying Apify for videos already in the database, up to MAX_ATTEMPTS
-    // times.
+    // The money question is only ever "did we already pay Apify for these
+    // videos?", so the evidence has to be the videos themselves. An earlier
+    // version keyed on Source.lastRefreshedAt and had a hole: that field is
+    // written at the very END of runRefresh, after thumbnail ingest and
+    // scoring. A worker killed during those steps leaves the videos inserted
+    // and paid for, but lastRefreshedAt untouched — so the guard saw nothing
+    // and re-scraped. Observed live: 21 videos persisted at 06:32:49, worker
+    // dead by ~06:33:25, lastRefreshedAt still three days old.
     //
-    // Source.lastRefreshedAt is written at the END of runRefresh, so a
-    // timestamp later than the job's claim proves the pipeline completed. Mark
-    // it done rather than retrying.
-    if (job.kind === 'refresh' && job.sourceId) {
-      const src = await db.source.findUnique({
-        where: { id: job.sourceId },
-        select: { lastRefreshedAt: true },
+    // Video.scrapedAt is written as each row is inserted, which is the earliest
+    // durable proof the Apify call succeeded and therefore the right thing to
+    // check.
+    if (job.kind === 'refresh' && job.sourceId && job.startedAt) {
+      const landed = await db.video.findFirst({
+        where: { sourceId: job.sourceId, scrapedAt: { gt: job.startedAt } },
+        select: { id: true },
       });
-      if (src?.lastRefreshedAt && job.startedAt && src.lastRefreshedAt > job.startedAt) {
+      if (landed) {
         await db.mediaJob.update({
           where: { id: job.id },
           data: {
             status: 'done',
             finishedAt: new Date(),
-            lastError: 'Worker died after completing the refresh; recovered without re-scraping.',
+            lastError: 'Worker died after the scrape landed; recovered without re-scraping. '
+              + 'Scoring may be incomplete — a rescore job covers that.',
           },
         });
+        // The tail that died is scoring, and it is free to redo. Queue it
+        // rather than leaving the new videos unscored, which is what makes a
+        // paid refresh look like it did nothing.
+        try {
+          await db.mediaJob.create({
+            data: {
+              workspaceId: job.workspaceId,
+              sourceId: job.sourceId,
+              kind: 'rescore',
+              status: 'queued',
+              payloadJson: '{}',
+            },
+          });
+        } catch {
+          // Best-effort: the job is already marked done and not re-charging,
+          // which is the property that matters.
+        }
         continue;
       }
     }

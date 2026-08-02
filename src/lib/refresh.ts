@@ -170,18 +170,35 @@ export async function runRefresh(opts: {
       });
     }
 
-    // Batched deliberately — 50 sequential round-trips would not fit the
-    // function budget. Never throws: a missing thumbnail must not fail a
-    // refresh that has already paid Apify.
+    // SCORING BEFORE THUMBNAILS. Order matters more than it looks.
+    //
+    // Scoring is what the refresh was bought for — an unscored video is
+    // invisible to every ranking in the product. Thumbnails are cosmetic: a
+    // missing one shows a grey box. Running ingest first put the cosmetic step
+    // ahead of the essential one, and when the worker was killed mid-ingest the
+    // videos landed unscored. Observed live: 21 videos persisted, thumbnails
+    // stored, scoring never reached, and a 1.2M-view outlier sat with
+    // score: null until someone rescored by hand.
+    if (newVideos > 0) {
+      await batchScoreVideos(sourceId).catch(err => errors.push(`Scoring failed: ${(err as Error).message}`));
+    }
+
+    // Bounded, and last. Ingest cost scales with the number of new videos,
+    // which is exactly when the budget is tightest, so past this many it is
+    // left to the retention/backfill path rather than risking the invocation.
+    // resolveThumbUrl already falls back to the source CDN, so an un-ingested
+    // thumbnail degrades rather than breaks.
+    const THUMB_INGEST_MAX_PER_RUN = 15;
     if (thumbTargets.length > 0) {
-      const ingest = await ingestThumbnails(workspaceId, thumbTargets);
+      const batch = thumbTargets.slice(0, THUMB_INGEST_MAX_PER_RUN);
+      const deferred = thumbTargets.length - batch.length;
+      const ingest = await ingestThumbnails(workspaceId, batch);
       if (ingest.failed > 0) {
         errors.push(`Thumbnail ingest: ${ingest.failed}/${ingest.stored + ingest.failed} failed`);
       }
-    }
-
-    if (newVideos > 0) {
-      await batchScoreVideos(sourceId).catch(err => errors.push(`Scoring failed: ${(err as Error).message}`));
+      if (deferred > 0) {
+        errors.push(`Thumbnail ingest: ${deferred} deferred to stay inside the worker budget (cosmetic only)`);
+      }
     }
   } catch (err) {
     if (err instanceof SpendCapExceededError) {
