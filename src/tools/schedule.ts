@@ -28,9 +28,24 @@ import { enqueueRefreshJob, outstandingJobForSource, dispatchWorker } from '../l
 import { withNextSteps, apifyCostLabel } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
+/**
+ * Intervals are deliberately SHORTER than their names.
+ *
+ * A strict 24h clock and a fixed-time daily cron drift against each other, and
+ * the drift silently eats runs. Observed: a source refreshed at 13:35 was not
+ * due when the 12:29 task fired — 22h54m elapsed, 66 minutes short — and the
+ * digest reported "nothing due" as though that were normal. Worse, once a run
+ * does land, the next day's fire is almost exactly 24h later and the task
+ * carries ~10 minutes of jitter, so roughly every other day would round the
+ * wrong way and skip.
+ *
+ * 22h for daily is late enough that a source can never be refreshed twice in a
+ * calendar day, and early enough that a fixed-time schedule always qualifies.
+ * Same reasoning for weekly at 6.5 days.
+ */
 const INTERVAL_MS: Record<string, number> = {
-  daily: 24 * 60 * 60_000,
-  weekly: 7 * 24 * 60 * 60_000,
+  daily: 22 * 60 * 60_000,
+  weekly: 6.5 * 24 * 60 * 60_000,
 };
 
 /** Same deadline as an interactive refresh — see src/tools/sources.ts. */
@@ -51,7 +66,18 @@ interface DueSource {
   hasOutstandingJob: boolean;
 }
 
-async function collectDue(workspaceId: string, includeManual: boolean): Promise<DueSource[]> {
+async function collectDue(
+  workspaceId: string,
+  includeManual: boolean,
+  /**
+   * Ignore the interval and treat every active scheduled source as due.
+   *
+   * For "run it now, I do not care that it ran this morning". The schedule is
+   * for unattended runs; a human asking explicitly has already made the
+   * decision the interval exists to make for them.
+   */
+  force = false,
+): Promise<DueSource[]> {
   const sources = await db.source.findMany({
     where: {
       workspaceId,
@@ -120,10 +146,13 @@ export function registerScheduleTools(server: McpServer) {
     {
       includeManual: z.boolean().default(false)
         .describe('Also include manual sources that have NEVER been refreshed (they hold no videos at all).'),
+      force: z.boolean().default(false)
+        .describe('Ignore the schedule interval and list every active scheduled source as due — for a manual '
+          + '"run it now". Still free, still shows costs.'),
     },
-    async ({ includeManual }) => {
+    async ({ includeManual, force }) => {
       const workspace = await requireWorkspace();
-      const due = await collectDue(workspace.id, includeManual);
+      const due = await collectDue(workspace.id, includeManual, force);
       const balance = await creditBalance(workspace.id);
 
       const actionable = due.filter(d => !d.hasOutstandingJob);
@@ -211,8 +240,12 @@ export function registerScheduleTools(server: McpServer) {
         .describe('Also refresh manual sources that have never been refreshed.'),
       dryRun: z.boolean().default(false)
         .describe('true = report the plan without enqueuing anything.'),
+      force: z.boolean().default(false)
+        .describe('Ignore the schedule interval and refresh every active scheduled source NOW. Use only when a '
+          + 'human explicitly asked for an immediate run — never from an unattended schedule, where the interval '
+          + 'is the thing preventing repeat spend. maxCredits still applies.'),
     },
-    async ({ maxCredits, includeManual, dryRun }) => {
+    async ({ maxCredits, includeManual, dryRun, force }) => {
       const workspace = await requireWorkspace();
       const balance = await creditBalance(workspace.id);
 
@@ -237,7 +270,7 @@ export function registerScheduleTools(server: McpServer) {
         };
       }
 
-      const due = await collectDue(workspace.id, includeManual);
+      const due = await collectDue(workspace.id, includeManual, force);
 
       const planned: Array<{ sourceId: string; query: string; estimatedCredits: number }> = [];
       const skipped: Array<{ sourceId: string; query: string; reason: string }> = [];
