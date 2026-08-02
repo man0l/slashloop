@@ -42,6 +42,14 @@ model Workspace {
   autoTopUp            Boolean   @default(false)
   stripeCustomerId     String?   @unique
   stripeSubscriptionId String?   @unique
+  /// Live and test mode each have their own Customer/Subscription id space
+  /// in Stripe — a live-mode id is meaningless (and errors) against a test
+  /// key. These mirror the two fields above for STRIPE_MODE=test, so
+  /// flipping modes on an already-onboarded workspace doesn't try to reuse
+  /// a live customer with a test key. See customerIdField() in
+  /// src/lib/stripe.ts.
+  stripeTestCustomerId     String? @unique
+  stripeTestSubscriptionId String? @unique
 
   // --- media retention ---
   /// Days to keep stored cover images / MP4s before the retention sweeper
