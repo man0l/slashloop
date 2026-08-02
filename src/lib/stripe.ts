@@ -62,7 +62,8 @@ export function requireStripe(): Stripe {
 
 /**
  * planKey ("creator" | "pro") + interval ("month" | "year") -> Stripe Price
- * id via env vars. One-time credit packs use packPriceId().
+ * id via env vars. Credit top-ups are variable-amount (api/billing/checkout.ts
+ * builds price_data on the fly), so they don't go through this lookup.
  */
 export function priceIdFor(planKey: string, interval: string): string {
   const suffix = `${planKey.toUpperCase()}_${interval.toUpperCase()}`;
@@ -70,15 +71,6 @@ export function priceIdFor(planKey: string, interval: string): string {
   if (!id) {
     const prefix = stripeMode() === 'test' ? 'STRIPE_TEST_PRICE_' : 'STRIPE_PRICE_';
     throw new Error(`${prefix}${suffix} is not set — add the Stripe Price id for ${planKey}/${interval} (${stripeMode()} mode).`);
-  }
-  return id;
-}
-
-export function packPriceId(): string {
-  const id = priceEnv('PACK');
-  if (!id) {
-    const name = stripeMode() === 'test' ? 'STRIPE_TEST_PRICE_PACK' : 'STRIPE_PRICE_PACK';
-    throw new Error(`${name} is not set — add the Stripe Price id for the credit top-up pack (${stripeMode()} mode).`);
   }
   return id;
 }
