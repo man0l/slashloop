@@ -22,6 +22,7 @@
 
 import { db } from '../db.js';
 import type { Prisma } from '@prisma/client';
+import { customerIdField, subscriptionIdField } from './stripe.js';
 
 export class InsufficientCreditsError extends Error {
   constructor(
@@ -269,8 +270,10 @@ export async function txSetPlan(
   if (opts.billingStatus !== undefined) data.billingStatus = opts.billingStatus;
   if (opts.periodStart !== undefined) data.periodStart = opts.periodStart;
   if (opts.periodEnd !== undefined) data.periodEnd = opts.periodEnd;
-  if (opts.stripeCustomerId !== undefined) data.stripeCustomerId = opts.stripeCustomerId;
-  if (opts.stripeSubscriptionId !== undefined) data.stripeSubscriptionId = opts.stripeSubscriptionId;
+  // Live/test mode have separate customer id spaces — write whichever
+  // column matches the active STRIPE_MODE (see stripe.ts customerIdField()).
+  if (opts.stripeCustomerId !== undefined) (data as Record<string, unknown>)[customerIdField()] = opts.stripeCustomerId;
+  if (opts.stripeSubscriptionId !== undefined) (data as Record<string, unknown>)[subscriptionIdField()] = opts.stripeSubscriptionId;
 
   const updated = await tx.workspace.update({
     where: { id: workspaceId },
@@ -333,5 +336,18 @@ export async function txUpdateBillingFields(
     stripeSubscriptionId: string | null;
   }>,
 ): Promise<void> {
-  await tx.workspace.update({ where: { id: workspaceId }, data: fields });
+  // stripeCustomerId/stripeSubscriptionId here are logical names — map to
+  // whichever column matches the active STRIPE_MODE before writing.
+  const { stripeCustomerId, stripeSubscriptionId, ...rest } = fields;
+  const data: Record<string, unknown> = { ...rest };
+  if (stripeCustomerId !== undefined) data[customerIdField()] = stripeCustomerId;
+  if (stripeSubscriptionId !== undefined) data[subscriptionIdField()] = stripeSubscriptionId;
+  await tx.workspace.update({ where: { id: workspaceId }, data: data as Prisma.WorkspaceUpdateInput });
+}
+
+/** Workspace lookup by Stripe customer id, scoped to the active
+ *  STRIPE_MODE — live and test each have their own customer id space (see
+ *  customerIdField() in src/lib/stripe.ts). */
+export function workspaceByCustomerId(customerId: string): Prisma.WorkspaceWhereUniqueInput {
+  return { [customerIdField()]: customerId } as Prisma.WorkspaceWhereUniqueInput;
 }

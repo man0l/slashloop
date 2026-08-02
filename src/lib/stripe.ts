@@ -74,3 +74,17 @@ export function priceIdFor(planKey: string, interval: string): string {
   }
   return id;
 }
+
+/**
+ * Live and test mode each have their own Customer/Subscription id space in
+ * Stripe — a live-mode id used against a test key (or vice versa) fails with
+ * "No such customer". Workspace stores both pairs (see prisma/schema.prisma);
+ * these resolve which column belongs to the active STRIPE_MODE.
+ */
+export function customerIdField(): 'stripeCustomerId' | 'stripeTestCustomerId' {
+  return stripeMode() === 'test' ? 'stripeTestCustomerId' : 'stripeCustomerId';
+}
+
+export function subscriptionIdField(): 'stripeSubscriptionId' | 'stripeTestSubscriptionId' {
+  return stripeMode() === 'test' ? 'stripeTestSubscriptionId' : 'stripeSubscriptionId';
+}

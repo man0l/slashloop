@@ -4,7 +4,7 @@
 // actually applies credits once Stripe confirms payment.
 import { verifySupabaseJwt } from '../../remote/auth.js';
 import { db } from '../../src/db.js';
-import { requireStripe, priceIdFor } from '../../src/lib/stripe.js';
+import { requireStripe, priceIdFor, customerIdField } from '../../src/lib/stripe.js';
 import { corsHeaders, corsPreflight } from '../../src/lib/cors.js';
 
 // $10 minimum for a credit top-up (mirrors the stepper's floor on the site).
@@ -59,14 +59,18 @@ export async function POST(request: Request): Promise<Response> {
 
   const stripe = requireStripe();
 
-  let customerId = workspace.stripeCustomerId;
+  // Live and test mode have separate Customer id spaces in Stripe — read/
+  // write whichever column matches the active STRIPE_MODE, not the live
+  // one unconditionally (a live customer id used with a test key 404s).
+  const field = customerIdField();
+  let customerId = workspace[field];
   if (!customerId) {
     const customer = await stripe.customers.create({
       email: typeof claims.email === 'string' ? claims.email : undefined,
       metadata: { workspaceId: workspace.id, supabaseUserId: claims.sub },
     });
     customerId = customer.id;
-    await db.workspace.update({ where: { id: workspace.id }, data: { stripeCustomerId: customerId } });
+    await db.workspace.update({ where: { id: workspace.id }, data: { [field]: customerId } });
   }
 
   let session;

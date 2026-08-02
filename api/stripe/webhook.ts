@@ -13,7 +13,7 @@ import type Stripe from 'stripe';
 import { Prisma } from '@prisma/client';
 import { db } from '../../src/db.js';
 import { requireStripe, stripeWebhookSecret, stripeMode } from '../../src/lib/stripe.js';
-import { PLAN_CREDITS, FREE_TIER_PLAN_CREDITS, txSetPlan, txAddPackCredits, txUpdateBillingFields } from '../../src/lib/credits.js';
+import { PLAN_CREDITS, FREE_TIER_PLAN_CREDITS, txSetPlan, txAddPackCredits, txUpdateBillingFields, workspaceByCustomerId } from '../../src/lib/credits.js';
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -119,7 +119,7 @@ async function handleCheckoutCompleted(tx: Prisma.TransactionClient, event: Stri
 async function handleSubscriptionUpdated(tx: Prisma.TransactionClient, event: Stripe.Event) {
   const sub = event.data.object as Stripe.Subscription;
   const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
-  const workspace = await tx.workspace.findUnique({ where: { stripeCustomerId: customerId } });
+  const workspace = await tx.workspace.findUnique({ where: workspaceByCustomerId(customerId) });
   if (!workspace) {
     // Can race checkout.session.completed if Stripe delivers this first —
     // that handler will set stripeCustomerId shortly; nothing to sync yet.
@@ -143,7 +143,7 @@ async function handleInvoicePaid(tx: Prisma.TransactionClient, event: Stripe.Eve
   if (invoice.billing_reason !== 'subscription_cycle') return; // initial invoice: handled by checkout.session.completed
   const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
   if (!customerId) return;
-  const workspace = await tx.workspace.findUnique({ where: { stripeCustomerId: customerId } });
+  const workspace = await tx.workspace.findUnique({ where: workspaceByCustomerId(customerId) });
   if (!workspace) return;
   const credits = PLAN_CREDITS[workspace.planKey];
   if (credits === undefined) {
@@ -157,7 +157,7 @@ async function handleInvoicePaymentFailed(tx: Prisma.TransactionClient, event: S
   const invoice = event.data.object as Stripe.Invoice;
   const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
   if (!customerId) return;
-  const workspace = await tx.workspace.findUnique({ where: { stripeCustomerId: customerId } });
+  const workspace = await tx.workspace.findUnique({ where: workspaceByCustomerId(customerId) });
   if (!workspace) return;
   await txUpdateBillingFields(tx, workspace.id, { billingStatus: 'past_due' });
 }
@@ -165,7 +165,7 @@ async function handleInvoicePaymentFailed(tx: Prisma.TransactionClient, event: S
 async function handleSubscriptionDeleted(tx: Prisma.TransactionClient, event: Stripe.Event) {
   const sub = event.data.object as Stripe.Subscription;
   const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
-  const workspace = await tx.workspace.findUnique({ where: { stripeCustomerId: customerId } });
+  const workspace = await tx.workspace.findUnique({ where: workspaceByCustomerId(customerId) });
   if (!workspace) return;
   // Downgrade, not delete: packCredits (paid for separately) are untouched
   // because txSetPlan only ever sets planKey/planCredits.
