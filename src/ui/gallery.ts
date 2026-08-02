@@ -31,6 +31,8 @@ export interface GalleryCard {
   engagementRate: string;
   outlierScore: number | null;
   durationSec: number | null;
+  /** Epoch ms the video was posted — drives the "newest" sort. */
+  postedAt: number;
   /** Signed URL for the stored MP4, null when nothing is stored (or it expired). */
   mediaUrl: string | null;
   keyMoments: Array<{
@@ -87,13 +89,12 @@ function cardHtml(c: GalleryCard): string {
     : `<p class="nomedia">No stored video — expired or never analysed. Frames unavailable.</p>`;
 
   const score = c.outlierScore ?? 0;
-  // data-* drives client-side filters (no network). postedAt omitted — sort
-  // "newest" uses data-views-as-proxy only if we lack a timestamp; we embed
-  // scraped order via data-score/views and optional data-i for stable order.
+  // data-* drives client-side filters (no network).
   return `
   <article class="card"
            data-score="${score}"
            data-views="${c.views}"
+           data-posted="${c.postedAt}"
            data-has-media="${c.mediaUrl ? '1' : '0'}"
            data-handle="${esc(c.creatorHandle.toLowerCase())}">
     ${c.thumbUrl ? `<img class="thumb" src="${esc(c.thumbUrl)}" alt="" loading="lazy"/>`
@@ -157,6 +158,7 @@ function toolbarHtml(filters: GalleryFilters): string {
       <select id="f-sort" aria-label="Sort cards">
         <option value="outlier_score"${selectedAttr(sortBy, 'outlier_score')}>Outlier score</option>
         <option value="views"${selectedAttr(sortBy, 'views')}>Most views</option>
+        <option value="newest"${selectedAttr(sortBy, 'newest')}>Newest</option>
       </select>
     </label>
     <label class="field">
@@ -340,6 +342,11 @@ ${cards.length ? toolbarHtml(filters) : ''}
       var aw = parseInt(a.getAttribute('data-views'), 10) || 0;
       var bw = parseInt(b.getAttribute('data-views'), 10) || 0;
       if (sortBy === 'views') return bw - aw || bv - av;
+      if (sortBy === 'newest') {
+        var ap = parseInt(a.getAttribute('data-posted'), 10) || 0;
+        var bp = parseInt(b.getAttribute('data-posted'), 10) || 0;
+        return bp - ap || bv - av;
+      }
       return bv - av || bw - aw;
     });
   }

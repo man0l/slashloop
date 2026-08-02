@@ -37,6 +37,9 @@
     "api/gallery.ts": {
       "maxDuration": 30
     },
+    "api/gallery-data.ts": {
+      "maxDuration": 30
+    },
     "api/cron/media-retention.ts": {
       "maxDuration": 60
     },

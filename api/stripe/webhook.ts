@@ -14,6 +14,7 @@ import { Prisma } from '@prisma/client';
 import { db } from '../../src/db.js';
 import { requireStripe, stripeWebhookSecret, stripeMode } from '../../src/lib/stripe.js';
 import { PLAN_CREDITS, FREE_TIER_PLAN_CREDITS, txSetPlan, txAddPackCredits, txUpdateBillingFields, workspaceByCustomerId } from '../../src/lib/credits.js';
+import { primaryWorkspaceByOwnerId } from '../../src/lib/workspaces.js';
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -60,7 +61,7 @@ async function handleCheckoutCompleted(tx: Prisma.TransactionClient, event: Stri
     console.warn(`[stripe-webhook] checkout.session.completed ${session.id} has no client_reference_id, skipping`);
     return;
   }
-  const workspace = await tx.workspace.findUnique({ where: { ownerId: session.client_reference_id } });
+  const workspace = await primaryWorkspaceByOwnerId(session.client_reference_id, tx);
   if (!workspace) {
     console.warn(`[stripe-webhook] no workspace for owner ${session.client_reference_id} (session ${session.id})`);
     return;

@@ -2,7 +2,7 @@
 // Stripe's hosted Billing Portal (cancellation, plan switch, card update)
 // so none of that has to be built here.
 import { verifySupabaseJwt } from '../../remote/auth.js';
-import { db } from '../../src/db.js';
+import { primaryWorkspaceByOwnerId } from '../../src/lib/workspaces.js';
 import { requireStripe, customerIdField } from '../../src/lib/stripe.js';
 import { corsHeaders, corsPreflight } from '../../src/lib/cors.js';
 
@@ -30,7 +30,7 @@ export async function POST(request: Request): Promise<Response> {
 
   if (!SITE_URL) return json(500, { error: 'SITE_URL is not configured on the server' });
 
-  const workspace = await db.workspace.findUnique({ where: { ownerId: claims.sub } });
+  const workspace = await primaryWorkspaceByOwnerId(claims.sub);
   const customerId = workspace?.[customerIdField()];
   if (!customerId) {
     return json(404, { error: 'no_stripe_customer', message: 'No billing account yet — subscribe first.' });

@@ -13,6 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { z } from 'zod/v4';
+import type { Prisma } from '@prisma/client';
 import { registerAppTool, registerAppResource, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { db } from '../db.js';
 import { requireWorkspace, currentUserId } from '../context.js';
@@ -44,6 +45,10 @@ export interface BuildCardsOptions {
   minViews?: number;
   /** Initial thumbnail density for the toolbar dropdown. */
   density?: GalleryFilters['density'];
+  /** Server-side ranking. Default 'outlier_score' — see the sort split below. */
+  sortBy?: GalleryFilters['sortBy'];
+  /** Resolve a specific workspace (REST API) instead of the caller's primary one (MCP tools). */
+  workspaceId?: string;
 }
 
 /**
@@ -69,8 +74,9 @@ function storageOrigin(): string | null {
 export async function buildCards(
   opts: BuildCardsOptions = {},
 ): Promise<{ cards: GalleryCard[]; note?: string; sourceId?: string; filters: GalleryFilters }> {
-  const workspace = await requireWorkspace();
+  const workspace = await requireWorkspace(opts.workspaceId ? { workspaceId: opts.workspaceId } : undefined);
   const limit = Math.min(Math.max(opts.limit ?? GALLERY_POOL, 1), 60);
+  const sortBy = opts.sortBy ?? 'outlier_score';
 
   const where: {
     source: { workspaceId: string };
@@ -78,46 +84,60 @@ export async function buildCards(
   } = { source: { workspaceId: workspace.id } };
   if (opts.sourceId) where.sourceId = opts.sourceId;
 
-  // Rank by Score.outlierScore in the DB so the pool is the true top-N
-  // workspace outliers — not "top of an arbitrary unpaged slice".
-  //
-  // Split scored from unscored rather than relying on a single ORDER BY:
-  // Postgres defaults DESC to NULLS FIRST and Prisma cannot express nulls
-  // ordering through a relation, so an unsplit query can hand back a pool
-  // made entirely of unscored videos. An in-memory re-sort cannot repair
-  // that — the wrong rows were already selected. Same fix as get_feed.
   const include = { score: true, analyses: { orderBy: { createdAt: 'desc' as const }, take: 1 } };
+  type VideoCardRow = Prisma.VideoGetPayload<{ include: { score: true; analyses: true } }>;
 
-  const videos = await db.video.findMany({
-    where: { ...where, score: { isNot: null } },
-    include,
-    orderBy: { score: { outlierScore: 'desc' } },
-    take: limit,
-  });
+  let ranked: VideoCardRow[];
 
-  // Only backfill with unscored videos if the workspace has too few scored
-  // ones to fill the pool — otherwise a fresh workspace renders an empty
-  // gallery while it clearly has videos.
-  if (videos.length < limit) {
-    const unscored = await db.video.findMany({
-      where: { ...where, score: { is: null } },
+  if (sortBy === 'views' || sortBy === 'newest') {
+    // Single query, no scored/unscored split needed — views and postedAt are
+    // never null, so a plain ORDER BY already returns the true top-N.
+    ranked = await db.video.findMany({
+      where,
       include,
-      orderBy: { postedAt: 'desc' },
-      take: limit - videos.length,
+      orderBy: sortBy === 'views' ? { views: 'desc' } : { postedAt: 'desc' },
+      take: limit,
     });
-    videos.push(...unscored);
-  }
+  } else {
+    // Rank by Score.outlierScore in the DB so the pool is the true top-N
+    // workspace outliers — not "top of an arbitrary unpaged slice".
+    //
+    // Split scored from unscored rather than relying on a single ORDER BY:
+    // Postgres defaults DESC to NULLS FIRST and Prisma cannot express nulls
+    // ordering through a relation, so an unsplit query can hand back a pool
+    // made entirely of unscored videos. An in-memory re-sort cannot repair
+    // that — the wrong rows were already selected. Same fix as get_feed.
+    const videos = await db.video.findMany({
+      where: { ...where, score: { isNot: null } },
+      include,
+      orderBy: { score: { outlierScore: 'desc' } },
+      take: limit,
+    });
 
-  // Scores are non-null by construction above, but the backfill rows are not;
-  // treat missing as 0 so they sort last.
-  const ranked = [...videos].sort(
-    (a, b) => (b.score?.outlierScore ?? 0) - (a.score?.outlierScore ?? 0),
-  );
+    // Only backfill with unscored videos if the workspace has too few scored
+    // ones to fill the pool — otherwise a fresh workspace renders an empty
+    // gallery while it clearly has videos.
+    if (videos.length < limit) {
+      const unscored = await db.video.findMany({
+        where: { ...where, score: { is: null } },
+        include,
+        orderBy: { postedAt: 'desc' },
+        take: limit - videos.length,
+      });
+      videos.push(...unscored);
+    }
+
+    // Scores are non-null by construction above, but the backfill rows are not;
+    // treat missing as 0 so they sort last.
+    ranked = [...videos].sort(
+      (a, b) => (b.score?.outlierScore ?? 0) - (a.score?.outlierScore ?? 0),
+    );
+  }
 
   const filters: GalleryFilters = {
     minOutlier: opts.minOutlier && opts.minOutlier > 0 ? opts.minOutlier : 0,
     minViews: opts.minViews && opts.minViews > 0 ? opts.minViews : 0,
-    sortBy: 'outlier_score',
+    sortBy,
     density: opts.density,
   };
 
@@ -156,6 +176,7 @@ export async function buildCards(
         : '0%',
       outlierScore: v.score?.outlierScore ?? null,
       durationSec: v.durationSec,
+      postedAt: v.postedAt.getTime(),
       mediaUrl: media.url,
       keyMoments,
     });
