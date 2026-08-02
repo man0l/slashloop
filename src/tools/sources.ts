@@ -109,12 +109,49 @@ export function registerSourceTools(server: McpServer) {
       sourceType: z.enum(['creator', 'keyword', 'hashtag']).describe('Type of source'),
       query: z.string().describe('Handle, keyword phrase, or hashtag (with #)'),
       language: z.string().default('en').describe('Language code'),
-      videoLimit: z.number().min(1).max(200).default(50).describe('Max videos per refresh'),
+      // 20, not 50. This default decides whether a new user ever reaches the
+      // part of the product that has value.
+      //
+      // The free tier is 300 credits and a refresh costs 1.5 per video, so at
+      // 50 a single source costs 75 credits. Tracking four sources — the
+      // natural first session — spends the entire allowance before a single
+      // analysis, and analysis is where the insight is. At 20 the same session
+      // costs 120 and leaves room for 36 analyses.
+      //
+      // Little is lost: the scraper routinely overshoots the limit anyway (a
+      // 20-video request returned 30 in practice), and hashtag refreshes mostly
+      // return videos already held. Raising it per-source stays one call away.
+      videoLimit: z.number().min(1).max(200).default(20)
+        .describe('Max videos per refresh (default 20 ≈ 30 credits). Costs 1.5 credits per video returned, '
+          + 'so raise it deliberately — 50 videos is 75 credits.'),
       refreshSchedule: z.enum(['manual', 'daily', 'weekly']).default('manual'),
       nicheTag: z.string().optional().describe('Niche/workspace tag'),
     },
     async ({ platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag }) => {
       const workspace = await requireWorkspace();
+
+      // Refuse platforms that cannot be scraped, at the moment the user asks —
+      // not two steps later at refresh.
+      //
+      // scrapeSource throws for reels and shorts (src/lib/apify.ts): there is no
+      // scraper for either. Accepting the source anyway produced the worst
+      // possible onboarding path — track succeeds, refresh fails, and the
+      // product looks broken rather than incomplete. Found by walking the
+      // new-user journey: search_library on an empty Reels library offered
+      // exactly this dead end.
+      if (platform !== 'tiktok') {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            error: 'platform_not_supported',
+            platform,
+            message: `${platform} cannot be scraped yet — TikTok is the only live platform. `
+              + 'Creating this source would succeed and then fail at refresh, so it is refused here instead.',
+            suggestion: `If this query also exists on TikTok, track it there: `
+              + `create_source with platform="tiktok", sourceType="${sourceType}", query="${query}".`,
+          }, null, 2) }],
+          isError: true,
+        };
+      }
 
       const source = await db.source.create({
         data: {

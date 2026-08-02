@@ -283,7 +283,11 @@ export function registerFeedTools(server: McpServer) {
             ? `Zero matches does NOT mean nothing exists for "${query}" — it means nothing matching has been pulled into this workspace yet. Say that plainly, then offer to track it.`
             : undefined,
         }, [
-          {
+          // Only offer tracking on a platform that can actually be scraped.
+          // Suggesting a Reels source sends the user into create_source →
+          // refresh → failure, which reads as a broken product rather than an
+          // unfinished one.
+          platform === 'tiktok' ? {
             label: `Track ${query} on ${platform}`,
             tool: 'create_source',
             args: {
@@ -294,6 +298,17 @@ export function registerFeedTools(server: McpServer) {
             why: existingVideos.length === 0
               ? 'Free. Nothing matching has been scraped yet — tracking it, then refreshing, is the only way to get results.'
               : 'Free. Keeps this search fed with new videos instead of a one-off look at old data.',
+          } : {
+            label: `Track ${query} on TikTok instead`,
+            tool: 'create_source',
+            args: {
+              platform: 'tiktok',
+              sourceType: query.startsWith('#') ? 'hashtag' : query.startsWith('@') ? 'creator' : 'keyword',
+              query,
+            },
+            why: `Free. ${platform} has no scraper yet, so a ${platform} source would be created and then fail `
+              + 'at refresh. TikTok is the only live platform — say so plainly rather than letting the user '
+              + 'discover it two steps later.',
           },
         ]), null, 2) }],
       };

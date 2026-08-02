@@ -349,5 +349,14 @@ export async function txUpdateBillingFields(
  *  STRIPE_MODE — live and test each have their own customer id space (see
  *  customerIdField() in src/lib/stripe.ts). */
 export function workspaceByCustomerId(customerId: string): Prisma.WorkspaceWhereUniqueInput {
-  return { [customerIdField()]: customerId } as Prisma.WorkspaceWhereUniqueInput;
+  // Branch rather than build a computed key. TypeScript widens `{ [f()]: v }`
+  // to `{ [x: string]: string }` even when f() returns a literal union, which
+  // loses the guarantee that the key is one of the @unique columns — so the
+  // previous `as` cast was asserting something the compiler had already said
+  // it could not verify. These two branches type-check with no cast at all,
+  // and adding a third id column would now be a compile error rather than a
+  // silent lookup against a non-unique field.
+  return customerIdField() === 'stripeTestCustomerId'
+    ? { stripeTestCustomerId: customerId }
+    : { stripeCustomerId: customerId };
 }
