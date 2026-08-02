@@ -61,6 +61,24 @@ export function registerSettingsTools(server: McpServer) {
       const budgetRemaining = workspace.monthlyBudgetCents - totalCost;
       const credits = { planCredits: workspace.planCredits, packCredits: workspace.packCredits, total: workspace.planCredits + workspace.packCredits };
 
+      // Where to buy more, surfaced BEFORE the balance runs out rather than
+      // only in the insufficient-credits error. By the time a call fails the
+      // user has already been interrupted mid-task.
+      const topUpUrl = process.env.UPGRADE_URL ?? 'https://slashloop.dev/upgrade';
+
+      // Which Stripe key set is actually in play. Not a secret — it is the
+      // difference between a real charge and a test one, and shipping with
+      // STRIPE_MODE=test is the kind of mistake that is invisible until a
+      // customer's payment never arrives. Mirrors src/lib/stripe.ts.
+      const stripeMode = (process.env.STRIPE_MODE ?? 'live').trim().toLowerCase() === 'test'
+        ? 'test'
+        : 'live';
+
+      // Cheapest metered action is analyze_video at 5 credits; below that
+      // nothing chargeable can run at all.
+      const LOW_CREDIT_THRESHOLD = 20;
+      const creditsLow = credits.total < LOW_CREDIT_THRESHOLD;
+
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           period,
@@ -69,6 +87,21 @@ export function registerSettingsTools(server: McpServer) {
           // src/lib/credits.ts). monthlyBudgetCents/budget* below is COGS
           // (what we pay Apify/Google) and is informational only now.
           credits,
+          billing: {
+            stripeMode,
+            topUpUrl,
+            ...(stripeMode === 'test' ? {
+              modeWarning: 'STRIPE_MODE=test — checkout uses Stripe test keys and NO real payment is taken. '
+                + 'Card numbers must be Stripe test cards. Set STRIPE_MODE=live to accept real payments.',
+            } : {}),
+          },
+          creditsLow,
+          ...(creditsLow ? {
+            lowCreditsMessage:
+              `Only ${credits.total} credits left — below the ${LOW_CREDIT_THRESHOLD} needed for most actions. `
+              + `Top up at ${topUpUrl}. Reads (get_feed, show_gallery, rescore_sources, deepen_baselines screening) `
+              + 'stay free; refreshes and analyses do not.',
+          } : {}),
           summary: {
             totalCostCents: totalCost,
             totalCostDisplay: `$${(totalCost / 100).toFixed(2)}`,

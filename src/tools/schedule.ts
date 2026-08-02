@@ -129,6 +129,29 @@ export function registerScheduleTools(server: McpServer) {
       const actionable = due.filter(d => !d.hasOutstandingJob);
       const totalCredits = actionable.reduce((a, d) => a + d.estimatedCredits, 0);
 
+      // Forward projection, not just "can I afford today".
+      //
+      // A schedule burns credits on a fixed cadence, so the balance running out
+      // is predictable well before it happens. Reporting it only when a call
+      // fails means the user finds out mid-task, and an unattended run finds
+      // out with nobody watching. Every input here is already known: the
+      // sources, their cadence, and 1.5 credits per video.
+      const scheduled = await db.source.findMany({
+        where: { workspaceId: workspace.id, isActive: true, refreshSchedule: { in: ['daily', 'weekly'] } },
+        select: { query: true, refreshSchedule: true, videoLimit: true },
+      });
+
+      let dailyBurn = 0;
+      for (const s of scheduled) {
+        const perRun = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * s.videoLimit);
+        dailyBurn += s.refreshSchedule === 'daily' ? perRun : perRun / 7;
+      }
+      dailyBurn = Math.round(dailyBurn * 10) / 10;
+
+      const runwayDays = dailyBurn > 0 ? Math.floor(balance.total / dailyBurn) : null;
+      const topUpUrl = process.env.UPGRADE_URL ?? 'https://slashloop.dev/upgrade';
+      const RUNWAY_WARN_DAYS = 7;
+
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
           message: due.length === 0
@@ -137,6 +160,26 @@ export function registerScheduleTools(server: McpServer) {
           creditsAvailable: balance.total,
           estimatedCreditsToRefreshAll: totalCredits,
           affordable: totalCredits <= balance.total,
+          projection: {
+            scheduledSources: scheduled.length,
+            creditsPerDay: dailyBurn,
+            runwayDays,
+            runsOutOn: runwayDays != null
+              ? new Date(Date.now() + runwayDays * 86_400_000).toISOString().slice(0, 10)
+              : null,
+            breakdown: scheduled.map(s => ({
+              query: s.query,
+              cadence: s.refreshSchedule,
+              videoLimit: s.videoLimit,
+              creditsPerRun: Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * s.videoLimit),
+            })),
+            ...(runwayDays != null && runwayDays <= RUNWAY_WARN_DAYS ? {
+              warning: `At the current schedule this workspace burns ~${dailyBurn} credits/day and has about `
+                + `${runwayDays} day(s) left. Top up at ${topUpUrl}, or reduce a source's videoLimit — cost is `
+                + '1.5 credits per video, so halving the limit halves the burn.',
+              topUpUrl,
+            } : {}),
+          },
           due,
           note: 'Estimates assume each source returns its full videoLimit; the worker settles down to the '
             + 'actual number of videos returned, so real cost is usually lower. Sources with '
@@ -178,11 +221,18 @@ export function registerScheduleTools(server: McpServer) {
       // to authorise more than the balance.
       const ceiling = Math.min(maxCredits, balance.total);
       if (ceiling < 1) {
+        const topUpUrl = process.env.UPGRADE_URL ?? 'https://slashloop.dev/upgrade';
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
             message: 'No credits available — nothing queued.',
             creditsAvailable: balance.total,
             requestedCeiling: maxCredits,
+            topUpUrl,
+            // A scheduled run that stops here reports to nobody in the moment,
+            // so the recovery step has to be in the message itself.
+            howToFix: `Top up at ${topUpUrl}, or lower the videoLimit on your scheduled sources — `
+              + 'refresh costs 1.5 credits per video, so a 50-video source is 75 credits and a 10-video '
+              + 'creator source is 15.',
           }, null, 2) }],
         };
       }
