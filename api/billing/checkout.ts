@@ -4,6 +4,7 @@
 // actually applies credits once Stripe confirms payment.
 import { verifySupabaseJwt } from '../../remote/auth.js';
 import { db } from '../../src/db.js';
+import { primaryWorkspaceByOwnerId } from '../../src/lib/workspaces.js';
 import { requireStripe, priceIdFor, customerIdField } from '../../src/lib/stripe.js';
 import { corsHeaders, corsPreflight } from '../../src/lib/cors.js';
 
@@ -52,7 +53,7 @@ export async function POST(request: Request): Promise<Response> {
     return json(400, { error: `amountCents must be an integer >= ${MIN_PACK_AMOUNT_CENTS} ($${MIN_PACK_AMOUNT_CENTS / 100} minimum)` });
   }
 
-  let workspace = await db.workspace.findUnique({ where: { ownerId: claims.sub } });
+  let workspace = await primaryWorkspaceByOwnerId(claims.sub);
   if (!workspace) {
     workspace = await db.workspace.create({ data: { ownerId: claims.sub, name: 'My workspace' } });
   }

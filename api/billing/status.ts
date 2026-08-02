@@ -1,7 +1,7 @@
 // GET /api/billing/status — Supabase JWT auth. Read-only balance/plan view
 // for the site's account page and its post-checkout polling.
 import { verifySupabaseJwt } from '../../remote/auth.js';
-import { db } from '../../src/db.js';
+import { primaryWorkspaceByOwnerId } from '../../src/lib/workspaces.js';
 import { corsHeaders, corsPreflight } from '../../src/lib/cors.js';
 
 function json(status: number, body: unknown): Response {
@@ -28,7 +28,7 @@ export async function GET(request: Request): Promise<Response> {
   // creates a workspace on first use; a billing-status check before that
   // happens just means "you're not provisioned yet", not an error to fix
   // by creating one.
-  const workspace = await db.workspace.findUnique({ where: { ownerId: claims.sub } });
+  const workspace = await primaryWorkspaceByOwnerId(claims.sub);
   if (!workspace) return json(404, { error: 'no_workspace' });
 
   return json(200, {
