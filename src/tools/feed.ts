@@ -405,8 +405,16 @@ export function registerFeedTools(server: McpServer) {
             scoreType: s.scoreType,
             postedAt: s.video.postedAt.toISOString(),
             explanation: s.explanation,
+            // Without this a caller cannot tell an already-analysed video from
+            // a fresh one, so an unattended digest recommends the same video
+            // every single morning. Observed: a scheduled run proposed
+            // analysing a video that had been analysed AND hook-extracted.
+            hasAnalysis: analyzedIds.has(s.video.id),
           })),
         }, [
+          // A digest should recommend what is still worth doing. Without
+          // hasAnalysis on each entry above, an unattended run has no way to
+          // tell, and repeats yesterday's recommendation forever.
           unanalyzedActual.length > 0 ? {
             label: `Analyze the ${unanalyzedActual.length} real outlier${unanalyzedActual.length === 1 ? '' : 's'}`,
             tool: 'analyze_video',
