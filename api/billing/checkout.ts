@@ -4,8 +4,11 @@
 // actually applies credits once Stripe confirms payment.
 import { verifySupabaseJwt } from '../../remote/auth.js';
 import { db } from '../../src/db.js';
-import { requireStripe, priceIdFor, packPriceId } from '../../src/lib/stripe.js';
+import { requireStripe, priceIdFor } from '../../src/lib/stripe.js';
 import { corsHeaders, corsPreflight } from '../../src/lib/cors.js';
+
+// $10 minimum for a credit top-up (mirrors the stepper's floor on the site).
+const MIN_PACK_AMOUNT_CENTS = 1000;
 
 const SITE_URL = (process.env.SITE_URL ?? '').replace(/\/$/, '');
 
@@ -31,19 +34,22 @@ export async function POST(request: Request): Promise<Response> {
 
   if (!SITE_URL) return json(500, { error: 'SITE_URL is not configured on the server' });
 
-  let body: { planKey?: string; interval?: string };
+  let body: { planKey?: string; interval?: string; amountCents?: number };
   try {
-    body = (await request.json()) as { planKey?: string; interval?: string };
+    body = (await request.json()) as { planKey?: string; interval?: string; amountCents?: number };
   } catch {
     return json(400, { error: 'invalid_json' });
   }
 
-  const { planKey, interval } = body;
+  const { planKey, interval, amountCents } = body;
   if (planKey !== 'creator' && planKey !== 'pro' && planKey !== 'pack') {
     return json(400, { error: 'planKey must be "creator", "pro", or "pack"' });
   }
   if (planKey !== 'pack' && interval !== 'month' && interval !== 'year') {
     return json(400, { error: 'interval must be "month" or "year"' });
+  }
+  if (planKey === 'pack' && (!Number.isInteger(amountCents) || (amountCents as number) < MIN_PACK_AMOUNT_CENTS)) {
+    return json(400, { error: `amountCents must be an integer >= ${MIN_PACK_AMOUNT_CENTS} ($${MIN_PACK_AMOUNT_CENTS / 100} minimum)` });
   }
 
   let workspace = await db.workspace.findUnique({ where: { ownerId: claims.sub } });
@@ -66,11 +72,26 @@ export async function POST(request: Request): Promise<Response> {
   let session;
   try {
     if (planKey === 'pack') {
+      // Variable-amount top-up: no fixed Price object, no automatic tax — the
+      // amount the customer picks is exactly what they pay (tax_behavior:
+      // 'exclusive' means Stripe won't add VAT/tax on top). The webhook
+      // grants credits 1:1 against the amount actually charged (1 credit =
+      // $0.01, see src/lib/credits.ts), not from Price metadata.
       session = await stripe.checkout.sessions.create({
         mode: 'payment',
         customer: customerId,
         client_reference_id: claims.sub,
-        line_items: [{ price: packPriceId(), quantity: 1 }],
+        line_items: [
+          {
+            price_data: {
+              currency: 'usd',
+              unit_amount: amountCents,
+              tax_behavior: 'exclusive',
+              product_data: { name: 'Slashloop credit top-up' },
+            },
+            quantity: 1,
+          },
+        ],
         success_url: `${SITE_URL}/billing/success`,
         cancel_url: `${SITE_URL}/billing/cancel`,
       });

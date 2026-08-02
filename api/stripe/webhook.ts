@@ -70,7 +70,8 @@ async function handleCheckoutCompleted(tx: Prisma.TransactionClient, event: Stri
   const full = await requireStripe().checkout.sessions.retrieve(session.id, {
     expand: ['line_items.data.price'],
   });
-  const price = full.line_items?.data?.[0]?.price as Stripe.Price | undefined;
+  const lineItem = full.line_items?.data?.[0];
+  const price = lineItem?.price as Stripe.Price | undefined;
   if (!price) {
     console.warn(`[stripe-webhook] checkout session ${session.id} has no line item price, skipping`);
     return;
@@ -97,13 +98,20 @@ async function handleCheckoutCompleted(tx: Prisma.TransactionClient, event: Stri
       'subscription_create',
     );
   } else if (session.mode === 'payment') {
-    const packCredits = Number(price.metadata.pack_credits ?? 0);
+    // Credit top-ups are variable-amount (api/billing/checkout.ts builds
+    // price_data on the fly, no Price metadata) — grant 1 credit per cent
+    // actually charged (1 credit = $0.01, src/lib/credits.ts), reading the
+    // line item's own amount_total rather than the client-controlled request
+    // so a tampered amountCents can't grant more than what Stripe collected.
+    // price.metadata.pack_credits still wins if set (e.g. a manually created
+    // Price in the Stripe dashboard with a bonus/discounted ratio).
+    const packCredits = Number(price.metadata.pack_credits ?? 0) || (lineItem?.amount_total ?? 0);
     const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
     if (customerId) await txUpdateBillingFields(tx, workspace.id, { stripeCustomerId: customerId });
     if (packCredits > 0) {
       await txAddPackCredits(tx, workspace.id, packCredits, event.id, 'pack_purchase');
     } else {
-      console.warn(`[stripe-webhook] payment-mode session ${session.id} price ${price.id} has no pack_credits metadata`);
+      console.warn(`[stripe-webhook] payment-mode session ${session.id} price ${price.id} has no pack_credits metadata and no charged amount`);
     }
   }
 }
