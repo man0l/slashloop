@@ -272,7 +272,7 @@ export function registerScheduleTools(server: McpServer) {
 
       const due = await collectDue(workspace.id, includeManual, force);
 
-      const planned: Array<{ sourceId: string; query: string; estimatedCredits: number }> = [];
+      const planned: Array<{ sourceId: string; query: string; estimatedCredits: number; videoLimit: number }> = [];
       const skipped: Array<{ sourceId: string; query: string; reason: string }> = [];
       let committed = 0;
 
@@ -289,7 +289,7 @@ export function registerScheduleTools(server: McpServer) {
           });
           continue;
         }
-        planned.push({ sourceId: d.sourceId, query: d.query, estimatedCredits: d.estimatedCredits });
+        planned.push({ sourceId: d.sourceId, query: d.query, estimatedCredits: d.estimatedCredits, videoLimit: d.videoLimit });
         committed += d.estimatedCredits;
       }
 
@@ -309,6 +309,7 @@ export function registerScheduleTools(server: McpServer) {
           workspaceId: workspace.id,
           sourceId: p.sourceId,
           payload: {},
+          videoLimit: p.videoLimit,
           deadlineAt: new Date(Date.now() + REFRESH_JOB_DEADLINE_MS),
         });
         jobs.push({ sourceId: p.sourceId, query: p.query, jobId: job.id });

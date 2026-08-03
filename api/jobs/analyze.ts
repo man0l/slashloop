@@ -17,6 +17,7 @@
 
 import { analyzeVideoWithDownload } from '../../src/analysis/index.js';
 import { claimNextJob, completeJob, failJob, reclaimStuckJobs, type AnalyzeJobPayload } from '../../src/lib/jobs.js';
+import { rescoreStaleTooFresh } from '../../src/scoring.js';
 import { CREDIT_COSTS, refundCredits } from '../../src/lib/credits.js';
 import { db } from '../../src/db.js';
 
@@ -68,6 +69,15 @@ export async function POST(request: Request): Promise<Response> {
   // SQL, because a second copy of MAX_ATTEMPTS/STUCK_AFTER_MINUTES would drift
   // from these constants the first time one was tuned and the other wasn't.
   const reclaimed = await reclaimStuckJobs();
+
+  // Same idea for scores stuck at 'too_fresh': the 48h window that made them
+  // unscoreable has usually passed by the next drain, and this piggybacks on
+  // the same per-minute cadence rather than needing its own trigger. Free
+  // (no Apify, no credits) and bounded — see RESCORE_STALE_SOURCE_CAP.
+  const rescoredStale = await rescoreStaleTooFresh().catch((err) => {
+    console.warn(`[jobs] rescoreStaleTooFresh failed: ${(err as Error).message}`);
+    return { sourcesRescored: 0 };
+  });
 
   while (Date.now() - startedAt < RESERVE_MS) {
     // Drain all three queues from this one endpoint so the existing pg_cron
@@ -146,6 +156,10 @@ export async function POST(request: Request): Promise<Response> {
           workspaceId: job.workspaceId,
           sourceId: job.sourceId,
           limitOverride: (JSON.parse(job.payloadJson || '{}') as { limitOverride?: number }).limitOverride,
+          // Stable across every retry of this job (minted once at enqueue) —
+          // see the opId doc comment in src/lib/refresh.ts.
+          opId: job.opId ?? undefined,
+          preAuthCredits: job.preAuthCredits ?? undefined,
         });
         if (!result.ok) {
           const message = result.errors.join('; ') || result.refusal || 'refresh refused';
@@ -234,6 +248,7 @@ export async function POST(request: Request): Promise<Response> {
 
   return json(200, {
     reclaimed,
+    rescoredStale,
     processed: processed.length,
     succeeded: processed.filter(p => p.ok).length,
     failed: processed.filter(p => !p.ok).length,

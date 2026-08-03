@@ -16,6 +16,7 @@
 // supabase/migrations/*_pgcron_drain_analyze_jobs.sql.
 // ---------------------------------------------------------------------------
 
+import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { CREDIT_COSTS, refundCredits } from './credits.js';
 
@@ -113,6 +114,17 @@ export async function enqueueAnalyzeJob(opts: {
  * A refresh job scrapes a SOURCE. It carries preAuthCredits because the
  * pre-authorisation scales with videoLimit — unlike analyze, which is a fixed
  * price — so the reclaim path cannot infer the refund from the kind alone.
+ *
+ * opId and preAuthCredits are minted HERE, once, and stay fixed across every
+ * retry of this job. runRefresh() is told to use them instead of minting its
+ * own — that is what makes a retry's debitCredits() call idempotent (same
+ * refId as the attempt that got killed) instead of a second, unrecoverable
+ * charge. Before this, runRefresh generated a fresh opId per *invocation*: a
+ * scrape killed by the platform timeout mid-flight had already debited under
+ * that opId, and because MediaJob.opId was never set, reclaimStuckJobs had no
+ * refId to refund even on the exhausted-attempts path — the pre-auth simply
+ * vanished. Confirmed live: two separate 30-credit pre-auths from timed-out
+ * attempts with no matching settle/fail entry anywhere in CreditLedger.
  */
 export interface RefreshJobPayload {
   limitOverride?: number;
@@ -122,9 +134,15 @@ export async function enqueueRefreshJob(opts: {
   workspaceId: string;
   sourceId: string;
   payload: RefreshJobPayload;
+  /** Videos this refresh is capped at — the same number runRefresh would use
+   *  (limitOverride, or else the source's own videoLimit) — so the pre-auth
+   *  minted here matches what the worker will actually charge for. */
+  videoLimit: number;
   /** Wall clock after which await_job stops telling callers to keep waiting. */
   deadlineAt: Date;
 }): Promise<MediaJobRow> {
+  const opId = randomUUID();
+  const preAuthCredits = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * opts.videoLimit);
   return db.mediaJob.create({
     data: {
       workspaceId: opts.workspaceId,
@@ -133,10 +151,8 @@ export async function enqueueRefreshJob(opts: {
       status: 'queued',
       payloadJson: JSON.stringify(opts.payload ?? {}),
       deadlineAt: opts.deadlineAt,
-      // Credits are debited inside runRefresh, not at enqueue, so there is no
-      // pre-auth for the reclaim path to refund. runRefresh settles its own
-      // debit within the worker invocation; a worker killed before it debits
-      // has cost the user nothing.
+      opId,
+      preAuthCredits,
     },
   }) as unknown as Promise<MediaJobRow>;
 }

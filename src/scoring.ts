@@ -277,6 +277,44 @@ export function scoreVideo(
  */
 export const CREATOR_BASELINE_MIN_SAMPLE = 5;
 
+/**
+ * Cap on distinct sources rescored per call — this runs on every worker
+ * drain (every minute, see api/jobs/analyze.ts), so it stays bounded rather
+ * than risking the invocation's time budget on a large backlog.
+ */
+const RESCORE_STALE_SOURCE_CAP = 20;
+
+/**
+ * Videos posted under 48h ago are scored 'too_fresh' with outlierScore 0 and
+ * an explanation promising the real score is "calculated on next refresh" —
+ * but nothing else ever re-scores them once that window passes. A source
+ * that isn't refreshed again (manual schedule, or just not due yet) leaves
+ * those videos permanently stuck at 0x, which is exactly what "sort by
+ * newest, see 0x outliers that never resolve" looks like from outside.
+ *
+ * Finds videos whose 48h freshness window has now passed but whose Score
+ * row is still 'too_fresh', and rescores their source (free — no Apify, no
+ * credits, just batchScoreVideos). Call on a regular cadence rather than
+ * only at refresh time.
+ */
+export async function rescoreStaleTooFresh(): Promise<{ sourcesRescored: number }> {
+  const cutoff = subHours(new Date(), 48);
+  const stale = await db.video.findMany({
+    where: { postedAt: { lte: cutoff }, score: { is: { scoreType: 'too_fresh' } } },
+    select: { sourceId: true },
+    distinct: ['sourceId'],
+    take: RESCORE_STALE_SOURCE_CAP,
+  });
+
+  for (const { sourceId } of stale) {
+    await batchScoreVideos(sourceId).catch((err) => {
+      console.warn(`[scoring] rescore of stale too_fresh videos failed for source ${sourceId}: ${(err as Error).message}`);
+    });
+  }
+
+  return { sourcesRescored: stale.length };
+}
+
 export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]> {
   const videos = await db.video.findMany({
     where: { sourceId },

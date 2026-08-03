@@ -245,6 +245,7 @@ export async function refreshSourceForWorkspace(
       workspaceId: workspace.id,
       sourceId,
       payload: { limitOverride: input.videoLimit },
+      videoLimit: limit,
       deadlineAt,
     });
     // Best-effort poke; pg_cron drains within a minute regardless.
