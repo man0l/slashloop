@@ -347,18 +347,19 @@ export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: numbe
   const cutoff = subHours(new Date(), 48);
   const stale = await db.video.findMany({
     where: { postedAt: { lte: cutoff }, score: { is: { scoreType: 'too_fresh' } } },
-    select: { creatorHandle: true, platform: true, sourceId: true, source: { select: { workspaceId: true } } },
+    select: { creatorHandle: true, platform: true, sourceId: true, postedAt: true, source: { select: { workspaceId: true } } },
     // Cast a wider net than the group cap below — many stale videos collapse
     // into few distinct creators, so scanning more rows costs nothing extra
     // (one indexed query) but yields a fuller, more useful set of groups.
     take: RESCORE_STALE_GROUP_CAP * 5,
   });
 
-  const groups = new Map<string, { creatorHandle: string; platform: string; workspaceId: string; sourceId: string }>();
+  const groups = new Map<string, { creatorHandle: string; platform: string; workspaceId: string; sourceId: string; latestStalePostedAt: Date }>();
   for (const v of stale) {
     if (!v.source) continue;
     const key = `${v.creatorHandle}__${v.platform}__${v.source.workspaceId}`;
-    if (!groups.has(key)) {
+    const existing = groups.get(key);
+    if (!existing) {
       groups.set(key, {
         creatorHandle: v.creatorHandle,
         platform: v.platform,
@@ -366,14 +367,17 @@ export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: numbe
         // Any one of the creator's stale videos' sources works as the
         // record-keeping home for whatever this scrape finds/updates.
         sourceId: v.sourceId,
+        latestStalePostedAt: v.postedAt,
       });
+    } else if (v.postedAt > existing.latestStalePostedAt) {
+      existing.latestStalePostedAt = v.postedAt;
     }
   }
 
   let creatorsRescraped = 0;
   let sourcesRescoredOnly = 0;
 
-  for (const { creatorHandle, platform, workspaceId, sourceId } of [...groups.values()].slice(0, RESCORE_STALE_GROUP_CAP)) {
+  for (const { creatorHandle, platform, workspaceId, sourceId, latestStalePostedAt } of [...groups.values()].slice(0, RESCORE_STALE_GROUP_CAP)) {
     // Leave whatever's left for the next minute's drain rather than risking
     // this invocation's budget — the primary job queues still run after this.
     if (Date.now() - startedAt > RESCRAPE_STALE_MAX_DURATION_MS) break;
@@ -383,10 +387,19 @@ export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: numbe
     // Baseline.computedAt already exists and is touched by every scoring
     // pass (computeCreatorBaselinesBatch), so it doubles as "how fresh is
     // what we already have" with no new table needed.
+    //
+    // Time alone isn't enough, though: a creator who posts frequently can
+    // have a brand new video the last rescrape never saw, even minutes
+    // later — "posted after our last real check" always overrides the
+    // cooldown, because the point of rescraping is specifically to pick up
+    // content we don't have yet, and computedAt only proves we checked
+    // BEFORE that video existed, not that we've seen it.
     const baseline = await db.baseline.findUnique({
       where: { creatorHandle_platform: { creatorHandle, platform } },
     });
-    if (baseline && Date.now() - baseline.computedAt.getTime() < BASELINE_RESCRAPE_COOLDOWN_MS) {
+    const alreadyCoveredByLastCheck = baseline && baseline.computedAt > latestStalePostedAt;
+    const withinCooldown = baseline && Date.now() - baseline.computedAt.getTime() < BASELINE_RESCRAPE_COOLDOWN_MS;
+    if (alreadyCoveredByLastCheck && withinCooldown) {
       await batchScoreVideos(sourceId).catch((err) => {
         console.warn(`[scoring] fallback rescore failed for source ${sourceId}: ${(err as Error).message}`);
       });
