@@ -278,21 +278,21 @@ export function scoreVideo(
 export const CREATOR_BASELINE_MIN_SAMPLE = 5;
 
 /**
- * Cap on distinct sources considered per call, and how long this pass may
- * run before ceding the rest of the worker's time budget to the primary
- * fetch/analyze/rescore/refresh queues that run after it (see
- * api/jobs/analyze.ts) — a real scrape can take 10-30s, so both stay small.
- * Any sources left over are picked up on the next minute's drain; a video
- * only ever needs this once (its scoreType leaves 'too_fresh' for good the
- * moment it's rescored), so a shallow per-minute pass still clears a backlog
- * quickly without risking the invocation.
+ * Cap on distinct (creator, platform, workspace) groups considered per call,
+ * and how long this pass may run before ceding the rest of the worker's time
+ * budget to the primary fetch/analyze/rescore/refresh queues that run after
+ * it (see api/jobs/analyze.ts) — a real scrape can take 10-30s, so both stay
+ * small. Any groups left over are picked up on the next minute's drain; a
+ * video only ever needs this once (its scoreType leaves 'too_fresh' for good
+ * the moment it's rescored), so a shallow per-minute pass still clears a
+ * backlog quickly without risking the invocation.
  */
-const RESCORE_STALE_SOURCE_CAP = 20;
+const RESCORE_STALE_GROUP_CAP = 20;
 const RESCRAPE_STALE_MAX_DURATION_MS = 15_000;
 
-/** Small, bounded top-up scrape for a source with stale too_fresh videos —
- *  enough to pick up their now-current view counts without re-pulling the
- *  source's full (possibly much larger) videoLimit. */
+/** Small, bounded top-up scrape per stale creator — enough to pick up their
+ *  latest stats without pulling a whole source's full (possibly much
+ *  larger) videoLimit. */
 const STALE_RESCRAPE_LIMIT = 5;
 
 /**
@@ -300,43 +300,71 @@ const STALE_RESCRAPE_LIMIT = 5;
  * Once 48h passes they're eligible for a real score, but a video's own
  * `views` column is frozen at whatever it was when first scraped — almost
  * certainly still tiny, since it was captured while under 48h old. Recomputing
- * from that stale number alone (this function's original implementation)
- * cleared the 0x placeholder but didn't reflect the video's actual current
+ * from that stale number alone (an earlier version of this function) cleared
+ * the 0x placeholder but didn't reflect the video's actual current
  * performance.
  *
- * So this now spends real Apify credits to re-scrape the source (limited to
- * STALE_RESCRAPE_LIMIT videos, not its full videoLimit) BEFORE rescoring —
- * runRefresh() both fetches current stats and updates the existing video row
- * with them (src/lib/refresh.ts), then rescopes automatically. Runs
- * unattended, across every workspace, on the existing per-minute worker
- * drain — no user action required and no confirmation prompt, since it is
- * inherently self-limiting (a video only ever needs this once: the moment
- * it's rescored, its scoreType leaves 'too_fresh' and it stops matching this
- * query). Each source's own credit balance and the platform-wide Apify spend
- * cap are still enforced exactly as any other refresh would be, so a
- * workspace that's out of credits is skipped rather than blocked or billed
- * regardless — see runRefresh's InsufficientCreditsError / cap_breached
- * refusal paths.
+ * So this spends real Apify credits to re-fetch current stats before
+ * rescoring — but scoped to the video's CREATOR, not the source that
+ * originally discovered it. Outlier scoring compares a video to its
+ * creator's own baseline (computeCreatorBaseline), built from that
+ * creator's videos across every source that has ever found them. Re-running
+ * a hashtag/keyword source's own query again mostly surfaces a different
+ * set of creators each time and rarely re-includes the specific stale
+ * video at all — a creator-scoped scrape (runRefresh's sourceTypeOverride/
+ * queryOverride, src/lib/refresh.ts) targets the actual person the score is
+ * measured against, regardless of which source's bookkeeping the resulting
+ * rows are attributed to.
+ *
+ * Grouped by (creatorHandle, platform, workspaceId) — the same creator can
+ * be stale in more than one source within a workspace (dedupe to one scrape
+ * covering all of them), and billing must still land on each source's own
+ * workspace, so a creator stale in two different workspaces is two separate
+ * groups. Runs unattended, across every workspace, on the existing
+ * per-minute worker drain — no user action required and no confirmation
+ * prompt, since it is inherently self-limiting (each video only ever needs
+ * this once). Each workspace's own credit balance and the platform-wide
+ * Apify spend cap are still enforced exactly as any other refresh would be,
+ * so a workspace that's out of credits is skipped rather than blocked or
+ * billed regardless — see runRefresh's InsufficientCreditsError /
+ * cap_breached refusal paths.
  *
  * Falls back to the old free recompute-from-stored-views behaviour whenever
  * the rescrape itself is refused or fails, so a video still isn't stuck
  * showing the placeholder even when it can't be paid for right now.
  */
-export async function rescoreStaleTooFresh(): Promise<{ sourcesRescraped: number; sourcesRescoredOnly: number }> {
+export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: number; sourcesRescoredOnly: number }> {
   const startedAt = Date.now();
   const cutoff = subHours(new Date(), 48);
   const stale = await db.video.findMany({
     where: { postedAt: { lte: cutoff }, score: { is: { scoreType: 'too_fresh' } } },
-    select: { sourceId: true, source: { select: { workspaceId: true } } },
-    distinct: ['sourceId'],
-    take: RESCORE_STALE_SOURCE_CAP,
+    select: { creatorHandle: true, platform: true, sourceId: true, source: { select: { workspaceId: true } } },
+    // Cast a wider net than the group cap below — many stale videos collapse
+    // into few distinct creators, so scanning more rows costs nothing extra
+    // (one indexed query) but yields a fuller, more useful set of groups.
+    take: RESCORE_STALE_GROUP_CAP * 5,
   });
 
-  let sourcesRescraped = 0;
+  const groups = new Map<string, { creatorHandle: string; platform: string; workspaceId: string; sourceId: string }>();
+  for (const v of stale) {
+    if (!v.source) continue;
+    const key = `${v.creatorHandle}__${v.platform}__${v.source.workspaceId}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        creatorHandle: v.creatorHandle,
+        platform: v.platform,
+        workspaceId: v.source.workspaceId,
+        // Any one of the creator's stale videos' sources works as the
+        // record-keeping home for whatever this scrape finds/updates.
+        sourceId: v.sourceId,
+      });
+    }
+  }
+
+  let creatorsRescraped = 0;
   let sourcesRescoredOnly = 0;
 
-  for (const { sourceId, source } of stale) {
-    if (!source) continue;
+  for (const { creatorHandle, workspaceId, sourceId } of [...groups.values()].slice(0, RESCORE_STALE_GROUP_CAP)) {
     // Leave whatever's left for the next minute's drain rather than risking
     // this invocation's budget — the primary job queues still run after this.
     if (Date.now() - startedAt > RESCRAPE_STALE_MAX_DURATION_MS) break;
@@ -348,18 +376,20 @@ export async function rescoreStaleTooFresh(): Promise<{ sourcesRescraped: number
       // (refresh.ts already imports batchScoreVideos from here).
       const { runRefresh } = await import('./lib/refresh.js');
       const result = await runRefresh({
-        workspaceId: source.workspaceId,
+        workspaceId,
         sourceId,
         limitOverride: STALE_RESCRAPE_LIMIT,
+        sourceTypeOverride: 'creator',
+        queryOverride: creatorHandle,
       });
       if (result.ok) {
         rescraped = true;
-        sourcesRescraped++;
+        creatorsRescraped++;
       } else {
-        console.warn(`[scoring] stale too_fresh rescrape refused for source ${sourceId}: ${result.refusal ?? result.errors.join('; ')}`);
+        console.warn(`[scoring] stale too_fresh rescrape refused for creator ${creatorHandle}: ${result.refusal ?? result.errors.join('; ')}`);
       }
     } catch (err) {
-      console.warn(`[scoring] stale too_fresh rescrape failed for source ${sourceId}: ${(err as Error).message}`);
+      console.warn(`[scoring] stale too_fresh rescrape failed for creator ${creatorHandle}: ${(err as Error).message}`);
     }
 
     // runRefresh already rescored internally when it persisted/updated
@@ -373,7 +403,7 @@ export async function rescoreStaleTooFresh(): Promise<{ sourcesRescraped: number
     }
   }
 
-  return { sourcesRescraped, sourcesRescoredOnly };
+  return { creatorsRescraped, sourcesRescoredOnly };
 }
 
 export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]> {
