@@ -86,8 +86,8 @@ export async function listSourcesForWorkspace(workspace: Workspace, filters: Lis
   }));
 }
 
-export function getSourceForWorkspace(workspace: Workspace, sourceId: string) {
-  return db.source.findFirst({
+export async function getSourceForWorkspace(workspace: Workspace, sourceId: string) {
+  const source = await db.source.findFirst({
     where: { id: sourceId, workspaceId: workspace.id },
     include: {
       videos: {
@@ -99,6 +99,21 @@ export function getSourceForWorkspace(workspace: Workspace, sourceId: string) {
       refreshRuns: { take: 3, orderBy: { ranAt: 'desc' } },
     },
   });
+  if (!source) return null;
+
+  // MediaJob has no Prisma relation to Source (sourceId is a plain nullable
+  // column, shared with video-scoped kinds) — queried separately rather than
+  // via `include`. Refusals like insufficient_credits/cap_breached never
+  // reach runRefresh's db.refreshRun.create() call, so they leave no
+  // RefreshRun row at all; without this, a source can fail every attempt
+  // and still show nothing wrong anywhere in the UI.
+  const lastRefreshJob = await db.mediaJob.findFirst({
+    where: { sourceId, kind: 'refresh' },
+    orderBy: { createdAt: 'desc' },
+    select: { status: true, lastError: true, createdAt: true, finishedAt: true },
+  });
+
+  return { ...source, lastRefreshJob };
 }
 
 export interface CreateSourceInput {
