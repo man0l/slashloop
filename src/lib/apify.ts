@@ -134,6 +134,19 @@ function collectNotices(rawItems: any[]): string[] {
   return notices;
 }
 
+/** Normalize raw actor records into usable videos, dropping anything that fails to parse or has no id. */
+function normalizeItems(rawItems: any[]): NormalizedVideo[] {
+  return rawItems
+    .map(raw => {
+      try {
+        return normalizeTikTok(raw);
+      } catch {
+        return null;
+      }
+    })
+    .filter((v): v is NormalizedVideo => v !== null && !!v.externalId);
+}
+
 // ---------------------------------------------------------------------------
 // TikTok scraper — calls clockworks/tiktok-scraper
 // ---------------------------------------------------------------------------
@@ -179,33 +192,52 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
     input.searchQueries = [opts.query.trim()];
   }
 
-  console.log(`[apify] calling TikTok scraper (actor=${primaryTikTokActorId()}) for ${opts.sourceType}="${opts.query}" limit=${opts.limit} (est cost: ${estimatedCostCents}c)`);
+  const context = `${opts.sourceType}="${opts.query}"`;
+  console.log(`[apify] calling TikTok scraper (actor=${primaryTikTokActorId()}) for ${context} limit=${opts.limit} (est cost: ${estimatedCostCents}c)`);
 
-  const { rawItems } = await runTikTokActorWithFallback(input, apiKey, `${opts.sourceType}="${opts.query}"`);
+  let { rawItems, actorId } = await runTikTokActorWithFallback(input, apiKey, context);
+  let items = normalizeItems(rawItems);
+  let notices = collectNotices(rawItems);
+  let spentCents = estimatedCostCents;
 
-  // Normalize via the existing normalizer
-  const items: NormalizedVideo[] = rawItems
-    .map(raw => {
-      try {
-        return normalizeTikTok(raw);
-      } catch {
-        return null;
-      }
-    })
-    .filter((v): v is NormalizedVideo => v !== null && !!v.externalId);
+  // runTikTokActorWithFallback only falls back to the default actor on an
+  // HTTP failure. A misconfigured non-default actor (wrong input shape for
+  // its own schema, e.g. `profiles` not formatted the way IT expects) can
+  // still return 200 with an in-dataset "no videos for profile/hashtag"
+  // record — that reads as a clean, successful empty scrape and never
+  // triggers the existing fallback, even though the query is perfectly
+  // valid. Confirmed live: every creator-source refresh in one workspace
+  // failed identically this way across 3 different, real handles. Retry
+  // once against the known-good default before accepting "nothing found".
+  if (items.length === 0 && notices.length > 0 && actorId !== DEFAULT_TIKTOK_ACTOR_ID) {
+    console.warn(
+      `[apify] ${actorId} returned 0 usable videos for ${context} (${notices.join(' | ')}) `
+      + `— retrying against ${DEFAULT_TIKTOK_ACTOR_ID}`,
+    );
+    const retryRawItems = await runTikTokActor(DEFAULT_TIKTOK_ACTOR_ID, input, apiKey);
+    const retryItems = normalizeItems(retryRawItems);
+    spentCents += estimatedCostCents; // a second full actor run, same est. size
+    if (retryItems.length > 0) {
+      rawItems = retryRawItems;
+      items = retryItems;
+      notices = collectNotices(retryRawItems);
+      actorId = DEFAULT_TIKTOK_ACTOR_ID;
+    }
+    // Retry also came back empty: keep the primary's notices — they're more
+    // specific than a second identical "nothing found".
+  }
 
-  const notices = collectNotices(rawItems);
   if (items.length === 0 && rawItems.length > 0) {
     console.warn(`[apify] ${rawItems.length} record(s) returned, 0 usable videos: ${notices.join(' | ')}`);
   }
 
   // Record actual cost (we use the estimate since Apify's per-call billing
   // is not returned in the response — the real invoice lands later).
-  await recordApifySpend(opts.workspaceId, estimatedCostCents, null);
+  await recordApifySpend(opts.workspaceId, spentCents, null);
 
   return {
     items,
-    costCents: estimatedCostCents,
+    costCents: spentCents,
     rawCount: rawItems.length,
     actorRunId: null,
     notices,

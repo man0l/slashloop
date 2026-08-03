@@ -15,6 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from 'node:crypto';
+import { subMonths } from 'date-fns';
 import { db } from '../db.js';
 import { scrapeSource } from './apify.js';
 import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
@@ -22,6 +23,18 @@ import { batchScoreVideos } from '../scoring.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } from './credits.js';
 import { ingestThumbnails, type ThumbIngestTarget } from './media.js';
 import { enqueueRescoreJob } from './jobs.js';
+
+/**
+ * Videos posted before this cutoff are scraped (and billed — Apify already
+ * returned them) but not persisted. Discovery scrapes (hashtag/keyword, and
+ * TikTok's own "top" ranking for a query) surface evergreen multi-year-old
+ * content alongside anything actually fresh; without a floor the library
+ * fills with videos years too old to act on. Applies to every source type,
+ * including creator — a creator's own baseline is computed from whatever
+ * history is in the DB (src/scoring.ts computeCreatorBaseline), so this also
+ * caps how far back that baseline looks.
+ */
+const RECENCY_CUTOFF_MONTHS = 3;
 
 export interface RunRefreshResult {
   ok: boolean;
@@ -55,6 +68,17 @@ export async function runRefresh(opts: {
   workspaceId: string;
   sourceId: string;
   limitOverride?: number;
+  /**
+   * Stable credit-ledger identity for this MediaJob, minted once at enqueue
+   * (see enqueueRefreshJob). Passing the SAME opId across every retry of the
+   * same job is what makes debitCredits() idempotent on a killed-and-retried
+   * attempt instead of a second charge — falls back to a fresh one only for
+   * callers outside the job queue (there are none left, kept for safety).
+   */
+  opId?: string;
+  /** Pre-auth amount to debit under `opId`, minted alongside it at enqueue so
+   *  every retry debits (or idempotently replays) the exact same amount. */
+  preAuthCredits?: number;
 }): Promise<RunRefreshResult> {
   const { workspaceId, sourceId, limitOverride } = opts;
   const startTime = Date.now();
@@ -93,8 +117,12 @@ export async function runRefresh(opts: {
   }
 
   // Pre-authorise the worst case (a full `limit` of videos), refunded below.
-  const opId = randomUUID();
-  const preAuthCredits = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * limit);
+  // opId/preAuthCredits come from the caller (the MediaJob's own stable
+  // identity) whenever this is running under the job queue, so a retry after
+  // a killed attempt replays the same debit instead of charging again — see
+  // the opId doc comment above and enqueueRefreshJob in src/lib/jobs.ts.
+  const opId = opts.opId ?? randomUUID();
+  const preAuthCredits = opts.preAuthCredits ?? Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * limit);
   let creditBalance;
   try {
     creditBalance = await debitCredits(workspaceId, preAuthCredits, 'refresh_source', `${opId}:preauth`);
@@ -130,8 +158,16 @@ export async function runRefresh(opts: {
     // even if persistence or scoring throws below.
     actualCredits = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * itemsPulled);
 
+    const recencyCutoff = subMonths(new Date(), RECENCY_CUTOFF_MONTHS);
+    let skippedOld = 0;
+
     const thumbTargets: ThumbIngestTarget[] = [];
     for (const nv of result.items) {
+      if (new Date(nv.postedAt) < recencyCutoff) {
+        skippedOld++;
+        continue;
+      }
+
       const existing = await db.video.findFirst({
         where: { platform: nv.platform, externalId: nv.externalId },
         select: { id: true },
@@ -168,6 +204,13 @@ export async function runRefresh(opts: {
         thumbnailUrl: nv.thumbnailUrl,
         coverDownloadUrl: nv.coverDownloadUrl,
       });
+    }
+
+    if (skippedOld > 0) {
+      errors.push(
+        `Recency filter: ${skippedOld} of ${result.items.length} scraped videos were older than `
+        + `${RECENCY_CUTOFF_MONTHS} months and were not saved (cosmetic only)`,
+      );
     }
 
     // SCORING BEFORE THUMBNAILS. Order matters more than it looks.

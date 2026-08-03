@@ -81,8 +81,16 @@ export async function buildCards(
   const where: {
     source: { workspaceId: string };
     sourceId?: string;
+    views?: { gte: number };
   } = { source: { workspaceId: workspace.id } };
   if (opts.sourceId) where.sourceId = opts.sourceId;
+  if (opts.minViews && opts.minViews > 0) where.views = { gte: opts.minViews };
+
+  // minOutlier was previously only echoed back in `filters` for the standalone
+  // HTML gallery's own client-side JS to apply — the JSON route (site's
+  // Gallery page) has no client-side filtering of its own, so the dropdown
+  // silently did nothing there. Applied as a real DB filter below instead.
+  const minOutlier = opts.minOutlier && opts.minOutlier > 0 ? opts.minOutlier : 0;
 
   const include = { score: true, analyses: { orderBy: { createdAt: 'desc' as const }, take: 1 } };
   type VideoCardRow = Prisma.VideoGetPayload<{ include: { score: true; analyses: true } }>;
@@ -92,8 +100,10 @@ export async function buildCards(
   if (sortBy === 'views' || sortBy === 'newest') {
     // Single query, no scored/unscored split needed — views and postedAt are
     // never null, so a plain ORDER BY already returns the true top-N.
+    // A minOutlier filter here necessarily excludes unscored videos too —
+    // there is no score to compare against the threshold.
     ranked = await db.video.findMany({
-      where,
+      where: minOutlier > 0 ? { ...where, score: { is: { outlierScore: { gte: minOutlier } } } } : where,
       include,
       orderBy: sortBy === 'views' ? { views: 'desc' } : { postedAt: 'desc' },
       take: limit,
@@ -108,7 +118,9 @@ export async function buildCards(
     // made entirely of unscored videos. An in-memory re-sort cannot repair
     // that — the wrong rows were already selected. Same fix as get_feed.
     const videos = await db.video.findMany({
-      where: { ...where, score: { isNot: null } },
+      where: minOutlier > 0
+        ? { ...where, score: { is: { outlierScore: { gte: minOutlier } } } }
+        : { ...where, score: { isNot: null } },
       include,
       orderBy: { score: { outlierScore: 'desc' } },
       take: limit,
@@ -116,8 +128,10 @@ export async function buildCards(
 
     // Only backfill with unscored videos if the workspace has too few scored
     // ones to fill the pool — otherwise a fresh workspace renders an empty
-    // gallery while it clearly has videos.
-    if (videos.length < limit) {
+    // gallery while it clearly has videos. Skipped entirely under a minOutlier
+    // filter: an unscored video's threshold is unknown, so it can never
+    // legitimately backfill a "≥ Nx" result set.
+    if (videos.length < limit && minOutlier === 0) {
       const unscored = await db.video.findMany({
         where: { ...where, score: { is: null } },
         include,
