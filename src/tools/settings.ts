@@ -9,7 +9,7 @@ import { requireWorkspace } from '../context.js';
 import { loadAnalysisConfig, updateAnalysisConfig, DEFAULT_CONFIG, COST_ESTIMATES, BATCH_COST_ESTIMATES } from '../analysis/index.js';
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import { getApifyCapStatus } from '../lib/spend-cap.js';
-import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from '../lib/credits.js';
+import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance, resolveBillingWorkspace } from '../lib/credits.js';
 import { retentionCeiling, validateRetentionDays } from '../lib/retention.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -23,6 +23,7 @@ export function registerSettingsTools(server: McpServer) {
     },
     async ({ period }) => {
       const workspace = await requireWorkspace();
+      const billingWorkspace = await resolveBillingWorkspace(workspace);
 
       // Build date filter
       const now = new Date();
@@ -59,7 +60,7 @@ export function registerSettingsTools(server: McpServer) {
 
       const budgetUsed = (totalCost / workspace.monthlyBudgetCents * 100).toFixed(1);
       const budgetRemaining = workspace.monthlyBudgetCents - totalCost;
-      const credits = { planCredits: workspace.planCredits, packCredits: workspace.packCredits, total: workspace.planCredits + workspace.packCredits };
+      const credits = { planCredits: billingWorkspace.planCredits, packCredits: billingWorkspace.packCredits, total: billingWorkspace.planCredits + billingWorkspace.packCredits };
 
       // Where to buy more, surfaced BEFORE the balance runs out rather than
       // only in the insufficient-credits error. By the time a call fails the
@@ -82,7 +83,7 @@ export function registerSettingsTools(server: McpServer) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           period,
-          workspace: { name: workspace.name, planKey: workspace.planKey, monthlyBudgetCents: workspace.monthlyBudgetCents },
+          workspace: { name: workspace.name, planKey: billingWorkspace.planKey, monthlyBudgetCents: workspace.monthlyBudgetCents },
           // Credits are what the customer actually spends against (see
           // src/lib/credits.ts). monthlyBudgetCents/budget* below is COGS
           // (what we pay Apify/Google) and is informational only now.
@@ -124,6 +125,7 @@ export function registerSettingsTools(server: McpServer) {
     {},
     async () => {
       const workspace = await requireWorkspace();
+      const billingWorkspace = await resolveBillingWorkspace(workspace);
 
       const analysisConfig = await loadAnalysisConfig(workspace.id);
       const autoAnalyzeRules = JSON.parse(workspace.autoAnalyzeRulesJson);
@@ -133,15 +135,15 @@ export function registerSettingsTools(server: McpServer) {
           workspace: {
             id: workspace.id,
             name: workspace.name,
-            planKey: workspace.planKey,
-            billingStatus: workspace.billingStatus,
-            periodEnd: workspace.periodEnd?.toISOString() ?? null,
+            planKey: billingWorkspace.planKey,
+            billingStatus: billingWorkspace.billingStatus,
+            periodEnd: billingWorkspace.periodEnd?.toISOString() ?? null,
             createdAt: workspace.createdAt,
           },
           credits: {
-            planCredits: workspace.planCredits,
-            packCredits: workspace.packCredits,
-            total: workspace.planCredits + workspace.packCredits,
+            planCredits: billingWorkspace.planCredits,
+            packCredits: billingWorkspace.packCredits,
+            total: billingWorkspace.planCredits + billingWorkspace.packCredits,
           },
           creditCosts: CREDIT_COSTS,
           analysisConfig,
@@ -151,7 +153,7 @@ export function registerSettingsTools(server: McpServer) {
           mediaRetention: {
             thumbRetentionDays: workspace.thumbRetentionDays,
             mediaRetentionDays: workspace.mediaRetentionDays,
-            maxRetentionDays: retentionCeiling(workspace.planKey),
+            maxRetentionDays: retentionCeiling(billingWorkspace.planKey),
             note: 'Stored cover images and videos are deleted after this many days. '
               + 'Lowering it takes effect on the next daily sweep; raising it does not '
               + 'restore anything already deleted.',
@@ -184,6 +186,7 @@ export function registerSettingsTools(server: McpServer) {
     },
     async (params) => {
       const workspace = await requireWorkspace();
+      const billingWorkspace = await resolveBillingWorkspace(workspace);
 
       // Update workspace fields. Credits/plan/billing fields are deliberately
       // not settable here — they're server-controlled (see planKey/planCredits
@@ -203,14 +206,14 @@ export function registerSettingsTools(server: McpServer) {
       ] as const) {
         const requested = params[key];
         if (requested === undefined) continue;
-        const check = validateRetentionDays(workspace.planKey, requested, label);
+        const check = validateRetentionDays(billingWorkspace.planKey, requested, label);
         if (!check.ok) {
           return {
             content: [{ type: 'text' as const, text: JSON.stringify({
               error: 'invalid_retention',
               message: check.message,
               maxRetentionDays: check.ceiling,
-              planKey: workspace.planKey,
+              planKey: billingWorkspace.planKey,
             }, null, 2) }],
             isError: true,
           };
@@ -236,12 +239,12 @@ export function registerSettingsTools(server: McpServer) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           message: 'Settings updated',
-          workspace: { name: params.name ?? workspace.name, planKey: workspace.planKey },
+          workspace: { name: params.name ?? workspace.name, planKey: billingWorkspace.planKey },
           analysisConfig: config,
           mediaRetention: {
             thumbRetentionDays: workspaceUpdate.thumbRetentionDays ?? workspace.thumbRetentionDays,
             mediaRetentionDays: workspaceUpdate.mediaRetentionDays ?? workspace.mediaRetentionDays,
-            maxRetentionDays: retentionCeiling(workspace.planKey),
+            maxRetentionDays: retentionCeiling(billingWorkspace.planKey),
           },
         }, null, 2) }],
       };
@@ -462,9 +465,10 @@ export function registerSettingsTools(server: McpServer) {
     {},
     async () => {
       const workspace = await requireWorkspace();
+      const billingWorkspace = await resolveBillingWorkspace(workspace);
 
       const status = await getApifyCapStatus(workspace.id);
-      const credits = { planCredits: workspace.planCredits, packCredits: workspace.packCredits, total: workspace.planCredits + workspace.packCredits, planKey: workspace.planKey };
+      const credits = { planCredits: billingWorkspace.planCredits, packCredits: billingWorkspace.packCredits, total: billingWorkspace.planCredits + billingWorkspace.packCredits, planKey: billingWorkspace.planKey };
 
       // Recent cap_breach events (last 30 days)
       const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
