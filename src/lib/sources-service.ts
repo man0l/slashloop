@@ -59,7 +59,11 @@ export async function listSourcesForWorkspace(workspace: Workspace, filters: Lis
       nicheTag: filters.nicheTag || undefined,
     },
     include: {
-      _count: { select: { videos: true, refreshRuns: true } },
+      // Filtered relation count: excludes baseline-only samples pulled to
+      // keep a creator's outlier baseline fresh (see Video.isBaselineSample)
+      // — they aren't content the workspace tracked, so they shouldn't
+      // inflate what looks like a source's real video count.
+      _count: { select: { videos: { where: { isBaselineSample: false } }, refreshRuns: true } },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -86,7 +90,12 @@ export function getSourceForWorkspace(workspace: Workspace, sourceId: string) {
   return db.source.findFirst({
     where: { id: sourceId, workspaceId: workspace.id },
     include: {
-      videos: { take: 5, orderBy: { postedAt: 'desc' }, select: { id: true, views: true, postedAt: true } },
+      videos: {
+        where: { isBaselineSample: false },
+        take: 5,
+        orderBy: { postedAt: 'desc' },
+        select: { id: true, views: true, postedAt: true },
+      },
       refreshRuns: { take: 3, orderBy: { ranAt: 'desc' } },
     },
   });

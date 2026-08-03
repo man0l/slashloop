@@ -82,7 +82,8 @@ export async function buildCards(
     source: { workspaceId: string };
     sourceId?: string;
     views?: { gte: number };
-  } = { source: { workspaceId: workspace.id } };
+    isBaselineSample: false;
+  } = { source: { workspaceId: workspace.id }, isBaselineSample: false };
   if (opts.sourceId) where.sourceId = opts.sourceId;
   if (opts.minViews && opts.minViews > 0) where.views = { gte: opts.minViews };
 

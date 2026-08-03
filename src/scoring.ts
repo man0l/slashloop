@@ -296,6 +296,15 @@ const RESCRAPE_STALE_MAX_DURATION_MS = 15_000;
 const STALE_RESCRAPE_LIMIT = 5;
 
 /**
+ * Skip paying for another rescrape if this creator's baseline was already
+ * refreshed within this window — most often because an earlier stale video
+ * of theirs (this pass or an adjacent minute's) already paid for one. Keeps
+ * "don't scrape the same creator's 5 videos over and over" true even under a
+ * burst of several videos from the same creator going stale close together.
+ */
+const BASELINE_RESCRAPE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
+
+/**
  * Videos posted under 48h ago are scored 'too_fresh' with outlierScore 0.
  * Once 48h passes they're eligible for a real score, but a video's own
  * `views` column is frozen at whatever it was when first scraped — almost
@@ -364,10 +373,26 @@ export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: numbe
   let creatorsRescraped = 0;
   let sourcesRescoredOnly = 0;
 
-  for (const { creatorHandle, workspaceId, sourceId } of [...groups.values()].slice(0, RESCORE_STALE_GROUP_CAP)) {
+  for (const { creatorHandle, platform, workspaceId, sourceId } of [...groups.values()].slice(0, RESCORE_STALE_GROUP_CAP)) {
     // Leave whatever's left for the next minute's drain rather than risking
     // this invocation's budget — the primary job queues still run after this.
     if (Date.now() - startedAt > RESCRAPE_STALE_MAX_DURATION_MS) break;
+
+    // Don't pay to re-scrape a creator whose baseline was refreshed recently
+    // — likely by this same pass, for a different stale video of theirs.
+    // Baseline.computedAt already exists and is touched by every scoring
+    // pass (computeCreatorBaselinesBatch), so it doubles as "how fresh is
+    // what we already have" with no new table needed.
+    const baseline = await db.baseline.findUnique({
+      where: { creatorHandle_platform: { creatorHandle, platform } },
+    });
+    if (baseline && Date.now() - baseline.computedAt.getTime() < BASELINE_RESCRAPE_COOLDOWN_MS) {
+      await batchScoreVideos(sourceId).catch((err) => {
+        console.warn(`[scoring] fallback rescore failed for source ${sourceId}: ${(err as Error).message}`);
+      });
+      sourcesRescoredOnly++;
+      continue;
+    }
 
     let rescraped = false;
     try {

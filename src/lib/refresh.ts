@@ -180,6 +180,11 @@ export async function runRefresh(opts: {
     const recencyCutoff = subMonths(new Date(), RECENCY_CUTOFF_MONTHS);
     let skippedOld = 0;
 
+    // A creator/query override means this call exists purely to keep a
+    // baseline fresh (rescoreStaleTooFresh), not to track new content — see
+    // Video.isBaselineSample in prisma/schema.prisma.
+    const isBaselineOnly = !!opts.sourceTypeOverride;
+
     let updatedVideos = 0;
 
     const thumbTargets: ThumbIngestTarget[] = [];
@@ -211,6 +216,11 @@ export async function runRefresh(opts: {
             shares: nv.shares,
             saves: nv.saves,
             creatorFollowers: nv.creatorFollowers,
+            // Only a REAL (non-baseline-only) refresh promotes a video to
+            // visible — a baseline-only call re-touching an already-visible
+            // video must never hide it, so it leaves the flag untouched
+            // rather than writing `true` here.
+            ...(isBaselineOnly ? {} : { isBaselineSample: false }),
           },
         });
         updatedVideos++;
@@ -237,16 +247,22 @@ export async function runRefresh(opts: {
           transcript: nv.transcript,
           transcriptSource: nv.transcriptSource,
           rawJson: JSON.stringify(nv.raw),
+          isBaselineSample: isBaselineOnly,
         },
         select: { id: true },
       });
       newVideos++;
-      thumbTargets.push({
-        videoId: created.id,
-        platform: nv.platform,
-        thumbnailUrl: nv.thumbnailUrl,
-        coverDownloadUrl: nv.coverDownloadUrl,
-      });
+      // Thumbnails are for display — a baseline-only video is never shown
+      // anywhere, so ingesting one would just spend storage/ingest budget
+      // for nothing.
+      if (!isBaselineOnly) {
+        thumbTargets.push({
+          videoId: created.id,
+          platform: nv.platform,
+          thumbnailUrl: nv.thumbnailUrl,
+          coverDownloadUrl: nv.coverDownloadUrl,
+        });
+      }
     }
 
     if (skippedOld > 0) {
