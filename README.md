@@ -22,8 +22,10 @@ src/
   analysis/          # Gemini native + text analyzers
   lib/               # apify, gemini, spend-cap, storage, media, retention
 remote/              # OAuth + Streamable HTTP handlers
-api/                 # Vercel entrypoints (/mcp, /login, /oauth/consent, /health)
-api/billing/         # Checkout, Billing Portal, status — called by slashloop-site
+api/                 # Vercel entrypoints — kept to <=12 files (Hobby plan cap)
+                     # by routing several URL paths at one physical function
+                     # via vercel.json rewrites (see api/sources.ts)
+api/billing.ts       # Checkout, Billing Portal, status — called by slashloop-site
 api/stripe/          # Webhook — the only thing that grants/revokes credits
 api/cron/            # Scheduled jobs (media retention sweep)
 claude-plugin/       # Claude Code plugin (skills + bundled remote MCP)
