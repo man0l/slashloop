@@ -79,6 +79,22 @@ export async function runRefresh(opts: {
   /** Pre-auth amount to debit under `opId`, minted alongside it at enqueue so
    *  every retry debits (or idempotently replays) the exact same amount. */
   preAuthCredits?: number;
+  /**
+   * Query Apify as if `sourceId` were a different source type/query, while
+   * still attributing persisted/updated videos and billing to `sourceId`'s
+   * real workspace. For rescoreStaleTooFresh (src/scoring.ts): outlier
+   * scoring compares a video to its CREATOR's own baseline (computeCreator-
+   * Baseline), built from that creator's videos across every source that has
+   * ever found them — not from whichever hashtag/keyword source happened to
+   * discover this particular video. Re-running a hashtag/keyword source's
+   * own query again mostly surfaces a different set of creators each time
+   * and rarely re-includes the specific stale video. Overriding to a
+   * creator-scoped query targets the actual person the score is measured
+   * against, regardless of which source's record-keeping this call is
+   * attributed to.
+   */
+  sourceTypeOverride?: 'creator' | 'keyword' | 'hashtag';
+  queryOverride?: string;
 }): Promise<RunRefreshResult> {
   const { workspaceId, sourceId, limitOverride } = opts;
   const startTime = Date.now();
@@ -92,6 +108,9 @@ export async function runRefresh(opts: {
     };
   }
 
+  const effectiveSourceType = opts.sourceTypeOverride ?? (source.sourceType as 'creator' | 'keyword' | 'hashtag');
+  const effectiveQuery = opts.queryOverride ?? source.query;
+
   const limit = limitOverride ?? source.videoLimit;
   let itemsPulled = 0;
   let newVideos = 0;
@@ -100,7 +119,7 @@ export async function runRefresh(opts: {
   let rescoreQueued = false;
 
   const base = {
-    sourceId, query: source.query, platform: source.platform, sourceType: source.sourceType,
+    sourceId, query: effectiveQuery, platform: source.platform, sourceType: effectiveSourceType,
   };
 
   // Platform-wide Apify circuit breaker, unrelated to this workspace's credits.
@@ -143,8 +162,8 @@ export async function runRefresh(opts: {
     const result = await scrapeSource({
       workspaceId,
       platform: source.platform,
-      sourceType: source.sourceType as 'creator' | 'keyword' | 'hashtag',
-      query: source.query,
+      sourceType: effectiveSourceType,
+      query: effectiveQuery,
       limit,
     });
 
@@ -308,12 +327,12 @@ export async function runRefresh(opts: {
   //
   // As its own job it gets a full invocation, and because rescoring is free
   // (no Apify, no credits) a retry costs nothing.
-  if (source.sourceType === 'creator' && itemsPulled > 0) {
+  if (effectiveSourceType === 'creator' && itemsPulled > 0) {
     try {
       await enqueueRescoreJob({
         workspaceId,
         sourceId,
-        payload: { creatorHandle: source.query },
+        payload: { creatorHandle: effectiveQuery },
       });
       rescoreQueued = true;
     } catch (err) {

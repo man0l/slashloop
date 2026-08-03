@@ -79,7 +79,7 @@ export async function POST(request: Request): Promise<Response> {
   // doc comment in src/scoring.ts for the credit/cap safety argument.
   const rescoredStale = await rescoreStaleTooFresh().catch((err) => {
     console.warn(`[jobs] rescoreStaleTooFresh failed: ${(err as Error).message}`);
-    return { sourcesRescraped: 0, sourcesRescoredOnly: 0 };
+    return { creatorsRescraped: 0, sourcesRescoredOnly: 0 };
   });
 
   while (Date.now() - startedAt < RESERVE_MS) {
