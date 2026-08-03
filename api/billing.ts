@@ -1,12 +1,20 @@
-// POST /api/billing/checkout — Supabase JWT auth. Creates (or reuses) the
-// workspace's Stripe Customer and a Checkout Session, returns { url } for
-// the caller to redirect to. Grants nothing itself — the webhook is what
-// actually applies credits once Stripe confirms payment.
-import { verifySupabaseJwt } from '../../remote/auth.js';
-import { db } from '../../src/db.js';
-import { primaryWorkspaceByOwnerId } from '../../src/lib/workspaces.js';
-import { requireStripe, priceIdFor, customerIdField } from '../../src/lib/stripe.js';
-import { corsHeaders, corsPreflight } from '../../src/lib/cors.js';
+// GET  /api/billing/status    — Supabase JWT auth. Read-only balance/plan
+//      view for the site's account page and its post-checkout polling.
+// POST /api/billing/checkout  — creates (or reuses) the workspace's Stripe
+//      Customer and a Checkout Session, returns { url } to redirect to.
+//      Grants nothing itself — the webhook applies credits once Stripe
+//      confirms payment.
+// POST /api/billing/portal    — returns { url } for Stripe's hosted Billing
+//      Portal (cancellation, plan switch, card update).
+//
+// One file, not three — see api/sources.ts for why (Hobby plan's 12-function
+// cap). vercel.json rewrites each /api/billing/<action> path here with an
+// `action` query param; the URLs slashloop-site calls are unchanged.
+import { verifySupabaseJwt } from '../remote/auth.js';
+import { db } from '../src/db.js';
+import { primaryWorkspaceByOwnerId } from '../src/lib/workspaces.js';
+import { requireStripe, priceIdFor, customerIdField } from '../src/lib/stripe.js';
+import { corsHeaders, corsPreflight } from '../src/lib/cors.js';
 
 // $10 minimum for a credit top-up (mirrors the stepper's floor on the site).
 const MIN_PACK_AMOUNT_CENTS = 1000;
@@ -17,21 +25,44 @@ function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders() } });
 }
 
+async function authenticate(request: Request) {
+  const authHeader = request.headers.get('authorization') ?? '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return null;
+  try {
+    return await verifySupabaseJwt(token);
+  } catch {
+    return null;
+  }
+}
+
 export async function OPTIONS(): Promise<Response> {
   return corsPreflight();
 }
 
-export async function POST(request: Request): Promise<Response> {
-  const authHeader = request.headers.get('authorization') ?? '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return json(401, { error: 'invalid_token' });
+async function handleStatus(request: Request): Promise<Response> {
+  const claims = await authenticate(request);
+  if (!claims) return json(401, { error: 'invalid_token' });
 
-  let claims;
-  try {
-    claims = await verifySupabaseJwt(token);
-  } catch {
-    return json(401, { error: 'invalid_token' });
-  }
+  // Read-only: create nothing here. requireWorkspace() (the MCP tool path)
+  // creates a workspace on first use; a billing-status check before that
+  // happens just means "you're not provisioned yet", not an error to fix
+  // by creating one.
+  const workspace = await primaryWorkspaceByOwnerId(claims.sub);
+  if (!workspace) return json(404, { error: 'no_workspace' });
+
+  return json(200, {
+    planKey: workspace.planKey,
+    planCredits: workspace.planCredits,
+    packCredits: workspace.packCredits,
+    periodEnd: workspace.periodEnd,
+    billingStatus: workspace.billingStatus,
+  });
+}
+
+async function handleCheckout(request: Request): Promise<Response> {
+  const claims = await authenticate(request);
+  if (!claims) return json(401, { error: 'invalid_token' });
 
   if (!SITE_URL) return json(500, { error: 'SITE_URL is not configured on the server' });
 
@@ -118,4 +149,38 @@ export async function POST(request: Request): Promise<Response> {
 
   if (!session.url) return json(500, { error: 'checkout_session_failed', message: 'Stripe did not return a session URL' });
   return json(200, { url: session.url });
+}
+
+async function handlePortal(request: Request): Promise<Response> {
+  const claims = await authenticate(request);
+  if (!claims) return json(401, { error: 'invalid_token' });
+
+  if (!SITE_URL) return json(500, { error: 'SITE_URL is not configured on the server' });
+
+  const workspace = await primaryWorkspaceByOwnerId(claims.sub);
+  const customerId = workspace?.[customerIdField()];
+  if (!customerId) {
+    return json(404, { error: 'no_stripe_customer', message: 'No billing account yet — subscribe first.' });
+  }
+
+  const stripe = requireStripe();
+  const portal = await stripe.billingPortal.sessions.create({
+    customer: customerId,
+    return_url: `${SITE_URL}/account`,
+  });
+
+  return json(200, { url: portal.url });
+}
+
+export async function GET(request: Request): Promise<Response> {
+  const action = new URL(request.url).searchParams.get('action');
+  if (action === 'status') return handleStatus(request);
+  return json(404, { error: 'not_found' });
+}
+
+export async function POST(request: Request): Promise<Response> {
+  const action = new URL(request.url).searchParams.get('action');
+  if (action === 'checkout') return handleCheckout(request);
+  if (action === 'portal') return handlePortal(request);
+  return json(404, { error: 'not_found' });
 }

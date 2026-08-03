@@ -1,9 +1,12 @@
-// GET /gallery?t=<signed token> — the outlier gallery as a plain web page.
+// GET /gallery?t=<signed token>                          — the outlier gallery
+//     as a plain web page.
+// GET /api/gallery-data?workspaceId=&sourceId=&sortBy=... — JSON cards for the
+//     site's Gallery page (rewritten here with mode=data — see vercel.json).
 //
-// Second delivery route for the exact HTML that `show_gallery` publishes as a
-// `ui://` MCP App resource (src/tools/gallery.ts, docs/media-storage-plan.md §4).
-// Same buildGalleryHtml() call, same cards, same client-side filters — the only
-// difference is who renders it.
+// The HTML route is a second delivery path for the exact HTML that
+// `show_gallery` publishes as a `ui://` MCP App resource (src/tools/gallery.ts,
+// docs/media-storage-plan.md §4). Same buildGalleryHtml() call, same cards,
+// same client-side filters — the only difference is who renders it.
 //
 // This exists because MCP Apps are opt-in on the CLIENT: a host renders a
 // `ui://` resource only if it declared `io.modelcontextprotocol/ui` during
@@ -12,15 +15,26 @@
 // where a gallery should be. A URL works in every host, because it is not the
 // host's job to render it.
 //
-// Auth: a narrow, short-lived, audience-pinned token minted during the tool
-// call (src/lib/gallery-link.ts). It authorises exactly one thing — render this
-// user's gallery — and cannot be replayed against /mcp. The workspace is
-// derived from the token's `sub` via runWithUser → requireWorkspace, identical
-// to the MCP path, so query params can never widen what is visible.
+// Auth (HTML route): a narrow, short-lived, audience-pinned token minted
+// during the tool call (src/lib/gallery-link.ts). It authorises exactly one
+// thing — render this user's gallery — and cannot be replayed against /mcp.
+// The workspace is derived from the token's `sub` via runWithUser →
+// requireWorkspace, identical to the MCP path, so query params can never
+// widen what is visible.
+//
+// Auth (JSON route): Supabase Bearer JWT + an explicit workspaceId the caller
+// must own (requireOwnedWorkspace) — see src/lib/authz.ts.
+//
+// The two routes share this one file rather than living in api/gallery.ts and
+// api/gallery-data.ts separately: the Hobby plan caps a deployment at 12
+// Serverless Functions (see api/sources.ts for the same constraint).
 
 import { runWithUser } from '../src/context.js';
-import { buildGalleryHtml } from '../src/tools/gallery.js';
+import { buildGalleryHtml, buildCards } from '../src/tools/gallery.js';
 import { verifyGalleryToken, isGalleryLinkEnabled } from '../src/lib/gallery-link.js';
+import { corsPreflight } from '../src/lib/cors.js';
+import { requireOwnedWorkspace, jsonResponse } from '../src/lib/authz.js';
+import type { GalleryFilters } from '../src/ui/gallery.js';
 
 /**
  * Deny-by-default CSP, mirroring what the MCP App declares via
@@ -82,7 +96,47 @@ function densityOf(raw: string | null) {
   return raw === 'large' || raw === 'medium' || raw === 'small' || raw === 'list' ? raw : undefined;
 }
 
+export async function OPTIONS(): Promise<Response> {
+  return corsPreflight();
+}
+
+const SORT_VALUES = new Set<GalleryFilters['sortBy']>(['outlier_score', 'views', 'newest']);
+
+async function handleData(request: Request, url: URL): Promise<Response> {
+  const auth = await requireOwnedWorkspace(request, url.searchParams.get('workspaceId'));
+  if (!auth.ok) return auth.response;
+
+  const sortByRaw = url.searchParams.get('sortBy') ?? 'outlier_score';
+  const sortBy = SORT_VALUES.has(sortByRaw as GalleryFilters['sortBy'])
+    ? (sortByRaw as GalleryFilters['sortBy'])
+    : 'outlier_score';
+
+  const limitRaw = Number(url.searchParams.get('limit') ?? '');
+  const minOutlierRaw = Number(url.searchParams.get('minOutlier') ?? '');
+  const minViewsRaw = Number(url.searchParams.get('minViews') ?? '');
+
+  // buildCards() resolves its workspace through requireWorkspace(), which
+  // reads the current user id from AsyncLocalStorage (the MCP-tool context
+  // primitive, see src/context.ts) — run this REST handler inside that same
+  // context rather than re-deriving workspace resolution here.
+  const { cards, note, filters } = await runWithUser(auth.userId, () =>
+    buildCards({
+      workspaceId: auth.workspace.id,
+      sourceId: url.searchParams.get('sourceId') ?? undefined,
+      sortBy,
+      limit: Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined,
+      minOutlier: Number.isFinite(minOutlierRaw) && minOutlierRaw > 0 ? minOutlierRaw : undefined,
+      minViews: Number.isFinite(minViewsRaw) && minViewsRaw > 0 ? minViewsRaw : undefined,
+    }),
+  );
+
+  return jsonResponse(200, { cards, note, filters });
+}
+
 export async function GET(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.searchParams.get('mode') === 'data') return handleData(request, url);
+
   if (!isGalleryLinkEnabled()) {
     return page(
       500,
@@ -91,7 +145,6 @@ export async function GET(request: Request): Promise<Response> {
     );
   }
 
-  const url = new URL(request.url);
   const userId = await verifyGalleryToken(url.searchParams.get('t'));
   if (!userId) {
     return page(
