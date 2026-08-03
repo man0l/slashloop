@@ -141,10 +141,15 @@ export async function buildCards(
     density: opts.density,
   };
 
-  const cards: GalleryCard[] = [];
-  for (const [i, v] of ranked.entries()) {
-    const media = await signedMediaUrl(v);
+  // signedMediaUrl() makes a real HTTP call to Supabase Storage for every
+  // video whose media is actually stored — awaited one at a time here used
+  // to serialize the whole pool's sign requests (up to GALLERY_POOL = 48),
+  // stacking their round trips into multi-second load times that had nothing
+  // to do with the DB query or an index. They're independent per video, so
+  // run them concurrently instead.
+  const media = await Promise.all(ranked.map(v => signedMediaUrl(v)));
 
+  const cards: GalleryCard[] = ranked.map((v, i) => {
     let keyMoments: GalleryCard['keyMoments'] = [];
     if (v.analyses[0]) {
       try {
@@ -164,7 +169,7 @@ export async function buildCards(
       } catch { /* a malformed analysis costs its key moments, nothing else */ }
     }
 
-    cards.push({
+    return {
       id: v.id,
       index: i + 1,
       creatorHandle: v.creatorHandle,
@@ -178,10 +183,10 @@ export async function buildCards(
       outlierScore: v.score?.outlierScore ?? null,
       durationSec: v.durationSec,
       postedAt: v.postedAt.getTime(),
-      mediaUrl: media.url,
+      mediaUrl: media[i]!.url,
       keyMoments,
-    });
-  }
+    };
+  });
 
   const withMedia = cards.filter(c => c.mediaUrl).length;
   const notes: string[] = [];
