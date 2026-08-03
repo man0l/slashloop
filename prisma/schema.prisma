@@ -227,6 +227,9 @@ model Score {
   video Video @relation(fields: [videoId], references: [id])
 
   @@index([outlierScore])
+  // Backs both rescoreStaleTooFresh's own query and the pg_cron wake check
+  // (supabase/migrations/20260803130000_pgcron_wake_for_stale_too_fresh.sql).
+  @@index([scoreType])
 }
 
 model Analysis {
