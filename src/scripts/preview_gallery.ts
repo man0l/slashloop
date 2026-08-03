@@ -60,7 +60,7 @@ async function main() {
     console.log('[preview_gallery] top by outlier score:');
     for (const c of cards.slice(0, 8)) {
       const score = c.outlierScore == null ? '—' : `${c.outlierScore.toFixed(1)}x`;
-      console.log(`  ${score.padStart(6)}  @${c.creatorHandle}  ${c.views} views  ${c.caption.slice(0, 50)}`);
+      console.log(`  #${c.index}  ${score.padStart(6)}  @${c.creatorHandle}  ${c.views} views  ${c.caption.slice(0, 50)}`);
     }
   }
 

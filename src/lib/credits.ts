@@ -23,6 +23,7 @@
 import { db } from '../db.js';
 import type { Prisma } from '@prisma/client';
 import { customerIdField, subscriptionIdField } from './stripe.js';
+import { retentionCeiling } from './retention.js';
 
 export class InsufficientCreditsError extends Error {
   constructor(
@@ -263,9 +264,16 @@ export async function txSetPlan(
     select: { planCredits: true },
   });
 
+  // Retention is plan-driven (docs/media-storage-plan.md, src/lib/retention.ts):
+  // every plan change — upgrade or downgrade — snaps both retention windows
+  // to the new plan's ceiling, so a downgrade also pulls a stale higher
+  // value back down rather than leaving it grandfathered in.
+  const ceiling = retentionCeiling(opts.planKey);
   const data: Prisma.WorkspaceUpdateInput = {
     planKey: opts.planKey,
     planCredits: opts.planCredits,
+    thumbRetentionDays: ceiling,
+    mediaRetentionDays: ceiling,
   };
   if (opts.billingStatus !== undefined) data.billingStatus = opts.billingStatus;
   if (opts.periodStart !== undefined) data.periodStart = opts.periodStart;

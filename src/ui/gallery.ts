@@ -23,6 +23,9 @@
 
 export interface GalleryCard {
   id: string;
+  /** 1-based position in the pool this card was built from — stable across
+   *  client-side re-sort/re-page, and what a caller means by "video 3". */
+  index: number;
   creatorHandle: string;
   caption: string;
   url: string;
@@ -97,6 +100,7 @@ function cardHtml(c: GalleryCard): string {
            data-posted="${c.postedAt}"
            data-has-media="${c.mediaUrl ? '1' : '0'}"
            data-handle="${esc(c.creatorHandle.toLowerCase())}">
+    <span class="index-badge" title="Reference this as &quot;video ${c.index}&quot;">${c.index}</span>
     ${c.thumbUrl ? `<img class="thumb" src="${esc(c.thumbUrl)}" alt="" loading="lazy"/>`
                  : `<div class="thumb placeholder"></div>`}
     <div class="body">
@@ -221,8 +225,12 @@ export function renderGallery(
 
   /* ---- density: medium (default) ---- */
   .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
-  .card { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .card { position: relative; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
   .card[hidden] { display: none !important; }
+  .index-badge { position: absolute; top: 6px; left: 6px; z-index: 1; min-width: 18px; height: 18px;
+    padding: 0 5px; border-radius: 999px; background: rgba(0,0,0,.65); color: #fff; font-size: 10px;
+    font-weight: 700; display: flex; align-items: center; justify-content: center; line-height: 1; }
+  .density-list .index-badge { position: static; margin-left: 6px; align-self: center; }
   .thumb { width: 100%; aspect-ratio: 9/16; object-fit: cover; display: block; background: var(--line); }
   .thumb.placeholder { display: grid; place-items: center; }
   .body { padding: 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }

@@ -12,7 +12,7 @@
 /** Longest retention each plan may request, in days. */
 export const PLAN_RETENTION_MAX: Record<string, number> = {
   free: 3,
-  creator: 14,
+  creator: 7,
   pro: 30,
 };
 
