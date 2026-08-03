@@ -26,6 +26,10 @@
       "destination": "/api/gallery"
     },
     {
+      "source": "/api/gallery-data",
+      "destination": "/api/gallery"
+    },
+    {
       "source": "/",
       "destination": "/api/health"
     }
@@ -35,9 +39,6 @@
       "maxDuration": 60
     },
     "api/gallery.ts": {
-      "maxDuration": 30
-    },
-    "api/gallery-data.ts": {
       "maxDuration": 30
     },
     "api/cron/media-retention.ts": {

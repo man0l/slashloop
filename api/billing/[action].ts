@@ -1,7 +1,8 @@
-// POST /api/billing/checkout — Supabase JWT auth. Creates (or reuses) the
-// workspace's Stripe Customer and a Checkout Session, returns { url } for
-// the caller to redirect to. Grants nothing itself — the webhook is what
-// actually applies credits once Stripe confirms payment.
+// /api/billing/checkout | /api/billing/portal | /api/billing/status — all
+// three routed through this one file (Vercel bracket-route matches any
+// single segment under /api/billing/*), rather than one file each. The
+// Hobby plan caps a deployment at 12 Serverless Functions; see
+// api/jobs/analyze.ts for the same trade made on the job-worker routes.
 import { verifySupabaseJwt } from '../../remote/auth.js';
 import { db } from '../../src/db.js';
 import { primaryWorkspaceByOwnerId } from '../../src/lib/workspaces.js';
@@ -17,11 +18,15 @@ function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders() } });
 }
 
+function actionFromUrl(url: string): string {
+  return new URL(url).pathname.split('/').filter(Boolean).pop() ?? '';
+}
+
 export async function OPTIONS(): Promise<Response> {
   return corsPreflight();
 }
 
-export async function POST(request: Request): Promise<Response> {
+async function checkout(request: Request): Promise<Response> {
   const authHeader = request.headers.get('authorization') ?? '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   if (!token) return json(401, { error: 'invalid_token' });
@@ -118,4 +123,74 @@ export async function POST(request: Request): Promise<Response> {
 
   if (!session.url) return json(500, { error: 'checkout_session_failed', message: 'Stripe did not return a session URL' });
   return json(200, { url: session.url });
+}
+
+async function portal(request: Request): Promise<Response> {
+  const authHeader = request.headers.get('authorization') ?? '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return json(401, { error: 'invalid_token' });
+
+  let claims;
+  try {
+    claims = await verifySupabaseJwt(token);
+  } catch {
+    return json(401, { error: 'invalid_token' });
+  }
+
+  if (!SITE_URL) return json(500, { error: 'SITE_URL is not configured on the server' });
+
+  const workspace = await primaryWorkspaceByOwnerId(claims.sub);
+  const customerId = workspace?.[customerIdField()];
+  if (!customerId) {
+    return json(404, { error: 'no_stripe_customer', message: 'No billing account yet — subscribe first.' });
+  }
+
+  const stripe = requireStripe();
+  const portalSession = await stripe.billingPortal.sessions.create({
+    customer: customerId,
+    return_url: `${SITE_URL}/account`,
+  });
+
+  return json(200, { url: portalSession.url });
+}
+
+async function status(request: Request): Promise<Response> {
+  const authHeader = request.headers.get('authorization') ?? '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return json(401, { error: 'invalid_token' });
+
+  let claims;
+  try {
+    claims = await verifySupabaseJwt(token);
+  } catch {
+    return json(401, { error: 'invalid_token' });
+  }
+
+  // Read-only: create nothing here. requireWorkspace() (the MCP tool path)
+  // creates a workspace on first use; a billing-status check before that
+  // happens just means "you're not provisioned yet", not an error to fix
+  // by creating one.
+  const workspace = await primaryWorkspaceByOwnerId(claims.sub);
+  if (!workspace) return json(404, { error: 'no_workspace' });
+
+  return json(200, {
+    planKey: workspace.planKey,
+    planCredits: workspace.planCredits,
+    packCredits: workspace.packCredits,
+    periodEnd: workspace.periodEnd,
+    billingStatus: workspace.billingStatus,
+  });
+}
+
+export async function POST(request: Request): Promise<Response> {
+  const action = actionFromUrl(request.url);
+  if (action === 'checkout') return checkout(request);
+  if (action === 'portal') return portal(request);
+  return json(404, { error: 'not_found' });
+}
+
+export async function GET(request: Request): Promise<Response> {
+  const action = actionFromUrl(request.url);
+  if (action === 'status') return status(request);
+  return json(404, { error: 'not_found' });
 }

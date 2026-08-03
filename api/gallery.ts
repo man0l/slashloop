@@ -1,4 +1,9 @@
 // GET /gallery?t=<signed token> — the outlier gallery as a plain web page.
+// GET /api/gallery-data?workspaceId=&sourceId=&sortBy=&minOutlier=&minViews=&limit=
+//   — JSON cards for the site's Gallery page. Rewritten here (vercel.json)
+//   rather than living in its own file: the Hobby plan caps a deployment at
+//   12 Serverless Functions, so this shares api/gallery.ts's function instead
+//   of adding a 13th route. Dispatched on request pathname below.
 //
 // Second delivery route for the exact HTML that `show_gallery` publishes as a
 // `ui://` MCP App resource (src/tools/gallery.ts, docs/media-storage-plan.md §4).
@@ -19,8 +24,11 @@
 // to the MCP path, so query params can never widen what is visible.
 
 import { runWithUser } from '../src/context.js';
-import { buildGalleryHtml } from '../src/tools/gallery.js';
+import { buildGalleryHtml, buildCards } from '../src/tools/gallery.js';
 import { verifyGalleryToken, isGalleryLinkEnabled } from '../src/lib/gallery-link.js';
+import { corsPreflight } from '../src/lib/cors.js';
+import { requireOwnedWorkspace, jsonResponse } from '../src/lib/authz.js';
+import type { GalleryFilters } from '../src/ui/gallery.js';
 
 /**
  * Deny-by-default CSP, mirroring what the MCP App declares via
@@ -82,7 +90,48 @@ function densityOf(raw: string | null) {
   return raw === 'large' || raw === 'medium' || raw === 'small' || raw === 'list' ? raw : undefined;
 }
 
+const SORT_VALUES = new Set<GalleryFilters['sortBy']>(['outlier_score', 'views', 'newest']);
+
+/** JSON cards for the site's Gallery page — the api/gallery-data.ts rewrite target. */
+async function galleryData(request: Request, url: URL): Promise<Response> {
+  const auth = await requireOwnedWorkspace(request, url.searchParams.get('workspaceId'));
+  if (!auth.ok) return auth.response;
+
+  const sortByRaw = url.searchParams.get('sortBy') ?? 'outlier_score';
+  const sortBy = SORT_VALUES.has(sortByRaw as GalleryFilters['sortBy'])
+    ? (sortByRaw as GalleryFilters['sortBy'])
+    : 'outlier_score';
+
+  const limitRaw = Number(url.searchParams.get('limit') ?? '');
+  const minOutlierRaw = Number(url.searchParams.get('minOutlier') ?? '');
+  const minViewsRaw = Number(url.searchParams.get('minViews') ?? '');
+
+  // buildCards() resolves its workspace through requireWorkspace(), which
+  // reads the current user id from AsyncLocalStorage (the MCP-tool context
+  // primitive, see src/context.ts) — run this REST handler inside that same
+  // context rather than re-deriving workspace resolution here.
+  const { cards, note, filters } = await runWithUser(auth.userId, () =>
+    buildCards({
+      workspaceId: auth.workspace.id,
+      sourceId: url.searchParams.get('sourceId') ?? undefined,
+      sortBy,
+      limit: Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined,
+      minOutlier: Number.isFinite(minOutlierRaw) && minOutlierRaw > 0 ? minOutlierRaw : undefined,
+      minViews: Number.isFinite(minViewsRaw) && minViewsRaw > 0 ? minViewsRaw : undefined,
+    }),
+  );
+
+  return jsonResponse(200, { cards, note, filters });
+}
+
+export async function OPTIONS(): Promise<Response> {
+  return corsPreflight();
+}
+
 export async function GET(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.pathname.endsWith('/gallery-data')) return galleryData(request, url);
+
   if (!isGalleryLinkEnabled()) {
     return page(
       500,
@@ -91,7 +140,6 @@ export async function GET(request: Request): Promise<Response> {
     );
   }
 
-  const url = new URL(request.url);
   const userId = await verifyGalleryToken(url.searchParams.get('t'));
   if (!userId) {
     return page(
