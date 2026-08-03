@@ -142,7 +142,7 @@ export async function buildCards(
   };
 
   const cards: GalleryCard[] = [];
-  for (const v of ranked) {
+  for (const [i, v] of ranked.entries()) {
     const media = await signedMediaUrl(v);
 
     let keyMoments: GalleryCard['keyMoments'] = [];
@@ -166,6 +166,7 @@ export async function buildCards(
 
     cards.push({
       id: v.id,
+      index: i + 1,
       creatorHandle: v.creatorHandle,
       caption: v.caption,
       url: v.url,
@@ -346,15 +347,21 @@ export function registerGalleryApp(server: McpServer) {
           filters,
           withStoredVideo: cards.filter(c => c.mediaUrl).length,
           withKeyMoments: cards.filter(c => c.keyMoments.length > 0).length,
-          topOutlierScores: cards
-            .slice(0, 5)
-            .map(c => ({ id: c.id, handle: c.creatorHandle, outlierScore: c.outlierScore })),
+          // Every card in the pool, numbered — this is what lets a user say
+          // "video 3" and have it resolved back to a real id. The interactive
+          // gallery's on-card badges use this same index.
+          videos: cards.map(c => ({
+            index: c.index,
+            id: c.id,
+            handle: c.creatorHandle,
+            outlierScore: c.outlierScore,
+          })),
           galleryUrl,
           // Addressed to the model, not the user: hosts that never render the
           // ui:// resource have no other way to know a real gallery exists.
           hostNote: galleryUrl
             ? `If the interactive gallery did not appear in this conversation, this host did not render the MCP App. Give the user the galleryUrl above as a clickable link — it opens the same interactive gallery in their browser and is valid for ${ttlHumanized()}.`
-            : 'No gallery link available (no signing secret or public origin configured). If the interactive gallery did not render, summarise topOutlierScores as text instead.',
+            : 'No gallery link available (no signing secret or public origin configured). If the interactive gallery did not render, summarise the videos list as text instead — use its index to let the user reference a specific one ("video 3").',
         }, [
           candidates.length > 0 ? {
             label: candidates.length === 1

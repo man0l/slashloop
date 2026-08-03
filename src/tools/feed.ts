@@ -130,9 +130,13 @@ export function registerFeedTools(server: McpServer) {
 
       const paginated = filtered.slice(0, limit);
 
-      const feed = paginated.map(v => {
+      const feed = paginated.map((v, i) => {
         const engRate = v.views > 0 ? ((v.likes + v.comments + (v.shares ?? 0)) / v.views * 100).toFixed(1) : '0';
         return {
+          // 1-based position in THIS page — what "video 3" means when someone
+          // references a result from this call. Resets each call rather than
+          // following `offset`, since it names what's currently on screen.
+          index: i + 1,
           id: v.id,
           platform: v.platform,
           creatorHandle: v.creatorHandle,
@@ -410,7 +414,8 @@ export function registerFeedTools(server: McpServer) {
               + 'starts with ⚠️. Do not recommend analysing these ahead of the actual-score ones; verified example: '
               + 'a 438x estimated score in this workspace turned out to be 1.3x.',
           } : {}),
-          topOutliers: ranked.map(s => ({
+          topOutliers: ranked.map((s, i) => ({
+            index: i + 1,
             videoId: s.video.id,
             creator: s.video.creatorHandle,
             platform: s.video.platform,

@@ -202,11 +202,16 @@ consistent with [`pricing-research.md`](./pricing-research.md):
 | Plan | Max retention days |
 |---|---|
 | `free` | 3 |
-| `creator` | 14 |
+| `creator` | 7 |
 | `pro` | 30 |
 
 Flatten this to a single `RETENTION_DAYS_MAX` if you'd rather not tie it to
 plans yet — the clamp is one function either way.
+
+`txSetPlan` (src/lib/credits.ts) snaps both retention columns to the new
+plan's ceiling on every plan change, upgrade or downgrade — retention isn't
+just a cap on a value the user might never touch, it moves with the plan
+automatically.
 
 **Reads.** `get_settings` returns both values plus the effective ceiling, so a
 client knows what it's allowed to ask for. `update_settings` gains
@@ -217,6 +222,16 @@ objects already past the new cutoff are deleted within 24h. Raising it does not
 resurrect anything already deleted; it only extends the life of what's still
 resident. Both worth stating in the tool description, because "I set it to 30,
 where are my old thumbnails" is otherwise a support question.
+
+**The listing itself expires too.** The window above isn't only a media cost
+control — once a video's `scrapedAt` is older than the WIDER of its
+workspace's two retention columns, `api/cron/media-retention.ts`'s
+`sweepExpiredListings()` deletes the `Video` row entirely, hand-cascading
+through everything built from it (`Score`, `Analysis`, `Hook`, `Idea`,
+`Brief`, `SwipeEntry`/board saves, `MediaJob`) since none of those FKs
+cascade at the DB level. This applies uniformly — there is deliberately no
+"but it's saved to a Board" exemption, or the plan-level limit would mean
+nothing once a video is swiped once.
 
 ### 1.5 `src/lib/storage.ts` — no new dependency
 
