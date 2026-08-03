@@ -9,7 +9,7 @@
 
 import { z } from 'zod/v4';
 import { requireWorkspace } from '../context.js';
-import { insufficientCreditsPayload } from '../lib/credits.js';
+import { insufficientCreditsPayload, CREDIT_COSTS } from '../lib/credits.js';
 import { withNextSteps, apifyCostLabel, analyzeCostLabel, refreshCreditLabel } from '../lib/next-steps.js';
 import {
   listSourcesForWorkspace,
@@ -19,6 +19,7 @@ import {
   deleteSourceForWorkspace,
   refreshSourceForWorkspace,
 } from '../lib/sources-service.js';
+import { suggestSourcesForWorkspace } from '../lib/suggestions.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerSourceTools(server: McpServer) {
@@ -269,5 +270,49 @@ export function registerSourceTools(server: McpServer) {
             ]), null, 2) }],
           };
       }
+    });
+
+  // ---- suggest_sources ----
+  server.tool('suggest_sources',
+    `AI-suggested new hashtags, keywords, or creators to track, seeded from this workspace's biggest outliers. `
+    + `Costs ${CREDIT_COSTS.suggestSources} credits for the AI call, plus a small verification scrape per candidate `
+    + `(~5 videos at ${CREDIT_COSTS.refreshSourcePerVideo} credits/video) — a candidate is only ever shown if that scrape `
+    + `actually found real videos, so no hallucinated hashtag/handle gets suggested. Needs at least one scored outlier to `
+    + `seed from — refresh a source first if this is a brand new workspace.`,
+    {},
+    async () => {
+      const workspace = await requireWorkspace();
+      const result = await suggestSourcesForWorkspace(workspace);
+
+      if (!result.ok) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            error: 'suggest_sources_failed',
+            message: result.errors[0] ?? 'Could not generate suggestions.',
+            creditsCharged: result.creditsCharged,
+            creditsRemaining: result.creditsRemaining,
+          }, null, 2) }],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
+          message: result.suggestions.length > 0
+            ? `${result.suggestions.length} verified suggestion(s) — each one actually returned real videos when checked.`
+            : `${result.rawCandidateCount} candidate(s) proposed, none survived verification (already tracked or no real content found).`,
+          suggestions: result.suggestions,
+          rawCandidateCount: result.rawCandidateCount,
+          discardedCount: result.discardedCount,
+          creditsCharged: result.creditsCharged,
+          creditsRemaining: result.creditsRemaining,
+          notices: result.errors.length ? result.errors : undefined,
+        }, result.suggestions.map(s => ({
+          label: `Track ${s.sourceType === 'hashtag' ? '#' : s.sourceType === 'creator' ? '@' : ''}${s.query}`,
+          tool: 'create_source',
+          args: { platform: 'tiktok', sourceType: s.sourceType, query: s.query },
+          why: s.rationale,
+        }))), null, 2) }],
+      };
     });
 }

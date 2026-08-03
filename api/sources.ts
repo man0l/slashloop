@@ -20,6 +20,7 @@ import {
   deleteSourceForWorkspace,
   refreshSourceForWorkspace,
 } from '../src/lib/sources-service.js';
+import { suggestSourcesForWorkspace } from '../src/lib/suggestions.js';
 
 export async function OPTIONS(): Promise<Response> {
   return corsPreflight();
@@ -120,6 +121,29 @@ export async function POST(request: Request): Promise<Response> {
         // type completeness, since refreshSourceForWorkspace always queues here.
         return jsonResponse(200, result);
     }
+  }
+
+  if (action === 'suggest') {
+    let body: { workspaceId?: string };
+    try {
+      body = (await request.json()) as { workspaceId?: string };
+    } catch {
+      return jsonResponse(400, { error: 'invalid_json' });
+    }
+
+    const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+    if (!auth.ok) return auth.response;
+
+    const result = await suggestSourcesForWorkspace(auth.workspace);
+    if (!result.ok) {
+      return jsonResponse(422, {
+        error: 'suggest_sources_failed',
+        message: result.errors[0] ?? 'Could not generate suggestions.',
+        creditsCharged: result.creditsCharged,
+        creditsRemaining: result.creditsRemaining,
+      });
+    }
+    return jsonResponse(200, result);
   }
 
   let body: CreateSourceBody;
