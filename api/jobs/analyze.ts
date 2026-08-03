@@ -72,11 +72,14 @@ export async function POST(request: Request): Promise<Response> {
 
   // Same idea for scores stuck at 'too_fresh': the 48h window that made them
   // unscoreable has usually passed by the next drain, and this piggybacks on
-  // the same per-minute cadence rather than needing its own trigger. Free
-  // (no Apify, no credits) and bounded — see RESCORE_STALE_SOURCE_CAP.
+  // the same per-minute cadence rather than needing its own trigger. Spends
+  // real Apify credits (a small, bounded top-up scrape per source) so the
+  // eventual score reflects current performance, not whatever the view count
+  // was when the video was still under 48h old — see rescoreStaleTooFresh's
+  // doc comment in src/scoring.ts for the credit/cap safety argument.
   const rescoredStale = await rescoreStaleTooFresh().catch((err) => {
     console.warn(`[jobs] rescoreStaleTooFresh failed: ${(err as Error).message}`);
-    return { sourcesRescored: 0 };
+    return { sourcesRescraped: 0, sourcesRescoredOnly: 0 };
   });
 
   while (Date.now() - startedAt < RESERVE_MS) {

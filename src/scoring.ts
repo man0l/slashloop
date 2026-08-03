@@ -278,41 +278,102 @@ export function scoreVideo(
 export const CREATOR_BASELINE_MIN_SAMPLE = 5;
 
 /**
- * Cap on distinct sources rescored per call — this runs on every worker
- * drain (every minute, see api/jobs/analyze.ts), so it stays bounded rather
- * than risking the invocation's time budget on a large backlog.
+ * Cap on distinct sources considered per call, and how long this pass may
+ * run before ceding the rest of the worker's time budget to the primary
+ * fetch/analyze/rescore/refresh queues that run after it (see
+ * api/jobs/analyze.ts) — a real scrape can take 10-30s, so both stay small.
+ * Any sources left over are picked up on the next minute's drain; a video
+ * only ever needs this once (its scoreType leaves 'too_fresh' for good the
+ * moment it's rescored), so a shallow per-minute pass still clears a backlog
+ * quickly without risking the invocation.
  */
 const RESCORE_STALE_SOURCE_CAP = 20;
+const RESCRAPE_STALE_MAX_DURATION_MS = 15_000;
+
+/** Small, bounded top-up scrape for a source with stale too_fresh videos —
+ *  enough to pick up their now-current view counts without re-pulling the
+ *  source's full (possibly much larger) videoLimit. */
+const STALE_RESCRAPE_LIMIT = 5;
 
 /**
- * Videos posted under 48h ago are scored 'too_fresh' with outlierScore 0 and
- * an explanation promising the real score is "calculated on next refresh" —
- * but nothing else ever re-scores them once that window passes. A source
- * that isn't refreshed again (manual schedule, or just not due yet) leaves
- * those videos permanently stuck at 0x, which is exactly what "sort by
- * newest, see 0x outliers that never resolve" looks like from outside.
+ * Videos posted under 48h ago are scored 'too_fresh' with outlierScore 0.
+ * Once 48h passes they're eligible for a real score, but a video's own
+ * `views` column is frozen at whatever it was when first scraped — almost
+ * certainly still tiny, since it was captured while under 48h old. Recomputing
+ * from that stale number alone (this function's original implementation)
+ * cleared the 0x placeholder but didn't reflect the video's actual current
+ * performance.
  *
- * Finds videos whose 48h freshness window has now passed but whose Score
- * row is still 'too_fresh', and rescores their source (free — no Apify, no
- * credits, just batchScoreVideos). Call on a regular cadence rather than
- * only at refresh time.
+ * So this now spends real Apify credits to re-scrape the source (limited to
+ * STALE_RESCRAPE_LIMIT videos, not its full videoLimit) BEFORE rescoring —
+ * runRefresh() both fetches current stats and updates the existing video row
+ * with them (src/lib/refresh.ts), then rescopes automatically. Runs
+ * unattended, across every workspace, on the existing per-minute worker
+ * drain — no user action required and no confirmation prompt, since it is
+ * inherently self-limiting (a video only ever needs this once: the moment
+ * it's rescored, its scoreType leaves 'too_fresh' and it stops matching this
+ * query). Each source's own credit balance and the platform-wide Apify spend
+ * cap are still enforced exactly as any other refresh would be, so a
+ * workspace that's out of credits is skipped rather than blocked or billed
+ * regardless — see runRefresh's InsufficientCreditsError / cap_breached
+ * refusal paths.
+ *
+ * Falls back to the old free recompute-from-stored-views behaviour whenever
+ * the rescrape itself is refused or fails, so a video still isn't stuck
+ * showing the placeholder even when it can't be paid for right now.
  */
-export async function rescoreStaleTooFresh(): Promise<{ sourcesRescored: number }> {
+export async function rescoreStaleTooFresh(): Promise<{ sourcesRescraped: number; sourcesRescoredOnly: number }> {
+  const startedAt = Date.now();
   const cutoff = subHours(new Date(), 48);
   const stale = await db.video.findMany({
     where: { postedAt: { lte: cutoff }, score: { is: { scoreType: 'too_fresh' } } },
-    select: { sourceId: true },
+    select: { sourceId: true, source: { select: { workspaceId: true } } },
     distinct: ['sourceId'],
     take: RESCORE_STALE_SOURCE_CAP,
   });
 
-  for (const { sourceId } of stale) {
-    await batchScoreVideos(sourceId).catch((err) => {
-      console.warn(`[scoring] rescore of stale too_fresh videos failed for source ${sourceId}: ${(err as Error).message}`);
-    });
+  let sourcesRescraped = 0;
+  let sourcesRescoredOnly = 0;
+
+  for (const { sourceId, source } of stale) {
+    if (!source) continue;
+    // Leave whatever's left for the next minute's drain rather than risking
+    // this invocation's budget — the primary job queues still run after this.
+    if (Date.now() - startedAt > RESCRAPE_STALE_MAX_DURATION_MS) break;
+
+    let rescraped = false;
+    try {
+      // Dynamic import, matching the existing pattern in api/jobs/analyze.ts —
+      // avoids a static circular import between scoring.ts and refresh.ts
+      // (refresh.ts already imports batchScoreVideos from here).
+      const { runRefresh } = await import('./lib/refresh.js');
+      const result = await runRefresh({
+        workspaceId: source.workspaceId,
+        sourceId,
+        limitOverride: STALE_RESCRAPE_LIMIT,
+      });
+      if (result.ok) {
+        rescraped = true;
+        sourcesRescraped++;
+      } else {
+        console.warn(`[scoring] stale too_fresh rescrape refused for source ${sourceId}: ${result.refusal ?? result.errors.join('; ')}`);
+      }
+    } catch (err) {
+      console.warn(`[scoring] stale too_fresh rescrape failed for source ${sourceId}: ${(err as Error).message}`);
+    }
+
+    // runRefresh already rescored internally when it persisted/updated
+    // anything — only fall back to the free, stale-data recompute when the
+    // paid path didn't run at all.
+    if (!rescraped) {
+      await batchScoreVideos(sourceId).catch((err) => {
+        console.warn(`[scoring] fallback rescore failed for source ${sourceId}: ${(err as Error).message}`);
+      });
+      sourcesRescoredOnly++;
+    }
   }
 
-  return { sourcesRescored: stale.length };
+  return { sourcesRescraped, sourcesRescoredOnly };
 }
 
 export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]> {
