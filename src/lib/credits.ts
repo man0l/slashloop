@@ -53,6 +53,10 @@ export const CREDIT_COSTS = {
   generateHookVariations: 2,
   /** create_brief — a real Gemini text call. */
   createBrief: 2,
+  /** suggest_sources — one Gemini text call to generate candidates. Verifying
+   *  each candidate against Apify is billed separately, at
+   *  refreshSourcePerVideo, per candidate (src/lib/suggestions.ts). */
+  suggestSources: 3,
 } as const;
 
 export const FREE_TIER_PLAN_CREDITS = 300;

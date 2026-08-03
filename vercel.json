@@ -39,6 +39,10 @@
       "destination": "/api/sources?id=:id&action=refresh"
     },
     {
+      "source": "/api/sources/suggest",
+      "destination": "/api/sources?action=suggest"
+    },
+    {
       "source": "/api/sources/:id",
       "destination": "/api/sources?id=:id"
     },
