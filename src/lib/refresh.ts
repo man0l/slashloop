@@ -161,6 +161,8 @@ export async function runRefresh(opts: {
     const recencyCutoff = subMonths(new Date(), RECENCY_CUTOFF_MONTHS);
     let skippedOld = 0;
 
+    let updatedVideos = 0;
+
     const thumbTargets: ThumbIngestTarget[] = [];
     for (const nv of result.items) {
       if (new Date(nv.postedAt) < recencyCutoff) {
@@ -172,7 +174,29 @@ export async function runRefresh(opts: {
         where: { platform: nv.platform, externalId: nv.externalId },
         select: { id: true },
       });
-      if (existing) continue;
+      if (existing) {
+        // The scrape just returned this video's CURRENT stats for free (no
+        // extra Apify call) — previously discarded here entirely, which is
+        // why a video's views/score never moved past whatever they were the
+        // first time it was scraped. A video posted <48h ago gets forced to
+        // 0x/too_fresh (src/scoring.ts) specifically BECAUSE its early view
+        // count isn't meaningful yet; refreshing it here is what makes the
+        // eventual rescore (once 48h passes) reflect its real performance
+        // instead of recomputing the same stale, immature number forever.
+        await db.video.update({
+          where: { id: existing.id },
+          data: {
+            views: nv.views,
+            likes: nv.likes,
+            comments: nv.comments,
+            shares: nv.shares,
+            saves: nv.saves,
+            creatorFollowers: nv.creatorFollowers,
+          },
+        });
+        updatedVideos++;
+        continue;
+      }
 
       const created = await db.video.create({
         data: {
@@ -222,7 +246,10 @@ export async function runRefresh(opts: {
     // videos landed unscored. Observed live: 21 videos persisted, thumbnails
     // stored, scoring never reached, and a 1.2M-view outlier sat with
     // score: null until someone rescored by hand.
-    if (newVideos > 0) {
+    // Also rescore on updatedVideos alone (no new videos this run): an
+    // existing video's views/baseline can have moved even when nothing new
+    // was found, and batchScoreVideos re-scores the whole source anyway.
+    if (newVideos > 0 || updatedVideos > 0) {
       await batchScoreVideos(sourceId).catch(err => errors.push(`Scoring failed: ${(err as Error).message}`));
     }
 
