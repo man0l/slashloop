@@ -278,41 +278,170 @@ export function scoreVideo(
 export const CREATOR_BASELINE_MIN_SAMPLE = 5;
 
 /**
- * Cap on distinct sources rescored per call — this runs on every worker
- * drain (every minute, see api/jobs/analyze.ts), so it stays bounded rather
- * than risking the invocation's time budget on a large backlog.
+ * Cap on distinct (creator, platform, workspace) groups considered per call,
+ * and how long this pass may run before ceding the rest of the worker's time
+ * budget to the primary fetch/analyze/rescore/refresh queues that run after
+ * it (see api/jobs/analyze.ts) — a real scrape can take 10-30s, so both stay
+ * small. Any groups left over are picked up on the next minute's drain; a
+ * video only ever needs this once (its scoreType leaves 'too_fresh' for good
+ * the moment it's rescored), so a shallow per-minute pass still clears a
+ * backlog quickly without risking the invocation.
  */
-const RESCORE_STALE_SOURCE_CAP = 20;
+const RESCORE_STALE_GROUP_CAP = 20;
+const RESCRAPE_STALE_MAX_DURATION_MS = 15_000;
+
+/** Small, bounded top-up scrape per stale creator — enough to pick up their
+ *  latest stats without pulling a whole source's full (possibly much
+ *  larger) videoLimit. */
+const STALE_RESCRAPE_LIMIT = 5;
 
 /**
- * Videos posted under 48h ago are scored 'too_fresh' with outlierScore 0 and
- * an explanation promising the real score is "calculated on next refresh" —
- * but nothing else ever re-scores them once that window passes. A source
- * that isn't refreshed again (manual schedule, or just not due yet) leaves
- * those videos permanently stuck at 0x, which is exactly what "sort by
- * newest, see 0x outliers that never resolve" looks like from outside.
- *
- * Finds videos whose 48h freshness window has now passed but whose Score
- * row is still 'too_fresh', and rescores their source (free — no Apify, no
- * credits, just batchScoreVideos). Call on a regular cadence rather than
- * only at refresh time.
+ * Skip paying for another rescrape if this creator's baseline was already
+ * refreshed within this window — most often because an earlier stale video
+ * of theirs (this pass or an adjacent minute's) already paid for one. Keeps
+ * "don't scrape the same creator's 5 videos over and over" true even under a
+ * burst of several videos from the same creator going stale close together.
  */
-export async function rescoreStaleTooFresh(): Promise<{ sourcesRescored: number }> {
+const BASELINE_RESCRAPE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
+
+/**
+ * Videos posted under 48h ago are scored 'too_fresh' with outlierScore 0.
+ * Once 48h passes they're eligible for a real score, but a video's own
+ * `views` column is frozen at whatever it was when first scraped — almost
+ * certainly still tiny, since it was captured while under 48h old. Recomputing
+ * from that stale number alone (an earlier version of this function) cleared
+ * the 0x placeholder but didn't reflect the video's actual current
+ * performance.
+ *
+ * So this spends real Apify credits to re-fetch current stats before
+ * rescoring — but scoped to the video's CREATOR, not the source that
+ * originally discovered it. Outlier scoring compares a video to its
+ * creator's own baseline (computeCreatorBaseline), built from that
+ * creator's videos across every source that has ever found them. Re-running
+ * a hashtag/keyword source's own query again mostly surfaces a different
+ * set of creators each time and rarely re-includes the specific stale
+ * video at all — a creator-scoped scrape (runRefresh's sourceTypeOverride/
+ * queryOverride, src/lib/refresh.ts) targets the actual person the score is
+ * measured against, regardless of which source's bookkeeping the resulting
+ * rows are attributed to.
+ *
+ * Grouped by (creatorHandle, platform, workspaceId) — the same creator can
+ * be stale in more than one source within a workspace (dedupe to one scrape
+ * covering all of them), and billing must still land on each source's own
+ * workspace, so a creator stale in two different workspaces is two separate
+ * groups. Runs unattended, across every workspace, on the existing
+ * per-minute worker drain — no user action required and no confirmation
+ * prompt, since it is inherently self-limiting (each video only ever needs
+ * this once). Each workspace's own credit balance and the platform-wide
+ * Apify spend cap are still enforced exactly as any other refresh would be,
+ * so a workspace that's out of credits is skipped rather than blocked or
+ * billed regardless — see runRefresh's InsufficientCreditsError /
+ * cap_breached refusal paths.
+ *
+ * Falls back to the old free recompute-from-stored-views behaviour whenever
+ * the rescrape itself is refused or fails, so a video still isn't stuck
+ * showing the placeholder even when it can't be paid for right now.
+ */
+export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: number; sourcesRescoredOnly: number }> {
+  const startedAt = Date.now();
   const cutoff = subHours(new Date(), 48);
   const stale = await db.video.findMany({
     where: { postedAt: { lte: cutoff }, score: { is: { scoreType: 'too_fresh' } } },
-    select: { sourceId: true },
-    distinct: ['sourceId'],
-    take: RESCORE_STALE_SOURCE_CAP,
+    select: { creatorHandle: true, platform: true, sourceId: true, postedAt: true, source: { select: { workspaceId: true } } },
+    // Cast a wider net than the group cap below — many stale videos collapse
+    // into few distinct creators, so scanning more rows costs nothing extra
+    // (one indexed query) but yields a fuller, more useful set of groups.
+    take: RESCORE_STALE_GROUP_CAP * 5,
   });
 
-  for (const { sourceId } of stale) {
-    await batchScoreVideos(sourceId).catch((err) => {
-      console.warn(`[scoring] rescore of stale too_fresh videos failed for source ${sourceId}: ${(err as Error).message}`);
-    });
+  const groups = new Map<string, { creatorHandle: string; platform: string; workspaceId: string; sourceId: string; latestStalePostedAt: Date }>();
+  for (const v of stale) {
+    if (!v.source) continue;
+    const key = `${v.creatorHandle}__${v.platform}__${v.source.workspaceId}`;
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, {
+        creatorHandle: v.creatorHandle,
+        platform: v.platform,
+        workspaceId: v.source.workspaceId,
+        // Any one of the creator's stale videos' sources works as the
+        // record-keeping home for whatever this scrape finds/updates.
+        sourceId: v.sourceId,
+        latestStalePostedAt: v.postedAt,
+      });
+    } else if (v.postedAt > existing.latestStalePostedAt) {
+      existing.latestStalePostedAt = v.postedAt;
+    }
   }
 
-  return { sourcesRescored: stale.length };
+  let creatorsRescraped = 0;
+  let sourcesRescoredOnly = 0;
+
+  for (const { creatorHandle, platform, workspaceId, sourceId, latestStalePostedAt } of [...groups.values()].slice(0, RESCORE_STALE_GROUP_CAP)) {
+    // Leave whatever's left for the next minute's drain rather than risking
+    // this invocation's budget — the primary job queues still run after this.
+    if (Date.now() - startedAt > RESCRAPE_STALE_MAX_DURATION_MS) break;
+
+    // Don't pay to re-scrape a creator whose baseline was refreshed recently
+    // — likely by this same pass, for a different stale video of theirs.
+    // Baseline.computedAt already exists and is touched by every scoring
+    // pass (computeCreatorBaselinesBatch), so it doubles as "how fresh is
+    // what we already have" with no new table needed.
+    //
+    // Time alone isn't enough, though: a creator who posts frequently can
+    // have a brand new video the last rescrape never saw, even minutes
+    // later — "posted after our last real check" always overrides the
+    // cooldown, because the point of rescraping is specifically to pick up
+    // content we don't have yet, and computedAt only proves we checked
+    // BEFORE that video existed, not that we've seen it.
+    const baseline = await db.baseline.findUnique({
+      where: { creatorHandle_platform: { creatorHandle, platform } },
+    });
+    const alreadyCoveredByLastCheck = baseline && baseline.computedAt > latestStalePostedAt;
+    const withinCooldown = baseline && Date.now() - baseline.computedAt.getTime() < BASELINE_RESCRAPE_COOLDOWN_MS;
+    if (alreadyCoveredByLastCheck && withinCooldown) {
+      await batchScoreVideos(sourceId).catch((err) => {
+        console.warn(`[scoring] fallback rescore failed for source ${sourceId}: ${(err as Error).message}`);
+      });
+      sourcesRescoredOnly++;
+      continue;
+    }
+
+    let rescraped = false;
+    try {
+      // Dynamic import, matching the existing pattern in api/jobs/analyze.ts —
+      // avoids a static circular import between scoring.ts and refresh.ts
+      // (refresh.ts already imports batchScoreVideos from here).
+      const { runRefresh } = await import('./lib/refresh.js');
+      const result = await runRefresh({
+        workspaceId,
+        sourceId,
+        limitOverride: STALE_RESCRAPE_LIMIT,
+        sourceTypeOverride: 'creator',
+        queryOverride: creatorHandle,
+      });
+      if (result.ok) {
+        rescraped = true;
+        creatorsRescraped++;
+      } else {
+        console.warn(`[scoring] stale too_fresh rescrape refused for creator ${creatorHandle}: ${result.refusal ?? result.errors.join('; ')}`);
+      }
+    } catch (err) {
+      console.warn(`[scoring] stale too_fresh rescrape failed for creator ${creatorHandle}: ${(err as Error).message}`);
+    }
+
+    // runRefresh already rescored internally when it persisted/updated
+    // anything — only fall back to the free, stale-data recompute when the
+    // paid path didn't run at all.
+    if (!rescraped) {
+      await batchScoreVideos(sourceId).catch((err) => {
+        console.warn(`[scoring] fallback rescore failed for source ${sourceId}: ${(err as Error).message}`);
+      });
+      sourcesRescoredOnly++;
+    }
+  }
+
+  return { creatorsRescraped, sourcesRescoredOnly };
 }
 
 export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]> {

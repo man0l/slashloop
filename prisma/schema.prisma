@@ -155,6 +155,16 @@ model Video {
   rawJson          String   @default("{}")
   scrapedAt        DateTime @default(now())
 
+  /// True for a video pulled purely to keep a creator's outlier baseline
+  /// fresh (src/scoring.ts rescoreStaleTooFresh, via runRefresh's
+  /// sourceTypeOverride/queryOverride) rather than found by a source the
+  /// workspace is actually tracking. Persisted so the same creator isn't
+  /// re-scraped on every stale-check pass, but excluded from the Gallery and
+  /// from a Source's video count/preview — it isn't "content", it's baseline
+  /// data. Cleared (promoted to visible) the moment a real, non-override
+  /// refresh legitimately discovers the same video (src/lib/refresh.ts).
+  isBaselineSample Boolean  @default(false)
+
   // --- stored media (docs/media-storage-plan.md) ---
   /// Object key in the public `thumbs` bucket. Null = not stored; the feed
   /// falls back to thumbnailUrl above, which stays as provenance and is the

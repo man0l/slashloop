@@ -79,6 +79,22 @@ export async function runRefresh(opts: {
   /** Pre-auth amount to debit under `opId`, minted alongside it at enqueue so
    *  every retry debits (or idempotently replays) the exact same amount. */
   preAuthCredits?: number;
+  /**
+   * Query Apify as if `sourceId` were a different source type/query, while
+   * still attributing persisted/updated videos and billing to `sourceId`'s
+   * real workspace. For rescoreStaleTooFresh (src/scoring.ts): outlier
+   * scoring compares a video to its CREATOR's own baseline (computeCreator-
+   * Baseline), built from that creator's videos across every source that has
+   * ever found them — not from whichever hashtag/keyword source happened to
+   * discover this particular video. Re-running a hashtag/keyword source's
+   * own query again mostly surfaces a different set of creators each time
+   * and rarely re-includes the specific stale video. Overriding to a
+   * creator-scoped query targets the actual person the score is measured
+   * against, regardless of which source's record-keeping this call is
+   * attributed to.
+   */
+  sourceTypeOverride?: 'creator' | 'keyword' | 'hashtag';
+  queryOverride?: string;
 }): Promise<RunRefreshResult> {
   const { workspaceId, sourceId, limitOverride } = opts;
   const startTime = Date.now();
@@ -92,6 +108,9 @@ export async function runRefresh(opts: {
     };
   }
 
+  const effectiveSourceType = opts.sourceTypeOverride ?? (source.sourceType as 'creator' | 'keyword' | 'hashtag');
+  const effectiveQuery = opts.queryOverride ?? source.query;
+
   const limit = limitOverride ?? source.videoLimit;
   let itemsPulled = 0;
   let newVideos = 0;
@@ -100,7 +119,7 @@ export async function runRefresh(opts: {
   let rescoreQueued = false;
 
   const base = {
-    sourceId, query: source.query, platform: source.platform, sourceType: source.sourceType,
+    sourceId, query: effectiveQuery, platform: source.platform, sourceType: effectiveSourceType,
   };
 
   // Platform-wide Apify circuit breaker, unrelated to this workspace's credits.
@@ -143,8 +162,8 @@ export async function runRefresh(opts: {
     const result = await scrapeSource({
       workspaceId,
       platform: source.platform,
-      sourceType: source.sourceType as 'creator' | 'keyword' | 'hashtag',
-      query: source.query,
+      sourceType: effectiveSourceType,
+      query: effectiveQuery,
       limit,
     });
 
@@ -161,6 +180,13 @@ export async function runRefresh(opts: {
     const recencyCutoff = subMonths(new Date(), RECENCY_CUTOFF_MONTHS);
     let skippedOld = 0;
 
+    // A creator/query override means this call exists purely to keep a
+    // baseline fresh (rescoreStaleTooFresh), not to track new content — see
+    // Video.isBaselineSample in prisma/schema.prisma.
+    const isBaselineOnly = !!opts.sourceTypeOverride;
+
+    let updatedVideos = 0;
+
     const thumbTargets: ThumbIngestTarget[] = [];
     for (const nv of result.items) {
       if (new Date(nv.postedAt) < recencyCutoff) {
@@ -172,7 +198,34 @@ export async function runRefresh(opts: {
         where: { platform: nv.platform, externalId: nv.externalId },
         select: { id: true },
       });
-      if (existing) continue;
+      if (existing) {
+        // The scrape just returned this video's CURRENT stats for free (no
+        // extra Apify call) — previously discarded here entirely, which is
+        // why a video's views/score never moved past whatever they were the
+        // first time it was scraped. A video posted <48h ago gets forced to
+        // 0x/too_fresh (src/scoring.ts) specifically BECAUSE its early view
+        // count isn't meaningful yet; refreshing it here is what makes the
+        // eventual rescore (once 48h passes) reflect its real performance
+        // instead of recomputing the same stale, immature number forever.
+        await db.video.update({
+          where: { id: existing.id },
+          data: {
+            views: nv.views,
+            likes: nv.likes,
+            comments: nv.comments,
+            shares: nv.shares,
+            saves: nv.saves,
+            creatorFollowers: nv.creatorFollowers,
+            // Only a REAL (non-baseline-only) refresh promotes a video to
+            // visible — a baseline-only call re-touching an already-visible
+            // video must never hide it, so it leaves the flag untouched
+            // rather than writing `true` here.
+            ...(isBaselineOnly ? {} : { isBaselineSample: false }),
+          },
+        });
+        updatedVideos++;
+        continue;
+      }
 
       const created = await db.video.create({
         data: {
@@ -194,16 +247,22 @@ export async function runRefresh(opts: {
           transcript: nv.transcript,
           transcriptSource: nv.transcriptSource,
           rawJson: JSON.stringify(nv.raw),
+          isBaselineSample: isBaselineOnly,
         },
         select: { id: true },
       });
       newVideos++;
-      thumbTargets.push({
-        videoId: created.id,
-        platform: nv.platform,
-        thumbnailUrl: nv.thumbnailUrl,
-        coverDownloadUrl: nv.coverDownloadUrl,
-      });
+      // Thumbnails are for display — a baseline-only video is never shown
+      // anywhere, so ingesting one would just spend storage/ingest budget
+      // for nothing.
+      if (!isBaselineOnly) {
+        thumbTargets.push({
+          videoId: created.id,
+          platform: nv.platform,
+          thumbnailUrl: nv.thumbnailUrl,
+          coverDownloadUrl: nv.coverDownloadUrl,
+        });
+      }
     }
 
     if (skippedOld > 0) {
@@ -222,7 +281,10 @@ export async function runRefresh(opts: {
     // videos landed unscored. Observed live: 21 videos persisted, thumbnails
     // stored, scoring never reached, and a 1.2M-view outlier sat with
     // score: null until someone rescored by hand.
-    if (newVideos > 0) {
+    // Also rescore on updatedVideos alone (no new videos this run): an
+    // existing video's views/baseline can have moved even when nothing new
+    // was found, and batchScoreVideos re-scores the whole source anyway.
+    if (newVideos > 0 || updatedVideos > 0) {
       await batchScoreVideos(sourceId).catch(err => errors.push(`Scoring failed: ${(err as Error).message}`));
     }
 
@@ -281,12 +343,12 @@ export async function runRefresh(opts: {
   //
   // As its own job it gets a full invocation, and because rescoring is free
   // (no Apify, no credits) a retry costs nothing.
-  if (source.sourceType === 'creator' && itemsPulled > 0) {
+  if (effectiveSourceType === 'creator' && itemsPulled > 0) {
     try {
       await enqueueRescoreJob({
         workspaceId,
         sourceId,
-        payload: { creatorHandle: source.query },
+        payload: { creatorHandle: effectiveQuery },
       });
       rescoreQueued = true;
     } catch (err) {
