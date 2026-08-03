@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Apify client — minimal TikTok scraper integration.
 //
-// Uses the clockworks/tiktok-scraper actor in sync mode (run-sync-get-dataset-items).
+// Uses a TikTok scraper actor in sync mode (run-sync-get-dataset-items).
 // This is the simplest invocation: POST with the search query, block until
 // results are ready, return the dataset items.
 //
@@ -14,13 +14,74 @@
 // For Reels and Shorts we fall back to the same experimental stub — Reels
 // needs a different actor (apify/instagram-scraper) and Shorts needs the
 // YouTube Data API. Both are TODO; the cap is enforced whenever we wire them.
+//
+// --- Actor selection & fallback ---
+// clockworks/tiktok-scraper is the production-proven default. Set
+// APIFY_TIKTOK_ACTOR_ID to try a different actor (e.g. a personal fork) as
+// the PRIMARY one instead, without a code change or redeploy of this file.
+// Every call still falls back to clockworks automatically if the configured
+// primary actor's run fails — clockworks itself has no further fallback, so
+// a failure there is a real, terminal failure. A primary-actor failure logs
+// under the `[apify:actor-fallback]` tag specifically (not raised for
+// clockworks failures) so it's easy to grep for in Vercel logs without
+// wading through normal, expected scrape noise.
 // ---------------------------------------------------------------------------
 
 import { assertApifyCap, recordApifySpend } from './spend-cap.js';
 import { normalizeTikTok, type NormalizedVideo } from '../normalizers.js';
 
 const APIFY_API_BASE = 'https://api.apify.com/v2';
-const TIKTOK_ACTOR_ID = 'clockworks~tiktok-scraper';
+const DEFAULT_TIKTOK_ACTOR_ID = 'clockworks~tiktok-scraper';
+
+/** The actor to try first. Defaults to the production-proven clockworks actor. */
+function primaryTikTokActorId(): string {
+  return process.env.APIFY_TIKTOK_ACTOR_ID?.trim() || DEFAULT_TIKTOK_ACTOR_ID;
+}
+
+/** POST to one actor's run-sync-get-dataset-items endpoint; throws on any non-2xx or non-array response. */
+async function runTikTokActor(actorId: string, input: Record<string, unknown>, apiKey: string): Promise<any[]> {
+  const url = `${APIFY_API_BASE}/acts/${actorId}/run-sync-get-dataset-items?token=${apiKey}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Apify actor ${actorId} failed (${res.status}): ${text.slice(0, 500)}`);
+  }
+
+  const rawItems = await res.json();
+  if (!Array.isArray(rawItems)) {
+    throw new Error(`Apify actor ${actorId} returned non-array response: ${JSON.stringify(rawItems).slice(0, 200)}`);
+  }
+  return rawItems;
+}
+
+/**
+ * Runs the configured primary actor; on failure, falls back to
+ * DEFAULT_TIKTOK_ACTOR_ID (unless the primary already IS the default, in
+ * which case the failure is terminal — thrown as-is). `context` is a short
+ * human label (query/URL) for the fallback log line.
+ */
+async function runTikTokActorWithFallback(
+  input: Record<string, unknown>,
+  apiKey: string,
+  context: string,
+): Promise<{ rawItems: any[]; actorId: string }> {
+  const primary = primaryTikTokActorId();
+  try {
+    return { rawItems: await runTikTokActor(primary, input, apiKey), actorId: primary };
+  } catch (err) {
+    if (primary === DEFAULT_TIKTOK_ACTOR_ID) throw err;
+    console.error(
+      `[apify:actor-fallback] primary actor ${primary} failed for ${context} — falling back to ${DEFAULT_TIKTOK_ACTOR_ID}. `
+      + `Reason: ${(err as Error).message}`,
+    );
+    return { rawItems: await runTikTokActor(DEFAULT_TIKTOK_ACTOR_ID, input, apiKey), actorId: DEFAULT_TIKTOK_ACTOR_ID };
+  }
+}
 
 // Estimated cost per result, in cents — FREE tier ($0.0037/result), the most
 // expensive tier, used as a conservative upper bound for the pre-auth check.
@@ -118,24 +179,9 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
     input.searchQueries = [opts.query.trim()];
   }
 
-  const url = `${APIFY_API_BASE}/acts/${TIKTOK_ACTOR_ID}/run-sync-get-dataset-items?token=${apiKey}`;
-  console.log(`[apify] calling TikTok scraper for ${opts.sourceType}="${opts.query}" limit=${opts.limit} (est cost: ${estimatedCostCents}c)`);
+  console.log(`[apify] calling TikTok scraper (actor=${primaryTikTokActorId()}) for ${opts.sourceType}="${opts.query}" limit=${opts.limit} (est cost: ${estimatedCostCents}c)`);
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Apify TikTok scraper failed (${res.status}): ${text.slice(0, 500)}`);
-  }
-
-  const rawItems = (await res.json()) as any[];
-  if (!Array.isArray(rawItems)) {
-    throw new Error(`Apify returned non-array response: ${JSON.stringify(rawItems).slice(0, 200)}`);
-  }
+  const { rawItems } = await runTikTokActorWithFallback(input, apiKey, `${opts.sourceType}="${opts.query}"`);
 
   // Normalize via the existing normalizer
   const items: NormalizedVideo[] = rawItems
@@ -216,22 +262,10 @@ export async function downloadTikTokVideo(opts: ApifyDownloadOptions): Promise<A
     shouldDownloadSlideshowImages: false,
   };
 
-  const url = `${APIFY_API_BASE}/acts/${TIKTOK_ACTOR_ID}/run-sync-get-dataset-items?token=${apiKey}`;
-  console.log(`[apify] fetching single video ${opts.videoUrl} (est cost: ${ESTIMATED_DOWNLOAD_COST_CENTS}c)`);
+  console.log(`[apify] fetching single video (actor=${primaryTikTokActorId()}) ${opts.videoUrl} (est cost: ${ESTIMATED_DOWNLOAD_COST_CENTS}c)`);
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Apify TikTok scraper failed (${res.status}): ${text.slice(0, 500)}`);
-  }
-
-  const rawItems = (await res.json()) as any[];
-  if (!Array.isArray(rawItems) || rawItems.length === 0) {
+  const { rawItems } = await runTikTokActorWithFallback(input, apiKey, opts.videoUrl);
+  if (rawItems.length === 0) {
     throw new Error(`Apify returned no items for video URL: ${opts.videoUrl}`);
   }
 
