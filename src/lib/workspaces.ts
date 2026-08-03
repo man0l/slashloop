@@ -28,8 +28,23 @@ export function primaryWorkspaceByOwnerId(
   return client.workspace.findFirst({ where: { ownerId }, orderBy: { createdAt: 'asc' } });
 }
 
-export function listWorkspacesForUser(userId: string): Promise<Workspace[]> {
-  return db.workspace.findMany({ where: { ownerId: userId }, orderBy: { createdAt: 'asc' } });
+/** The account's real plan — i.e. the primary workspace's planKey. Every
+ *  non-primary workspace's own planKey is a stale artifact after the
+ *  account-level billing migration (src/lib/credits.ts); display code should
+ *  read this instead of a workspace's own field. */
+export async function resolveAccountPlanKey(ownerId: string): Promise<string> {
+  const primary = await primaryWorkspaceByOwnerId(ownerId);
+  return primary?.planKey ?? 'free';
+}
+
+/** Every workspace a user owns, with `planKey` overridden to the account's
+ *  real (primary workspace's) plan — see resolveAccountPlanKey. One extra
+ *  query for the whole list, not per row: every row shares the same owner. */
+export async function listWorkspacesForUser(userId: string): Promise<Workspace[]> {
+  const workspaces = await db.workspace.findMany({ where: { ownerId: userId }, orderBy: { createdAt: 'asc' } });
+  if (workspaces.length === 0) return workspaces;
+  const planKey = await resolveAccountPlanKey(userId);
+  return workspaces.map(w => ({ ...w, planKey }));
 }
 
 /**
@@ -75,9 +90,17 @@ export class WorkspaceLimitError extends Error {
 }
 
 /**
- * Create a new workspace for a user, gated by WORKSPACE_LIMITS. The new
- * workspace always starts on its own free-tier grant — the limit controls
- * how many workspaces a user may hold, not what plan a new one inherits.
+ * Create a new workspace for a user, gated by WORKSPACE_LIMITS.
+ *
+ * Billing is per-account (src/lib/credits.ts resolveBillingWorkspaceId),
+ * anchored on a user's PRIMARY (earliest-created) workspace — the same one
+ * Stripe already exclusively bills. Only that first workspace ever gets a
+ * real credit grant; every subsequent one starts at zero, since its
+ * planCredits/packCredits are never read for balance purposes again (every
+ * debit/refund/balance check resolves to the primary regardless of which
+ * workspace triggered it). Granting a free-tier stash to every additional
+ * workspace pre-migration was also how a WORKSPACE_LIMITS-bounded user could
+ * still farm free credits one workspace at a time.
  */
 export async function createWorkspaceForUser(userId: string, name: string): Promise<Workspace> {
   const existing = await listWorkspacesForUser(userId);
@@ -85,8 +108,13 @@ export async function createWorkspaceForUser(userId: string, name: string): Prom
   const limit = WORKSPACE_LIMITS[plan] ?? WORKSPACE_LIMITS.free;
   if (existing.length >= limit) throw new WorkspaceLimitError(limit, plan);
 
+  // planCredits defaults to 300 at the column level (prisma/schema.prisma) —
+  // that default exists for freeTierGrant() itself, so a secondary workspace
+  // MUST set it explicitly to 0 rather than omitting it, or it would silently
+  // inherit the column default and grant free credits anyway.
+  const grant = existing.length === 0 ? freeTierGrant() : { planKey: 'free', planCredits: 0, packCredits: 0 };
   return db.workspace.create({
-    data: { ownerId: userId, name, ...freeTierGrant() },
+    data: { ownerId: userId, name, ...grant },
   });
 }
 

@@ -21,7 +21,7 @@
 // ---------------------------------------------------------------------------
 
 import { db } from '../db.js';
-import type { Prisma } from '@prisma/client';
+import type { Prisma, Workspace } from '@prisma/client';
 import { customerIdField, subscriptionIdField } from './stripe.js';
 import { retentionCeiling } from './retention.js';
 
@@ -68,9 +68,55 @@ export interface CreditBalance {
   total: number;
 }
 
+/**
+ * Billing is per-ACCOUNT, not per-workspace — a user's plan/credits live on
+ * their primary (earliest-created) workspace, the same one Stripe billing
+ * already exclusively resolves to (api/billing.ts, api/stripe/webhook.ts,
+ * both via primaryWorkspaceByOwnerId in src/lib/workspaces.ts). Every credit
+ * operation below resolves whatever workspace an action happened in to that
+ * same primary workspace before touching a balance, so spending in a
+ * secondary workspace draws on the account's real pool instead of that
+ * workspace's own (post-migration, permanently empty) fields.
+ *
+ * Deliberately does NOT import primaryWorkspaceByOwnerId from
+ * src/lib/workspaces.ts — that module imports freeTierGrant from this one,
+ * and importing back would create a cycle. The lookup is only two small
+ * queries; duplicating it here is cheaper than restructuring the module
+ * boundary for it.
+ */
+async function resolveBillingWorkspaceId(workspaceId: string): Promise<string> {
+  const ws = await db.workspace.findUnique({ where: { id: workspaceId }, select: { ownerId: true } });
+  if (!ws?.ownerId) return workspaceId; // local/single-tenant workspace — no account to resolve to
+  const primary = await db.workspace.findFirst({
+    where: { ownerId: ws.ownerId },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true },
+  });
+  return primary?.id ?? workspaceId;
+}
+
+/**
+ * Full-row version of resolveBillingWorkspaceId, for callers that already
+ * have a Workspace object in hand and want to display the account's real
+ * plan/credits (get_settings, retention ceiling checks) rather than the
+ * active workspace's own — which, for a non-primary workspace, is
+ * permanently 'free'/empty after the account-level migration. Takes the
+ * ownerId straight off the object passed in, so it costs one query instead
+ * of resolveBillingWorkspaceId's two.
+ */
+export async function resolveBillingWorkspace(workspace: Workspace): Promise<Workspace> {
+  if (!workspace.ownerId) return workspace; // local/single-tenant — no account to resolve to
+  const primary = await db.workspace.findFirst({
+    where: { ownerId: workspace.ownerId },
+    orderBy: { createdAt: 'asc' },
+  });
+  return primary ?? workspace;
+}
+
 export async function creditBalance(workspaceId: string): Promise<CreditBalance> {
+  const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId);
   const ws = await db.workspace.findUniqueOrThrow({
-    where: { id: workspaceId },
+    where: { id: billingWorkspaceId },
     select: { planCredits: true, packCredits: true },
   });
   return { planCredits: ws.planCredits, packCredits: ws.packCredits, total: ws.planCredits + ws.packCredits };
@@ -98,13 +144,15 @@ export async function debitCredits(
   credits = Math.ceil(credits);
   if (credits <= 0) return creditBalance(workspaceId);
 
+  const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId);
+
   return db.$transaction(async (tx) => {
     const prior = await tx.creditLedger.findUnique({
-      where: { workspaceId_refId: { workspaceId, refId: idempotencyKey } },
+      where: { workspaceId_refId: { workspaceId: billingWorkspaceId, refId: idempotencyKey } },
     });
     if (prior) {
       const ws = await tx.workspace.findUniqueOrThrow({
-        where: { id: workspaceId },
+        where: { id: billingWorkspaceId },
         select: { planCredits: true, packCredits: true },
       });
       return { planCredits: ws.planCredits, packCredits: ws.packCredits, total: ws.planCredits + ws.packCredits };
@@ -117,20 +165,20 @@ export async function debitCredits(
       UPDATE "Workspace"
          SET "planCredits" = "planCredits" - LEAST("planCredits", ${credits}),
              "packCredits" = "packCredits" - GREATEST(0, ${credits} - "planCredits")
-       WHERE id = ${workspaceId}
+       WHERE id = ${billingWorkspaceId}
          AND "planCredits" + "packCredits" >= ${credits}
    RETURNING "planCredits", "packCredits"
     `;
 
     if (rows.length === 0) {
-      const balance = await creditBalance(workspaceId);
+      const balance = await creditBalance(billingWorkspaceId);
       throw new InsufficientCreditsError(workspaceId, credits, balance.total);
     }
 
     const { planCredits, packCredits } = rows[0];
     await tx.creditLedger.create({
       data: {
-        workspaceId,
+        workspaceId: billingWorkspaceId,
         delta: -credits,
         bucket: 'plan',
         reason: 'tool_call',
@@ -161,13 +209,15 @@ export async function refundCredits(
   credits = Math.ceil(credits); // see debitCredits — Int columns, no float8 assignment cast
   if (credits <= 0) return creditBalance(workspaceId);
 
+  const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId);
+
   return db.$transaction(async (tx) => {
     const prior = await tx.creditLedger.findUnique({
-      where: { workspaceId_refId: { workspaceId, refId } },
+      where: { workspaceId_refId: { workspaceId: billingWorkspaceId, refId } },
     });
     if (prior) {
       const ws = await tx.workspace.findUniqueOrThrow({
-        where: { id: workspaceId },
+        where: { id: billingWorkspaceId },
         select: { planCredits: true, packCredits: true },
       });
       return { planCredits: ws.planCredits, packCredits: ws.packCredits, total: ws.planCredits + ws.packCredits };
@@ -176,13 +226,13 @@ export async function refundCredits(
     const rows = await tx.$queryRaw<{ planCredits: number; packCredits: number }[]>`
       UPDATE "Workspace"
          SET "packCredits" = "packCredits" + ${credits}
-       WHERE id = ${workspaceId}
+       WHERE id = ${billingWorkspaceId}
    RETURNING "planCredits", "packCredits"
     `;
     const { planCredits, packCredits } = rows[0];
     await tx.creditLedger.create({
       data: {
-        workspaceId,
+        workspaceId: billingWorkspaceId,
         delta: credits,
         bucket: 'pack',
         reason,

@@ -8,7 +8,7 @@
 // cap). vercel.json rewrites /api/workspaces/:id here with an `id` query param.
 import { corsPreflight } from '../src/lib/cors.js';
 import { requireAuth, jsonResponse } from '../src/lib/authz.js';
-import { listWorkspacesForUser, createWorkspaceForUser, renameWorkspaceForUser, WorkspaceLimitError } from '../src/lib/workspaces.js';
+import { listWorkspacesForUser, createWorkspaceForUser, renameWorkspaceForUser, resolveAccountPlanKey, WorkspaceLimitError } from '../src/lib/workspaces.js';
 
 export async function OPTIONS(): Promise<Response> {
   return corsPreflight();
@@ -43,7 +43,8 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const workspace = await createWorkspaceForUser(auth.userId, name);
-    return jsonResponse(200, { id: workspace.id, name: workspace.name, planKey: workspace.planKey, createdAt: workspace.createdAt.toISOString() });
+    const planKey = await resolveAccountPlanKey(auth.userId);
+    return jsonResponse(200, { id: workspace.id, name: workspace.name, planKey, createdAt: workspace.createdAt.toISOString() });
   } catch (err) {
     if (err instanceof WorkspaceLimitError) {
       return jsonResponse(403, { error: 'workspace_limit_reached', message: err.message, limit: err.limit, planKey: err.planKey });
@@ -71,7 +72,8 @@ export async function PATCH(request: Request): Promise<Response> {
 
   try {
     const workspace = await renameWorkspaceForUser(auth.userId, id, name);
-    return jsonResponse(200, { id: workspace.id, name: workspace.name, planKey: workspace.planKey });
+    const planKey = await resolveAccountPlanKey(auth.userId);
+    return jsonResponse(200, { id: workspace.id, name: workspace.name, planKey });
   } catch {
     return jsonResponse(404, { error: 'workspace_not_found' });
   }
