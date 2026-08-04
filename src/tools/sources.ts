@@ -19,7 +19,7 @@ import {
   deleteSourceForWorkspace,
   refreshSourceForWorkspace,
 } from '../lib/sources-service.js';
-import { suggestSourcesForWorkspace } from '../lib/suggestions.js';
+import { seedSourceCandidates, verifySourceCandidate } from '../lib/suggestions.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerSourceTools(server: McpServer) {
@@ -282,32 +282,46 @@ export function registerSourceTools(server: McpServer) {
     {},
     async () => {
       const workspace = await requireWorkspace();
-      const result = await suggestSourcesForWorkspace(workspace);
+      const seed = await seedSourceCandidates(workspace);
 
-      if (!result.ok) {
+      if (!seed.ok) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
             error: 'suggest_sources_failed',
-            message: result.errors[0] ?? 'Could not generate suggestions.',
-            creditsCharged: result.creditsCharged,
-            creditsRemaining: result.creditsRemaining,
+            message: seed.errors[0] ?? 'Could not generate suggestions.',
+            creditsCharged: seed.creditsCharged,
+            creditsRemaining: seed.creditsRemaining,
           }, null, 2) }],
           isError: true,
         };
       }
 
+      // A conversational tool call has to return one final answer, so
+      // (unlike the site UI, which shows each candidate as its own check
+      // resolves) verify every candidate here before responding — each is
+      // still its own independent Apify scrape, just run concurrently.
+      const verifications = await Promise.all(seed.candidates.map(c => verifySourceCandidate(workspace, c)));
+
+      const suggestions = verifications.filter(v => v.verified).map(v => v.suggestion!);
+      const notices = verifications.filter(v => v.error).map(v => v.error!);
+      const creditsCharged = seed.creditsCharged + verifications.reduce((sum, v) => sum + v.creditsCharged, 0);
+      const creditsRemaining = verifications.length > 0
+        ? verifications[verifications.length - 1].creditsRemaining
+        : seed.creditsRemaining;
+      const discardedCount = seed.alreadyTrackedCount + verifications.filter(v => !v.verified).length;
+
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
-          message: result.suggestions.length > 0
-            ? `${result.suggestions.length} verified suggestion(s) — each one actually returned real videos when checked.`
-            : `${result.rawCandidateCount} candidate(s) proposed, none survived verification (already tracked or no real content found).`,
-          suggestions: result.suggestions,
-          rawCandidateCount: result.rawCandidateCount,
-          discardedCount: result.discardedCount,
-          creditsCharged: result.creditsCharged,
-          creditsRemaining: result.creditsRemaining,
-          notices: result.errors.length ? result.errors : undefined,
-        }, result.suggestions.map(s => ({
+          message: suggestions.length > 0
+            ? `${suggestions.length} verified suggestion(s) — each one actually returned real videos when checked.`
+            : `${seed.rawCandidateCount} candidate(s) proposed, none survived verification (already tracked or no real content found).`,
+          suggestions,
+          rawCandidateCount: seed.rawCandidateCount,
+          discardedCount,
+          creditsCharged,
+          creditsRemaining,
+          notices: notices.length ? notices : undefined,
+        }, suggestions.map(s => ({
           label: `Track ${s.sourceType === 'hashtag' ? '#' : s.sourceType === 'creator' ? '@' : ''}${s.query}`,
           tool: 'create_source',
           args: { platform: 'tiktok', sourceType: s.sourceType, query: s.query },

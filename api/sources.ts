@@ -20,7 +20,7 @@ import {
   deleteSourceForWorkspace,
   refreshSourceForWorkspace,
 } from '../src/lib/sources-service.js';
-import { suggestSourcesForWorkspace } from '../src/lib/suggestions.js';
+import { seedSourceCandidates, verifySourceCandidate, type SeedCandidate } from '../src/lib/suggestions.js';
 
 export async function OPTIONS(): Promise<Response> {
   return corsPreflight();
@@ -134,7 +134,11 @@ export async function POST(request: Request): Promise<Response> {
     const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
     if (!auth.ok) return auth.response;
 
-    const result = await suggestSourcesForWorkspace(auth.workspace);
+    // Seeding only — fast (one Gemini call), no Apify scrapes yet. The
+    // caller (site UI) verifies each returned candidate with its own
+    // separate action=suggest-verify call, so it can show each result the
+    // moment it resolves instead of waiting on all of them together.
+    const result = await seedSourceCandidates(auth.workspace);
     if (!result.ok) {
       return jsonResponse(422, {
         error: 'suggest_sources_failed',
@@ -143,6 +147,30 @@ export async function POST(request: Request): Promise<Response> {
         creditsRemaining: result.creditsRemaining,
       });
     }
+    return jsonResponse(200, result);
+  }
+
+  if (action === 'suggest-verify') {
+    let body: { workspaceId?: string } & Partial<SeedCandidate>;
+    try {
+      body = (await request.json()) as { workspaceId?: string } & Partial<SeedCandidate>;
+    } catch {
+      return jsonResponse(400, { error: 'invalid_json' });
+    }
+
+    const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+    if (!auth.ok) return auth.response;
+
+    if (!body.sourceType || !SOURCE_TYPES.has(body.sourceType)) {
+      return jsonResponse(400, { error: 'sourceType must be one of creator, keyword, hashtag' });
+    }
+    if (!body.query) return jsonResponse(400, { error: 'query is required' });
+
+    const result = await verifySourceCandidate(auth.workspace, {
+      sourceType: body.sourceType as SeedCandidate['sourceType'],
+      query: body.query,
+      rationale: body.rationale ?? '',
+    });
     return jsonResponse(200, result);
   }
 
