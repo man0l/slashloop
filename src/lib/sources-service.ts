@@ -20,6 +20,7 @@ import { batchScoreVideos } from '../scoring.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } from './credits.js';
 import { ingestThumbnails, type ThumbIngestTarget } from './media.js';
 import { enqueueRefreshJob, enqueueRescoreJob, outstandingJobForSource, dispatchWorker } from './jobs.js';
+import { dismissSuggestion } from './suggestions.js';
 
 /**
  * Largest refresh still run inline, in videos. Zero = always queue.
@@ -199,6 +200,13 @@ export async function deleteSourceForWorkspace(workspace: Workspace, sourceId: s
   await db.refreshRun.deleteMany({ where: { sourceId } });
   await db.video.deleteMany({ where: { sourceId } });
   await db.source.delete({ where: { id: sourceId } }).catch(() => null);
+
+  // Deleting a source is a stronger "no thanks" than dismissing a mere
+  // suggestion — the user tracked it and then decided against it. Record it
+  // the same way, so seedSourceCandidates() doesn't turn around and suggest
+  // the exact thing just removed.
+  await dismissSuggestion(workspace, { sourceType: owned.sourceType as 'hashtag' | 'keyword' | 'creator', query: owned.query });
+
   return true;
 }
 
