@@ -20,7 +20,7 @@ import {
   deleteSourceForWorkspace,
   refreshSourceForWorkspace,
 } from '../src/lib/sources-service.js';
-import { seedSourceCandidates, verifySourceCandidate, type SeedCandidate } from '../src/lib/suggestions.js';
+import { seedSourceCandidates, verifySourceCandidate, dismissSuggestion, type SeedCandidate } from '../src/lib/suggestions.js';
 
 export async function OPTIONS(): Promise<Response> {
   return corsPreflight();
@@ -172,6 +172,26 @@ export async function POST(request: Request): Promise<Response> {
       rationale: body.rationale ?? '',
     });
     return jsonResponse(200, result);
+  }
+
+  if (action === 'suggest-dismiss') {
+    let body: { workspaceId?: string; sourceType?: string; query?: string };
+    try {
+      body = (await request.json()) as { workspaceId?: string; sourceType?: string; query?: string };
+    } catch {
+      return jsonResponse(400, { error: 'invalid_json' });
+    }
+
+    const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+    if (!auth.ok) return auth.response;
+
+    if (!body.sourceType || !SOURCE_TYPES.has(body.sourceType)) {
+      return jsonResponse(400, { error: 'sourceType must be one of creator, keyword, hashtag' });
+    }
+    if (!body.query) return jsonResponse(400, { error: 'query is required' });
+
+    await dismissSuggestion(auth.workspace, { sourceType: body.sourceType as SeedCandidate['sourceType'], query: body.query });
+    return jsonResponse(200, { message: 'Suggestion dismissed', sourceType: body.sourceType, query: body.query });
   }
 
   let body: CreateSourceBody;

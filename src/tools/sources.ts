@@ -19,7 +19,7 @@ import {
   deleteSourceForWorkspace,
   refreshSourceForWorkspace,
 } from '../lib/sources-service.js';
-import { seedSourceCandidates, verifySourceCandidate } from '../lib/suggestions.js';
+import { seedSourceCandidates, verifySourceCandidate, dismissSuggestion } from '../lib/suggestions.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerSourceTools(server: McpServer) {
@@ -308,7 +308,7 @@ export function registerSourceTools(server: McpServer) {
       const creditsRemaining = verifications.length > 0
         ? verifications[verifications.length - 1].creditsRemaining
         : seed.creditsRemaining;
-      const discardedCount = seed.alreadyTrackedCount + verifications.filter(v => !v.verified).length;
+      const discardedCount = seed.alreadyTrackedCount + seed.alreadyDismissedCount + verifications.filter(v => !v.verified).length;
 
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
@@ -327,6 +327,24 @@ export function registerSourceTools(server: McpServer) {
           args: { platform: 'tiktok', sourceType: s.sourceType, query: s.query },
           why: s.rationale,
         }))), null, 2) }],
+      };
+    });
+
+  // ---- dismiss_suggested_source ----
+  server.tool('dismiss_suggested_source',
+    `Marks an AI-suggested hashtag/keyword/creator (from suggest_sources) as "no thanks" — future suggest_sources `
+    + `calls for this workspace won't propose it again.`,
+    {
+      sourceType: z.enum(['hashtag', 'keyword', 'creator']),
+      query: z.string().min(1).describe('The suggested query exactly as returned by suggest_sources, no # or @ prefix.'),
+    },
+    async ({ sourceType, query }) => {
+      const workspace = await requireWorkspace();
+      await dismissSuggestion(workspace, { sourceType, query });
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
+          message: `Won't suggest ${sourceType === 'hashtag' ? '#' : sourceType === 'creator' ? '@' : ''}${query} again.`,
+        }, []), null, 2) }],
       };
     });
 }

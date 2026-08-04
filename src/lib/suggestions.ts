@@ -49,6 +49,8 @@ export interface SeedSourcesResult {
   rawCandidateCount: number;
   /** Candidates the model proposed that were already tracked — dropped before verification, never charged. */
   alreadyTrackedCount: number;
+  /** Candidates the model proposed that this workspace previously dismissed ("no thanks") — dropped before verification, never charged. */
+  alreadyDismissedCount: number;
   creditsCharged: number;
   creditsRemaining: number;
   errors: string[];
@@ -81,11 +83,16 @@ const CANDIDATE_SCHEMA = z.array(z.object({
   rationale: z.string(),
 })).max(MAX_RAW_CANDIDATES);
 
-const SUGGEST_SYSTEM = `You are a TikTok content-discovery strategist. Given a list of a workspace's biggest outlier videos (creator, views, multiple vs. baseline, caption) and what's already tracked, suggest NEW hashtags, search keywords, or creator accounts worth tracking that are NOT already tracked.
+const SUGGEST_SYSTEM = `You are a TikTok content-discovery strategist. Given a list of a workspace's biggest outlier videos (creator, views, multiple vs. baseline, caption) and what's already tracked or previously rejected, suggest NEW hashtags, search keywords, or creator accounts worth tracking that are NOT in that list.
 
 Look for patterns: recurring themes, adjacent niches, hashtags mentioned in captions that aren't tracked yet, creators with a similar style to the ones already breaking out. Prefer specific, real TikTok hashtags/handles over generic guesses — each one will be verified against real TikTok data, so a plausible-sounding but nonexistent hashtag just wastes the check.
 
 Output raw JSON array, up to 8 items: [{"sourceType": "hashtag"|"keyword"|"creator", "query": "string, no # or @ prefix", "rationale": "one sentence, cite which outlier(s) this comes from"}]`;
+
+/** Lowercase, strip a leading # or @ — the same normalization used to key SuggestionDismissal rows. */
+function normalizeQuery(query: string): string {
+  return query.toLowerCase().replace(/^[#@]/, '');
+}
 
 /**
  * Step 1: seed candidates from this workspace's biggest outliers via a
@@ -109,21 +116,24 @@ export async function seedSourceCandidates(workspace: Workspace): Promise<SeedSo
 
   if (outliers.length === 0) {
     return {
-      ok: false, candidates: [], rawCandidateCount: 0, alreadyTrackedCount: 0,
+      ok: false, candidates: [], rawCandidateCount: 0, alreadyTrackedCount: 0, alreadyDismissedCount: 0,
       creditsCharged: 0, creditsRemaining: balanceBefore.total,
       errors: ['No outlier videos yet — refresh a source first so there is something to seed suggestions from.'],
     };
   }
 
   const existingSources = await db.source.findMany({ where: { workspaceId: workspace.id }, select: { query: true } });
-  const existingQueries = new Set(existingSources.map(s => s.query.toLowerCase().replace(/^[#@]/, '')));
+  const existingQueries = new Set(existingSources.map(s => normalizeQuery(s.query)));
+
+  const dismissals = await db.suggestionDismissal.findMany({ where: { workspaceId: workspace.id }, select: { sourceType: true, query: true } });
+  const dismissedKeys = new Set(dismissals.map(d => `${d.sourceType}:${d.query}`));
 
   const seedList = outliers
     .map((s, i) => `[${i}] @${s.video.creatorHandle} — ${s.video.views.toLocaleString()} views, ${s.outlierScore}x `
       + `(from tracked source "${s.video.source.query}"): "${s.video.caption.slice(0, 200)}"`)
     .join('\n');
-  const trackedList = [...existingQueries].join(', ') || '(none)';
-  const userMessage = `## This workspace's biggest outliers\n\n${seedList}\n\n## Already tracked (do not suggest these again)\n${trackedList}\n\nSuggest up to 8 new hashtags, keywords, or creators to track.`;
+  const excludedList = [...new Set([...existingQueries, ...dismissals.map(d => d.query)])].join(', ') || '(none)';
+  const userMessage = `## This workspace's biggest outliers\n\n${seedList}\n\n## Already tracked or previously rejected (do not suggest these again)\n${excludedList}\n\nSuggest up to 8 new hashtags, keywords, or creators to track.`;
 
   const opId = randomUUID();
   try {
@@ -131,7 +141,7 @@ export async function seedSourceCandidates(workspace: Workspace): Promise<SeedSo
   } catch (err) {
     if (err instanceof InsufficientCreditsError) {
       return {
-        ok: false, candidates: [], rawCandidateCount: 0, alreadyTrackedCount: 0,
+        ok: false, candidates: [], rawCandidateCount: 0, alreadyTrackedCount: 0, alreadyDismissedCount: 0,
         creditsCharged: 0, creditsRemaining: err.remaining,
         errors: [err.message],
       };
@@ -149,17 +159,19 @@ export async function seedSourceCandidates(workspace: Workspace): Promise<SeedSo
     await refundCredits(workspace.id, CREDIT_COSTS.suggestSources, 'suggest_sources', `${opId}:fail`, 'call_failed');
     const balance = await creditBalance(workspace.id);
     return {
-      ok: false, candidates: [], rawCandidateCount: 0, alreadyTrackedCount: 0,
+      ok: false, candidates: [], rawCandidateCount: 0, alreadyTrackedCount: 0, alreadyDismissedCount: 0,
       creditsCharged: 0, creditsRemaining: balance.total,
       errors: [`Suggestion generation failed: ${(err as Error).message}`],
     };
   }
 
-  // Dedupe against what's already tracked, then cap how many the caller can
-  // send for (paid) verification.
-  const alreadyTracked = rawCandidates.filter(c => existingQueries.has(c.query.toLowerCase().replace(/^[#@]/, '')));
+  // Dedupe against what's already tracked and what this workspace previously
+  // dismissed, then cap how many the caller can send for (paid) verification.
+  const alreadyTracked = rawCandidates.filter(c => existingQueries.has(normalizeQuery(c.query)));
+  const alreadyDismissed = rawCandidates.filter(c =>
+    !existingQueries.has(normalizeQuery(c.query)) && dismissedKeys.has(`${c.sourceType}:${normalizeQuery(c.query)}`));
   const candidates = rawCandidates
-    .filter(c => !existingQueries.has(c.query.toLowerCase().replace(/^[#@]/, '')))
+    .filter(c => !existingQueries.has(normalizeQuery(c.query)) && !dismissedKeys.has(`${c.sourceType}:${normalizeQuery(c.query)}`))
     .slice(0, MAX_VERIFIED_CANDIDATES);
 
   const balanceAfter = await creditBalance(workspace.id);
@@ -168,10 +180,27 @@ export async function seedSourceCandidates(workspace: Workspace): Promise<SeedSo
     candidates,
     rawCandidateCount: rawCandidates.length,
     alreadyTrackedCount: alreadyTracked.length,
+    alreadyDismissedCount: alreadyDismissed.length,
     creditsCharged: balanceBefore.total - balanceAfter.total,
     creditsRemaining: balanceAfter.total,
     errors: [],
   };
+}
+
+/**
+ * Records a "no thanks" on a candidate so future seedSourceCandidates() calls
+ * for this workspace exclude it — both from what's shown and from what's
+ * sent to Gemini as already-considered. Idempotent (unique on workspace +
+ * sourceType + normalized query): dismissing the same candidate twice is a
+ * no-op, not an error.
+ */
+export async function dismissSuggestion(workspace: Workspace, candidate: Pick<SeedCandidate, 'sourceType' | 'query'>): Promise<void> {
+  const query = normalizeQuery(candidate.query);
+  await db.suggestionDismissal.upsert({
+    where: { workspaceId_sourceType_query: { workspaceId: workspace.id, sourceType: candidate.sourceType, query } },
+    create: { workspaceId: workspace.id, sourceType: candidate.sourceType, query },
+    update: {},
+  });
 }
 
 /**

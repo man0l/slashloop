@@ -43,6 +43,10 @@
       "destination": "/api/sources?action=suggest-verify"
     },
     {
+      "source": "/api/sources/suggest/dismiss",
+      "destination": "/api/sources?action=suggest-dismiss"
+    },
+    {
       "source": "/api/sources/suggest",
       "destination": "/api/sources?action=suggest"
     },
