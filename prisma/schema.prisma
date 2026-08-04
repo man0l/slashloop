@@ -65,12 +65,13 @@ model Workspace {
   thumbRetentionDays   Int       @default(3)
   mediaRetentionDays   Int       @default(3)
 
-  sources         Source[]
-  boards          Board[]
-  usageLogs       UsageLog[]
-  autoAnalyzeRuns AutoAnalyzeRun[]
-  creditLedger    CreditLedger[]
-  mediaJobs       MediaJob[]
+  sources              Source[]
+  boards               Board[]
+  usageLogs            UsageLog[]
+  autoAnalyzeRuns      AutoAnalyzeRun[]
+  creditLedger         CreditLedger[]
+  mediaJobs            MediaJob[]
+  suggestionDismissals SuggestionDismissal[]
 
   @@index([ownerId])
 }
@@ -107,6 +108,25 @@ model StripeEvent {
   type        String
   payloadJson String
   processedAt DateTime @default(now())
+}
+
+/// A workspace's "no thanks" on an AI-suggested hashtag/keyword/creator
+/// (src/lib/suggestions.ts) — excluded from both the candidates shown on a
+/// future suggest run and the "already considered" list sent to Gemini, so
+/// a rejected suggestion doesn't keep coming back.
+model SuggestionDismissal {
+  id          String   @id @default(uuid())
+  workspaceId String
+  sourceType  String // hashtag | keyword | creator
+  /// Normalized the same way the tracked-sources dedupe is: lowercase, no
+  /// leading # or @.
+  query       String
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@unique([workspaceId, sourceType, query])
+  @@index([workspaceId])
 }
 
 model Source {
