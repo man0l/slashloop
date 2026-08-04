@@ -134,28 +134,35 @@ export async function suggestSourcesForWorkspace(workspace: Workspace): Promise<
     .filter(c => !existingQueries.has(c.query.toLowerCase().replace(/^[#@]/, '')))
     .slice(0, MAX_VERIFIED_CANDIDATES);
 
-  // ---- verify: exactly ONE real Apify scrape per candidate. Never
-  // persisted as a Source/Video — only shown if it's still ok to spend on,
-  // and only kept as a suggestion if it actually returned videos. ----
-  const suggestions: SourceSuggestion[] = [];
-  let discardedCount = alreadyTracked.length;
+  // ---- verify: exactly ONE real Apify scrape per candidate, run
+  // CONCURRENTLY rather than one after another. A real Apify actor run
+  // blocks synchronously (run-sync-get-dataset-items) for anywhere from a
+  // few seconds to well over a minute, and can silently double that on a
+  // fallback retry (see runTikTokActorWithFallback) — five of those stacked
+  // sequentially inside one HTTP request has no realistic chance of
+  // finishing before the request times out, which is exactly what made this
+  // endpoint appear to return nothing at all. Running them in parallel
+  // bounds worst-case wall time to roughly one scrape's latency instead of
+  // MAX_VERIFIED_CANDIDATES of them. Never persisted as a Source/Video —
+  // only shown if it's still ok to spend on, and only kept as a suggestion
+  // if it actually returned videos. ----
+  const capStatus = await getApifyCapStatus(workspace.id);
+  if (capStatus.breached) {
+    errors.push('Apify spend cap breached — no candidates were verified.');
+  }
 
-  for (const candidate of candidates) {
-    const capStatus = await getApifyCapStatus(workspace.id);
-    if (capStatus.breached) {
-      errors.push('Apify spend cap breached — stopped verifying remaining candidates.');
-      break;
-    }
+  type VerifyOutcome =
+    | { candidate: typeof candidates[number]; outcome: 'verified'; suggestion: SourceSuggestion }
+    | { candidate: typeof candidates[number]; outcome: 'empty' | 'no_credits' }
+    | { candidate: typeof candidates[number]; outcome: 'error'; message: string };
 
+  const verifyResults: VerifyOutcome[] = capStatus.breached ? [] : await Promise.all(candidates.map(async (candidate): Promise<VerifyOutcome> => {
     const verifyOpId = randomUUID();
     const verifyPreAuth = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * VERIFY_SCRAPE_LIMIT);
     try {
       await debitCredits(workspace.id, verifyPreAuth, 'suggest_sources_verify', `${verifyOpId}:preauth`);
     } catch (err) {
-      if (err instanceof InsufficientCreditsError) {
-        errors.push('Out of credits — stopped verifying remaining candidates.');
-        break;
-      }
+      if (err instanceof InsufficientCreditsError) return { candidate, outcome: 'no_credits' };
       throw err;
     }
 
@@ -174,25 +181,45 @@ export async function suggestSourcesForWorkspace(workspace: Workspace): Promise<
         await refundCredits(workspace.id, refundAmount, 'suggest_sources_verify', `${verifyOpId}:settle`, 'usage_settlement');
       }
 
-      if (result.items.length > 0) {
-        const top = [...result.items].sort((a, b) => b.views - a.views)[0];
-        suggestions.push({
+      if (result.items.length === 0) return { candidate, outcome: 'empty' };
+      const top = [...result.items].sort((a, b) => b.views - a.views)[0];
+      return {
+        candidate,
+        outcome: 'verified',
+        suggestion: {
           sourceType: candidate.sourceType,
           query: candidate.query,
           rationale: candidate.rationale,
           sampleViews: top.views,
           sampleCaption: top.caption,
           verifiedVideoCount: result.items.length,
-        });
-      } else {
-        discardedCount++;
-      }
+        },
+      };
     } catch (err) {
       // The scrape itself threw (not just "0 results") — refund in full,
       // this candidate never got a real judgment either way.
       await refundCredits(workspace.id, verifyPreAuth, 'suggest_sources_verify', `${verifyOpId}:fail`, 'call_failed');
+      return { candidate, outcome: 'error', message: (err as Error).message };
+    }
+  }));
+
+  const suggestions: SourceSuggestion[] = [];
+  let discardedCount = alreadyTracked.length;
+  let notedOutOfCredits = false;
+  for (const r of verifyResults) {
+    if (r.outcome === 'verified') {
+      suggestions.push(r.suggestion);
+    } else if (r.outcome === 'empty') {
       discardedCount++;
-      errors.push(`Couldn't verify "${candidate.query}": ${(err as Error).message}`);
+    } else if (r.outcome === 'error') {
+      discardedCount++;
+      errors.push(`Couldn't verify "${r.candidate.query}": ${r.message}`);
+    } else {
+      discardedCount++;
+      if (!notedOutOfCredits) {
+        errors.push('Ran out of credits partway through verification.');
+        notedOutOfCredits = true;
+      }
     }
   }
 
