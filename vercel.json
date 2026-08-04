@@ -59,6 +59,14 @@
       "destination": "/api/workspaces?id=:id"
     },
     {
+      "source": "/api/videos/:id/analyze",
+      "destination": "/api/videos?id=:id&action=analyze"
+    },
+    {
+      "source": "/api/videos/:id",
+      "destination": "/api/videos?id=:id"
+    },
+    {
       "source": "/",
       "destination": "/api/pages?page=health"
     }
@@ -78,6 +86,9 @@
     },
     "api/sources.ts": {
       "maxDuration": 60
+    },
+    "api/videos.ts": {
+      "maxDuration": 30
     }
   },
   "crons": [
