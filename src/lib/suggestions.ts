@@ -5,6 +5,15 @@
 // hallucinated hashtag with no real content is worse than no suggestion at
 // all, so nothing here is surfaced without having actually returned videos.
 //
+// Split into two steps — seedSourceCandidates() and verifySourceCandidate()
+// — rather than one combined call. A combined call means the caller waits
+// for the slowest of up to MAX_VERIFIED_CANDIDATES real Apify scrapes before
+// seeing anything at all (each one blocks synchronously for seconds to over
+// a minute); this was previously the cause of the endpoint reliably timing
+// out. Seeding is fast (one Gemini call) and returns immediately; the caller
+// then fires one verify call per candidate itself and can render each result
+// the moment its own call resolves, instead of waiting on all of them.
+//
 // Nothing is persisted as a tracked Source/Video during verification — a
 // suggestion is just data in the response until the user explicitly tracks
 // it (the normal create_source / POST /api/sources path).
@@ -23,10 +32,27 @@ import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, cr
 const SEED_OUTLIER_COUNT = 15;
 /** Cap on candidates the model may propose in one call. */
 const MAX_RAW_CANDIDATES = 8;
-/** Cap on candidates actually verified against Apify — bounds worst-case spend. */
-const MAX_VERIFIED_CANDIDATES = 5;
+/** Cap on candidates actually offered for (paid) verification — bounds worst-case spend. */
+export const MAX_VERIFIED_CANDIDATES = 5;
 /** Small probe, not a real refresh — just enough to tell "real content" from "nothing here". */
 const VERIFY_SCRAPE_LIMIT = 5;
+
+export interface SeedCandidate {
+  sourceType: 'hashtag' | 'keyword' | 'creator';
+  query: string;
+  rationale: string;
+}
+
+export interface SeedSourcesResult {
+  ok: boolean;
+  candidates: SeedCandidate[];
+  rawCandidateCount: number;
+  /** Candidates the model proposed that were already tracked — dropped before verification, never charged. */
+  alreadyTrackedCount: number;
+  creditsCharged: number;
+  creditsRemaining: number;
+  errors: string[];
+}
 
 export interface SourceSuggestion {
   sourceType: 'hashtag' | 'keyword' | 'creator';
@@ -37,16 +63,16 @@ export interface SourceSuggestion {
   verifiedVideoCount: number;
 }
 
-export interface SuggestSourcesResult {
+export interface VerifyCandidateResult {
+  /** false only for an unexpected error — insufficient credits and "no real
+   *  content found" both come back ok:true with verified:false, since both
+   *  are a normal, expected outcome rather than a failure. */
   ok: boolean;
-  suggestions: SourceSuggestion[];
-  rawCandidateCount: number;
-  /** Candidates the model proposed but that didn't survive: already tracked,
-   *  or verification came back with no real videos. */
-  discardedCount: number;
+  verified: boolean;
+  suggestion?: SourceSuggestion;
   creditsCharged: number;
   creditsRemaining: number;
-  errors: string[];
+  error?: string;
 }
 
 const CANDIDATE_SCHEMA = z.array(z.object({
@@ -61,11 +87,15 @@ Look for patterns: recurring themes, adjacent niches, hashtags mentioned in capt
 
 Output raw JSON array, up to 8 items: [{"sourceType": "hashtag"|"keyword"|"creator", "query": "string, no # or @ prefix", "rationale": "one sentence, cite which outlier(s) this comes from"}]`;
 
-export async function suggestSourcesForWorkspace(workspace: Workspace): Promise<SuggestSourcesResult> {
-  const errors: string[] = [];
+/**
+ * Step 1: seed candidates from this workspace's biggest outliers via a
+ * single Gemini call. Fast (one text-generation call) — no Apify scrapes
+ * here, so nothing here is verified yet. Charges the flat suggestSources
+ * fee once, a sunk cost regardless of how many candidates later verify.
+ */
+export async function seedSourceCandidates(workspace: Workspace): Promise<SeedSourcesResult> {
   const balanceBefore = await creditBalance(workspace.id);
 
-  // ---- seed: biggest outliers + what's already tracked ----
   const outliers = await db.score.findMany({
     where: { outlierScore: { gte: 2 }, video: { source: { workspaceId: workspace.id } } },
     include: {
@@ -79,7 +109,7 @@ export async function suggestSourcesForWorkspace(workspace: Workspace): Promise<
 
   if (outliers.length === 0) {
     return {
-      ok: false, suggestions: [], rawCandidateCount: 0, discardedCount: 0,
+      ok: false, candidates: [], rawCandidateCount: 0, alreadyTrackedCount: 0,
       creditsCharged: 0, creditsRemaining: balanceBefore.total,
       errors: ['No outlier videos yet — refresh a source first so there is something to seed suggestions from.'],
     };
@@ -95,15 +125,13 @@ export async function suggestSourcesForWorkspace(workspace: Workspace): Promise<
   const trackedList = [...existingQueries].join(', ') || '(none)';
   const userMessage = `## This workspace's biggest outliers\n\n${seedList}\n\n## Already tracked (do not suggest these again)\n${trackedList}\n\nSuggest up to 8 new hashtags, keywords, or creators to track.`;
 
-  // ---- AI call: flat fee, charged once regardless of how many candidates
-  // survive verification below — the call itself is a sunk cost either way. ----
   const opId = randomUUID();
   try {
     await debitCredits(workspace.id, CREDIT_COSTS.suggestSources, 'suggest_sources', `${opId}:preauth`);
   } catch (err) {
     if (err instanceof InsufficientCreditsError) {
       return {
-        ok: false, suggestions: [], rawCandidateCount: 0, discardedCount: 0,
+        ok: false, candidates: [], rawCandidateCount: 0, alreadyTrackedCount: 0,
         creditsCharged: 0, creditsRemaining: err.remaining,
         errors: [err.message],
       };
@@ -121,116 +149,104 @@ export async function suggestSourcesForWorkspace(workspace: Workspace): Promise<
     await refundCredits(workspace.id, CREDIT_COSTS.suggestSources, 'suggest_sources', `${opId}:fail`, 'call_failed');
     const balance = await creditBalance(workspace.id);
     return {
-      ok: false, suggestions: [], rawCandidateCount: 0, discardedCount: 0,
+      ok: false, candidates: [], rawCandidateCount: 0, alreadyTrackedCount: 0,
       creditsCharged: 0, creditsRemaining: balance.total,
       errors: [`Suggestion generation failed: ${(err as Error).message}`],
     };
   }
 
-  // Dedupe against what's already tracked before spending anything on
-  // verification, then cap how many get the (paid) verification pass.
+  // Dedupe against what's already tracked, then cap how many the caller can
+  // send for (paid) verification.
   const alreadyTracked = rawCandidates.filter(c => existingQueries.has(c.query.toLowerCase().replace(/^[#@]/, '')));
   const candidates = rawCandidates
     .filter(c => !existingQueries.has(c.query.toLowerCase().replace(/^[#@]/, '')))
     .slice(0, MAX_VERIFIED_CANDIDATES);
 
-  // ---- verify: exactly ONE real Apify scrape per candidate, run
-  // CONCURRENTLY rather than one after another. A real Apify actor run
-  // blocks synchronously (run-sync-get-dataset-items) for anywhere from a
-  // few seconds to well over a minute, and can silently double that on a
-  // fallback retry (see runTikTokActorWithFallback) — five of those stacked
-  // sequentially inside one HTTP request has no realistic chance of
-  // finishing before the request times out, which is exactly what made this
-  // endpoint appear to return nothing at all. Running them in parallel
-  // bounds worst-case wall time to roughly one scrape's latency instead of
-  // MAX_VERIFIED_CANDIDATES of them. Never persisted as a Source/Video —
-  // only shown if it's still ok to spend on, and only kept as a suggestion
-  // if it actually returned videos. ----
-  const capStatus = await getApifyCapStatus(workspace.id);
-  if (capStatus.breached) {
-    errors.push('Apify spend cap breached — no candidates were verified.');
-  }
-
-  type VerifyOutcome =
-    | { candidate: typeof candidates[number]; outcome: 'verified'; suggestion: SourceSuggestion }
-    | { candidate: typeof candidates[number]; outcome: 'empty' | 'no_credits' }
-    | { candidate: typeof candidates[number]; outcome: 'error'; message: string };
-
-  const verifyResults: VerifyOutcome[] = capStatus.breached ? [] : await Promise.all(candidates.map(async (candidate): Promise<VerifyOutcome> => {
-    const verifyOpId = randomUUID();
-    const verifyPreAuth = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * VERIFY_SCRAPE_LIMIT);
-    try {
-      await debitCredits(workspace.id, verifyPreAuth, 'suggest_sources_verify', `${verifyOpId}:preauth`);
-    } catch (err) {
-      if (err instanceof InsufficientCreditsError) return { candidate, outcome: 'no_credits' };
-      throw err;
-    }
-
-    try {
-      const result = await scrapeSource({
-        workspaceId: workspace.id,
-        platform: 'tiktok',
-        sourceType: candidate.sourceType,
-        query: candidate.query,
-        limit: VERIFY_SCRAPE_LIMIT,
-      });
-
-      const actualCredits = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * result.items.length);
-      const refundAmount = verifyPreAuth - actualCredits;
-      if (refundAmount > 0) {
-        await refundCredits(workspace.id, refundAmount, 'suggest_sources_verify', `${verifyOpId}:settle`, 'usage_settlement');
-      }
-
-      if (result.items.length === 0) return { candidate, outcome: 'empty' };
-      const top = [...result.items].sort((a, b) => b.views - a.views)[0];
-      return {
-        candidate,
-        outcome: 'verified',
-        suggestion: {
-          sourceType: candidate.sourceType,
-          query: candidate.query,
-          rationale: candidate.rationale,
-          sampleViews: top.views,
-          sampleCaption: top.caption,
-          verifiedVideoCount: result.items.length,
-        },
-      };
-    } catch (err) {
-      // The scrape itself threw (not just "0 results") — refund in full,
-      // this candidate never got a real judgment either way.
-      await refundCredits(workspace.id, verifyPreAuth, 'suggest_sources_verify', `${verifyOpId}:fail`, 'call_failed');
-      return { candidate, outcome: 'error', message: (err as Error).message };
-    }
-  }));
-
-  const suggestions: SourceSuggestion[] = [];
-  let discardedCount = alreadyTracked.length;
-  let notedOutOfCredits = false;
-  for (const r of verifyResults) {
-    if (r.outcome === 'verified') {
-      suggestions.push(r.suggestion);
-    } else if (r.outcome === 'empty') {
-      discardedCount++;
-    } else if (r.outcome === 'error') {
-      discardedCount++;
-      errors.push(`Couldn't verify "${r.candidate.query}": ${r.message}`);
-    } else {
-      discardedCount++;
-      if (!notedOutOfCredits) {
-        errors.push('Ran out of credits partway through verification.');
-        notedOutOfCredits = true;
-      }
-    }
-  }
-
   const balanceAfter = await creditBalance(workspace.id);
   return {
     ok: true,
-    suggestions,
+    candidates,
     rawCandidateCount: rawCandidates.length,
-    discardedCount,
+    alreadyTrackedCount: alreadyTracked.length,
     creditsCharged: balanceBefore.total - balanceAfter.total,
     creditsRemaining: balanceAfter.total,
-    errors,
+    errors: [],
   };
+}
+
+/**
+ * Step 2: verify exactly ONE candidate with exactly ONE real Apify scrape.
+ * Meant to be called once per candidate returned by seedSourceCandidates,
+ * by the caller — not looped internally — so each candidate's result comes
+ * back (and can be shown) independently, instead of the caller waiting for
+ * every candidate before seeing any of them. A real Apify actor run blocks
+ * synchronously for anywhere from a few seconds to well over a minute (and
+ * can silently double that on a fallback retry — see
+ * runTikTokActorWithFallback in apify.ts), so keeping this to one scrape per
+ * call keeps each call's own worst case bounded and independent of how many
+ * other candidates are being verified.
+ */
+export async function verifySourceCandidate(workspace: Workspace, candidate: SeedCandidate): Promise<VerifyCandidateResult> {
+  const capStatus = await getApifyCapStatus(workspace.id);
+  if (capStatus.breached) {
+    const balance = await creditBalance(workspace.id);
+    return { ok: true, verified: false, creditsCharged: 0, creditsRemaining: balance.total, error: 'Apify spend cap breached.' };
+  }
+
+  const verifyOpId = randomUUID();
+  const verifyPreAuth = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * VERIFY_SCRAPE_LIMIT);
+  const balanceBefore = await creditBalance(workspace.id);
+
+  try {
+    await debitCredits(workspace.id, verifyPreAuth, 'suggest_sources_verify', `${verifyOpId}:preauth`);
+  } catch (err) {
+    if (err instanceof InsufficientCreditsError) {
+      return { ok: true, verified: false, creditsCharged: 0, creditsRemaining: err.remaining, error: 'Out of credits.' };
+    }
+    throw err;
+  }
+
+  try {
+    const result = await scrapeSource({
+      workspaceId: workspace.id,
+      platform: 'tiktok',
+      sourceType: candidate.sourceType,
+      query: candidate.query,
+      limit: VERIFY_SCRAPE_LIMIT,
+    });
+
+    const actualCredits = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * result.items.length);
+    const refundAmount = verifyPreAuth - actualCredits;
+    if (refundAmount > 0) {
+      await refundCredits(workspace.id, refundAmount, 'suggest_sources_verify', `${verifyOpId}:settle`, 'usage_settlement');
+    }
+
+    const balanceAfter = await creditBalance(workspace.id);
+    const creditsCharged = balanceBefore.total - balanceAfter.total;
+
+    if (result.items.length === 0) {
+      return { ok: true, verified: false, creditsCharged, creditsRemaining: balanceAfter.total };
+    }
+    const top = [...result.items].sort((a, b) => b.views - a.views)[0];
+    return {
+      ok: true,
+      verified: true,
+      suggestion: {
+        sourceType: candidate.sourceType,
+        query: candidate.query,
+        rationale: candidate.rationale,
+        sampleViews: top.views,
+        sampleCaption: top.caption,
+        verifiedVideoCount: result.items.length,
+      },
+      creditsCharged,
+      creditsRemaining: balanceAfter.total,
+    };
+  } catch (err) {
+    // The scrape itself threw (not just "0 results") — refund in full, this
+    // candidate never got a real judgment either way.
+    await refundCredits(workspace.id, verifyPreAuth, 'suggest_sources_verify', `${verifyOpId}:fail`, 'call_failed');
+    const balance = await creditBalance(workspace.id);
+    return { ok: false, verified: false, creditsCharged: 0, creditsRemaining: balance.total, error: (err as Error).message };
+  }
 }
