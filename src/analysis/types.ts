@@ -38,6 +38,10 @@ export interface AnalysisContext {
    * (Phase 2.2). Present = gemini-native can skip the upload entirely.
    */
   geminiFile?: { uri: string; name: string } | null;
+  /** Signed, time-limited URL for the STORED copy of the video in the private
+   *  media bucket, if it is stored. Lets the openrouter-video backend send the
+   *  clip by URL (qwen/bytedance/stepfun fetch it) instead of base64. */
+  storedMediaUrl?: string | null;
   // Optional: pre-downloaded video file path (required by gemini-native)
   videoFilePath?: string;
   // True when invoked from run_auto_analyze — backends use it to look up

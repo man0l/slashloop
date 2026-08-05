@@ -38,8 +38,8 @@ export function modelToOpenRouter(model: string): string {
     'gemini-2.5-pro': 'google/gemini-2.5-pro',
   };
   if (map[model]) return map[model];
-  // Already OpenRouter-qualified (google/... or a pinned date id): pass through.
-  if (model.startsWith('google/')) return model;
+  // Already provider-qualified (google/..., qwen/..., z-ai/..., ...): pass through.
+  if (model.includes('/')) return model;
   throw new Error(`No OpenRouter model mapping for "${model}"`);
 }
 
@@ -102,6 +102,96 @@ export interface OpenRouterResult {
   parsed: unknown;
   inputTokens: number;
   outputTokens: number;
+}
+
+/**
+ * Pull the first JSON object out of raw model text. Reasoning models
+ * (qwen3.7, stepfun, glm-4.6v) emit a "Thinking process" preamble even in JSON
+ * mode; code fences and prose can wrap the body. Finds the first '{' and
+ * matches to the last '}', so the extreme carving above is unnecessary as long
+ * as the wanted JSON is the first object. Returns null when nothing parses.
+ */
+export function extractFirstJson(text: string): unknown | null {
+  const fenced = text.replace(/```(?:json)?/gi, '').trim();
+  const start = fenced.indexOf('{');
+  if (start === -1) return null;
+  const end = fenced.lastIndexOf('}');
+  if (end <= start) return null;
+  try {
+    return JSON.parse(fenced.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+export interface OpenRouterVideoCallOptions {
+  maxTokens?: number;
+}
+
+/**
+ * One chat completion with a VIDEO part (URL or base64 data URL) against an
+ * OpenRouter model that supports video input. Returns raw text + token counts;
+ * the caller validates it against the analysis schema. JSON mode is requested
+ * but providers vary in how strictly they honour it, so the caller should run
+ * the output through extractFirstJson.
+ */
+export async function callOpenRouterVideo(
+  systemPrompt: string,
+  userText: string,
+  model: string,
+  videoUrl: string,
+  options?: OpenRouterVideoCallOptions,
+): Promise<{ rawText: string; inputTokens: number; outputTokens: number }> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error('OPENROUTER_API_KEY environment variable is not set');
+
+  const res = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      ...(process.env.PUBLIC_URL ? { 'HTTP-Referer': process.env.PUBLIC_URL, 'X-Title': 'slashloop' } : {}),
+    },
+    body: JSON.stringify({
+      model: modelToOpenRouter(model),
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: [
+          { type: 'text', text: userText },
+          { type: 'video_url', video_url: { url: videoUrl } },
+        ]},
+      ],
+      temperature: 0.3,
+      // Reasoning models burn tokens on chain-of-thought; give them room to
+      // still emit the full JSON (probed: max_tokens 200 starves them).
+      max_tokens: options?.maxTokens ?? 4096,
+      response_format: { type: 'json_object' },
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`OpenRouter API error ${res.status}: ${text}`);
+  }
+
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    error?: { message?: string; code?: number };
+  };
+
+  if (data.error) {
+    throw new Error(`OpenRouter API error ${data.error.code ?? ''}: ${data.error.message ?? ''}`);
+  }
+
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error('OpenRouter returned no content');
+
+  return {
+    rawText: content,
+    inputTokens: data.usage?.prompt_tokens ?? 0,
+    outputTokens: data.usage?.completion_tokens ?? 0,
+  };
 }
 
 /**

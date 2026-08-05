@@ -23,10 +23,12 @@ import { db } from '../db.js';
 import { VideoAnalysisDataSchema, clampTimestamps } from './schema.js';
 import { GeminiNativeAnalyzer } from './gemini-native.js';
 import { GeminiTextAnalyzer } from './gemini-text.js';
+import { OpenRouterVideoAnalyzer } from './openrouter-video.js';
 import { loadAnalysisConfig, updateAnalysisConfig } from './config.js';
 import { basisToConfidence, getCostCents, type AnalysisConfig, type AnalysisContext, type AnalysisResult, type VideoAnalyzer, DEFAULT_CONFIG } from './types.js';
-import { resolveThumbUrl } from '../lib/media.js';
+import { resolveThumbUrl, signedMediaUrl } from '../lib/media.js';
 import { classifyGeminiError } from '../lib/gemini-errors.js';
+import { openRouterVideoEnabled } from '../lib/llm.js';
 
 /**
  * A Gemini Files handle for this video that has not expired yet (Phase 2.2).
@@ -54,6 +56,7 @@ function createBackend(id: string, config: AnalysisConfig, model?: string): Vide
   switch (id) {
     case 'gemini-native': return new GeminiNativeAnalyzer(config, model ? { model } : undefined);
     case 'gemini-text': return new GeminiTextAnalyzer(config);
+    case 'openrouter-video': return new OpenRouterVideoAnalyzer();
     default: throw new Error(`Unknown analysis backend: ${id}`);
   }
 }
@@ -75,7 +78,7 @@ function createBackend(id: string, config: AnalysisConfig, model?: string): Vide
 // ---------------------------------------------------------------------------
 
 export interface BackendAttempt {
-  /** Analyzer to run: 'gemini-native' | 'gemini-text'. */
+  /** Analyzer to run: 'gemini-native' | 'gemini-text' | 'openrouter-video'. */
   backendId: string;
   /** Set only on the native model-fallback attempt. */
   model?: string;
@@ -87,7 +90,7 @@ export interface BackendAttempt {
 
 export function planBackendAttempts(
   config: AnalysisConfig,
-  opts?: { forceBackend?: string; flipToFallback?: boolean },
+  opts?: { forceBackend?: string; flipToFallback?: boolean; orVideoEnabled?: boolean },
 ): BackendAttempt[] {
   // After MAX_FAILURES consecutive failures the primary is swapped for the
   // configured fallback for an hour (see analyzeVideo) — go straight there.
@@ -102,6 +105,15 @@ export function planBackendAttempts(
   if (primaryBackend === 'gemini-native' && fallbackModel) {
     attempts.push({ backendId: 'gemini-native', model: fallbackModel, label: ' (fallback model)', fallback: true });
   }
+
+  // OpenRouter video (model via OPENROUTER_VIDEO_MODEL) sits between the Google
+  // native attempts and the text fallback — a shot-level analysis on a billed
+  // OpenRouter key when Google can't, before we drop to camera-blind text.
+  const orVideo = opts?.orVideoEnabled ?? openRouterVideoEnabled();
+  if (primaryBackend === 'gemini-native' && orVideo && !attempts.some(a => a.backendId === 'openrouter-video')) {
+    attempts.push({ backendId: 'openrouter-video', label: ' (fallback)', fallback: true });
+  }
+
   if (fallbackBackend && fallbackBackend !== primaryBackend
     && !attempts.some(a => a.backendId === fallbackBackend && !a.model)) {
     attempts.push({ backendId: fallbackBackend, label: ' (fallback)', fallback: true });
@@ -202,6 +214,10 @@ export async function analyzeVideo(
   const config = workspaceId !== 'unknown' ? await loadAnalysisConfig(workspaceId) : { ...DEFAULT_CONFIG };
   const batch = options?.batch ?? false;
 
+  // Signed URL for the STORED copy of the video, only when the openrouter-video
+  // backend might run (avoids an extra storage round-trip on every analysis).
+  const storedMedia = openRouterVideoEnabled() ? await signedMediaUrl(video) : { url: null };
+
   // 3. Build analysis context
   const ctx: AnalysisContext = {
     videoId: video.id,
@@ -225,6 +241,7 @@ export async function analyzeVideo(
     workspaceId,
     thumbImageUrl: resolveThumbUrl(video),
     geminiFile: liveGeminiFile(video),
+    storedMediaUrl: storedMedia.url,
     videoFilePath: options?.videoFilePath,
     batch,
   };
@@ -265,6 +282,12 @@ export async function analyzeVideo(
     // 2.2 exists to create — straight to the text fallback.
     if (backendId === 'gemini-native' && !ctx.videoFilePath && !ctx.geminiFile) {
       console.log(`[analysis] ${backendId} has neither a video file nor a live Gemini file, skipping to text-only fallback`);
+      continue;
+    }
+    // openrouter-video needs either a stored-media URL (URL mode) or the local
+    // file (base64 mode) — otherwise there is no clip to send it.
+    if (backendId === 'openrouter-video' && !ctx.videoFilePath && !ctx.storedMediaUrl) {
+      console.log(`[analysis] openrouter-video has neither a stored video URL nor a local file, skipping to text-only fallback`);
       continue;
     }
 
@@ -389,6 +412,12 @@ export async function analyzeVideoWithDownload(
   const config = workspaceId ? await loadAnalysisConfig(workspaceId) : { ...DEFAULT_CONFIG };
   const backend = options?.forceBackend ?? config.backend;
 
+  // The openrouter-video backend can send the clip by URL when it is STORED
+  // (URL mode — no download); otherwise it needs the local file for base64.
+  const storedMedia = openRouterVideoEnabled() ? await signedMediaUrl(video).catch(() => ({ url: null as string | null })) : { url: null as string | null };
+  const needsFile = backend === 'gemini-native'
+    || (openRouterVideoEnabled() && !storedMedia.url);
+
   // If the backend needs a video file, download it via Apify.
   //
   // TikTok only: downloadTikTokVideo drives the clockworks/tiktok-scraper
@@ -405,7 +434,7 @@ export async function analyzeVideoWithDownload(
   let videoFilePath: string | undefined;
   if (cachedGeminiFile) {
     console.log(`[analysis] Gemini still holds ${videoId} — skipping download and upload`);
-  } else if (backend === 'gemini-native' && video.platform === 'tiktok' && video.url && workspaceId) {
+  } else if (needsFile && video.platform === 'tiktok' && video.url && workspaceId) {
     try {
       const { mkdtempSync } = await import('node:fs');
       const { tmpdir } = await import('node:os');
