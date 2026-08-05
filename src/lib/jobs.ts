@@ -19,6 +19,7 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { CREDIT_COSTS, refundCredits } from './credits.js';
+import { classifyFetchError } from './fetch-errors.js';
 
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 
@@ -249,6 +250,31 @@ export async function latestReportingJobForVideo(
   if (!job) return null;
   if (job.status === 'failed' && opts?.newerThan && job.createdAt <= opts.newerThan) return null;
   return job;
+}
+
+/**
+ * Newest failed-fetch reason per video — the "why can't this video be
+ * scraped?" surface for the gallery. One query for the whole card pool (then
+ * newest-per-video), classified by classifyFetchError in src/lib/fetch-errors.ts.
+ */
+export async function latestFetchErrors(
+  videoIds: string[],
+): Promise<Record<string, { code: string; message: string }>> {
+  if (videoIds.length === 0) return {};
+  const ids = [...new Set(videoIds)];
+  const rows = (await db.mediaJob.findMany({
+    where: { videoId: { in: ids }, kind: 'fetch', status: 'failed', lastError: { not: null } },
+    orderBy: { createdAt: 'desc' },
+    select: { videoId: true, lastError: true },
+  })) as unknown as Array<{ videoId: string; lastError: string | null }>;
+
+  const out: Record<string, { code: string; message: string }> = {};
+  for (const r of rows) {
+    if (out[r.videoId]) continue; // first (newest) already recorded
+    const info = classifyFetchError(r.lastError);
+    if (info) out[r.videoId] = { code: info.code, message: info.message };
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

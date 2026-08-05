@@ -18,6 +18,7 @@ import { registerAppTool, registerAppResource, RESOURCE_MIME_TYPE } from '@model
 import { db } from '../db.js';
 import { requireWorkspace, currentUserId } from '../context.js';
 import { resolveThumbUrl, signedMediaUrl } from '../lib/media.js';
+import { latestFetchErrors } from '../lib/jobs.js';
 import { signGalleryUrl, ttlHumanized } from '../lib/gallery-link.js';
 import { withNextSteps, analyzeCostLabel } from '../lib/next-steps.js';
 import { renderGallery, type GalleryCard, type GalleryFilters } from '../ui/gallery.js';
@@ -163,6 +164,10 @@ export async function buildCards(
   // to do with the DB query or an index. They're independent per video, so
   // run them concurrently instead.
   const media = await Promise.all(ranked.map(v => signedMediaUrl(v)));
+  // One batched query: newest failed-fetch reason per video, so cards that
+  // couldn't be scraped show the specific Apify issue instead of a silent
+  // blank thumbnail.
+  const fetchErrors = await latestFetchErrors(ranked.map(v => v.id));
 
   const cards: GalleryCard[] = ranked.map((v, i) => {
     let keyMoments: GalleryCard['keyMoments'] = [];
@@ -200,6 +205,9 @@ export async function buildCards(
       postedAt: v.postedAt.getTime(),
       mediaUrl: media[i]!.url,
       keyMoments,
+      // Only show a scrape error when there is no stored video to watch — a
+      // video that eventually got stored didn't "fail to scrape".
+      fetchError: media[i]!.url ? null : (fetchErrors[v.id] ?? null),
     };
   });
 

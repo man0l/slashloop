@@ -38,6 +38,9 @@ export interface GalleryCard {
   postedAt: number;
   /** Signed URL for the stored MP4, null when nothing is stored (or it expired). */
   mediaUrl: string | null;
+  /** Why this video couldn't be scraped by the fetch worker (Apify etc.), when
+   *  it has no stored video — lets the card show an error icon + tooltip. */
+  fetchError: { code: string; message: string } | null;
   keyMoments: Array<{
     timestampSec: number;
     role: string;
@@ -86,10 +89,13 @@ function cardHtml(c: GalleryCard): string {
 
   // The <video> is the spike. preload="none" so a gallery of them costs nothing
   // until someone actually asks for one — egress is metered on this plan.
+  const fetchMsg = c.fetchError ? `${c.fetchError.message} (${c.fetchError.code})` : null;
   const player = c.mediaUrl
     ? `<video id="v-${esc(c.id)}" class="player" preload="none" controls playsinline
               src="${esc(c.mediaUrl)}"></video>`
-    : `<p class="nomedia">No stored video — expired or never analysed. Frames unavailable.</p>`;
+    : fetchMsg
+      ? `<p class="nomedia nomedia-fetch">⛔ Could not scrape this video — ${esc(fetchMsg)}. Frames unavailable.</p>`
+      : `<p class="nomedia">No stored video — expired or never analysed. Frames unavailable.</p>`;
 
   const score = c.outlierScore ?? 0;
   // data-* drives client-side filters (no network).
@@ -99,6 +105,7 @@ function cardHtml(c: GalleryCard): string {
            data-views="${c.views}"
            data-posted="${c.postedAt}"
            data-has-media="${c.mediaUrl ? '1' : '0'}"
+           data-fetch-error="${c.fetchError ? esc(c.fetchError.code) : ''}"
            data-handle="${esc(c.creatorHandle.toLowerCase())}">
     <span class="index-badge" title="Reference this as &quot;video ${c.index}&quot;">${c.index}</span>
     ${c.thumbUrl ? `<img class="thumb" src="${esc(c.thumbUrl)}" alt="" loading="lazy"/>`
@@ -110,6 +117,7 @@ function cardHtml(c: GalleryCard): string {
         <span>${esc(c.engagementRate)} eng</span>
         ${c.outlierScore != null ? `<span class="score-badge">${c.outlierScore.toFixed(1)}x</span>` : ''}
         ${c.durationSec != null ? `<span>${c.durationSec}s</span>` : ''}
+        ${c.fetchError ? `<span class="fetch-error" title="Could not be scraped — ${esc(fetchMsg)}" aria-label="scrape error">⛔</span>` : ''}
       </div>
       <p class="caption">${esc(c.caption) || '<em>no caption</em>'}</p>
       ${player}
@@ -236,6 +244,8 @@ export function renderGallery(
   .body { padding: 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
   .meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; opacity: .8; }
   .score-badge { font-weight: 600; opacity: 1; }
+  .fetch-error { cursor: help; font-size: 13px; line-height: 1; color: #ff5c5c; }
+  .nomedia-fetch { color: #ff5c5c; opacity: .85; }
   .caption { margin: 0; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .player { width: 100%; border-radius: 6px; background: #000; }
   .nomedia { margin: 0; font-size: 12px; opacity: .6; }
