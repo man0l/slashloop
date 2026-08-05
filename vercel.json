@@ -69,6 +69,10 @@
     {
       "source": "/",
       "destination": "/api/pages?page=health"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/api/pages?page=404"
     }
   ],
   "functions": {
