@@ -9,7 +9,8 @@
   "include": [
     "src/**/*.ts",
     "api/videos.ts",
-    "api/jobs/analyze.ts"
+    "api/jobs/analyze.ts",
+    "api/pages.ts"
   ],
   "exclude": ["node_modules", "dist", "src/seed.ts", "src/scripts/**"]
 }

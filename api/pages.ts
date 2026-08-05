@@ -14,6 +14,14 @@ export default (req: IncomingMessage, res: ServerResponse) => {
       return handleLogin(req, res);
     case 'consent':
       return handleConsent(req, res);
+    // Catch-all 404 target — vercel.json rewrites every unmatched path here so
+    // stray project files (e.g. src/*.ts mirrored into the static output) are
+    // never served, only this response.
+    case '404':
+      res.statusCode = 404;
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.end('Not Found');
+      return;
     default:
       return handleHealth(req, res, originFrom(req));
   }
