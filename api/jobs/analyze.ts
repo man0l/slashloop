@@ -16,7 +16,7 @@
 // the rest queued — the next dispatch or the next sweep continues.
 
 import { analyzeVideoWithDownload } from '../../src/analysis/index.js';
-import { claimNextJob, completeJob, failJob, reclaimStuckJobs, type AnalyzeJobPayload } from '../../src/lib/jobs.js';
+import { claimNextJob, completeJob, failJob, reclaimStuckJobs, enqueueAnalyzeJob, type AnalyzeJobPayload, type FetchJobPayload } from '../../src/lib/jobs.js';
 import { rescoreStaleTooFresh } from '../../src/scoring.js';
 import { CREDIT_COSTS, refundCredits } from '../../src/lib/credits.js';
 import { tagJobFailure } from '../../src/lib/gemini-errors.js';
@@ -195,7 +195,10 @@ export async function POST(request: Request): Promise<Response> {
 
     // fetch jobs: download + store the MP4 only, no Gemini. Cost is Apify spend
     // (asserted inside downloadTikTokVideo), not AI credits, so these rows
-    // carry no opId and reclaimStuckJobs never tries to refund them.
+    // carry no opId and reclaimStuckJobs never tries to refund them — unless
+    // the fetch was enqueued as part of an analysis pipeline, in which case
+    // the payload carries an opId for credit refund on failure, and an
+    // enqueueAnalysis block to chain an analyze job after successful store.
     if (job.kind === 'fetch') {
       try {
         const v = await db.video.findUnique({ where: { id: videoId }, select: { url: true, platform: true } });
@@ -203,11 +206,43 @@ export async function POST(request: Request): Promise<Response> {
         const { downloadAndStoreVideo } = await import('../../src/lib/media.js');
         const res = await downloadAndStoreVideo(job.workspaceId, videoId, v.url);
         if (!res) throw new Error('download/store returned no result');
+
+        // If this fetch was a precursor to analysis, enqueue the analyze job
+        // now that the video is stored. The analyze job will use the stored
+        // MP4 (URL mode for openrouter-video, or Phase 2.1 cache) instead of
+        // downloading from Apify again.
+        const fPayload = JSON.parse(job.payloadJson || '{}') as FetchJobPayload;
+        if (fPayload.enqueueAnalysis && job.opId) {
+          await enqueueAnalyzeJob({
+            workspaceId: job.workspaceId,
+            videoId,
+            payload: { forceBackend: fPayload.enqueueAnalysis.forceBackend },
+            opId: job.opId,
+          });
+        }
+
         await completeJob(job.id, null);
         processed.push({ jobId: job.id, videoId, ok: true });
       } catch (err) {
         const message = (err as Error).message;
         const { terminal } = await failJob(job.id, message);
+
+        // If the fetch had a pending analysis, refund the pre-debited credits
+        // since the analysis will never run. Only refund on terminal failure
+        // (attempts exhausted) — a retry may still succeed.
+        if (terminal) {
+          const fPayload = JSON.parse(job.payloadJson || '{}') as FetchJobPayload;
+          if (fPayload.opId) {
+            await refundCredits(
+              job.workspaceId,
+              CREDIT_COSTS.analyzeVideo,
+              'analyze_video',
+              `${fPayload.opId}:fetch_fail`,
+              'fetch_failed',
+            ).catch(e => console.warn(`[jobs] refund failed for fetch ${job.id}: ${(e as Error).message}`));
+          }
+        }
+
         console.warn(`[jobs] fetch job ${job.id} failed (terminal=${terminal}): ${message}`);
         processed.push({ jobId: job.id, videoId, ok: false, error: message });
       }
