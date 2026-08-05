@@ -131,12 +131,13 @@ export interface OpenRouterVideoCallOptions {
 /**
  * How long to wait for an OpenRouter video chat completion before timing out.
  *
- * The job worker has a 60s Vercel timeout, and the Apify download can consume
- * 15-25s. OpenRouter gets at most 30s to respond before we fall through to
- * Gemini; any longer and the entire pipeline times out with no fallback time
- * left.
+ * The job worker has a 60s Vercel timeout. With download+analysis now split
+ * into separate fetch and analyze jobs, the analyze job has the full budget
+ * for the AI call — no Apify download to subtract. 50s gives most models
+ * enough time while leaving ~10s for the rest of the pipeline (reading stored
+ * video, validating, persisting results).
  */
-const OPENROUTER_VIDEO_TIMEOUT_MS = 30_000;
+const OPENROUTER_VIDEO_TIMEOUT_MS = 50_000;
 
 /**
  * One chat completion with a VIDEO part (URL or base64 data URL) against an
