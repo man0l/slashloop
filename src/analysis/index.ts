@@ -186,12 +186,12 @@ async function recordFailure(workspaceId: string, backendId: string): Promise<nu
   return newCount;
 }
 
-async function recordSuccess(workspaceId: string, backendId: string): Promise<void> {
-  const map = await loadFailureMap(workspaceId);
-  if (map[backendId]?.count) {
-    delete map[backendId];
-    await saveFailureMap(workspaceId, map);
-  }
+async function recordSuccess(workspaceId: string): Promise<void> {
+  // Clear ALL failure counters — a successful analysis from any backend
+  // means the system is working. We should not keep paid backends
+  // (openrouter-video, gemini-native) in penalty box based on stale
+  // failures from a transient outage or a bug that has since been fixed.
+  await saveFailureMap(workspaceId, {});
 }
 
 async function getFailureCount(workspaceId: string, backendId: string): Promise<number> {
@@ -327,7 +327,7 @@ export async function analyzeVideo(
         : output.costCents;
 
       if (workspaceId !== 'unknown') {
-        await recordSuccess(workspaceId, backendId);
+        await recordSuccess(workspaceId);
       }
 
       // 6. Store in DB
