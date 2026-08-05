@@ -68,17 +68,57 @@ class OpenRouterTextClient implements TextModelClient {
 
 /**
  * The factory. Provider is an env decision, not per-call:
- *   OPENROUTER_API_KEY set  -> OpenRouter (same Gemini models, no Google quota)
- *   otherwise               -> Google directly
+ *   LLM_PROVIDER=google        -> Google directly (force)
+ *   LLM_PROVIDER=openrouter    -> OpenRouter (force)
+ *   otherwise (default)        -> OpenRouter when OPENROUTER_API_KEY is set,
+ *                                  else Google. OpenRouter is the default when
+ *                                  its key exists — it keeps the service
+ *                                  running on a billed key even when the
+ *                                  Google key is free-tier/quota'd (503/429).
  */
 export function createTextClient(): TextModelClient {
-  if (process.env.OPENROUTER_API_KEY) return new OpenRouterTextClient();
+  const force = process.env.LLM_PROVIDER?.trim().toLowerCase();
+  if (force === 'google') return new GoogleTextClient();
+  if (force === 'openrouter' || process.env.OPENROUTER_API_KEY) return new OpenRouterTextClient();
   return new GoogleTextClient();
 }
 
 /** Which provider the factory would pick right now (for labels/usage logs). */
 export function activeProvider(): 'google' | 'openrouter' {
   return createTextClient().provider;
+}
+
+// ---------------------------------------------------------------------------
+// Video routing (native video analysis over OpenRouter)
+//
+// When OPENROUTER_VIDEO_MODEL is set, the attempt chain inserts an
+// 'openrouter-video' backend between Google-native and text. "Mode" decides how
+// the video reaches the provider:
+//   url      -> send a signed Supabase storage URL (only providers that fetch
+//               URLs: qwen, bytedance-seed, stepfun) — no upload bloat
+//   base64   -> inline the local MP4 as a data URL (glm-5v/4.6v, minimax,
+//               xiaomi, and the URL-able ones too) — works for any
+//   auto     -> url when the video is stored in the media bucket, else base64
+//   off      -> never route video through OpenRouter
+//
+// The factory below is the single switch: change OPENROUTER_VIDEO_MODEL or
+// OPENROUTER_VIDEO_MODE to move between providers without touching code.
+// ---------------------------------------------------------------------------
+
+export type OpenRouterVideoMode = 'auto' | 'url' | 'base64' | 'off';
+
+/** Env-driven selection of the OpenRouter video backend. */
+export function openRouterVideoConfig(): { enabled: boolean; model: string; mode: OpenRouterVideoMode } {
+  const model = process.env.OPENROUTER_VIDEO_MODEL?.trim() || 'qwen/qwen3.5-flash-02-23';
+  const modeRaw = process.env.OPENROUTER_VIDEO_MODE?.trim().toLowerCase() || 'auto';
+  const mode: OpenRouterVideoMode = modeRaw === 'url' || modeRaw === 'base64' || modeRaw === 'off' ? modeRaw : 'auto';
+  const enabled = mode !== 'off' && !!process.env.OPENROUTER_API_KEY;
+  return { enabled, model, mode };
+}
+
+/** Convenience: is the openrouter-video backend active in this process? */
+export function openRouterVideoEnabled(): boolean {
+  return openRouterVideoConfig().enabled;
 }
 
 /** Facade: call the active provider, same signature as callGeminiText. */
@@ -90,5 +130,3 @@ export function callModelText(
 ): Promise<TextModelResult> {
   return createTextClient().call(systemPrompt, userMessage, model, options);
 }
-
-export { modelToOpenRouter } from './openrouter.js';

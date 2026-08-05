@@ -11,7 +11,7 @@ function cfg(over: Partial<AnalysisConfig>): AnalysisConfig {
 
 describe('planBackendAttempts', () => {
   test('default config: native(primary) -> native(fallback model) -> text', () => {
-    const attempts = planBackendAttempts(DEFAULT_CONFIG);
+    const attempts = planBackendAttempts(DEFAULT_CONFIG, { orVideoEnabled: false });
     expect(attempts).toEqual([
       { backendId: 'gemini-native' },
       { backendId: 'gemini-native', model: 'gemini-3.5-flash-lite', label: ' (fallback model)', fallback: true },
@@ -20,12 +20,12 @@ describe('planBackendAttempts', () => {
   });
 
   test('no model fallback when fallbackModel equals geminiModel', () => {
-    const attempts = planBackendAttempts(cfg({ geminiModel: 'gemini-3.5-flash', fallbackModel: 'gemini-3.5-flash' }));
+    const attempts = planBackendAttempts(cfg({ geminiModel: 'gemini-3.5-flash', fallbackModel: 'gemini-3.5-flash' }), { orVideoEnabled: false });
     expect(attempts.map(a => a.backendId)).toEqual(['gemini-native', 'gemini-text']);
   });
 
   test('no model fallback when fallbackModel is unset (legacy config rows)', () => {
-    const attempts = planBackendAttempts(cfg({ fallbackModel: undefined }));
+    const attempts = planBackendAttempts(cfg({ fallbackModel: undefined }), { orVideoEnabled: false });
     expect(attempts.map(a => a.backendId)).toEqual(['gemini-native', 'gemini-text']);
   });
 
@@ -45,12 +45,28 @@ describe('planBackendAttempts', () => {
   });
 
   test('flipToFallback (2 consecutive failures) goes straight to the configured fallback', () => {
-    const attempts = planBackendAttempts(DEFAULT_CONFIG, { flipToFallback: true });
+    const attempts = planBackendAttempts(DEFAULT_CONFIG, { flipToFallback: true, orVideoEnabled: true });
+    expect(attempts).toEqual([{ backendId: 'gemini-text' }]);
+  });
+
+  test('openrouter-video is slotted between native and text when enabled', () => {
+    const attempts = planBackendAttempts(DEFAULT_CONFIG, { orVideoEnabled: true });
+    expect(attempts.map(a => a.backendId)).toEqual(['gemini-native', 'gemini-native', 'openrouter-video', 'gemini-text']);
+    expect(attempts[2]).toMatchObject({ backendId: 'openrouter-video', fallback: true });
+  });
+
+  test('openrouter-video is omitted when disabled', () => {
+    const attempts = planBackendAttempts(DEFAULT_CONFIG, { orVideoEnabled: false });
+    expect(attempts.map(a => a.backendId)).toEqual(['gemini-native', 'gemini-native', 'gemini-text']);
+  });
+
+  test('openrouter-video is omitted for text-configured workspaces', () => {
+    const attempts = planBackendAttempts(cfg({ backend: 'gemini-text', fallback: 'gemini-text' }), { orVideoEnabled: true });
     expect(attempts).toEqual([{ backendId: 'gemini-text' }]);
   });
 
   test('no duplicate when fallback backend equals native (model-fallback only)', () => {
-    const attempts = planBackendAttempts(cfg({ fallback: 'gemini-native' }));
+    const attempts = planBackendAttempts(cfg({ fallback: 'gemini-native' }), { orVideoEnabled: false });
     // primary native + model fallback; the 'gemini-native' fallback equals the
     // primary so it must not be repeated; text is not configured.
     expect(attempts.map(a => a.backendId + (a.model ? ':' + a.model : ''))).toEqual([

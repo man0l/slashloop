@@ -1,7 +1,7 @@
 // Unit tests for the OpenRouter adapter — pure parts (model mapping, content
 // building, error classification), no network. `bun test`.
 import { describe, expect, test } from 'bun:test';
-import { modelToOpenRouter, buildUserContent, classifyOpenRouterError } from './openrouter.js';
+import { modelToOpenRouter, buildUserContent, classifyOpenRouterError, extractFirstJson } from './openrouter.js';
 import { tagJobFailure, parseJobLastError } from './gemini-errors.js';
 
 describe('modelToOpenRouter', () => {
@@ -15,12 +15,38 @@ describe('modelToOpenRouter', () => {
     expect(modelToOpenRouter('gemini-2.5-pro')).toBe('google/gemini-2.5-pro');
   });
 
-  test('passes through already-qualified ids', () => {
+  test('passes through any provider-qualified id (google/, qwen/, z-ai/, ...)', () => {
     expect(modelToOpenRouter('google/gemini-3.5-flash')).toBe('google/gemini-3.5-flash');
+    expect(modelToOpenRouter('qwen/qwen3.5-flash-02-23')).toBe('qwen/qwen3.5-flash-02-23');
+    expect(modelToOpenRouter('z-ai/glm-5v-turbo')).toBe('z-ai/glm-5v-turbo');
+    expect(modelToOpenRouter('bytedance-seed/seed-1.6-flash')).toBe('bytedance-seed/seed-1.6-flash');
   });
 
-  test('throws for an unmapped model', () => {
+  test('throws for an unmapped bare model id', () => {
     expect(() => modelToOpenRouter('gpt-4o')).toThrow(/No OpenRouter model mapping/);
+  });
+});
+
+describe('extractFirstJson', () => {
+  test('plain JSON', () => {
+    expect(extractFirstJson('{"a":1}')).toEqual({ a: 1 });
+  });
+
+  test('strips a "Thinking process" preamble from reasoning models', () => {
+    const raw = 'Thinking Process:\n1. The user wants JSON.\n\n{"scene":"a forest","characters":"Mole"}';
+    expect(extractFirstJson(raw)).toEqual({ scene: 'a forest', characters: 'Mole' });
+  });
+
+  test('strips code fences', () => {
+    expect(extractFirstJson('```json\n{"a":1}\n```')).toEqual({ a: 1 });
+  });
+
+  test('extracts the first object out of prose wrap', () => {
+    expect(extractFirstJson('Here you go: {"on_screen":"hello"} — hope that helps')).toEqual({ on_screen: 'hello' });
+  });
+
+  test('null when nothing parses', () => {
+    expect(extractFirstJson('no json here')).toBeNull();
   });
 });
 
