@@ -129,6 +129,16 @@ export interface OpenRouterVideoCallOptions {
 }
 
 /**
+ * How long to wait for an OpenRouter video chat completion before timing out.
+ *
+ * The job worker has a 60s Vercel timeout, and the Apify download can consume
+ * 15-25s. OpenRouter gets at most 30s to respond before we fall through to
+ * Gemini; any longer and the entire pipeline times out with no fallback time
+ * left.
+ */
+const OPENROUTER_VIDEO_TIMEOUT_MS = 30_000;
+
+/**
  * One chat completion with a VIDEO part (URL or base64 data URL) against an
  * OpenRouter model that supports video input. Returns raw text + token counts;
  * the caller validates it against the analysis schema. JSON mode is requested
@@ -152,6 +162,7 @@ export async function callOpenRouterVideo(
       Authorization: `Bearer ${apiKey}`,
       ...(process.env.PUBLIC_URL ? { 'HTTP-Referer': process.env.PUBLIC_URL, 'X-Title': 'slashloop' } : {}),
     },
+    signal: AbortSignal.timeout(OPENROUTER_VIDEO_TIMEOUT_MS),
     body: JSON.stringify({
       model: modelToOpenRouter(model),
       messages: [
