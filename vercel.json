@@ -51,8 +51,16 @@
       "dest": "/api/sources?action=suggest"
     },
     {
+      "src": "^/api/sources$",
+      "dest": "/api/sources"
+    },
+    {
       "src": "^/api/sources(?:/([^/]+?))$",
       "dest": "/api/sources?id=$1"
+    },
+    {
+      "src": "^/api/workspaces$",
+      "dest": "/api/workspaces"
     },
     {
       "src": "^/api/workspaces(?:/([^/]+?))$",
