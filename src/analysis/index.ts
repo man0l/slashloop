@@ -1,9 +1,10 @@
 // ---------------------------------------------------------------------------
 // Analysis Module — Public API
 //
-// One interface, three backends, same Zod schema out.
-// Switching is a config flag on the workspace.
-// Fallback is automatic and logged.
+// One interface, two backends (gemini-native video + gemini-text fallback),
+// same Zod schema out. Backend selection is a config flag on the workspace;
+// model fallback (native on a second model when the primary 503s) is automatic
+// and logged.
 // Every analysis records backend + model + cost_cents.
 // Failure counts are persisted on Workspace.failureCountsJson so the fallback
 // state survives server restarts (this matters for MCP servers spawned by
@@ -25,6 +26,7 @@ import { GeminiTextAnalyzer } from './gemini-text.js';
 import { loadAnalysisConfig, updateAnalysisConfig } from './config.js';
 import { basisToConfidence, getCostCents, type AnalysisConfig, type AnalysisContext, type AnalysisResult, type VideoAnalyzer, DEFAULT_CONFIG } from './types.js';
 import { resolveThumbUrl } from '../lib/media.js';
+import { classifyGeminiError } from '../lib/gemini-errors.js';
 
 /**
  * A Gemini Files handle for this video that has not expired yet (Phase 2.2).
@@ -48,12 +50,63 @@ function liveGeminiFile(video: {
 // Factory — create the right backend from config
 // ---------------------------------------------------------------------------
 
-function createBackend(id: string, config: AnalysisConfig): VideoAnalyzer {
+function createBackend(id: string, config: AnalysisConfig, model?: string): VideoAnalyzer {
   switch (id) {
-    case 'gemini-native': return new GeminiNativeAnalyzer(config);
+    case 'gemini-native': return new GeminiNativeAnalyzer(config, model ? { model } : undefined);
     case 'gemini-text': return new GeminiTextAnalyzer(config);
     default: throw new Error(`Unknown analysis backend: ${id}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Backend/model attempt planning
+//
+// Growth from a two-element chain to three:
+//   1. primary backend, primary model  (gemini-native + geminiModel)
+//   2. same-backend model fallback     (gemini-native + fallbackModel) — the
+//      paid-API survival play: when gemini-3.5-flash 503s, a different video
+//      model bucket (default gemini-3.5-flash-lite) can still do shot-level
+//      analysis instead of dropping straight to a camera-blind text call.
+//   3. configured backend fallback     (usually gemini-text)
+//
+// Pure and unit-tested (src/analysis/index.test.ts) so pricing/ordering holds
+// independent of the DB/network. The runtime loop additionally skips (2) when
+// the primary failure was deterministic (see the gate in analyzeVideo below).
+// ---------------------------------------------------------------------------
+
+export interface BackendAttempt {
+  /** Analyzer to run: 'gemini-native' | 'gemini-text'. */
+  backendId: string;
+  /** Set only on the native model-fallback attempt. */
+  model?: string;
+  /** Suffix for the stored Analysis.backend string, e.g. ' (fallback model)'. */
+  label?: string;
+  /** True for any non-primary attempt (logging + surface tagging). */
+  fallback?: boolean;
+}
+
+export function planBackendAttempts(
+  config: AnalysisConfig,
+  opts?: { forceBackend?: string; flipToFallback?: boolean },
+): BackendAttempt[] {
+  // After MAX_FAILURES consecutive failures the primary is swapped for the
+  // configured fallback for an hour (see analyzeVideo) — go straight there.
+  const primaryBackend = opts?.flipToFallback ? config.fallback : (opts?.forceBackend ?? config.backend);
+  const fallbackBackend = config.fallback;
+  const attempts: BackendAttempt[] = [{ backendId: primaryBackend }];
+
+  const fallbackModel = config.fallbackModel && config.fallbackModel !== config.geminiModel
+    ? config.fallbackModel
+    : undefined;
+
+  if (primaryBackend === 'gemini-native' && fallbackModel) {
+    attempts.push({ backendId: 'gemini-native', model: fallbackModel, label: ' (fallback model)', fallback: true });
+  }
+  if (fallbackBackend && fallbackBackend !== primaryBackend
+    && !attempts.some(a => a.backendId === fallbackBackend && !a.model)) {
+    attempts.push({ backendId: fallbackBackend, label: ' (fallback)', fallback: true });
+  }
+  return attempts;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,23 +231,33 @@ export async function analyzeVideo(
 
   // 4. Determine backend chain (DB-backed failure check)
   const primaryFailureCount = await getFailureCount(workspaceId, config.backend);
-  let primaryBackend = options?.forceBackend ?? config.backend;
+  const primaryBackend = options?.forceBackend ?? config.backend;
   const fallbackBackend = config.fallback;
+  const flipToFallback = primaryFailureCount >= MAX_FAILURES_BEFORE_FALLBACK && primaryBackend !== fallbackBackend;
 
-  if (primaryFailureCount >= MAX_FAILURES_BEFORE_FALLBACK && primaryBackend !== fallbackBackend) {
+  if (flipToFallback) {
     console.warn(`[analysis] ${primaryBackend} has ${primaryFailureCount} consecutive failures (persisted), using fallback: ${fallbackBackend}`);
-    primaryBackend = fallbackBackend;
   }
 
-  // 5. Try primary, then fallback
-  const backendsToTry = [primaryBackend];
-  if (fallbackBackend && fallbackBackend !== primaryBackend) {
-    backendsToTry.push(fallbackBackend);
-  }
+  // 5. Try primary -> same-capability model fallback -> configured fallback.
+  const attempts = planBackendAttempts(config, { forceBackend: options?.forceBackend, flipToFallback });
 
   let lastError: Error | null = null;
+  // The model fallback is worth trying only after a retryable failure (5xx /
+  // 429 / timeout — a capacity or transient problem a different model bucket
+  // can sidestep). A deterministic failure (bad key, malformed input, schema
+  // rejection) would recur identically on the second model, so skip it rather
+  // than burn paid tokens; the text fallback still gets its chance.
+  let lastErrorRetryable = true;
 
-  for (const backendId of backendsToTry) {
+  for (const attempt of attempts) {
+    const { backendId, model } = attempt;
+
+    if (model && lastError && !lastErrorRetryable) {
+      console.log(`[analysis] skipping model fallback (${model}) — previous ${attempt.backendId} error is deterministic, not worth a second paid call`);
+      continue;
+    }
+
     // gemini-native needs the video to exist SOMEWHERE it can reach: either a
     // local file to upload, or a live Files API handle from a previous run
     // (Phase 2.2), in which case Gemini already holds it and no local copy is
@@ -205,11 +268,11 @@ export async function analyzeVideo(
       continue;
     }
 
-    const backend = createBackend(backendId, config);
-    const isFallback = backendId !== (options?.forceBackend ?? config.backend);
+    const backend = createBackend(backendId, config, model);
+    const isFallback = attempt.fallback === true;
 
     try {
-      console.log(`[analysis] Running ${backend.name} on video ${videoId}${isFallback ? ' (FALLBACK)' : ''}${batch ? ' (BATCH)' : ''}...`);
+      console.log(`[analysis] Running ${backend.name}${attempt.label ?? ''} on video ${videoId}${model ? ` (model ${model})` : ''}${isFallback ? ' (FALLBACK)' : ''}${batch ? ' (BATCH)' : ''}...`);
       const output = await backend.analyze(ctx);
 
       // Validate (should already be validated inside the backend, but double-check)
@@ -254,7 +317,7 @@ export async function analyzeVideo(
           schemaVersion: 'v3',
           analysisJson: JSON.stringify(clamped),
           analysisBasis: output.analysisBasis,
-          backend: output.backend + (isFallback ? ' (fallback)' : '') + (batch ? ' (batch)' : ''),
+          backend: output.backend + (attempt.label ?? '') + (batch ? ' (batch)' : ''),
           model: output.model,
           costCents: Math.round(costCents * 100) / 100,
         },
@@ -281,25 +344,21 @@ export async function analyzeVideo(
         analysis: validated.data,
         analysisBasis: output.analysisBasis,
         confidence: basisToConfidence(output.analysisBasis),
-        backend: output.backend + (isFallback ? ' (fallback)' : '') + (batch ? ' (batch)' : ''),
+        backend: output.backend + (attempt.label ?? '') + (batch ? ' (batch)' : ''),
         model: output.model,
         costCents,
       };
 
     } catch (err) {
       lastError = err as Error;
+      lastErrorRetryable = classifyGeminiError(err).retryable;
       if (workspaceId !== 'unknown') {
         const newCount = await recordFailure(workspaceId, backendId);
         console.error(`[analysis] ${backend.name} failed for video ${videoId}: ${(err as Error).message} (failure count for ${backendId}: ${newCount})`);
       } else {
         console.error(`[analysis] ${backend.name} failed for video ${videoId}:`, (err as Error).message);
       }
-
-      if (isFallback) {
-        // We're already on the fallback and it failed — give up
-        break;
-      }
-      // Try next backend in chain
+      // Try next attempt in the chain (primary -> model fallback -> fallback).
       continue;
     }
   }
@@ -307,7 +366,7 @@ export async function analyzeVideo(
   throw new Error(
     `All analysis backends failed for video ${videoId}. ` +
     `Last error: ${lastError?.message}. ` +
-    `Backends tried: [${backendsToTry.join(', ')}]`,
+    `Backends tried: [${attempts.map(a => a.backendId + (a.model ? `:${a.model}` : '')).join(', ')}]`,
   );
 }
 

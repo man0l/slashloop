@@ -16,6 +16,7 @@ export async function loadAnalysisConfig(workspaceId: string): Promise<AnalysisC
       backend: stored.backend ?? DEFAULT_CONFIG.backend,
       fallback: stored.fallback ?? DEFAULT_CONFIG.fallback,
       geminiModel: stored.geminiModel ?? DEFAULT_CONFIG.geminiModel,
+      fallbackModel: stored.fallbackModel ?? DEFAULT_CONFIG.fallbackModel,
     };
   } catch {
     return { ...DEFAULT_CONFIG };
