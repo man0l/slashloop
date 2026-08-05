@@ -20,7 +20,7 @@ import { VideoAnalysisDataSchema } from './schema.js';
 import type { VideoAnalyzer, AnalysisContext, AnalysisOutput } from './types.js';
 import { getCostCents } from './types.js';
 import type { AnalysisConfig } from './types.js';
-import { callGeminiText } from '../lib/gemini.js';
+import { callModelText, activeProvider } from '../lib/llm.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPT_PATH = resolve(__dirname, '../../prompts/gemini-text.v1.md');
@@ -152,7 +152,7 @@ export class GeminiTextAnalyzer implements VideoAnalyzer {
 
     console.log(`[gemini-text] Analyzing ${ctx.videoId} with ${this.model} (basis: ${analysisBasis})${ctx.batch ? ' (BATCH)' : ''}...`);
 
-    const result = await callGeminiText(template, userMessage, this.model,
+    const result = await callModelText(template, userMessage, this.model,
       cover ? { images: [cover] } : undefined);
 
     const validated = VideoAnalysisDataSchema.safeParse(result.parsed);
@@ -169,7 +169,9 @@ export class GeminiTextAnalyzer implements VideoAnalyzer {
       backend: this.backendId,
       model: this.model,
       costCents,
-      provider: this.provider,
+      // 'google' or 'openrouter' — whichever provider actually served the call
+      // (the factory picks by env; authed via the active provider's key).
+      provider: activeProvider(),
     };
   }
 }

@@ -23,7 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import type { Workspace } from '@prisma/client';
 import { db } from '../db.js';
-import { callGeminiText } from './gemini.js';
+import { callModelText } from './llm.js';
 import { scrapeSource } from './apify.js';
 import { getApifyCapStatus } from './spend-cap.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from './credits.js';
@@ -151,7 +151,7 @@ export async function seedSourceCandidates(workspace: Workspace): Promise<SeedSo
 
   let rawCandidates: z.infer<typeof CANDIDATE_SCHEMA>;
   try {
-    const { parsed } = await callGeminiText(SUGGEST_SYSTEM, userMessage);
+    const { parsed } = await callModelText(SUGGEST_SYSTEM, userMessage);
     const result = CANDIDATE_SCHEMA.safeParse(parsed);
     if (!result.success) throw new Error('Gemini returned candidates in an unexpected shape');
     rawCandidates = result.data;

@@ -7,7 +7,7 @@ import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { BriefDataSchema, type BriefData } from './schema.js';
 import type { BriefResult } from './types.js';
-import { callGeminiText } from '../lib/gemini.js';
+import { callModelText } from '../lib/llm.js';
 
 const BRIEF_SYSTEM = `You are Gemini, a UGC/ad creative director who turns viral video analyses into actionable creative briefs. Given an analysis, produce a brief a UGC creator can follow.
 
@@ -38,7 +38,7 @@ export async function generateBrief(
 
   let briefData!: BriefData;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const parsed = await callGeminiText(BRIEF_SYSTEM, userMessage, model);
+    const parsed = await callModelText(BRIEF_SYSTEM, userMessage, model);
     const result = BriefDataSchema.safeParse(parsed);
     if (result.success) { briefData = result.data; break; }
     if (attempt === 0) continue;
