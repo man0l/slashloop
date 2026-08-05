@@ -2,16 +2,13 @@
 // MCP Tools: Video Detail + AI Analysis
 // ---------------------------------------------------------------------------
 
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
-import { analyzeVideoWithDownload } from '../analysis/index.js';
-import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../lib/credits.js';
+import { analyzeVideoForWorkspace } from '../lib/video-service.js';
 import { resolveThumbUrl, signedMediaUrl, frameUrlAt } from '../lib/media.js';
-import { enqueueAnalyzeJob, dispatchWorker, outstandingJobForVideo } from '../lib/jobs.js';
+import { outstandingJobForVideo } from '../lib/jobs.js';
 import { withNextSteps } from '../lib/next-steps.js';
-import { loadAnalysisConfig } from '../analysis/config.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerVideoTools(server: McpServer) {
@@ -21,8 +18,12 @@ export function registerVideoTools(server: McpServer) {
     'Get full details of a video including stats, score, analysis, and available actions.',
     { videoId: z.string() },
     async ({ videoId }) => {
-      const video = await db.video.findUnique({
-        where: { id: videoId },
+      const workspace = await requireWorkspace();
+      // Scoped to the caller's own workspace — a video id is a UUID (not
+      // practically guessable), but nothing should ever return another
+      // workspace's video regardless.
+      const video = await db.video.findFirst({
+        where: { id: videoId, source: { workspaceId: workspace.id } },
         include: {
           score: true,
           source: { select: { id: true, query: true, platform: true, nicheTag: true, workspaceId: true } },
@@ -146,23 +147,18 @@ export function registerVideoTools(server: McpServer) {
     },
     async ({ videoId, forceBackend }) => {
       const workspace = await requireWorkspace();
+      const outcome = await analyzeVideoForWorkspace(workspace, videoId, { forceBackend });
 
-      // Scope to the caller's own workspace before spending their credits
-      // on someone else's video.
-      const owned = await db.video.findFirst({
-        where: { id: videoId, source: { workspaceId: workspace.id } },
-        select: { id: true },
-      });
-      if (!owned) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Video not found' }) }], isError: true };
-
-      const opId = randomUUID();
-      try {
-        await debitCredits(workspace.id, CREDIT_COSTS.analyzeVideo, 'analyze_video', `${opId}:preauth`);
-      } catch (err) {
-        if (err instanceof InsufficientCreditsError) {
-          return { content: [{ type: 'text' as const, text: JSON.stringify(insufficientCreditsPayload(err), null, 2) }], isError: true };
-        }
-        throw err;
+      if (!outcome.ok) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            error: 'Analysis failed',
+            message: outcome.error,
+            creditsCharged: outcome.creditsCharged,
+            creditsRemaining: outcome.creditsRemaining,
+          }, null, 2) }],
+          isError: true,
+        };
       }
 
       // gemini-native cannot finish inside this request: Apify download, Gemini
@@ -175,37 +171,26 @@ export function registerVideoTools(server: McpServer) {
       // gemini-text stays inline. It is a single text call that completes in
       // seconds, and routing it through the queue would make the one path that
       // currently works slower and require polling for no reason.
-      const effectiveBackend = forceBackend
-        ?? (await loadAnalysisConfig(workspace.id)).backend;
-
-      if (effectiveBackend === 'gemini-native') {
-        const job = await enqueueAnalyzeJob({
-          workspaceId: workspace.id,
-          videoId,
-          payload: { forceBackend },
-          opId,
-        });
-        const dispatch = await dispatchWorker();
-        const balance = await creditBalance(workspace.id);
+      if (outcome.queued) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
             message: 'Analysis queued',
-            jobId: job.id,
+            jobId: outcome.job.id,
             videoId,
-            status: job.status,
-            backend: effectiveBackend,
+            status: outcome.job.status,
+            backend: outcome.backend,
             // Surfaced because it changes what to expect: a dropped dispatch
             // still runs, just on the next sweep instead of within seconds.
-            dispatched: dispatch.dispatched,
-            dispatchNote: dispatch.dispatched
+            dispatched: outcome.dispatched,
+            dispatchNote: outcome.dispatched
               ? 'Worker invoked. Wait with await_job rather than polling get_video in a loop.'
-              : `Worker not reached (${dispatch.reason}); the job stays queued and the sweeper will run it.`,
-            creditsCharged: CREDIT_COSTS.analyzeVideo,
-            creditsRemaining: balance.total,
+              : `Worker not reached (${outcome.dispatchReason}); the job stays queued and the sweeper will run it.`,
+            creditsCharged: outcome.creditsCharged,
+            creditsRemaining: outcome.creditsRemaining,
           }, [{
             label: 'Wait for the analysis',
             tool: 'await_job',
-            args: { jobId: job.id },
+            args: { jobId: outcome.job.id },
             why: 'Free. Blocks server-side ~25s per call and returns the moment the job is done or failed. '
               + 'Keep calling only while shouldKeepPolling is true. This replaces polling get_video in a loop, '
               + 'which burns a round-trip per check and has no stop condition.',
@@ -213,35 +198,21 @@ export function registerVideoTools(server: McpServer) {
         };
       }
 
-      try {
-        const result = await analyzeVideoWithDownload(videoId, { forceBackend });
-        const balance = await creditBalance(workspace.id);
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({
-            message: 'Analysis complete',
-            id: result.id,
-            analysisBasis: result.analysisBasis,
-            confidence: result.confidence,
-            backend: result.backend,
-            model: result.model,
-            costCents: result.costCents,
-            analysis: result.analysis,
-            creditsCharged: CREDIT_COSTS.analyzeVideo,
-            creditsRemaining: balance.total,
-          }, null, 2) }],
-        };
-      } catch (err) {
-        const balance = await refundCredits(workspace.id, CREDIT_COSTS.analyzeVideo, 'analyze_video', `${opId}:fail`, 'call_failed');
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({
-            error: 'Analysis failed',
-            message: (err as Error).message,
-            creditsCharged: 0,
-            creditsRemaining: balance.total,
-          }) }],
-          isError: true,
-        };
-      }
+      const { result } = outcome;
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          message: 'Analysis complete',
+          id: result.id,
+          analysisBasis: result.analysisBasis,
+          confidence: result.confidence,
+          backend: result.backend,
+          model: result.model,
+          costCents: result.costCents,
+          analysis: result.analysis,
+          creditsCharged: outcome.creditsCharged,
+          creditsRemaining: outcome.creditsRemaining,
+        }, null, 2) }],
+      };
     });
 
   // ---- get_video_transcript ----

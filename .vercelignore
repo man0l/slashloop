@@ -4,6 +4,7 @@ prisma/*.db
 .env.*
 .agents
 .claude
+.zcode
 .mcp.json
 
 # Superseded — delete the file and this line together.

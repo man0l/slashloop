@@ -19,6 +19,7 @@ import { analyzeVideoWithDownload } from '../../src/analysis/index.js';
 import { claimNextJob, completeJob, failJob, reclaimStuckJobs, type AnalyzeJobPayload } from '../../src/lib/jobs.js';
 import { rescoreStaleTooFresh } from '../../src/scoring.js';
 import { CREDIT_COSTS, refundCredits } from '../../src/lib/credits.js';
+import { tagJobFailure } from '../../src/lib/gemini-errors.js';
 import { db } from '../../src/db.js';
 
 /**
@@ -228,7 +229,10 @@ export async function POST(request: Request): Promise<Response> {
       await completeJob(job.id, result.id ?? null);
       processed.push({ jobId: job.id, videoId, ok: true });
     } catch (err) {
-      const message = (err as Error).message;
+      // Tag the failure with its category ([gemini_quota] etc.) so the detail
+      // endpoint can tell the gallery "Gemini is out of credits" from "this
+      // video can't be analyzed" — see src/lib/gemini-errors.ts.
+      const message = tagJobFailure(err);
       const { terminal } = await failJob(job.id, message);
 
       // The caller was debited at enqueue time, so the refund is owed here —

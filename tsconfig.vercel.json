@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "declaration": false,
+    "outDir": "dist"
+  },
+  "include": [
+    "src/**/*.ts",
+    "api/videos.ts",
+    "api/jobs/analyze.ts"
+  ],
+  "exclude": ["node_modules", "dist", "src/seed.ts", "src/scripts/**"]
+}

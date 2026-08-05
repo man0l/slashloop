@@ -11,7 +11,10 @@
     "preview:gallery": "bun src/scripts/preview_gallery.ts",
     "db:push": "prisma db push --schema prisma/schema.prisma",
     "db:generate": "prisma generate --schema prisma/schema.prisma",
-    "postinstall": "prisma generate --schema prisma/schema.prisma || true"
+    "postinstall": "prisma generate --schema prisma/schema.prisma || true",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit -p tsconfig.json",
+    "typecheck:vercel": "bunx tsc --noEmit -p tsconfig.vercel.json"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.5",
