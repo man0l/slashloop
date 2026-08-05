@@ -41,7 +41,6 @@ server.log
 .agents/skills/supabase-postgres-best-practices/
 .claude/skills/supabase/
 .claude/skills/supabase-postgres-best-practices/
-
 # Third-party Stripe agent skills (fetched via `npx skills add`, not project source)
 .agents/skills/connect-recommend/
 .agents/skills/stripe-best-practices/
@@ -65,3 +64,7 @@ _rescore*
 
 # Tooling caches
 .playwright-mcp/
+
+# All env files (fallback catch-all beyond the specific .env variants above)
+.env*
+
