@@ -62,7 +62,7 @@ export interface MediaJobRow {
 }
 
 export interface AnalyzeJobPayload {
-  forceBackend?: 'gemini-native' | 'gemini-text';
+  forceBackend?: 'gemini-native' | 'gemini-text' | 'openrouter-video';
 }
 
 /**

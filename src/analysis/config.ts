@@ -5,6 +5,7 @@
 import { db } from '../db.js';
 import type { AnalysisConfig } from './types.js';
 import { DEFAULT_CONFIG } from './types.js';
+import { openRouterVideoEnabled } from '../lib/llm.js';
 
 export async function loadAnalysisConfig(workspaceId: string): Promise<AnalysisConfig> {
   const workspace = await db.workspace.findUnique({ where: { id: workspaceId } });
@@ -13,13 +14,13 @@ export async function loadAnalysisConfig(workspaceId: string): Promise<AnalysisC
   try {
     const stored = JSON.parse(workspace.analysisConfigJson) as Partial<AnalysisConfig>;
     return {
-      backend: stored.backend ?? DEFAULT_CONFIG.backend,
+      backend: stored.backend ?? (openRouterVideoEnabled() ? 'openrouter-video' : DEFAULT_CONFIG.backend),
       fallback: stored.fallback ?? DEFAULT_CONFIG.fallback,
       geminiModel: stored.geminiModel ?? DEFAULT_CONFIG.geminiModel,
       fallbackModel: stored.fallbackModel ?? DEFAULT_CONFIG.fallbackModel,
     };
   } catch {
-    return { ...DEFAULT_CONFIG };
+    return { ...DEFAULT_CONFIG, backend: openRouterVideoEnabled() ? 'openrouter-video' : DEFAULT_CONFIG.backend };
   }
 }
 

@@ -102,8 +102,8 @@ export interface VideoAnalyzer {
 // ---- Workspace analysis config ----
 
 export interface AnalysisConfig {
-  backend: 'gemini-native' | 'gemini-text';
-  fallback: 'gemini-native' | 'gemini-text';
+  backend: 'gemini-native' | 'gemini-text' | 'openrouter-video';
+  fallback: 'gemini-native' | 'gemini-text' | 'openrouter-video';
   /** Gemini model for both native video and text-only fallback */
   geminiModel:
     | 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-2.5-pro'

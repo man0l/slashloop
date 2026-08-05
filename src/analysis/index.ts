@@ -97,26 +97,43 @@ export function planBackendAttempts(
   const primaryBackend = opts?.flipToFallback ? config.fallback : (opts?.forceBackend ?? config.backend);
   const fallbackBackend = config.fallback;
   const attempts: BackendAttempt[] = [{ backendId: primaryBackend }];
+  const orVideo = opts?.orVideoEnabled ?? openRouterVideoEnabled();
 
   const fallbackModel = config.fallbackModel && config.fallbackModel !== config.geminiModel
     ? config.fallbackModel
     : undefined;
 
-  if (primaryBackend === 'gemini-native' && fallbackModel) {
-    attempts.push({ backendId: 'gemini-native', model: fallbackModel, label: ' (fallback model)', fallback: true });
-  }
-
-  // OpenRouter video (model via OPENROUTER_VIDEO_MODEL) sits between the Google
-  // native attempts and the text fallback — a shot-level analysis on a billed
-  // OpenRouter key when Google can't, before we drop to camera-blind text.
-  const orVideo = opts?.orVideoEnabled ?? openRouterVideoEnabled();
-  if (primaryBackend === 'gemini-native' && orVideo && !attempts.some(a => a.backendId === 'openrouter-video')) {
-    attempts.push({ backendId: 'openrouter-video', label: ' (fallback)', fallback: true });
-  }
-
-  if (fallbackBackend && fallbackBackend !== primaryBackend
-    && !attempts.some(a => a.backendId === fallbackBackend && !a.model)) {
-    attempts.push({ backendId: fallbackBackend, label: ' (fallback)', fallback: true });
+  if (primaryBackend === 'openrouter-video') {
+    // OpenRouter is primary: try gemini-native as a model fallback (same
+    // video-level capability, different provider), then the text fallback.
+    if (fallbackModel) {
+      attempts.push({ backendId: 'gemini-native', model: fallbackModel, label: ' (fallback model)', fallback: true });
+    }
+    if (fallbackBackend && fallbackBackend !== primaryBackend
+      && !attempts.some(a => a.backendId === fallbackBackend && !a.model)) {
+      attempts.push({ backendId: fallbackBackend, label: ' (fallback)', fallback: true });
+    }
+  } else if (primaryBackend === 'gemini-native') {
+    // Gemini-native is primary (user explicitly chose it via config or env).
+    if (fallbackModel) {
+      attempts.push({ backendId: 'gemini-native', model: fallbackModel, label: ' (fallback model)', fallback: true });
+    }
+    // OpenRouter video (model via OPENROUTER_VIDEO_MODEL) sits between the Google
+    // native attempts and the text fallback — a shot-level analysis on a billed
+    // OpenRouter key when Google can't, before we drop to camera-blind text.
+    if (orVideo && !attempts.some(a => a.backendId === 'openrouter-video')) {
+      attempts.push({ backendId: 'openrouter-video', label: ' (fallback)', fallback: true });
+    }
+    if (fallbackBackend && fallbackBackend !== primaryBackend
+      && !attempts.some(a => a.backendId === fallbackBackend && !a.model)) {
+      attempts.push({ backendId: fallbackBackend, label: ' (fallback)', fallback: true });
+    }
+  } else {
+    // gemini-text (or other) — single attempt, then the configured fallback if different.
+    if (fallbackBackend && fallbackBackend !== primaryBackend
+      && !attempts.some(a => a.backendId === fallbackBackend && !a.model)) {
+      attempts.push({ backendId: fallbackBackend, label: ' (fallback)', fallback: true });
+    }
   }
   return attempts;
 }
@@ -305,8 +322,8 @@ export async function analyzeVideo(
       }
 
       // Recompute cost using the batch table if requested
-      const costCents = batch
-        ? getCostCents(backendId as 'gemini-native' | 'gemini-text', output.model, true)
+      const costCents = batch && (backendId === 'gemini-native' || backendId === 'gemini-text')
+        ? getCostCents(backendId, output.model, true)
         : output.costCents;
 
       if (workspaceId !== 'unknown') {

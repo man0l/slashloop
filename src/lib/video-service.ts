@@ -45,7 +45,7 @@ export type AnalyzeVideoOutcome =
 export async function analyzeVideoForWorkspace(
   workspace: Workspace,
   videoId: string,
-  opts?: { forceBackend?: 'gemini-native' | 'gemini-text' },
+  opts?: { forceBackend?: 'gemini-native' | 'gemini-text' | 'openrouter-video' },
 ): Promise<AnalyzeVideoOutcome> {
   const owned = await db.video.findFirst({ where: { id: videoId, source: { workspaceId: workspace.id } }, select: { id: true } });
   if (!owned) return { ok: false, errorCode: 'not_found', error: 'Video not found.', creditsCharged: 0, creditsRemaining: (await creditBalance(workspace.id)).total };

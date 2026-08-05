@@ -58,11 +58,11 @@ async function main() {
   const capped = engFiltered.slice(0, rules.dailyLimit);
 
   const config = await loadAnalysisConfig(workspace.id);
-  const perVideoCost = getCostCents(
-    config.backend as 'gemini-native' | 'gemini-text',
-    config.geminiModel,
-    true,
-  );
+  // openrouter-video is billed per-token via OpenRouter's own meter, not
+  // the credit ledger — the estimate is 0 for that backend.
+  const perVideoCost = config.backend === 'openrouter-video'
+    ? 0
+    : getCostCents(config.backend, config.geminiModel, true);
   console.log(`[auto-analyze-cron] ${capped.length} candidates, est cost $${(perVideoCost * capped.length / 100).toFixed(4)}`);
 
   let analyzedCount = 0;
