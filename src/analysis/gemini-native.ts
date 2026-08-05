@@ -16,11 +16,11 @@ import type { AnalysisConfig } from './types.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPT_PATH = resolve(__dirname, '../../prompts/gemini-observe.v2.md');
 
-function loadPromptTemplate(): string {
+export function loadPromptTemplate(): string {
   return readFileSync(PROMPT_PATH, 'utf-8');
 }
 
-function buildUserMessage(ctx: AnalysisContext, template: string): string {
+export function buildUserMessage(ctx: AnalysisContext, template: string): string {
   const followers = ctx.creatorFollowers?.toLocaleString() ?? 'unknown';
   const duration = ctx.durationSec ?? 'unknown';
   const outlierScore = ctx.outlierScore?.toFixed(1) ?? 'N/A';
