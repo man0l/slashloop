@@ -1,78 +1,78 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "regions": ["fra1"],
-  "rewrites": [
+  "routes": [
     {
-      "source": "/mcp",
-      "destination": "/api/mcp"
+      "src": "^/mcp$",
+      "dest": "/api/mcp"
     },
     {
-      "source": "/.well-known/oauth-protected-resource",
-      "destination": "/api/pages?page=well-known"
+      "src": "^/\\.well-known/oauth-protected-resource$",
+      "dest": "/api/pages?page=well-known"
     },
     {
-      "source": "/oauth/consent",
-      "destination": "/api/pages?page=consent"
+      "src": "^/oauth/consent$",
+      "dest": "/api/pages?page=consent"
     },
     {
-      "source": "/login",
-      "destination": "/api/pages?page=login"
+      "src": "^/login$",
+      "dest": "/api/pages?page=login"
     },
     {
-      "source": "/health",
-      "destination": "/api/pages?page=health"
+      "src": "^/health$",
+      "dest": "/api/pages?page=health"
     },
     {
-      "source": "/gallery",
-      "destination": "/api/gallery"
+      "src": "^/gallery$",
+      "dest": "/api/gallery"
     },
     {
-      "source": "/api/gallery-data",
-      "destination": "/api/gallery?mode=data"
+      "src": "^/api/gallery-data$",
+      "dest": "/api/gallery?mode=data"
     },
     {
-      "source": "/api/billing/:action",
-      "destination": "/api/billing?action=:action"
+      "src": "^/api/billing(?:/([^/]+?))$",
+      "dest": "/api/billing?action=$1"
     },
     {
-      "source": "/api/sources/:id/refresh",
-      "destination": "/api/sources?id=:id&action=refresh"
+      "src": "^/api/sources(?:/([^/]+?))/refresh$",
+      "dest": "/api/sources?id=$1&action=refresh"
     },
     {
-      "source": "/api/sources/suggest/verify",
-      "destination": "/api/sources?action=suggest-verify"
+      "src": "^/api/sources/suggest/verify$",
+      "dest": "/api/sources?action=suggest-verify"
     },
     {
-      "source": "/api/sources/suggest/dismiss",
-      "destination": "/api/sources?action=suggest-dismiss"
+      "src": "^/api/sources/suggest/dismiss$",
+      "dest": "/api/sources?action=suggest-dismiss"
     },
     {
-      "source": "/api/sources/suggest",
-      "destination": "/api/sources?action=suggest"
+      "src": "^/api/sources/suggest$",
+      "dest": "/api/sources?action=suggest"
     },
     {
-      "source": "/api/sources/:id",
-      "destination": "/api/sources?id=:id"
+      "src": "^/api/sources(?:/([^/]+?))$",
+      "dest": "/api/sources?id=$1"
     },
     {
-      "source": "/api/workspaces/:id",
-      "destination": "/api/workspaces?id=:id"
+      "src": "^/api/workspaces(?:/([^/]+?))$",
+      "dest": "/api/workspaces?id=$1"
     },
     {
-      "source": "/api/videos/:id/analyze",
-      "destination": "/api/videos?id=:id&action=analyze"
+      "src": "^/api/videos(?:/([^/]+?))/analyze$",
+      "dest": "/api/videos?id=$1&action=analyze"
     },
     {
-      "source": "/api/videos/:id",
-      "destination": "/api/videos?id=:id"
+      "src": "^/api/videos(?:/([^/]+?))$",
+      "dest": "/api/videos?id=$1"
     },
     {
-      "source": "/",
-      "destination": "/api/pages?page=health"
+      "src": "^/$",
+      "dest": "/api/pages?page=health"
     },
     {
-      "source": "/(.*)",
-      "destination": "/api/pages?page=404"
+      "src": "/(.*)",
+      "dest": "/api/pages?page=404"
     }
   ],
   "functions": {
