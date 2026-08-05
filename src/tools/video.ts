@@ -130,7 +130,8 @@ export function registerVideoTools(server: McpServer) {
           ideaCount: video.ideas?.length ?? 0,
           scrapedAt: video.scrapedAt.toISOString(),
           actions: {
-            canAnalyze: !video.analyses.length,
+            canAnalyze: true,
+            hasAnalysis: video.analyses.length > 0,
             canExtractHook: !!latestAnalysis && (latestAnalysis.analysisBasis.startsWith('video') || latestAnalysis.analysisBasis === 'transcript+thumbnail'),
             hasIdea: (video.ideas?.length ?? 0) > 0,
           },
