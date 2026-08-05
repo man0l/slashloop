@@ -12,12 +12,24 @@ import type { AnalysisResult } from '../analysis/types.js';
 import { loadAnalysisConfig } from '../analysis/config.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from './credits.js';
 import { resolveThumbUrl, signedMediaUrl } from './media.js';
-import { enqueueAnalyzeJob, dispatchWorker, outstandingJobForVideo, type MediaJobRow } from './jobs.js';
+import { enqueueAnalyzeJob, dispatchWorker, latestReportingJobForVideo, type MediaJobRow } from './jobs.js';
+import { classifyGeminiError, errorCodeFor, parseJobLastError, friendlyGeminiMessage, type GeminiErrorCode } from './gemini-errors.js';
 
 export type AnalyzeVideoOutcome =
   | { ok: true; queued: true; job: MediaJobRow; dispatched: boolean; dispatchReason?: string; backend: string; creditsCharged: number; creditsRemaining: number }
   | { ok: true; queued: false; result: AnalysisResult; creditsCharged: number; creditsRemaining: number }
-  | { ok: false; error: string; creditsCharged: number; creditsRemaining: number };
+  | {
+      ok: false;
+      /** Stable machine token — 'insufficient_credits' | 'not_found' | a
+       *  GeminiErrorCode from gemini-errors.ts. Lets the REST layer pick an
+       *  HTTP status + message without re-parsing an opaque sentence. */
+      errorCode: string;
+      error: string;
+      /** For insufficient_credits: how many credits the action needed. */
+      required?: number;
+      creditsCharged: number;
+      creditsRemaining: number;
+    };
 
 /**
  * Runs (or queues) analysis on one video. Mirrors the analyze_video MCP
@@ -36,14 +48,14 @@ export async function analyzeVideoForWorkspace(
   opts?: { forceBackend?: 'gemini-native' | 'gemini-text' },
 ): Promise<AnalyzeVideoOutcome> {
   const owned = await db.video.findFirst({ where: { id: videoId, source: { workspaceId: workspace.id } }, select: { id: true } });
-  if (!owned) return { ok: false, error: 'Video not found.', creditsCharged: 0, creditsRemaining: (await creditBalance(workspace.id)).total };
+  if (!owned) return { ok: false, errorCode: 'not_found', error: 'Video not found.', creditsCharged: 0, creditsRemaining: (await creditBalance(workspace.id)).total };
 
   const opId = randomUUID();
   try {
     await debitCredits(workspace.id, CREDIT_COSTS.analyzeVideo, 'analyze_video', `${opId}:preauth`);
   } catch (err) {
     if (err instanceof InsufficientCreditsError) {
-      return { ok: false, error: err.message, creditsCharged: 0, creditsRemaining: err.remaining };
+      return { ok: false, errorCode: 'insufficient_credits', error: err.message, required: err.required, creditsCharged: 0, creditsRemaining: err.remaining };
     }
     throw err;
   }
@@ -66,7 +78,10 @@ export async function analyzeVideoForWorkspace(
     return { ok: true, queued: false, result, creditsCharged: CREDIT_COSTS.analyzeVideo, creditsRemaining: balance.total };
   } catch (err) {
     const balance = await refundCredits(workspace.id, CREDIT_COSTS.analyzeVideo, 'analyze_video', `${opId}:fail`, 'call_failed');
-    return { ok: false, error: (err as Error).message, creditsCharged: 0, creditsRemaining: balance.total };
+    // Classify so the REST layer can tell "Gemini out of credits" (429,
+    // refunded, retry later) from "this video can't be analyzed" (422).
+    const errorCode = errorCodeFor(classifyGeminiError(err).category);
+    return { ok: false, errorCode, error: (err as Error).message, creditsCharged: 0, creditsRemaining: balance.total };
   }
 }
 
@@ -86,8 +101,10 @@ export interface VideoDetailForWorkspace {
     model: string;
     data: unknown;
   } | null;
-  /** A queued/running analyze job for this video, so the caller can keep polling instead of assuming failure. */
-  analysisJob: { jobId: string; status: string; lastError: string | null } | null;
+  /** A queued/running analyze job (or a recent terminal failure with no newer
+   *  successful analysis), so the caller can keep polling instead of assuming
+   *  failure. errorCode is the machine tag ('gemini_quota', 'other', ...). */
+  analysisJob: { jobId: string; status: string; lastError: string | null; errorCode: string | null } | null;
 }
 
 /**
@@ -107,12 +124,12 @@ export async function getVideoDetailForWorkspace(workspace: Workspace, videoId: 
   });
   if (!video) return null;
 
+  const latest = video.analyses[0];
+
   const [media, job] = await Promise.all([
     signedMediaUrl(video),
-    outstandingJobForVideo(video.id),
+    latestReportingJobForVideo(video.id, { newerThan: latest?.createdAt }),
   ]);
-
-  const latest = video.analyses[0];
 
   return {
     id: video.id,
@@ -125,6 +142,103 @@ export async function getVideoDetailForWorkspace(workspace: Workspace, videoId: 
     analysis: latest
       ? { id: latest.id, analysisBasis: latest.analysisBasis, backend: latest.backend, model: latest.model, data: JSON.parse(latest.analysisJson) }
       : null,
-    analysisJob: job ? { jobId: job.id, status: job.status, lastError: job.lastError } : null,
+    analysisJob: job ? { jobId: job.id, status: job.status, lastError: job.lastError, errorCode: parseJobLastError(job.lastError)?.errorCode ?? null } : null,
+  };
+}
+
+/**
+ * Map an analyze outcome to an HTTP response, in one pure place so the route
+ * (api/videos.ts) stays a thin shell and the mapping is unit-testable:
+ *
+ *   - not_found                  -> 404 video_not_found
+ *   - insufficient_credits       -> 402 insufficient_credits (+ upgradeUrl)
+ *   - Gemini quota/rate/5xx/timeout -> 429, retryable: true (paid API down —
+ *                                    not the user's fault, nothing to fix)
+ *   - any other failure          -> 422 analyze_failed
+ *   - queued / inline success    -> 200
+ *
+ * 429 vs 422 is the whole point: the gallery can tell "Gemini ran out of
+ * credits, come back later" (nothing charged) from "this video can't be
+ * analyzed" without grepping an error string.
+ */
+export function mapAnalyzeOutcomeToHttp(outcome: AnalyzeVideoOutcome): { status: number; body: Record<string, unknown> } {
+  if (!outcome.ok) {
+    if (outcome.errorCode === 'not_found') {
+      return { status: 404, body: { error: 'video_not_found' } };
+    }
+    if (outcome.errorCode === 'insufficient_credits') {
+      const upgradeUrl = process.env.UPGRADE_URL ?? 'https://slashloop.dev/upgrade';
+      return {
+        status: 402,
+        body: {
+          error: 'insufficient_credits',
+          required: outcome.required,
+          remaining: outcome.creditsRemaining,
+          upgradeUrl,
+          message: outcome.error,
+        },
+      };
+    }
+    const transient = outcome.errorCode === 'gemini_quota'
+      || outcome.errorCode === 'gemini_rate_limit'
+      || outcome.errorCode === 'gemini_server'
+      || outcome.errorCode === 'gemini_timeout';
+    if (transient) {
+      // Google-side capacity/credit trouble for the paid key — a 429 with
+      // retryable:true says "nothing is wrong on your side, come back later".
+      const publicError = outcome.errorCode === 'gemini_quota' ? 'gemini_quota_exhausted'
+        : outcome.errorCode === 'gemini_rate_limit' ? 'gemini_rate_limited'
+          : 'gemini_transient_error';
+      return {
+        status: 429,
+        body: {
+          error: publicError,
+          retryable: true,
+          errorCode: outcome.errorCode,
+          message: friendlyGeminiMessage(outcome.errorCode as GeminiErrorCode),
+          detail: outcome.error,
+          creditsCharged: outcome.creditsCharged,
+          creditsRemaining: outcome.creditsRemaining,
+        },
+      };
+    }
+    return {
+      status: 422,
+      body: {
+        error: 'analyze_failed',
+        errorCode: outcome.errorCode,
+        message: friendlyGeminiMessage(outcome.errorCode as GeminiErrorCode, outcome.error),
+        detail: outcome.error,
+        creditsCharged: outcome.creditsCharged,
+        creditsRemaining: outcome.creditsRemaining,
+      },
+    };
+  }
+
+  if (outcome.queued) {
+    return {
+      status: 200,
+      body: {
+        queued: true,
+        jobId: outcome.job.id,
+        status: outcome.job.status,
+        backend: outcome.backend,
+        creditsCharged: outcome.creditsCharged,
+        creditsRemaining: outcome.creditsRemaining,
+      },
+    };
+  }
+
+  return {
+    status: 200,
+    body: {
+      queued: false,
+      analysisBasis: outcome.result.analysisBasis,
+      backend: outcome.result.backend,
+      model: outcome.result.model,
+      analysis: outcome.result.analysis,
+      creditsCharged: outcome.creditsCharged,
+      creditsRemaining: outcome.creditsRemaining,
+    },
   };
 }

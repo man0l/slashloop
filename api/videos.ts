@@ -7,7 +7,7 @@
 // `id`/`action` query params — the URLs callers use are unchanged.
 import { corsPreflight } from '../src/lib/cors.js';
 import { requireOwnedWorkspace, jsonResponse } from '../src/lib/authz.js';
-import { getVideoDetailForWorkspace, analyzeVideoForWorkspace } from '../src/lib/video-service.js';
+import { getVideoDetailForWorkspace, analyzeVideoForWorkspace, mapAnalyzeOutcomeToHttp } from '../src/lib/video-service.js';
 
 export async function OPTIONS(): Promise<Response> {
   return corsPreflight();
@@ -46,28 +46,8 @@ export async function POST(request: Request): Promise<Response> {
   const forceBackend = body.forceBackend === 'gemini-native' || body.forceBackend === 'gemini-text' ? body.forceBackend : undefined;
   const outcome = await analyzeVideoForWorkspace(auth.workspace, videoId, { forceBackend });
 
-  if (!outcome.ok) {
-    return jsonResponse(422, { error: 'analyze_failed', message: outcome.error, creditsCharged: outcome.creditsCharged, creditsRemaining: outcome.creditsRemaining });
-  }
-
-  if (outcome.queued) {
-    return jsonResponse(200, {
-      queued: true,
-      jobId: outcome.job.id,
-      status: outcome.job.status,
-      backend: outcome.backend,
-      creditsCharged: outcome.creditsCharged,
-      creditsRemaining: outcome.creditsRemaining,
-    });
-  }
-
-  return jsonResponse(200, {
-    queued: false,
-    analysisBasis: outcome.result.analysisBasis,
-    backend: outcome.result.backend,
-    model: outcome.result.model,
-    analysis: outcome.result.analysis,
-    creditsCharged: outcome.creditsCharged,
-    creditsRemaining: outcome.creditsRemaining,
-  });
+  // All error/status shaping lives in the pure mapper so it's unit-testable —
+  // insufficient credits -> 402, Gemini quota -> 429 retryable, other -> 422.
+  const mapped = mapAnalyzeOutcomeToHttp(outcome);
+  return jsonResponse(mapped.status, mapped.body);
 }

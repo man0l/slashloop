@@ -228,6 +228,29 @@ export async function outstandingJobForVideo(videoId: string): Promise<MediaJobR
   }) as unknown as Promise<MediaJobRow | null>;
 }
 
+/**
+ * The newest analyze job worth reporting to a detail endpoint — queued/running
+ * means "in progress, poll me"; a *failed* job is only worth surfacing when
+ * there is no newer successful analysis to shout over, otherwise it's stale
+ * noise competing with a real result (re-analyzed-and-won videos must not keep
+ * showing last week's failure). Callers wanting just the outstanding job keep
+ * using outstandingJobForVideo.
+ */
+export async function latestReportingJobForVideo(
+  videoId: string,
+  opts?: { newerThan?: Date },
+): Promise<MediaJobRow | null> {
+  const rows = (await db.mediaJob.findMany({
+    where: { videoId, status: { in: ['queued', 'running', 'failed'] } },
+    orderBy: { createdAt: 'desc' },
+    take: 1,
+  })) as unknown as MediaJobRow[];
+  const job = rows[0] ?? null;
+  if (!job) return null;
+  if (job.status === 'failed' && opts?.newerThan && job.createdAt <= opts.newerThan) return null;
+  return job;
+}
+
 // ---------------------------------------------------------------------------
 // Claim / complete
 // ---------------------------------------------------------------------------
