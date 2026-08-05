@@ -62,7 +62,7 @@ export async function analyzeVideoForWorkspace(
 
   const effectiveBackend = opts?.forceBackend ?? (await loadAnalysisConfig(workspace.id)).backend;
 
-  if (effectiveBackend === 'gemini-native') {
+  if (effectiveBackend === 'gemini-native' || effectiveBackend === 'openrouter-video') {
     const job = await enqueueAnalyzeJob({ workspaceId: workspace.id, videoId, payload: { forceBackend: opts?.forceBackend }, opId });
     const dispatch = await dispatchWorker();
     const balance = await creditBalance(workspace.id);
