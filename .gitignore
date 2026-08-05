@@ -68,3 +68,6 @@ _rescore*
 # All env files (fallback catch-all beyond the specific .env variants above)
 .env*
 
+
+# ZCode session workspace (plans/handoffs) — never commit or deploy
+.zcode/
