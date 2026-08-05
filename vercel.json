@@ -67,6 +67,18 @@
       "dest": "/api/videos?id=$1"
     },
     {
+      "src": "^/api/cron/media-retention$",
+      "dest": "/api/cron/media-retention"
+    },
+    {
+      "src": "^/api/jobs/analyze$",
+      "dest": "/api/jobs/analyze"
+    },
+    {
+      "src": "^/api/stripe/webhook$",
+      "dest": "/api/stripe/webhook"
+    },
+    {
       "src": "^/$",
       "dest": "/api/pages?page=health"
     },
