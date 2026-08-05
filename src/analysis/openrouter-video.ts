@@ -25,6 +25,16 @@ import { openRouterVideoConfig } from '../lib/llm.js';
  *  providers may reject them — fall back to text. URL mode has no such cap. */
 const MAX_BASE64_BYTES = 15 * 1024 * 1024;
 
+/**
+ * Videos longer than this skip the openrouter-video backend entirely.
+ *
+ * The job worker has a 60s Vercel timeout. Apify download of a long video can
+ * take 20-25s, and OpenRouter's model needs significant time to process minutes
+ * of video. Beyond ~2 minutes the pipeline consistently times out with no budget
+ * left for the gemini-native or gemini-text fallback.
+ */
+const MAX_DURATION_SEC = 120;
+
 export class OpenRouterVideoAnalyzer implements VideoAnalyzer {
   readonly name = 'OpenRouter Video';
   readonly backendId = 'openrouter-video';
@@ -37,6 +47,13 @@ export class OpenRouterVideoAnalyzer implements VideoAnalyzer {
   }
 
   async analyze(ctx: AnalysisContext): Promise<AnalysisOutput> {
+    // Skip very long videos — they exceed the Vercel function timeout, and the
+    // time spent waiting wastes the fallback budget. The text-only backend can
+    // still analyse them from caption/thumbnail.
+    if (ctx.durationSec && ctx.durationSec > MAX_DURATION_SEC) {
+      throw new Error(`OpenRouter video skipped: ${ctx.durationSec}s video exceeds ${MAX_DURATION_SEC}s limit`);
+    }
+
     const videoUrl = await this.resolveVideoUrl(ctx);
     if (!videoUrl) {
       throw new Error('OpenRouter video needs either stored media (URL mode) or a local video file (base64 mode).');
