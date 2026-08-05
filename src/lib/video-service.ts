@@ -12,7 +12,7 @@ import type { AnalysisResult } from '../analysis/types.js';
 import { loadAnalysisConfig } from '../analysis/config.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from './credits.js';
 import { resolveThumbUrl, signedMediaUrl } from './media.js';
-import { enqueueAnalyzeJob, dispatchWorker, latestReportingJobForVideo, type MediaJobRow } from './jobs.js';
+import { enqueueAnalyzeJob, enqueueFetchJob, dispatchWorker, latestReportingJobForVideo, type MediaJobRow } from './jobs.js';
 import { classifyGeminiError, errorCodeFor, parseJobLastError, friendlyGeminiMessage, type GeminiErrorCode } from './gemini-errors.js';
 
 export type AnalyzeVideoOutcome =
