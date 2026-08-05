@@ -67,16 +67,29 @@ export interface AnalyzeJobPayload {
 
 /**
  * A fetch job downloads + stores the MP4 only (no Gemini analysis), so the
- * gallery can play a video and seek key moments without a full analysis run.
- * Fetch is charged against the Apify spend cap inside downloadTikTokVideo, not
- * AI credits, so these rows carry no opId and reclaimStuckJobs skips refunding
- * them (its `if (exhausted && job.opId)` guard).
+ * gallery can play a video and seek key moments without a full Gemini analysis
+ * run. Fetch is charged against the Apify spend cap inside downloadTikTokVideo,
+ * not AI credits, so these rows carry no opId and reclaimStuckJobs skips
+ * refunding them (its `if (exhausted && job.opId)` guard).
+ *
+ * When enqueued as part of an analysis pipeline, `opId` and `enqueueAnalysis`
+ * tell the fetch handler to chain an analyze job after a successful download,
+ * or refund the pre-debited credits if the download fails.
  */
-export interface FetchJobPayload {}
+export interface FetchJobPayload {
+  /** OpId minted by the original analyze_video call. Set when chaining to an
+   *  analyze job — the fetch handler refunds credits if the download fails. */
+  opId?: string;
+  /** After successful download+store, enqueue an analyze job with these params. */
+  enqueueAnalysis?: {
+    forceBackend?: string;
+  };
+}
 
 export async function enqueueFetchJob(opts: {
   workspaceId: string;
   videoId: string;
+  payload?: FetchJobPayload;
 }): Promise<MediaJobRow> {
   return db.mediaJob.create({
     data: {
@@ -84,7 +97,7 @@ export async function enqueueFetchJob(opts: {
       videoId: opts.videoId,
       kind: 'fetch',
       status: 'queued',
-      payloadJson: JSON.stringify({}),
+      payloadJson: JSON.stringify(opts.payload ?? {}),
     },
   }) as unknown as Promise<MediaJobRow>;
 }

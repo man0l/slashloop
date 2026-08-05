@@ -63,7 +63,27 @@ export async function analyzeVideoForWorkspace(
   const effectiveBackend = opts?.forceBackend ?? (await loadAnalysisConfig(workspace.id)).backend;
 
   if (effectiveBackend === 'gemini-native' || effectiveBackend === 'openrouter-video') {
-    const job = await enqueueAnalyzeJob({ workspaceId: workspace.id, videoId, payload: { forceBackend: opts?.forceBackend }, opId });
+    // Check if the video is already stored — if so, skip the fetch phase and
+    // enqueue the analyze job directly. Otherwise split into two queue steps:
+    // a fetch job (download + store), then an analyze job (AI analysis on the
+    // stored video). The fetch job handler chains the analyze job automatically.
+    const videoInfo = await db.video.findUnique({ where: { id: videoId }, select: { mediaStatus: true } });
+    const isStored = videoInfo?.mediaStatus === 'stored';
+
+    let job: MediaJobRow;
+    if (isStored) {
+      job = await enqueueAnalyzeJob({ workspaceId: workspace.id, videoId, payload: { forceBackend: opts?.forceBackend }, opId });
+    } else {
+      job = await enqueueFetchJob({
+        workspaceId: workspace.id,
+        videoId,
+        payload: {
+          opId,
+          enqueueAnalysis: { forceBackend: opts?.forceBackend },
+        },
+      });
+    }
+
     const dispatch = await dispatchWorker();
     const balance = await creditBalance(workspace.id);
     return {
