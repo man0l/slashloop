@@ -14,13 +14,23 @@ export async function loadAnalysisConfig(workspaceId: string): Promise<AnalysisC
   try {
     const stored = JSON.parse(workspace.analysisConfigJson) as Partial<AnalysisConfig>;
     return {
-      backend: stored.backend ?? (openRouterVideoEnabled() ? 'openrouter-video' : DEFAULT_CONFIG.backend),
+      // When OpenRouter is enabled and the stored backend is still the Prisma
+      // default ('gemini-native'), switch to 'openrouter-video' as the primary.
+      // An explicit workspace choice ('gemini-text' or 'openrouter-video') is
+      // preserved. This makes the env var (LLM_PROVIDER/OPENROUTER_API_KEY)
+      // the primary driver of the video analysis provider.
+      backend: stored.backend === 'gemini-native' && openRouterVideoEnabled()
+        ? 'openrouter-video'
+        : (stored.backend ?? DEFAULT_CONFIG.backend),
       fallback: stored.fallback ?? DEFAULT_CONFIG.fallback,
       geminiModel: stored.geminiModel ?? DEFAULT_CONFIG.geminiModel,
       fallbackModel: stored.fallbackModel ?? DEFAULT_CONFIG.fallbackModel,
     };
   } catch {
-    return { ...DEFAULT_CONFIG, backend: openRouterVideoEnabled() ? 'openrouter-video' : DEFAULT_CONFIG.backend };
+    return {
+      ...DEFAULT_CONFIG,
+      backend: openRouterVideoEnabled() ? 'openrouter-video' : DEFAULT_CONFIG.backend,
+    };
   }
 }
 
