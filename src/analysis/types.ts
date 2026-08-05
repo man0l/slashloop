@@ -103,13 +103,25 @@ export interface AnalysisConfig {
   /** Gemini model for both native video and text-only fallback */
   geminiModel:
     | 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-2.5-pro'
-    | 'gemini-3.1-flash-lite' | 'gemini-3.5-flash' | 'gemini-3-pro-preview';
+    | 'gemini-3.1-flash-lite' | 'gemini-3.5-flash' | 'gemini-3.5-flash-lite' | 'gemini-3.6-flash'
+    | 'gemini-3-pro-preview';
+  /**
+   * A second VIDEO-capable model tried after geminiModel fails with a
+   * retryable (capacity/quota/5xx/timeout) error, BEFORE giving up to the
+   * text-only `fallback` backend. Survival play for the paid API: when
+   * gemini-3.5-flash is 503 "high demand", a different model bucket (default
+   * gemini-3.5-flash-lite — GA, video-capable, ~5x cheaper input, separate
+   * per-model quota) can still produce a shot-level analysis. Falls back to
+   * geminiModel when unset or equal to it.
+   */
+  fallbackModel?: string;
 }
 
 export const DEFAULT_CONFIG: AnalysisConfig = {
   backend: 'gemini-native',
   fallback: 'gemini-text',
   geminiModel: 'gemini-3.5-flash',
+  fallbackModel: 'gemini-3.5-flash-lite',
 };
 
 // ---- Cost estimates (cents) per 30s video ----
@@ -128,6 +140,8 @@ export const COST_ESTIMATES = {
     'gemini-2.5-pro': 4,            // ~$0.04 (legacy)
     'gemini-3.1-flash-lite': 0.2,   // ~$0.002
     'gemini-3.5-flash': 0.5,        // ~$0.005
+    'gemini-3.5-flash-lite': 0.2,   // ~$0.002 — cheaper input tier, same video path
+    'gemini-3.6-flash': 0.4,        // ~$0.004 — marketed lower price than 3.5 Flash
     'gemini-3-pro-preview': 4,      // ~$0.04
   },
   'gemini-text': {
@@ -136,6 +150,8 @@ export const COST_ESTIMATES = {
     'gemini-2.5-pro': 2,            // ~$0.02 (legacy)
     'gemini-3.1-flash-lite': 0.1,   // ~$0.001
     'gemini-3.5-flash': 0.25,       // ~$0.0025
+    'gemini-3.5-flash-lite': 0.1,   // ~$0.001
+    'gemini-3.6-flash': 0.2,        // ~$0.002
     'gemini-3-pro-preview': 2,      // ~$0.02
   },
 } as const;
@@ -149,6 +165,8 @@ export const BATCH_COST_ESTIMATES = {
     'gemini-2.5-pro': 2,            // 50% off (legacy)
     'gemini-3.1-flash-lite': 0.1,   // 50% off
     'gemini-3.5-flash': 0.25,       // 50% off
+    'gemini-3.5-flash-lite': 0.1,   // 50% off
+    'gemini-3.6-flash': 0.2,        // 50% off
     'gemini-3-pro-preview': 2,      // 50% off
   },
   'gemini-text': {
@@ -157,6 +175,8 @@ export const BATCH_COST_ESTIMATES = {
     'gemini-2.5-pro': 1,            // 50% off (legacy)
     'gemini-3.1-flash-lite': 0.05,  // 50% off
     'gemini-3.5-flash': 0.125,      // 50% off
+    'gemini-3.5-flash-lite': 0.05,  // 50% off
+    'gemini-3.6-flash': 0.1,        // 50% off
     'gemini-3-pro-preview': 1,      // 50% off
   },
 } as const;

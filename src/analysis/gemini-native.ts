@@ -167,8 +167,8 @@ export class GeminiNativeAnalyzer implements VideoAnalyzer {
   readonly provider = 'google';
   private model: string;
 
-  constructor(config?: AnalysisConfig) {
-    this.model = config?.geminiModel ?? 'gemini-3.5-flash';
+  constructor(config?: AnalysisConfig, opts?: { model?: string }) {
+    this.model = opts?.model ?? config?.geminiModel ?? 'gemini-3.5-flash';
   }
 
   async analyze(ctx: AnalysisContext): Promise<AnalysisOutput> {
