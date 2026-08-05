@@ -43,7 +43,7 @@ export async function POST(request: Request): Promise<Response> {
   const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
   if (!auth.ok) return auth.response;
 
-  const forceBackend = body.forceBackend === 'gemini-native' || body.forceBackend === 'gemini-text' ? body.forceBackend : undefined;
+  const forceBackend = body.forceBackend === 'gemini-native' || body.forceBackend === 'gemini-text' || body.forceBackend === 'openrouter-video' ? body.forceBackend : undefined;
   const outcome = await analyzeVideoForWorkspace(auth.workspace, videoId, { forceBackend });
 
   // All error/status shaping lives in the pure mapper so it's unit-testable —

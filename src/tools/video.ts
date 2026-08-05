@@ -143,7 +143,7 @@ export function registerVideoTools(server: McpServer) {
     'Run AI analysis on a video. Uses the configured backend (default: gemini-native, fallback: gemini-text). gemini-native downloads the video via Apify then uploads it for native understanding (shots, audio, on-screen text); gemini-text does a text-only call on transcript + caption + metadata. Costs 5 credits. gemini-native is QUEUED rather than run inline — it cannot finish inside one request — so the response is a jobId and status, not an analysis. Wait for it with await_job (blocks server-side and returns the moment it finishes) rather than polling get_video in a loop; the analysisJob field on get_video still reports progress for a one-off check. gemini-text returns its analysis directly.',
     {
       videoId: z.string().describe('Video ID to analyze'),
-      forceBackend: z.enum(['gemini-native', 'gemini-text']).optional().describe('Override the workspace default backend'),
+      forceBackend: z.enum(['gemini-native', 'gemini-text', 'openrouter-video']).optional().describe('Override the workspace default backend'),
     },
     async ({ videoId, forceBackend }) => {
       const workspace = await requireWorkspace();
