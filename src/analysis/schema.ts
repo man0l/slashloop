@@ -56,70 +56,70 @@ export const ShotSchema = z.object({
   timestampSec: z.number().min(0),
   durationSec: z.number().min(0),
   type: z.enum(['talking_head', 'b_roll', 'product_closeup', 'text_overlay', 'split_screen', 'transition', 'reaction', 'demonstration', 'other'] as const).catch('other'),
-  description: z.string(),
+  description: z.string().catch(''),
   onScreenText: z.string().nullable().describe('Text visible in frame, null if none'),
 });
 
 export const OnScreenTextEntrySchema = z.object({
   timestampSec: z.number().min(0),
-  text: z.string(),
+  text: z.string().catch(''),
   style: z.enum(['overlay', 'subtitle', 'caption_packed', 'title_card', 'watermark'] as const).nullable().catch(null),
 });
 
 export const AudioAnalysisSchema = z.object({
   speechDetected: z.boolean(),
   speechType: z.enum(['direct_address', 'voiceover', 'conversation', 'none'] as const).nullable().catch(null),
-  musicDescription: z.string().describe('Type of music or trending sound, if detected'),
-  soundEffects: z.array(z.string()).describe('Notable sound effects'),
-  tone: z.string().describe('Overall audio mood/atmosphere'),
+  musicDescription: z.string().catch('').describe('Type of music or trending sound, if detected'),
+  soundEffects: z.array(z.string()).catch([]).describe('Notable sound effects'),
+  tone: z.string().catch('').describe('Overall audio mood/atmosphere'),
 });
 
 export const EmotionalArcPointSchema = z.object({
   timestampSec: z.number().min(0),
-  primaryEmotion: z.string(),
+  primaryEmotion: z.string().catch(''),
   intensity: z.number().min(1).max(10),
-  trigger: z.string().describe('What in the video triggers this emotion'),
+  trigger: z.string().catch('').describe('What in the video triggers this emotion'),
 });
 
 // ---- Strategic analysis sub-schemas ----
 
 export const HookSchema = z.object({
-  text: z.string().describe('Exact hook text or visual description'),
+  text: z.string().catch('').describe('Exact hook text or visual description'),
   type: z.enum(HOOK_TYPES).catch('other'),
   placement: z.enum(['spoken', 'on_screen', 'visual', 'audio', 'text_overlay', 'other'] as const).catch('other'),
-  mechanism: z.string().describe('Why this hook works psychologically'),
+  mechanism: z.string().catch('').describe('Why this hook works psychologically'),
 });
 
 export const AngleSchema = z.object({
   type: z.enum(ANGLE_TYPES).catch('other'),
-  description: z.string(),
+  description: z.string().catch(''),
 });
 
 export const StorytellingBeatSchema = z.object({
   type: z.enum(BEAT_TYPES).catch('other'),
   timestampSec: z.number().min(0),
-  description: z.string(),
+  description: z.string().catch(''),
 });
 
 export const PacingSchema = z.object({
-  rhythm: z.string(),
-  retentionStrategy: z.string(),
+  rhythm: z.string().catch(''),
+  retentionStrategy: z.string().catch(''),
   cutsPerMinute: z.number().nullable().describe('Estimated edit pace'),
 });
 
 export const AudienceInsightSchema = z.object({
-  targetDemographic: z.string(),
-  unspokenDesire: z.string(),
+  targetDemographic: z.string().catch(''),
+  unspokenDesire: z.string().catch(''),
 });
 
 export const TransferablePatternSchema = z.object({
-  pattern: z.string(),
-  description: z.string(),
-  adaptationNotes: z.string(),
+  pattern: z.string().catch(''),
+  description: z.string().catch(''),
+  adaptationNotes: z.string().catch(''),
 });
 
 export const OverallAssessmentSchema = z.object({
-  summary: z.string(),
+  summary: z.string().catch(''),
   viralityScore: z.number().min(1).max(10),
   replicability: z.enum(REPLICABILITY).catch('medium'),
 });
@@ -167,7 +167,7 @@ export const KeyMomentSchema = z.object({
   cameraAngle: softEnum(['eye_level', 'low', 'high', 'overhead', 'dutch', 'other'] as const),
   cameraMovement: softEnum(['static', 'handheld', 'pan', 'push_in', 'pull_out', 'whip', 'other'] as const),
   /** Imperative voice — an instruction to perform, not a description of what was performed. */
-  subjectAction: z.string(),
+  subjectAction: z.string().catch(''),
   wardrobeProps: z.string().nullable().catch(null),
   setting: z.string().nullable().catch(null),
   /**
@@ -202,11 +202,11 @@ export const VideoAnalysisDataSchema = z.object({
   hook: HookSchema,
   angle: AngleSchema,
   storytellingBeats: z.array(StorytellingBeatSchema),
-  keyMechanisms: z.array(z.string()).min(1),
-  emotionalDrivers: z.array(z.string()).min(1),
+  keyMechanisms: z.array(z.string()).min(1).catch(['other']),
+  emotionalDrivers: z.array(z.string()).min(1).catch(['other']),
   pacing: PacingSchema,
-  visualTechniques: z.array(z.string()),
-  audioTechniques: z.array(z.string()),
+  visualTechniques: z.array(z.string()).catch([]),
+  audioTechniques: z.array(z.string()).catch([]),
   audienceInsight: AudienceInsightSchema,
   transferablePatterns: z.array(TransferablePatternSchema),
   overallAssessment: OverallAssessmentSchema,

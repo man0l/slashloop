@@ -173,8 +173,8 @@ export function registerSettingsTools(server: McpServer) {
         minEngagementRate: z.number().default(3),
         dailyLimit: z.number().default(10),
       }).optional(),
-      analysisBackend: z.enum(['gemini-native', 'gemini-text']).optional(),
-      analysisFallback: z.enum(['gemini-native', 'gemini-text']).optional(),
+      analysisBackend: z.enum(['gemini-native', 'gemini-text', 'openrouter-video']).optional(),
+      analysisFallback: z.enum(['gemini-native', 'gemini-text', 'openrouter-video']).optional(),
       geminiModel: z.enum([
         'gemini-2.5-flash', 'gemini-2.5-pro',
         'gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-3-pro-preview',
@@ -345,11 +345,11 @@ export function registerSettingsTools(server: McpServer) {
       // Estimate cost using batch rates (50% Gemini discount)
       const config = await loadAnalysisConfig(workspace.id);
       const { getCostCents } = await import('../analysis/types.js');
-      const perVideoCost = getCostCents(
-        config.backend as 'gemini-native' | 'gemini-text',
-        config.geminiModel,
-        true,
-      );
+      // openrouter-video is billed per-token via OpenRouter's own meter, not
+      // the credit ledger — the estimate is 0 for that backend.
+      const perVideoCost = config.backend === 'openrouter-video'
+        ? 0
+        : getCostCents(config.backend, config.geminiModel, true);
       const estimatedCostCents = Math.round(perVideoCost * capped.length * 100) / 100;
 
       if (dryRun) {

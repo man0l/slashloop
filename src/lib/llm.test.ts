@@ -47,6 +47,7 @@ describe('createTextClient factory (OpenRouter default)', () => {
 
 describe('openRouterVideoConfig (env-driven video routing)', () => {
   test('defaults: enabled, qwen model, auto mode', () => {
+    process.env.OPENROUTER_API_KEY = 'sk-or-v1-test-not-a-real-key';
     delete process.env.OPENROUTER_VIDEO_MODEL;
     delete process.env.OPENROUTER_VIDEO_MODE;
     const cfg = openRouterVideoConfig();
@@ -54,6 +55,7 @@ describe('openRouterVideoConfig (env-driven video routing)', () => {
   });
 
   test('model and mode switch via env', () => {
+    process.env.OPENROUTER_API_KEY = 'sk-or-v1-test-not-a-real-key';
     process.env.OPENROUTER_VIDEO_MODEL = 'z-ai/glm-5v-turbo';
     process.env.OPENROUTER_VIDEO_MODE = 'base64';
     const cfg = openRouterVideoConfig();
@@ -61,11 +63,13 @@ describe('openRouterVideoConfig (env-driven video routing)', () => {
   });
 
   test('mode=off disables it', () => {
+    process.env.OPENROUTER_API_KEY = 'sk-or-v1-test-not-a-real-key';
     process.env.OPENROUTER_VIDEO_MODE = 'off';
     expect(openRouterVideoEnabled()).toBe(false);
   });
 
   test('unknown mode falls back to auto', () => {
+    process.env.OPENROUTER_API_KEY = 'sk-or-v1-test-not-a-real-key';
     process.env.OPENROUTER_VIDEO_MODE = 'banana';
     expect(openRouterVideoConfig().mode).toBe('auto');
   });
