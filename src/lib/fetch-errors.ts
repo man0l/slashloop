@@ -26,6 +26,7 @@ export type FetchErrorCode =
   | 'apify_cdn_failed'
   | 'apify_actor_error'
   | 'download_failed'
+  | 'openrouter_balance'
   | 'other';
 
 export interface FetchErrorInfo {
@@ -55,6 +56,10 @@ export function classifyFetchError(lastError: string | null): FetchErrorInfo | n
   }
   if (/tik tok cdn download failed|cdn download failed/i.test(msg)) {
     return { code: 'apify_cdn_failed', message: 'TikTok CDN refused the download.' };
+  }
+  // OpenRouter rejects video-format requests below a $1.00 account balance.
+  if (/requires at least \$\d/.test(msg) || (/\bbalance for video\b/i.test(msg))) {
+    return { code: 'openrouter_balance', message: 'OpenRouter needs at least $1.00 balance for video analysis — top up at openrouter.ai/settings/credits.' };
   }
   if (/apify actor/i.test(msg)) {
     return { code: 'apify_actor_error', message: 'The Apify scrape actor failed to run.' };

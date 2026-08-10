@@ -63,6 +63,13 @@ describe('classifyGeminiError', () => {
     expect(info.retryable).toBe(true);
   });
 
+  test('OpenRouter balance-for-video 402 -> quota, retryable', () => {
+    const info = classifyGeminiError(new Error('OpenRouter API error 402: This request requires at least $1.00 in balance for video'));
+    expect(info.category).toBe('quota');
+    expect(info.retryable).toBe(true);
+    expect(errorCodeFor(info.category)).toBe('gemini_quota');
+  });
+
   test('unrelated failure (Apify download) -> unknown, maps to "other"', () => {
     const info = classifyGeminiError(new Error('Downloaded file too small'));
     expect(info.category).toBe('unknown');
