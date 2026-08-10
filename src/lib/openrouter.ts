@@ -143,6 +143,13 @@ function videoTimeoutMs(): number {
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_VIDEO_TIMEOUT_MS;
 }
 
+/** Max output tokens for VIDEO analysis. 4096 was truncating full-length clips
+ *  mid-schema on Gemini — the VPS worker raises it via OPENROUTER_VIDEO_MAX_TOKENS. */
+function videoMaxTokens(): number {
+  const n = Number(process.env.OPENROUTER_VIDEO_MAX_TOKENS);
+  return Number.isFinite(n) && n > 0 ? n : 8192;
+}
+
 /**
  * One chat completion with a VIDEO part (URL or base64 data URL) against an
  * OpenRouter model that supports video input. Returns raw text + token counts;
@@ -180,7 +187,7 @@ export async function callOpenRouterVideo(
       temperature: 0.3,
       // Reasoning models burn tokens on chain-of-thought; give them room to
       // still emit the full JSON (probed: max_tokens 200 starves them).
-      max_tokens: options?.maxTokens ?? 4096,
+      max_tokens: options?.maxTokens ?? videoMaxTokens(),
       response_format: { type: 'json_object' },
     }),
   });
