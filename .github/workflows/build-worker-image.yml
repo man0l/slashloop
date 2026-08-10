@@ -123,14 +123,15 @@ jobs:
           cache-to: type=gha,mode=max
 
       # Make the GHCR package PUBLIC so the VPS's watchtower can pull
-      # ghcr.io/man0l/slashloop-worker:master with no docker login. The
-      # GITHUB_TOKEN has packages:write (declared above), which grants package
-      # visibility management; try both user- and repo-scoped endpoints so a
-      # scope change upstream can't silently break this.
+      # ghcr.io/man0l/slashloop-worker:master with no docker login. For
+      # personal-account packages GITHUB_TOKEN cannot manage visibility (404);
+      # if a WRITE_PACKAGES_TOKEN PAT (write:packages) is configured as a repo
+      # secret it is used instead. Both user- and repo-scoped endpoints are
+      # tried so a scope change upstream can't silently break this.
       - name: Make GHCR package public
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.WRITE_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set +e
           curl -s -X PUT "https://api.github.com/user/packages/container/slashloop-worker/visibility" \
