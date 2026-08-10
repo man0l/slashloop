@@ -43,9 +43,11 @@ jobs:
       # Assemble the worker .env from GitHub variables (non-secret config) and
       # secrets (keys). Any secret not yet set (DATABASE_URL, GEMINI_API_KEY,
       # APIFY_API_KEY, DIRECT_URL) renders empty until it is added to GitHub —
-      # add it, then re-run this workflow. Written with printf (heredocs don't
-      # expand), into the workspace so the build can mount it. The marker grep
-      # only prints a non-secret value (video model) to prove expansion.
+      # add it, then re-run this workflow. Written into the build context as
+      # .worker-env (NOT a BuildKit secret — the docker-container builder runs
+      # in a separate container and can't see the runner's filesystem, so
+      # secret-files never reach the build); .dockerignore allows it through
+      # and worker/Dockerfile copies it to /app/.env. Never committed to git.
       - name: Prepare worker .env
         shell: bash
         env:
@@ -71,7 +73,7 @@ jobs:
           WORKER_RESCORE_EVERY: ${{ vars.WORKER_RESCORE_EVERY }}
         run: |
           set -e
-          out="$GITHUB_WORKSPACE/.worker-env.tmp"
+          out="$GITHUB_WORKSPACE/.worker-env"
           : > "$out"
           printf 'DATABASE_URL=%s\n' "$DATABASE_URL"            >> "$out"
           printf 'DIRECT_URL=%s\n' "$DIRECT_URL"                >> "$out"
@@ -115,11 +117,5 @@ jobs:
           tags: |
             ghcr.io/man0l/slashloop-worker:master
             ghcr.io/man0l/slashloop-worker:${{ github.sha }}
-          # Only the assembled .env reaches the build; nothing is persisted as
-          # an artifact or committed. docker/build-push-action mounts this as
-          # BuildKit secret id=worker_env, and worker/Dockerfile copies it to
-          # /app/.env.
-          secret-files: |
-            id=worker_env,src=${{ github.workspace }}/.worker-env.tmp
           cache-from: type=gha
           cache-to: type=gha,mode=max
