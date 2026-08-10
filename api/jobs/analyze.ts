@@ -213,10 +213,14 @@ export async function POST(request: Request): Promise<Response> {
         // downloading from Apify again.
         const fPayload = JSON.parse(job.payloadJson || '{}') as FetchJobPayload;
         if (fPayload.enqueueAnalysis && job.opId) {
+          // The fetch job's payload came from the API, so the backend string is
+          // only trusted if it matches a real analyzer — narrow before handing
+          // it to enqueueAnalyzeJob, whose payload type is the closed union.
+          const fb = fPayload.enqueueAnalysis.forceBackend;
           await enqueueAnalyzeJob({
             workspaceId: job.workspaceId,
             videoId,
-            payload: { forceBackend: fPayload.enqueueAnalysis.forceBackend },
+            payload: { forceBackend: fb === 'gemini-native' || fb === 'gemini-text' || fb === 'openrouter-video' ? fb : undefined },
             opId: job.opId,
           });
         }
