@@ -131,13 +131,17 @@ export interface OpenRouterVideoCallOptions {
 /**
  * How long to wait for an OpenRouter video chat completion before timing out.
  *
- * The job worker has a 60s Vercel timeout. With download+analysis now split
- * into separate fetch and analyze jobs, the analyze job has the full budget
- * for the AI call — no Apify download to subtract. 50s gives most models
- * enough time while leaving ~10s for the rest of the pipeline (reading stored
- * video, validating, persisting results).
+ * On Vercel (Hobby) the worker has a 60s ceiling, so 50s leaves ~10s for the
+ * rest of the pipeline. The VPS/Bun worker (src/worker) has no ceiling and can
+ * afford to wait much longer for Qwen on full-length clips — override with
+ * OPENROUTER_VIDEO_TIMEOUT_MS (e.g. 180000) there.
  */
-const OPENROUTER_VIDEO_TIMEOUT_MS = 50_000;
+const DEFAULT_VIDEO_TIMEOUT_MS = 50_000;
+
+function videoTimeoutMs(): number {
+  const n = Number(process.env.OPENROUTER_VIDEO_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_VIDEO_TIMEOUT_MS;
+}
 
 /**
  * One chat completion with a VIDEO part (URL or base64 data URL) against an
@@ -163,7 +167,7 @@ export async function callOpenRouterVideo(
       Authorization: `Bearer ${apiKey}`,
       ...(process.env.PUBLIC_URL ? { 'HTTP-Referer': process.env.PUBLIC_URL, 'X-Title': 'slashloop' } : {}),
     },
-    signal: AbortSignal.timeout(OPENROUTER_VIDEO_TIMEOUT_MS),
+    signal: AbortSignal.timeout(videoTimeoutMs()),
     body: JSON.stringify({
       model: modelToOpenRouter(model),
       messages: [

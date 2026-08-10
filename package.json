@@ -14,7 +14,8 @@
     "postinstall": "prisma generate --schema prisma/schema.prisma || true",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit -p tsconfig.json",
-    "typecheck:vercel": "bunx tsc --noEmit -p tsconfig.vercel.json"
+    "typecheck:vercel": "bunx tsc --noEmit -p tsconfig.vercel.json",
+    "worker": "bun src/worker/index.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.5",

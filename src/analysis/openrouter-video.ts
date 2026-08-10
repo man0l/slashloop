@@ -28,12 +28,12 @@ const MAX_BASE64_BYTES = 15 * 1024 * 1024;
 /**
  * Videos longer than this skip the openrouter-video backend entirely.
  *
- * The job worker has a 60s Vercel timeout. Apify download of a long video can
- * take 20-25s, and OpenRouter's model needs significant time to process minutes
- * of video. Beyond ~2 minutes the pipeline consistently times out with no budget
- * left for the gemini-native or gemini-text fallback.
+ * The Vercel job worker has a 60s timeout, so beyond ~2 minutes there is no
+ * budget left. The VPS/Bun worker has no ceiling — override with
+ * OPENROUTER_VIDEO_MAX_DURATION_SEC (e.g. 3600) so full-length clips are
+ * analysed there.
  */
-const MAX_DURATION_SEC = 120;
+const MAX_DURATION_SEC = Number(process.env.OPENROUTER_VIDEO_MAX_DURATION_SEC) || 120;
 
 export class OpenRouterVideoAnalyzer implements VideoAnalyzer {
   readonly name = 'OpenRouter Video';
