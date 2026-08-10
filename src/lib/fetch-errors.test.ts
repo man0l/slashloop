@@ -46,4 +46,10 @@ describe('classifyFetchError', () => {
   test('spend cap is matched before the generic Apify actor string', () => {
     expect(classifyFetchError('Apify spend cap exceeded: ... raise APIFY_SPEND_CAP_CENTS')?.code).toBe('apify_spend_cap');
   });
+
+  test('OpenRouter video balance-402 -> openrouter_balance', () => {
+    const info = classifyFetchError('OpenRouter API error 402: {"error":{"message":"This request requires at least $1.00 in balance for video","code":402}}');
+    expect(info?.code).toBe('openrouter_balance');
+    expect(info?.message.toLowerCase()).toContain('top up');
+  });
 });

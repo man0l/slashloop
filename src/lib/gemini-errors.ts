@@ -92,7 +92,10 @@ export function classifyGeminiError(err: unknown): GeminiErrorInfo {
   // OpenRouter's 402 "payment_required" (insufficient credits) is the same
   // paid-key budget signal as a Google quota error — the user's service should
   // present it as "credits ran out, come back later," not "analysis failed".
-  if (/\bpayment_required\b/i.test(message) || /insufficient credit/i.test(message)) {
+  // OpenRouter also hard-requires >= $1.00 balance for VIDEO requests ("This
+  // request requires at least $1.00 in balance for video") — same presentation.
+  if (/\bpayment_required\b/i.test(message) || /insufficient credit/i.test(message)
+    || /requires at least \$/i.test(message) || /\bbalance for video\b/i.test(message)) {
     return { category: 'quota', retryable: true, message };
   }
 
