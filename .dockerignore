@@ -1,0 +1,16 @@
+# Build context = repo root (docker build -f worker/Dockerfile .)
+node_modules
+.git
+dist
+.env
+.env.*
+.vercel
+.zcode
+.claude
+.agents
+supabase
+docs
+worklog.md
+worker/.env.example
+gallery-*.png
+gallery-*.md

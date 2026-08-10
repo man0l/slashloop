@@ -280,3 +280,25 @@ populating the env vars above from a real Stripe account.
 | `bun run db:push` | ⚠️ Local/throwaway DBs only — never production (see "Schema changes") |
 | `bun run db:generate` | Generate Prisma client |
 | `bun src/scripts/auto_analyze_cron.ts` | External cron entry for nightly batch |
+
+## VPS worker (optional — removes the 60s ceiling)
+
+Vercel Hobby caps functions at 60s, which a full-length OpenRouter video
+analysis (Qwen needs ~45s+ on a 10s clip and >50s on real clips) cannot fit.
+The same queue can be drained by a long-running worker with no wall-clock
+limit:
+
+- `src/worker/process-job.ts` — the per-job processing switch (fetch /
+  analyze / rescore / refresh), shared by the Vercel worker
+  (`api/jobs/analyze.ts`) and the VPS loop, so the retry/refund policy lives in
+  exactly one place.
+- `src/worker/index.ts` — `bun run worker`: reclaims stuck jobs, claims in
+  priority (fetch → analyze → rescore → refresh) with `FOR UPDATE SKIP LOCKED`
+  (safe to run alongside the Vercel worker / pg_cron — jobs are never
+  double-claimed), processes with no budget, idles `WORKER_IDLE_MS` (default
+  3s).
+- Docker: `docker build -t slashloop-worker -f worker/Dockerfile .` and run
+  with `worker/.env.example` (same env as Vercel plus
+  `OPENROUTER_VIDEO_TIMEOUT_MS`/`OPENROUTER_VIDEO_MAX_DURATION_SEC`).
+- If the VPS dies, pg_cron keeps poking Vercel's worker → text-level analysis
+  still works.

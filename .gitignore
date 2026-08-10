@@ -71,3 +71,6 @@ _rescore*
 
 # ZCode session workspace (plans/handoffs) — never commit or deploy
 .zcode/
+
+# The worker env EXAMPLE is placeholder-only — keep it tracked.
+!worker/.env.example
