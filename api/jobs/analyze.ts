@@ -204,8 +204,11 @@ export async function POST(request: Request): Promise<Response> {
         const v = await db.video.findUnique({ where: { id: videoId }, select: { url: true, platform: true } });
         if (!v || v.platform !== 'tiktok' || !v.url) throw new Error('no downloadable TikTok URL');
         const { downloadAndStoreVideo } = await import('../../src/lib/media.js');
-        const res = await downloadAndStoreVideo(job.workspaceId, videoId, v.url);
-        if (!res) throw new Error('download/store returned no result');
+        // Throws (and marks the video mediaStatus='failed') on any failure with
+        // the REAL Apify reason — that message becomes this job's lastError,
+        // which the gallery's ⛔ fetch-error surface maps to a specific issue
+        // (spend cap, actor, CDN, deleted video...).
+        await downloadAndStoreVideo(job.workspaceId, videoId, v.url);
 
         // If this fetch was a precursor to analysis, enqueue the analyze job
         // now that the video is stored. The analyze job will use the stored
