@@ -43,7 +43,9 @@ jobs:
       # Assemble the worker .env from GitHub variables (non-secret config) and
       # secrets (keys). Any secret not yet set (DATABASE_URL, GEMINI_API_KEY,
       # APIFY_API_KEY, DIRECT_URL) renders empty until it is added to GitHub —
-      # add it, then re-run this workflow.
+      # add it, then re-run this workflow. Written with printf (heredocs don't
+      # expand), into the workspace so the build can mount it. The marker grep
+      # only prints a non-secret value (video model) to prove expansion.
       - name: Prepare worker .env
         shell: bash
         env:
@@ -68,28 +70,32 @@ jobs:
           WORKER_IDLE_MS: ${{ vars.WORKER_IDLE_MS }}
           WORKER_RESCORE_EVERY: ${{ vars.WORKER_RESCORE_EVERY }}
         run: |
-          cat > /tmp/worker.env <<'EOF'
-          DATABASE_URL=$DATABASE_URL
-          DIRECT_URL=$DIRECT_URL
-          SUPABASE_URL=$SUPABASE_URL
-          SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
-          SUPABASE_SECRET_KEY=$SUPABASE_SECRET_KEY
-          GEMINI_API_KEY=$GEMINI_API_KEY
-          APIFY_API_KEY=$APIFY_API_KEY
-          APIFY_SPEND_CAP_CENTS=$APIFY_SPEND_CAP_CENTS
-          APIFY_TIKTOK_ACTOR_ID=$APIFY_TIKTOK_ACTOR_ID
-          OPENROUTER_API_KEY=$OPENROUTER_API_KEY
-          OPENROUTER_VIDEO_MODEL=$OPENROUTER_VIDEO_MODEL
-          OPENROUTER_VIDEO_MODE=$OPENROUTER_VIDEO_MODE
-          OPENROUTER_VIDEO_TIMEOUT_MS=$OPENROUTER_VIDEO_TIMEOUT_MS
-          OPENROUTER_VIDEO_MAX_DURATION_SEC=$OPENROUTER_VIDEO_MAX_DURATION_SEC
-          STORAGE_MEDIA_BUCKET=$STORAGE_MEDIA_BUCKET
-          STORAGE_THUMB_BUCKET=$STORAGE_THUMB_BUCKET
-          MEDIA_SIGNED_URL_TTL_SECONDS=$MEDIA_SIGNED_URL_TTL_SECONDS
-          PUBLIC_URL=$PUBLIC_URL
-          WORKER_IDLE_MS=$WORKER_IDLE_MS
-          WORKER_RESCORE_EVERY=$WORKER_RESCORE_EVERY
-          EOF
+          set -e
+          out="$GITHUB_WORKSPACE/.worker-env.tmp"
+          : > "$out"
+          printf 'DATABASE_URL=%s\n' "$DATABASE_URL"            >> "$out"
+          printf 'DIRECT_URL=%s\n' "$DIRECT_URL"                >> "$out"
+          printf 'SUPABASE_URL=%s\n' "$SUPABASE_URL"            >> "$out"
+          printf 'SUPABASE_ANON_KEY=%s\n' "$SUPABASE_ANON_KEY"  >> "$out"
+          printf 'SUPABASE_SECRET_KEY=%s\n' "$SUPABASE_SECRET_KEY" >> "$out"
+          printf 'GEMINI_API_KEY=%s\n' "$GEMINI_API_KEY"        >> "$out"
+          printf 'APIFY_API_KEY=%s\n' "$APIFY_API_KEY"          >> "$out"
+          printf 'APIFY_SPEND_CAP_CENTS=%s\n' "$APIFY_SPEND_CAP_CENTS" >> "$out"
+          printf 'APIFY_TIKTOK_ACTOR_ID=%s\n' "$APIFY_TIKTOK_ACTOR_ID" >> "$out"
+          printf 'OPENROUTER_API_KEY=%s\n' "$OPENROUTER_API_KEY" >> "$out"
+          printf 'OPENROUTER_VIDEO_MODEL=%s\n' "$OPENROUTER_VIDEO_MODEL" >> "$out"
+          printf 'OPENROUTER_VIDEO_MODE=%s\n' "$OPENROUTER_VIDEO_MODE" >> "$out"
+          printf 'OPENROUTER_VIDEO_TIMEOUT_MS=%s\n' "$OPENROUTER_VIDEO_TIMEOUT_MS" >> "$out"
+          printf 'OPENROUTER_VIDEO_MAX_DURATION_SEC=%s\n' "$OPENROUTER_VIDEO_MAX_DURATION_SEC" >> "$out"
+          printf 'STORAGE_MEDIA_BUCKET=%s\n' "$STORAGE_MEDIA_BUCKET" >> "$out"
+          printf 'STORAGE_THUMB_BUCKET=%s\n' "$STORAGE_THUMB_BUCKET" >> "$out"
+          printf 'MEDIA_SIGNED_URL_TTL_SECONDS=%s\n' "$MEDIA_SIGNED_URL_TTL_SECONDS" >> "$out"
+          printf 'PUBLIC_URL=%s\n' "$PUBLIC_URL"                >> "$out"
+          printf 'WORKER_IDLE_MS=%s\n' "$WORKER_IDLE_MS"        >> "$out"
+          printf 'WORKER_RESCORE_EVERY=%s\n' "$WORKER_RESCORE_EVERY" >> "$out"
+          ls -la "$out"
+          echo "lines: $(wc -l < "$out")"
+          echo "video-model-marker: $(grep -c '^OPENROUTER_VIDEO_MODEL=' "$out")"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -114,6 +120,6 @@ jobs:
           # BuildKit secret id=worker_env, and worker/Dockerfile copies it to
           # /app/.env.
           secret-files: |
-            id=worker_env,src=/tmp/worker.env
+            id=worker_env,src=${{ github.workspace }}/.worker-env.tmp
           cache-from: type=gha
           cache-to: type=gha,mode=max
