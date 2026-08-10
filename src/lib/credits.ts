@@ -208,7 +208,7 @@ export async function refundCredits(
   credits: number,
   tool: string,
   refId: string,
-  reason: 'usage_settlement' | 'call_failed' | 'adjustment' = 'call_failed',
+  reason: 'usage_settlement' | 'call_failed' | 'fetch_failed' | 'adjustment' = 'call_failed',
 ): Promise<CreditBalance> {
   credits = Math.ceil(credits); // see debitCredits — Int columns, no float8 assignment cast
   if (credits <= 0) return creditBalance(workspaceId);
