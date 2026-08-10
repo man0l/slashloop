@@ -253,15 +253,22 @@ export async function ingestVideoFile(
  *
  * TikTok only — downloadTikTokVideo drives the clockworks/tiktok-scraper
  * actor. Apify spend is asserted + recorded inside downloadTikTokVideo, so the
- * fetch flow is governed by the Apify spend cap, not AI credits. Returns the
- * stored bytes, or null on any failure; callers record 'failed' and move on.
+ * fetch flow is governed by the Apify spend cap, not AI credits. On ANY failure
+ * the video is marked mediaStatus='failed' and the REAL error is rethrown —
+ * the worker's failJob persists it as the job's lastError, which is what the
+ * gallery's ⛔ fetch-error surface (src/lib/fetch-errors.ts) reads. Swallowing
+ * the reason here used to turn every failure into a generic "download/store
+ * returned no result" and hid whether it was a spend cap, an Apify actor
+ * failure, a TikTok CDN refusal, or a deleted video.
  */
 export async function downloadAndStoreVideo(
   workspaceId: string,
   videoId: string,
   videoUrl: string,
-): Promise<{ bytes: number } | null> {
-  if (!isStorageEnabled()) return null;
+): Promise<{ bytes: number }> {
+  if (!isStorageEnabled()) {
+    throw new Error('media storage disabled — cannot store the video (STORAGE_MEDIA_BUCKET not configured)');
+  }
 
   const { mkdtempSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
@@ -277,11 +284,12 @@ export async function downloadAndStoreVideo(
     if (statSync(filePath).size < 1024) throw new Error('downloaded file too small');
 
     const stored = await ingestVideoFile(workspaceId, videoId, filePath);
-    return stored ? { bytes: dl.sizeBytes } : null;
+    if (!stored) throw new Error('failed to store the downloaded MP4 in the media bucket');
+
+    return { bytes: dl.sizeBytes };
   } catch (err) {
-    console.warn(`[media] fetch failed for ${videoId}: ${(err as Error).message}`);
     await db.video.update({ where: { id: videoId }, data: { mediaStatus: 'failed' } }).catch(() => {});
-    return null;
+    throw err;
   } finally {
     const { rmSync } = await import('node:fs');
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
