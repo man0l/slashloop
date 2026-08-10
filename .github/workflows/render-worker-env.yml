@@ -1,0 +1,72 @@
+# Reconstruct the VPS worker `.env` from the GitHub repo variables + secrets
+# so the secret lives only in GitHub (never in git) but is easy to get onto the
+# box: run this workflow (Actions -> render-worker-env -> Run workflow), then
+# download the `slashloop-worker-env` artifact and place it as
+# `<salonease repo>/slashloop-worker/.env`.
+#
+# Non-sensitive config comes from repo VARIABLES; sensitive values from repo
+# SECRETS. Any secret not yet set (see the README for the still-required ones,
+# e.g. DATABASE_URL, GEMINI_API_KEY, APIFY_API_KEY) renders as an empty value
+# in the .env — add it to GitHub Secrets, then re-run.
+name: render-worker-env
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assemble .env
+        shell: bash
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          APIFY_API_KEY: ${{ secrets.APIFY_API_KEY }}
+          APIFY_SPEND_CAP_CENTS: ${{ vars.APIFY_SPEND_CAP_CENTS }}
+          APIFY_TIKTOK_ACTOR_ID: ${{ vars.APIFY_TIKTOK_ACTOR_ID }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_VIDEO_MODEL: ${{ vars.OPENROUTER_VIDEO_MODEL }}
+          OPENROUTER_VIDEO_MODE: ${{ vars.OPENROUTER_VIDEO_MODE }}
+          OPENROUTER_VIDEO_TIMEOUT_MS: ${{ vars.OPENROUTER_VIDEO_TIMEOUT_MS }}
+          OPENROUTER_VIDEO_MAX_DURATION_SEC: ${{ vars.OPENROUTER_VIDEO_MAX_DURATION_SEC }}
+          STORAGE_MEDIA_BUCKET: ${{ vars.STORAGE_MEDIA_BUCKET }}
+          STORAGE_THUMB_BUCKET: ${{ vars.STORAGE_THUMB_BUCKET }}
+          MEDIA_SIGNED_URL_TTL_SECONDS: ${{ vars.MEDIA_SIGNED_URL_TTL_SECONDS }}
+          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+          WORKER_IDLE_MS: ${{ vars.WORKER_IDLE_MS }}
+          WORKER_RESCORE_EVERY: ${{ vars.WORKER_RESCORE_EVERY }}
+        run: |
+          cat > .env <<'EOF'
+          DATABASE_URL=$DATABASE_URL
+          DIRECT_URL=$DIRECT_URL
+          SUPABASE_URL=$SUPABASE_URL
+          SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+          SUPABASE_SECRET_KEY=$SUPABASE_SECRET_KEY
+          GEMINI_API_KEY=$GEMINI_API_KEY
+          APIFY_API_KEY=$APIFY_API_KEY
+          APIFY_SPEND_CAP_CENTS=$APIFY_SPEND_CAP_CENTS
+          APIFY_TIKTOK_ACTOR_ID=$APIFY_TIKTOK_ACTOR_ID
+          OPENROUTER_API_KEY=$OPENROUTER_API_KEY
+          OPENROUTER_VIDEO_MODEL=$OPENROUTER_VIDEO_MODEL
+          OPENROUTER_VIDEO_MODE=$OPENROUTER_VIDEO_MODE
+          OPENROUTER_VIDEO_TIMEOUT_MS=$OPENROUTER_VIDEO_TIMEOUT_MS
+          OPENROUTER_VIDEO_MAX_DURATION_SEC=$OPENROUTER_VIDEO_MAX_DURATION_SEC
+          STORAGE_MEDIA_BUCKET=$STORAGE_MEDIA_BUCKET
+          STORAGE_THUMB_BUCKET=$STORAGE_THUMB_BUCKET
+          MEDIA_SIGNED_URL_TTL_SECONDS=$MEDIA_SIGNED_URL_TTL_SECONDS
+          PUBLIC_URL=$PUBLIC_URL
+          WORKER_IDLE_MS=$WORKER_IDLE_MS
+          WORKER_RESCORE_EVERY=$WORKER_RESCORE_EVERY
+          EOF
+
+      - name: Upload .env artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slashloop-worker-env
+          path: .env
+          if-no-files-found: error
