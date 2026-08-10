@@ -3,10 +3,16 @@ name: build-worker-image
 # Auto-build the VPS worker Docker image on changes to master, and push it to
 # GitHub Container Registry (ghcr.io/man0l/slashloop-worker).
 #
+# The runtime .env is baked into the image AT BUILD TIME: this workflow
+# assembles it from the repo GitHub variables + secrets and passes it to the
+# Docker build as a BuildKit secret-file (worker/Dockerfile copies it to
+# /app/.env, which Bun auto-loads). Secrets are never uploaded as artifacts or
+# committed to git.
+#
 # Why paths: the image only changes when queue-drain / analysis code changes,
 # not on docs or frontend tweaks — matching the "build if the worker's code has
-# changed" rule. Build on old commits is a no-op; run the workflow manually
-# (Actions -> build-worker-image -> Run workflow) to force a rebuild.
+# changed" rule. Run the workflow manually (Actions -> build-worker-image ->
+# Run workflow) to force a rebuild.
 on:
   push:
     branches: [master]
@@ -30,11 +36,60 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # GITHUB_TOKEN with package write lets the build push to ghcr.io for
-      # this repository — no extra secret needed.
       packages: write
     steps:
       - uses: actions/checkout@v4
+
+      # Assemble the worker .env from GitHub variables (non-secret config) and
+      # secrets (keys). Any secret not yet set (DATABASE_URL, GEMINI_API_KEY,
+      # APIFY_API_KEY, DIRECT_URL) renders empty until it is added to GitHub —
+      # add it, then re-run this workflow.
+      - name: Prepare worker .env
+        shell: bash
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          APIFY_API_KEY: ${{ secrets.APIFY_API_KEY }}
+          APIFY_SPEND_CAP_CENTS: ${{ vars.APIFY_SPEND_CAP_CENTS }}
+          APIFY_TIKTOK_ACTOR_ID: ${{ vars.APIFY_TIKTOK_ACTOR_ID }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_VIDEO_MODEL: ${{ vars.OPENROUTER_VIDEO_MODEL }}
+          OPENROUTER_VIDEO_MODE: ${{ vars.OPENROUTER_VIDEO_MODE }}
+          OPENROUTER_VIDEO_TIMEOUT_MS: ${{ vars.OPENROUTER_VIDEO_TIMEOUT_MS }}
+          OPENROUTER_VIDEO_MAX_DURATION_SEC: ${{ vars.OPENROUTER_VIDEO_MAX_DURATION_SEC }}
+          STORAGE_MEDIA_BUCKET: ${{ vars.STORAGE_MEDIA_BUCKET }}
+          STORAGE_THUMB_BUCKET: ${{ vars.STORAGE_THUMB_BUCKET }}
+          MEDIA_SIGNED_URL_TTL_SECONDS: ${{ vars.MEDIA_SIGNED_URL_TTL_SECONDS }}
+          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+          WORKER_IDLE_MS: ${{ vars.WORKER_IDLE_MS }}
+          WORKER_RESCORE_EVERY: ${{ vars.WORKER_RESCORE_EVERY }}
+        run: |
+          cat > /tmp/worker.env <<'EOF'
+          DATABASE_URL=$DATABASE_URL
+          DIRECT_URL=$DIRECT_URL
+          SUPABASE_URL=$SUPABASE_URL
+          SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+          SUPABASE_SECRET_KEY=$SUPABASE_SECRET_KEY
+          GEMINI_API_KEY=$GEMINI_API_KEY
+          APIFY_API_KEY=$APIFY_API_KEY
+          APIFY_SPEND_CAP_CENTS=$APIFY_SPEND_CAP_CENTS
+          APIFY_TIKTOK_ACTOR_ID=$APIFY_TIKTOK_ACTOR_ID
+          OPENROUTER_API_KEY=$OPENROUTER_API_KEY
+          OPENROUTER_VIDEO_MODEL=$OPENROUTER_VIDEO_MODEL
+          OPENROUTER_VIDEO_MODE=$OPENROUTER_VIDEO_MODE
+          OPENROUTER_VIDEO_TIMEOUT_MS=$OPENROUTER_VIDEO_TIMEOUT_MS
+          OPENROUTER_VIDEO_MAX_DURATION_SEC=$OPENROUTER_VIDEO_MAX_DURATION_SEC
+          STORAGE_MEDIA_BUCKET=$STORAGE_MEDIA_BUCKET
+          STORAGE_THUMB_BUCKET=$STORAGE_THUMB_BUCKET
+          MEDIA_SIGNED_URL_TTL_SECONDS=$MEDIA_SIGNED_URL_TTL_SECONDS
+          PUBLIC_URL=$PUBLIC_URL
+          WORKER_IDLE_MS=$WORKER_IDLE_MS
+          WORKER_RESCORE_EVERY=$WORKER_RESCORE_EVERY
+          EOF
 
       - uses: docker/setup-buildx-action@v3
 
@@ -45,7 +100,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push worker image
+      - name: Build & push worker image (with baked .env)
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -54,5 +109,11 @@ jobs:
           tags: |
             ghcr.io/man0l/slashloop-worker:master
             ghcr.io/man0l/slashloop-worker:${{ github.sha }}
+          # Only the assembled .env reaches the build; nothing is persisted as
+          # an artifact or committed. docker/build-push-action mounts this as
+          # BuildKit secret id=worker_env, and worker/Dockerfile copies it to
+          # /app/.env.
+          secret-files: |
+            id=worker_env,src=/tmp/worker.env
           cache-from: type=gha
           cache-to: type=gha,mode=max

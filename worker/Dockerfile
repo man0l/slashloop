@@ -32,5 +32,18 @@ RUN bun run db:generate || true
 # The whole source tree (the worker imports across src/ and lib/).
 COPY . .
 
+# Lay down the runtime .env AT BUILD TIME, from the BuildKit secret `worker_env`
+# (the CI workflow assembles it from GitHub variables + secrets and passes it as
+# a secret-file — NOT as an artifact or a git-committed file). Bun auto-loads
+# /app/.env at startup. Local/builds-without-the-secret get a placeholder file
+# so an env-less build still works (and the smoke test can boot the loop).
+RUN --mount=type=secret,id=worker_env \
+    if [ -f /run/secrets/worker_env ]; then \
+      cp /run/secrets/worker_env /app/.env && \
+      echo "# .env baked in at build time from GitHub variables+secrets" >> /app/.env; \
+    else \
+      echo "# runtime env: supply the 'worker_env' BuildKit secret at build time" > /app/.env; \
+    fi
+
 # The queue drainer. No server — it self-polls the MediaJob table.
 CMD ["bun", "run", "worker"]
