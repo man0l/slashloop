@@ -1,9 +1,9 @@
-# Build context = repo root (docker build -f worker/Dockerfile .)
 node_modules
 .git
 dist
 .env
 .env.*
+!.worker-env
 .vercel
 .zcode
 .claude
