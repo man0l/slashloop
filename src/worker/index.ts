@@ -26,13 +26,27 @@ import { rescoreStaleTooFresh } from '../scoring.js';
 const IDLE_MS = Number(process.env.WORKER_IDLE_MS ?? 3000);
 const RESCORE_EVERY = Number(process.env.WORKER_RESCORE_EVERY ?? 60);
 
+// Which MediaJob kinds this worker claims. WORKER_KINDS is a comma-separated
+// list (e.g. "analyze,fetch" for video-only, or "refresh,rescore" for a
+// maintenance worker). Unset = drain everything (fetch,analyze,rescore,refresh).
+const ALL_KINDS = ['fetch', 'analyze', 'rescore', 'refresh'] as const;
+function workerKinds(): string[] {
+  const raw = (process.env.WORKER_KINDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  return raw.length ? raw : [...ALL_KINDS];
+}
+const KINDS = workerKinds();
+// Only the maintenance worker (refresh/rescore kinds) should spend Apify
+// credits on the periodic stale-score top-up scrape — the video worker
+// (analyze/fetch) must not double that spend.
+const doesMaintenance = KINDS.includes('refresh') || KINDS.includes('rescore');
+
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 let shuttingDown = false;
 process.on('SIGINT', () => { shuttingDown = true; });
 process.on('SIGTERM', () => { shuttingDown = true; });
 
-console.log(`[worker] started — idle ${IDLE_MS}ms, rescore every ${RESCORE_EVERY} iterations`);
+console.log(`[worker] started — kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms, rescore every ${RESCORE_EVERY} iterations`);
 
 let iteration = 0;
 
@@ -47,20 +61,23 @@ while (!shuttingDown) {
 
     // Same idea as the Vercel worker's per-invocation rescoreStaleTooFresh:
     // scores stuck at 'too_fresh' usually clear by the next check. Runs every
-    // N iterations (a few minutes at the default idle) instead of per minute.
-    if (++iteration % RESCORE_EVERY === 0) {
+    // N iterations (a few minutes at the default idle) instead of per minute —
+    // only on the maintenance worker.
+    if (doesMaintenance && ++iteration % RESCORE_EVERY === 0) {
       await rescoreStaleTooFresh().catch((err) => {
         console.warn(`[worker] rescoreStaleTooFresh failed: ${(err as Error).message}`);
       });
     }
 
-    // Priority order matters: fetch + analyze are the long legs this process
-    // exists for; rescore is free; refresh is claimed last (it is the longest
-    // scrape and runs best on its own).
-    const job = (await claimNextJob('fetch'))
-      ?? (await claimNextJob('analyze'))
-      ?? (await claimNextJob('rescore'))
-      ?? (await claimNextJob('refresh'));
+    // Claim in priority order, restricted to WORKER_KINDS. fetch + analyze are
+    // the long legs this process exists for; rescore is free; refresh is
+    // claimed last (it is the longest scrape and runs best on its own).
+    let job = null;
+    for (const kind of ALL_KINDS) {
+      if (!KINDS.includes(kind)) continue;
+      job = await claimNextJob(kind);
+      if (job) break;
+    }
 
     if (!job) {
       await sleep(IDLE_MS);
