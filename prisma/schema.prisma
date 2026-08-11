@@ -215,6 +215,11 @@ model Video {
   swipeEntries SwipeEntry[]
   ideas        Idea[]
 
+  /// Fan-out from a shared multi-tenant scrape can be applied twice — by two
+  /// worker containers racing, or (Phase B) by replaying a cached result.
+  /// The constraint is what makes that idempotent instead of duplicating rows;
+  /// src/lib/refresh.ts catches the violation and updates stats instead.
+  @@unique([sourceId, platform, externalId])
   @@index([sourceId])
   @@index([platform])
   @@index([creatorHandle])
@@ -223,6 +228,20 @@ model Video {
   // Retention sweeper scans by stored-at within status; both are covered.
   @@index([thumbStatus, thumbStoredAt])
   @@index([mediaStatus, mediaStoredAt])
+}
+
+/// One Apify run per canonical query across worker containers. A TTL row
+/// rather than pg_advisory_lock: the workers talk to the Supabase pooler in
+/// transaction pooling mode, where a session-level lock can be released on a
+/// different backend and leak. See src/lib/jobs.ts acquireCanonicalLock.
+model CanonicalScrapeLock {
+  /// canonicalKey(platform, sourceType, normalizedQuery)
+  key       String   @id
+  lockedBy  String
+  lockedAt  DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([expiresAt])
 }
 
 model Baseline {

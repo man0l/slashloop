@@ -1,0 +1,113 @@
+import { afterEach, describe, expect, test } from 'bun:test';
+import {
+  REFRESH_BATCH_PEER_CAP_DEFAULT,
+  refreshBatchPeerCap,
+  refreshBatchingEnabled,
+  refreshCoalesceMs,
+} from './jobs.js';
+import { canonicalKey, normalizeQuery } from './canonical-query.js';
+import { splitSpend } from './apify.js';
+
+const ENV_KEYS = ['REFRESH_BATCH_PEER_CAP', 'REFRESH_BATCHING_ENABLED', 'REFRESH_COALESCE_MS'] as const;
+
+afterEach(() => {
+  for (const k of ENV_KEYS) delete process.env[k];
+});
+
+describe('batching kill switch and caps', () => {
+  test('batching is on by default and only "0" disables it', () => {
+    expect(refreshBatchingEnabled()).toBe(true);
+    process.env.REFRESH_BATCHING_ENABLED = '0';
+    expect(refreshBatchingEnabled()).toBe(false);
+    process.env.REFRESH_BATCHING_ENABLED = '1';
+    expect(refreshBatchingEnabled()).toBe(true);
+  });
+
+  test('peer cap is overridable and rejects junk', () => {
+    expect(refreshBatchPeerCap()).toBe(REFRESH_BATCH_PEER_CAP_DEFAULT);
+    process.env.REFRESH_BATCH_PEER_CAP = '3';
+    expect(refreshBatchPeerCap()).toBe(3);
+    // 0 is meaningful: batch nothing, one scrape per job.
+    process.env.REFRESH_BATCH_PEER_CAP = '0';
+    expect(refreshBatchPeerCap()).toBe(0);
+    process.env.REFRESH_BATCH_PEER_CAP = 'nonsense';
+    expect(refreshBatchPeerCap()).toBe(REFRESH_BATCH_PEER_CAP_DEFAULT);
+    process.env.REFRESH_BATCH_PEER_CAP = '-2';
+    expect(refreshBatchPeerCap()).toBe(REFRESH_BATCH_PEER_CAP_DEFAULT);
+  });
+
+  test('coalescing hold defaults to a real window and 0 disables it', () => {
+    // A zero default would mean the worker claims each refresh alone and
+    // batching never fires — the whole point of the hold.
+    expect(refreshCoalesceMs()).toBeGreaterThan(0);
+    process.env.REFRESH_COALESCE_MS = '0';
+    expect(refreshCoalesceMs()).toBe(0);
+    process.env.REFRESH_COALESCE_MS = '5000';
+    expect(refreshCoalesceMs()).toBe(5000);
+    process.env.REFRESH_COALESCE_MS = 'later';
+    expect(refreshCoalesceMs()).toBeGreaterThan(0);
+  });
+
+  test('disabling batching also drops the hold — no latency for no benefit', () => {
+    process.env.REFRESH_COALESCE_MS = '30000';
+    process.env.REFRESH_BATCHING_ENABLED = '0';
+    expect(refreshCoalesceMs()).toBe(0);
+  });
+});
+
+describe('canonical grouping — what shares one Apify run', () => {
+  test('the same creator written differently is one key', () => {
+    const a = canonicalKey('tiktok', 'creator', '@BuildingWithLiz_');
+    const b = canonicalKey('tiktok', 'creator', 'buildingwithliz_');
+    const c = canonicalKey('TikTok', 'creator', '  @@buildingwithliz_  ');
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+  });
+
+  test('different platform, type or query never share a scrape', () => {
+    const creator = canonicalKey('tiktok', 'creator', 'foo');
+    expect(canonicalKey('reels', 'creator', 'foo')).not.toBe(creator);
+    expect(canonicalKey('tiktok', 'hashtag', 'foo')).not.toBe(creator);
+    expect(canonicalKey('tiktok', 'creator', 'bar')).not.toBe(creator);
+  });
+
+  test('a hashtag keeps its # stripped, a keyword keeps its text', () => {
+    expect(normalizeQuery('hashtag', '#BuildInPublic')).toBe('buildinpublic');
+    expect(normalizeQuery('keyword', 'Build In Public')).toBe('build in public');
+  });
+});
+
+describe('lease contention must not consume retries', () => {
+  test('MAX_ATTEMPTS is small enough that burning attempts on contention would be fatal', async () => {
+    const { MAX_ATTEMPTS } = await import('./jobs.js');
+    // Documents why the lease loser calls yieldJob (attempt returned) rather
+    // than failJob: with three lives, three lost races would terminally fail a
+    // refresh that never attempted a scrape.
+    expect(MAX_ATTEMPTS).toBeLessThanOrEqual(5);
+  });
+});
+
+describe('splitSpend — a shared run is a shared purchase', () => {
+  test('single tenant pays the whole run', () => {
+    expect(splitSpend(['w1'], 19)).toEqual([{ workspaceId: 'w1', cents: 19 }]);
+  });
+
+  test('splits evenly, remainder to the first sharer, sums to the total', () => {
+    const parts = splitSpend(['w1', 'w2', 'w3'], 19);
+    expect(parts.reduce((a, p) => a + p.cents, 0)).toBe(19);
+    expect(parts.find(p => p.workspaceId === 'w1')!.cents).toBe(7); // 6 + 1
+    expect(parts.find(p => p.workspaceId === 'w2')!.cents).toBe(6);
+  });
+
+  test('a workspace with two sources in the batch pays two shares', () => {
+    const parts = splitSpend(['w1', 'w1', 'w2', 'w3'], 20);
+    expect(parts).toHaveLength(3);
+    expect(parts.find(p => p.workspaceId === 'w1')!.cents).toBe(10); // 5+5
+    expect(parts.reduce((a, p) => a + p.cents, 0)).toBe(20);
+  });
+
+  test('never invents spend out of nothing', () => {
+    expect(splitSpend([], 19)).toEqual([]);
+    expect(splitSpend(['w1', 'w2'], 0).reduce((a, p) => a + p.cents, 0)).toBe(0);
+  });
+});

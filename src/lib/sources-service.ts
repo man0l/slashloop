@@ -21,6 +21,7 @@ import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } f
 import { ingestThumbnails, type ThumbIngestTarget } from './media.js';
 import { enqueueRefreshJob, enqueueRescoreJob, outstandingJobForSource, dispatchWorker } from './jobs.js';
 import { dismissSuggestion } from './suggestions.js';
+import { resolveRefreshPlan } from './refresh-policy.js';
 
 /**
  * Largest refresh still run inline, in videos. Zero = always queue.
@@ -259,7 +260,19 @@ export async function refreshSourceForWorkspace(
   const source = await db.source.findFirst({ where: { id: sourceId, workspaceId: workspace.id } });
   if (!source) return { kind: 'not_found' };
 
-  const limit = input.videoLimit ?? source.videoLimit;
+  // Same bootstrap/incremental plan runRefresh will use, so the job's
+  // preAuthCredits and the worker's debit stay aligned (and so the UI
+  // estimate reflects the small incremental scrape, not a 50-video full pull).
+  const plan = await resolveRefreshPlan(
+    {
+      id: source.id,
+      sourceType: source.sourceType,
+      videoLimit: source.videoLimit,
+      lastRefreshedAt: source.lastRefreshedAt,
+    },
+    input.videoLimit,
+  );
+  const limit = plan.limit;
 
   // Queue anything big enough to risk the 60s request budget. A scrape that
   // outlives it is killed after the Apify spend but before the rescore —
@@ -273,10 +286,13 @@ export async function refreshSourceForWorkspace(
     }
 
     const deadlineAt = new Date(Date.now() + REFRESH_JOB_DEADLINE_MS);
+    // Pass the resolved limit as limitOverride so a concurrent video insert
+    // between enqueue and worker cannot change the pre-auth size mid-flight.
+    // runRefresh still re-resolves postedAfter watermark at execute time.
     const job = await enqueueRefreshJob({
       workspaceId: workspace.id,
       sourceId,
-      payload: { limitOverride: input.videoLimit },
+      payload: { limitOverride: limit },
       videoLimit: limit,
       deadlineAt,
     });

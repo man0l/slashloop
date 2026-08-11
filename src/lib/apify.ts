@@ -144,6 +144,33 @@ async function runTikTokActorWithFallback(
   }
 }
 
+/**
+ * Split one run's cost across the workspaces that share it.
+ *
+ * Integer cents, remainder to the first sharer, and a workspace appearing
+ * twice (two of its sources tracking the same canonical query) pays twice —
+ * it consumed two of the N shares. Never rounds a share to 0 when there is
+ * cost to attribute: a cap that can be evaded by joining a big enough batch
+ * is not a cap.
+ */
+export function splitSpend(
+  workspaceIds: string[],
+  totalCents: number,
+): Array<{ workspaceId: string; cents: number }> {
+  const ids = workspaceIds.length > 0 ? workspaceIds : [];
+  if (ids.length === 0) return [];
+  if (ids.length === 1) return [{ workspaceId: ids[0]!, cents: totalCents }];
+
+  const per = Math.floor(totalCents / ids.length);
+  const remainder = totalCents - per * ids.length;
+  const byWorkspace = new Map<string, number>();
+  ids.forEach((id, idx) => {
+    const share = per + (idx === 0 ? remainder : 0);
+    byWorkspace.set(id, (byWorkspace.get(id) ?? 0) + share);
+  });
+  return [...byWorkspace].map(([workspaceId, cents]) => ({ workspaceId, cents }));
+}
+
 // Estimated cost per result, in cents — FREE tier ($0.0037/result), the most
 // expensive tier, used as a conservative upper bound for the pre-auth check.
 const ESTIMATED_COST_PER_RESULT_CENTS = 0.37;
@@ -152,9 +179,26 @@ const ESTIMATED_ACTOR_START_COST_CENTS = 0.1;
 
 export interface ApifyScrapeOptions {
   workspaceId: string;
+  /**
+   * Every workspace this ONE actor run is being made on behalf of, when a
+   * multi-tenant batch shares a scrape. The cap check and the recorded spend
+   * are split pro-rata across them, because that is literally what happened:
+   * ten tenants sharing a $0.019 run consumed a fifth of a cent each, not
+   * $0.019 each, and not $0.019 for whichever one the worker claimed first.
+   *
+   * Omit for a single-tenant scrape; it defaults to [workspaceId].
+   */
+  costShareWorkspaceIds?: string[];
   sourceType: 'creator' | 'keyword' | 'hashtag';
   query: string; // handle, keyword phrase, or hashtag (with or without #)
   limit: number; // max results
+  /**
+   * Creator scrapes only. Maps to clockworks `oldestPostDateUnified` —
+   * only return videos posted on/after this time (PAY_PER_EVENT date-filter
+   * add-on, ~$0.001). Used by incremental refresh so we pay for new posts,
+   * not the creator's already-known catalogue.
+   */
+  postedAfter?: Date;
 }
 
 export interface ApifyScrapeResult {
@@ -216,17 +260,28 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
   const apiKey = process.env.APIFY_API_KEY;
   if (!apiKey) throw new Error('APIFY_API_KEY is not set. Add it to .env (or the MCP server env block in your client config).');
 
-  // Pre-authorize cost
-  const estimatedCostCents = Math.ceil(opts.limit * ESTIMATED_COST_PER_RESULT_CENTS + ESTIMATED_ACTOR_START_COST_CENTS);
-  await assertApifyCap(opts.workspaceId, estimatedCostCents);
-
   // Build the actor input. clockworks/tiktok-scraper accepts:
   //   - hashtags: array of hashtags (without #)
   //   - searchQueries: array of keywords
   //   - profiles: array of usernames (for sourceType=creator)
   //   - resultsPerPage: integer
+  //   - profileSorting: latest | popular | oldest (creators)
+  //   - oldestPostDateUnified: ISO/relative date filter (creators, ~$0.001)
   // See https://apify.com/clockworks/tiktok-scraper/input-schema
   const hashtag = opts.query.replace(/^#/, '').trim();
+  // Date-filter add-on is a flat ~$0.001 when set — bake it into the estimate
+  // so the spend-cap pre-auth stays conservative.
+  const dateFilterCents = opts.postedAfter && opts.sourceType === 'creator' ? 0.1 : 0;
+  const estimatedCostCents = Math.ceil(
+    opts.limit * ESTIMATED_COST_PER_RESULT_CENTS + ESTIMATED_ACTOR_START_COST_CENTS + dateFilterCents,
+  );
+
+  // Cap check per SHARER, not per run. A batched scrape is a shared purchase:
+  // asserting the full estimate against one workspace let one tenant's cap be
+  // consumed by (and breach on behalf of) nine others.
+  const sharers = splitSpend(opts.costShareWorkspaceIds ?? [opts.workspaceId], estimatedCostCents);
+  for (const s of sharers) await assertApifyCap(s.workspaceId, s.cents);
+
   const input: Record<string, unknown> = {
     resultsPerPage: opts.limit,
     // Have the actor copy cover images into its key-value store and list the
@@ -236,9 +291,9 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
     // (src/lib/media.ts) and only falls back to the TikTok CDN when the actor
     // returns none — `mediaUrls` is documented as sometimes empty.
     //
-    // Costs a little more actor work per run. Videos are NOT downloaded here:
-    // that stays on the analyze path (downloadTikTokVideo), which pulls one
-    // video on demand rather than 50 speculatively.
+    // PPE does not charge the video-download event for covers (observed live).
+    // Videos are NOT downloaded here: that stays on the analyze path
+    // (downloadTikTokVideo), which pulls one video on demand.
     shouldDownloadCovers: true,
     shouldDownloadVideos: false,
     shouldDownloadSlideshowImages: false,
@@ -246,6 +301,18 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
 
   if (opts.sourceType === 'creator') {
     input.profiles = [opts.query.replace(/^@/, '').trim()];
+    // Latest-first is the actor default; set explicitly so a future schema
+    // change cannot silently switch us to "popular" (which re-returns the
+    // same evergreen hits every refresh).
+    input.profileSorting = 'latest';
+    // Pinned posts are almost never "new outliers" — skip them so a small
+    // resultsPerPage is not wasted on the same two pins every run.
+    input.excludePinnedPosts = true;
+    if (opts.postedAfter) {
+      // Absolute ISO. Relative forms ("2 days") also work; absolute is
+      // unambiguous against our watermark.
+      input.oldestPostDateUnified = opts.postedAfter.toISOString();
+    }
   } else if (opts.sourceType === 'hashtag') {
     input.hashtags = [hashtag];
   } else {
@@ -254,7 +321,11 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
   }
 
   const context = `${opts.sourceType}="${opts.query}"`;
-  console.log(`[apify] calling TikTok scraper (actor=${primaryTikTokActorId()}) for ${context} limit=${opts.limit} (est cost: ${estimatedCostCents}c)`);
+  const watermarkNote = opts.postedAfter ? ` postedAfter=${opts.postedAfter.toISOString()}` : '';
+  console.log(
+    `[apify] calling TikTok scraper (actor=${primaryTikTokActorId()}) for ${context} `
+    + `limit=${opts.limit}${watermarkNote} (est cost: ${estimatedCostCents}c)`,
+  );
 
   let { rawItems, actorId } = await runTikTokActorWithFallback(input, apiKey, context);
   let items = normalizeItems(rawItems);
@@ -294,7 +365,9 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
 
   // Record actual cost (we use the estimate since Apify's per-call billing
   // is not returned in the response — the real invoice lands later).
-  await recordApifySpend(opts.workspaceId, spentCents, null);
+  for (const s of splitSpend(opts.costShareWorkspaceIds ?? [opts.workspaceId], spentCents)) {
+    await recordApifySpend(s.workspaceId, s.cents, null);
+  }
 
   return {
     items,

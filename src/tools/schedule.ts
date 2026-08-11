@@ -25,6 +25,7 @@ import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
 import { CREDIT_COSTS, creditBalance } from '../lib/credits.js';
 import { enqueueRefreshJob, outstandingJobForSource, dispatchWorker } from '../lib/jobs.js';
+import { resolveRefreshPlan } from '../lib/refresh-policy.js';
 import { withNextSteps, apifyCostLabel } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -58,6 +59,14 @@ interface DueSource {
   sourceType: string;
   refreshSchedule: string;
   videoLimit: number;
+  /**
+   * What the worker will ACTUALLY scrape (refresh-policy: bootstrap ≤20,
+   * incremental ≤5) rather than the source's stored ceiling. Estimates and
+   * pre-auths are sized from this; quoting `videoLimit` meant a legacy
+   * 50-video source reserved 75 credits for a run that spends 8, and the
+   * ceiling below then refused to queue sources the budget could easily cover.
+   */
+  plannedLimit: number;
   lastRefreshedAt: string | null;
   hoursOverdue: number | null;
   neverRefreshed: boolean;
@@ -111,6 +120,13 @@ async function collectDue(
     // that is how a schedule turns into paying twice for the same scrape.
     const outstanding = await outstandingJobForSource(s.id);
 
+    const plan = await resolveRefreshPlan({
+      id: s.id,
+      sourceType: s.sourceType,
+      videoLimit: s.videoLimit,
+      lastRefreshedAt: s.lastRefreshedAt,
+    });
+
     due.push({
       sourceId: s.id,
       query: s.query,
@@ -118,11 +134,12 @@ async function collectDue(
       sourceType: s.sourceType,
       refreshSchedule: s.refreshSchedule,
       videoLimit: s.videoLimit,
+      plannedLimit: plan.limit,
       lastRefreshedAt: s.lastRefreshedAt?.toISOString() ?? null,
       hoursOverdue: overdueBy != null ? Math.round(overdueBy / 3_600_000) : null,
       neverRefreshed: last === null,
-      estimatedCredits: Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * s.videoLimit),
-      estimatedApify: apifyCostLabel(s.videoLimit),
+      estimatedCredits: Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * plan.limit),
+      estimatedApify: apifyCostLabel(plan.limit),
       hasOutstandingJob: Boolean(outstanding),
     });
   }
@@ -289,7 +306,7 @@ export function registerScheduleTools(server: McpServer) {
           });
           continue;
         }
-        planned.push({ sourceId: d.sourceId, query: d.query, estimatedCredits: d.estimatedCredits, videoLimit: d.videoLimit });
+        planned.push({ sourceId: d.sourceId, query: d.query, estimatedCredits: d.estimatedCredits, videoLimit: d.plannedLimit });
         committed += d.estimatedCredits;
       }
 
@@ -308,7 +325,9 @@ export function registerScheduleTools(server: McpServer) {
         const job = await enqueueRefreshJob({
           workspaceId: workspace.id,
           sourceId: p.sourceId,
-          payload: {},
+          // plannedLimit, not the source's stored ceiling: the pre-auth must
+          // match what the worker will actually scrape (refresh-policy).
+          payload: { limitOverride: p.videoLimit },
           videoLimit: p.videoLimit,
           deadlineAt: new Date(Date.now() + REFRESH_JOB_DEADLINE_MS),
         });

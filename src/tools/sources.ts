@@ -62,21 +62,18 @@ export function registerSourceTools(server: McpServer) {
       sourceType: z.enum(['creator', 'keyword', 'hashtag']).describe('Type of source'),
       query: z.string().describe('Handle, keyword phrase, or hashtag (with #)'),
       language: z.string().default('en').describe('Language code'),
-      // 20, not 50. This default decides whether a new user ever reaches the
-      // part of the product that has value.
+      // Bootstrap cap for the FIRST fill of a new source. Later refreshes use
+      // the new-outlier policy (src/lib/refresh-policy.ts): ~5 latest videos
+      // + creator date watermark — not a re-pull of this full limit.
       //
       // The free tier is 300 credits and a refresh costs 1.5 per video, so at
-      // 50 a single source costs 75 credits. Tracking four sources — the
-      // natural first session — spends the entire allowance before a single
-      // analysis, and analysis is where the insight is. At 20 the same session
-      // costs 120 and leaves room for 36 analyses.
-      //
-      // Little is lost: the scraper routinely overshoots the limit anyway (a
-      // 20-video request returned 30 in practice), and hashtag refreshes mostly
-      // return videos already held. Raising it per-source stays one call away.
+      // 50 a single bootstrap costs 75 credits. At 20 the first fill leaves
+      // room for analyses. Raise per-source only when you need a deeper
+      // first page; incremental runs stay small either way.
       videoLimit: z.number().min(1).max(200).default(20)
-        .describe('Max videos per refresh (default 20 ≈ 30 credits). Costs 1.5 credits per video returned, '
-          + 'so raise it deliberately — 50 videos is 75 credits.'),
+        .describe('Max videos on the FIRST (bootstrap) refresh (default 20 ≈ 30 credits). '
+          + 'Later refreshes only pull ~5 newest / posts after the watermark to catch new outliers. '
+          + 'Costs 1.5 credits per video Apify returns.'),
       refreshSchedule: z.enum(['manual', 'daily', 'weekly']).default('manual'),
       nicheTag: z.string().optional().describe('Niche/workspace tag'),
     },
@@ -151,10 +148,15 @@ export function registerSourceTools(server: McpServer) {
 
   // ---- refresh_source ----
   server.tool('refresh_source',
-    'Trigger a manual refresh for a source. TikTok uses the clockworks/tiktok-scraper actor (live). Instagram Reels and YouTube Shorts are stubs for now. Costs 1.5 credits per video returned. All Apify calls are also subject to the platform-wide APIFY_SPEND_CAP_CENTS guardrail (default $5) — if exceeded, the call is refused and a cap_breach event is logged.',
+    'Trigger a manual refresh for a source to catch NEW outliers (not re-scrape the full catalogue). '
+      + 'First fill (empty source) pulls up to the source videoLimit (capped at 20). '
+      + 'Later refreshes pull ~5 latest videos; creators also date-filter after the newest post already held. '
+      + 'TikTok uses clockworks/tiktok-scraper. Costs 1.5 credits per video Apify returns. '
+      + 'Subject to APIFY_SPEND_CAP_CENTS (default $5).',
     {
       sourceId: z.string(),
-      videoLimit: z.number().min(1).max(200).optional().describe('Override source video limit for this run'),
+      videoLimit: z.number().min(1).max(200).optional()
+        .describe('Hard cap for THIS run only. Default: bootstrap ≤20, incremental ≤5 (new outliers).'),
       async: z.boolean().optional()
         .describe('Force inline (false) or queued (true). Default: queued — a scrape does not fit inside a tool call. Only pass false for debugging.'),
     },
