@@ -347,7 +347,7 @@ A second `WORKER_KINDS=refresh,rescore` replica today means two concurrent Apify
 - exactly one container may include `refresh` in `WORKER_KINDS`;
 - worth a startup guard — log loudly (or refuse to claim `refresh`) unless an explicit `REFRESH_WORKER_SINGLETON=1` is set, so the constraint is enforced by the image rather than by memory.
 
-**2. Container stop grace must exceed a whole batch (new — G26).**
+**2. Container stop grace must exceed a whole batch (new — G26). Confirmed live on the VPS: neither worker sets `stop_grace_period`, and watchtower stops with its own 10s default.**
 `src/worker/index.ts` handles `SIGTERM` by setting `shuttingDown`, but the flag is only checked *between* jobs: the in-flight job keeps running. Docker's default 10s grace then `SIGKILL`s it. A redeploy landing mid-batch therefore kills the scrape and the fan-out, and with **G4** (refunded pre-auth + requeue ⇒ the retry replays the idempotent debit and is free) and **G5** (the catch-all fails every member, including ones already applied and billed) still open, that corrupts up to `REFRESH_BATCH_PEER_CAP` tenants' ledgers and wedges their refreshes for `STUCK_AFTER_MINUTES` (15). Master ships worker images to GHCR continuously, so this is a likely event, not a theoretical one.
 
 Fix: `stop_grace_period: 300s` on the maintenance service (scrape ~170s + fan-out headroom), and fix G4/G5 **before** widening the peer cap. A mid-batch kill is survivable only when each subscriber settles independently.
@@ -405,46 +405,57 @@ Everything below is on `feat/apify-multi-tenant-batching`, merged with `master` 
 1. Apply both migrations (`supabase db push` or the SQL directly). The lock acquire fails **open** with a warning if `CanonicalScrapeLock` is missing, so code can ship before the migration — but duplicate scrapes stay possible until it lands.
 2. `prisma generate` (postinstall already does it) — the `Video` compound unique is new.
 3. Set on the maintenance worker: `REFRESH_COALESCE_MS=30000`, `REFRESH_BATCH_PEER_CAP=9`, optionally `PLATFORM_WORKSPACE_ID`.
-4. Set `stop_grace_period: 300s` (compose) or `--stop-timeout 300` (docker run). Still the one gap the code cannot close by itself.
+4. Set `stop_grace_period: 300s` on both slashloop services **and** `WATCHTOWER_TIMEOUT=300s` on the watchtower service in `salonease/docker-compose.prod.yml` — watchtower passes its own stop timeout and ignores `stop_grace_period`. Still the one gap the code cannot close by itself (§14.4).
 5. Watch `[worker] refresh batch canonical=… size=…`. `size=1` on every line means the hold is too short for the enqueue pattern, not that grouping is broken.
 
-### 14.4 Why the lease matters with only ONE worker container
+### 14.4 The actual deployment, and what the lease is worth in it
 
-The VPS runs a single maintenance worker today, so "two containers scraping the same query" reads like a future problem. It is not:
+Read from `salonease/docker-compose.prod.yml` (the VPS this worker runs on):
 
-1. **Every deploy runs two.** `docker compose up -d` starts the new container while the old one is still finishing its in-flight job — and the `stop_grace_period: 300s` in §13.3 deliberately makes that overlap *longer* (up to 5 minutes). During it, both poll the same queue. The lease is what stops the new container starting a second Apify run for a query the old one is mid-scrape on.
-2. **Vercel is still a live drainer.** It claims nothing while `WORKER_URL` is set, but that is one env var. Unset it (or run a preview deployment with the same `DATABASE_URL`) and there are two runners again.
-3. **`async: false` bypasses the queue.** `refreshSourceForWorkspace` still has an inline scrape path (`INLINE_REFRESH_MAX_VIDEOS = 0` means it is unreachable by default, but an explicit `async: false` debug call takes it). That path does **not** take the lease — a known, low-severity hole, listed here rather than silently left.
+```yaml
+slashloop-worker:              WORKER_KINDS=analyze,fetch    WORKER_IDLE_MS=2000  DB_CONNECTION_LIMIT=4
+slashloop-worker-maintenance:  WORKER_KINDS=refresh,rescore  WORKER_IDLE_MS=5000  DB_CONNECTION_LIMIT=4
+watchtower:                    --interval 300 --label-enable  (both workers are labelled)
+```
+
+No `deploy.replicas`, no `stop_grace_period` on either service, and updates are automatic: watchtower polls GHCR every 5 minutes and replaces a labelled container as soon as `master` builds a new image.
+
+**Honest correction.** An earlier draft of this section claimed "every deploy runs two containers at once". That is wrong for this deployment: watchtower **stops the old container, then starts the new one** — sequential, no overlap. So on the VPS as configured, exactly one process claims `refresh`, and the lease is *insurance*, not a fix for something happening today.
+
+What the lease is actually worth here:
+
+1. **Vercel is one env var away from drainer status.** It claims nothing while `WORKER_URL` is set; unset it, or run a preview deployment against the same `DATABASE_URL`, and there are two runners.
+2. **`./slashloop-worker/.env` holds the production cloud Supabase credentials.** Anyone running `bun run worker` locally with that file is a second refresh drainer against prod.
+3. **It is the precondition for `replicas: 2`** (§14.5) — without it, scaling is a spend bug rather than a throughput win.
+4. It costs one indexed UPSERT per refresh.
+
+**The live problem in this deployment is not concurrency, it is the 10-second kill.** Watchtower stops with its own timeout (`WATCHTOWER_TIMEOUT`, default **10s**) and does **not** read a service's `stop_grace_period`, which is unset here anyway. A refresh batch is a ~170s scrape plus fan-out. So every auto-update that lands mid-scrape SIGKILLs a batch that has already been billed; the jobs sit `running` until `reclaimStuckJobs` picks them up 15 minutes later (which does the right thing — the videos-landed check completes them rather than re-scraping — but 15 minutes late). Both settings are needed:
+
+```yaml
+  slashloop-worker-maintenance:
+    stop_grace_period: 300s      # container's own StopTimeout
+  slashloop-worker:
+    stop_grace_period: 300s      # analyze can be a 300s OpenRouter call
+  watchtower:
+    environment:
+      - WATCHTOWER_TIMEOUT=300s  # watchtower passes its own stop timeout
+```
+
+Lease TTL (`CANONICAL_LOCK_TTL_MS`, 10 min) is deliberately shorter than `STUCK_AFTER_MINUTES` (15): a SIGKILLed leader's lease frees before its jobs are reclaimed, so recovery never has to wait on the lock.
 
 **Losing the race costs nothing.** The loser calls `yieldJob`, which requeues *and gives the attempt back* — `attempts` increments at claim time, so using `failJob` here would let three lost races terminally fail a refresh that never attempted anything. The same applies to the Vercel budget-requeue path.
+
+**Not set on the VPS today:** `PLATFORM_WORKSPACE_ID` (so a batched scrape's spend cap still falls back to the leader's workspace — §4 attribution is in the code but inactive until it is set), and none of the batching envs, which means the defaults apply: batching on, 30s coalescing hold, peer cap 9.
 
 ### 14.5 Running a second worker container
 
 Only worth it when *distinct-query throughput* is the bottleneck: with the lease, a second refresh container does not speed up one query (it yields and picks up other work), it drains **other** canonical queries in parallel.
 
-```yaml
-# docker-compose.prod.yml (sketch)
-services:
-  worker-video:
-    image: ghcr.io/man0l/slashloop-worker:latest
-    environment: { WORKER_KINDS: "analyze,fetch", DB_CONNECTION_LIMIT: "4" }
-    stop_grace_period: 300s
-  worker-maint:
-    image: ghcr.io/man0l/slashloop-worker:latest
-    environment:
-      WORKER_KINDS: "refresh,rescore"
-      DB_CONNECTION_LIMIT: "4"
-      REFRESH_COALESCE_MS: "30000"
-      REFRESH_BATCH_PEER_CAP: "9"
-    stop_grace_period: 300s
-    deploy: { replicas: 2 }      # safe ONLY because of the lease
-```
+Applied to the real file, that is `deploy: { replicas: 2 }` on `slashloop-worker-maintenance` — safe **only** because of the lease. Before doing it, check three things:
 
-Before scaling `worker-maint` past 1, check three things:
-
-- **Pool.** Each replica opens `DB_CONNECTION_LIMIT` connections against the shared pooler; `replicas: 2` on both services is 16 connections before Vercel asks for any.
-- **`WORKER_RESCORE_EVERY`.** Every maintenance replica runs `rescoreStaleTooFresh` on its own counter, so N replicas means N× the baseline top-up scrapes. That sweep needs its own lease (or `WORKER_RESCORE_EVERY=0` on all but one) before scaling — this is the G24 double-spend returning by a different route.
-- **Coalescing.** Two replicas halve the effective batch size: each claims a leader from the same window, and one of the two yields on the lease. If the goal is cheaper scrapes rather than faster ones, one replica with a longer `REFRESH_COALESCE_MS` beats two replicas.
+- **`WORKER_RESCORE_EVERY`.** Every maintenance replica runs `rescoreStaleTooFresh` on its own counter, so N replicas means N× the baseline top-up scrapes. That sweep needs its own lease (or `WORKER_RESCORE_EVERY=0` on all but one) before scaling — this is the G24 double-spend returning by a different route, and it is the single strongest reason not to scale this service casually.
+- **Pool.** Each replica opens `DB_CONNECTION_LIMIT=4` against the shared Supabase pooler. Today's two containers are 8; `replicas: 2` on the maintenance service makes it 12, before Vercel's per-request clients ask for any.
+- **Coalescing.** Two replicas *halve* the effective batch size: both claim leaders from the same 30s window, and one yields on the lease. If the goal is cheaper scrapes rather than faster ones, **one replica with a longer `REFRESH_COALESCE_MS` beats two replicas** — scaling out is for distinct-query throughput only.
 
 ### 14.6 Deliberately not done
 
