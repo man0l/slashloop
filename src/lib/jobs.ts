@@ -534,6 +534,29 @@ export async function claimJobsByIds(ids: string[]): Promise<MediaJobRow[]> {
   return claimed;
 }
 
+/**
+ * Put a claimed job back in the queue and GIVE THE ATTEMPT BACK.
+ *
+ * `failJob` is the wrong tool when nothing was tried: attempts increment at
+ * claim time, so a job that keeps losing a race — the canonical-scrape lease
+ * is held by another container, say — would burn all MAX_ATTEMPTS and be
+ * terminally failed for someone else's contention, without a single scrape
+ * having been attempted on its behalf.
+ *
+ * Only for "we did not start": no Apify call, no credits moved, nothing
+ * persisted. The retry limit still bounds real failures.
+ */
+export async function yieldJob(id: string, reason: string): Promise<void> {
+  await db.$executeRaw`
+    UPDATE "MediaJob"
+       SET "status" = 'queued',
+           "startedAt" = NULL,
+           "attempts" = GREATEST(0, "attempts" - 1),
+           "lastError" = ${reason.slice(0, 1000)}
+     WHERE "id" = ${id}
+  `;
+}
+
 export async function completeJob(id: string, analysisId: string | null): Promise<void> {
   await db.mediaJob.update({
     where: { id },

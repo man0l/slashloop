@@ -75,3 +75,13 @@ describe('canonical grouping — what shares one Apify run', () => {
     expect(normalizeQuery('keyword', 'Build In Public')).toBe('build in public');
   });
 });
+
+describe('lease contention must not consume retries', () => {
+  test('MAX_ATTEMPTS is small enough that burning attempts on contention would be fatal', async () => {
+    const { MAX_ATTEMPTS } = await import('./jobs.js');
+    // Documents why the lease loser calls yieldJob (attempt returned) rather
+    // than failJob: with three lives, three lost races would terminally fail a
+    // refresh that never attempted a scrape.
+    expect(MAX_ATTEMPTS).toBeLessThanOrEqual(5);
+  });
+});

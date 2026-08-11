@@ -19,7 +19,7 @@
 
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import {
-  claimNextJob, completeJob, failJob, enqueueAnalyzeJob,
+  claimNextJob, completeJob, failJob, yieldJob, enqueueAnalyzeJob,
   type MediaJobRow, type AnalyzeJobPayload, type FetchJobPayload,
 } from '../lib/jobs.js';
 import { CREDIT_COSTS, refundCredits } from '../lib/credits.js';
@@ -110,7 +110,10 @@ export async function processClaimedJob(
     // prevent. Leave it queued for the next drain instead.
     const requires = opts?.refreshRequiresMs ?? DEFAULT_REFRESH_REQUIRES_MS;
     if (opts?.deadlineMs && Date.now() + requires > opts.deadlineMs) {
-      await failJob(job.id, 'insufficient budget remaining; requeued for next drain');
+      // Same reasoning as the lease yield below: the job was never started, so
+      // it must not spend an attempt. A busy Vercel drain could otherwise
+      // terminally fail a refresh it simply never had room for.
+      await yieldJob(job.id, 'insufficient budget remaining; requeued for next drain');
       return { ok: false, error: 'insufficient budget remaining; requeued for next drain', requeued: true };
     }
     // Phase A multi-tenant batching: claim other queued refreshes of the SAME
@@ -140,7 +143,10 @@ export async function processClaimedJob(
     // peer) or now an incremental no-op.
     const lockOwner = `${process.env.HOSTNAME ?? 'worker'}:${job.id}`;
     if (key && !(await acquireCanonicalLock(key, lockOwner))) {
-      await failJob(job.id, `another worker is already scraping ${key}; requeued`);
+      // yieldJob, not failJob: attempts increment at claim, so failing here
+      // would spend one of three lives on another container's contention
+      // without this job having attempted anything.
+      await yieldJob(job.id, `another worker is scraping ${key}; requeued without spending an attempt`);
       return { ok: false, error: 'canonical scrape already in progress', requeued: true };
     }
 

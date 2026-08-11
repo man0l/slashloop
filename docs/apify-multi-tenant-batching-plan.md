@@ -408,7 +408,45 @@ Everything below is on `feat/apify-multi-tenant-batching`, merged with `master` 
 4. Set `stop_grace_period: 300s` (compose) or `--stop-timeout 300` (docker run). Still the one gap the code cannot close by itself.
 5. Watch `[worker] refresh batch canonical=… size=…`. `size=1` on every line means the hold is too short for the enqueue pattern, not that grouping is broken.
 
-### 14.4 Deliberately not done
+### 14.4 Why the lease matters with only ONE worker container
+
+The VPS runs a single maintenance worker today, so "two containers scraping the same query" reads like a future problem. It is not:
+
+1. **Every deploy runs two.** `docker compose up -d` starts the new container while the old one is still finishing its in-flight job — and the `stop_grace_period: 300s` in §13.3 deliberately makes that overlap *longer* (up to 5 minutes). During it, both poll the same queue. The lease is what stops the new container starting a second Apify run for a query the old one is mid-scrape on.
+2. **Vercel is still a live drainer.** It claims nothing while `WORKER_URL` is set, but that is one env var. Unset it (or run a preview deployment with the same `DATABASE_URL`) and there are two runners again.
+3. **`async: false` bypasses the queue.** `refreshSourceForWorkspace` still has an inline scrape path (`INLINE_REFRESH_MAX_VIDEOS = 0` means it is unreachable by default, but an explicit `async: false` debug call takes it). That path does **not** take the lease — a known, low-severity hole, listed here rather than silently left.
+
+**Losing the race costs nothing.** The loser calls `yieldJob`, which requeues *and gives the attempt back* — `attempts` increments at claim time, so using `failJob` here would let three lost races terminally fail a refresh that never attempted anything. The same applies to the Vercel budget-requeue path.
+
+### 14.5 Running a second worker container
+
+Only worth it when *distinct-query throughput* is the bottleneck: with the lease, a second refresh container does not speed up one query (it yields and picks up other work), it drains **other** canonical queries in parallel.
+
+```yaml
+# docker-compose.prod.yml (sketch)
+services:
+  worker-video:
+    image: ghcr.io/man0l/slashloop-worker:latest
+    environment: { WORKER_KINDS: "analyze,fetch", DB_CONNECTION_LIMIT: "4" }
+    stop_grace_period: 300s
+  worker-maint:
+    image: ghcr.io/man0l/slashloop-worker:latest
+    environment:
+      WORKER_KINDS: "refresh,rescore"
+      DB_CONNECTION_LIMIT: "4"
+      REFRESH_COALESCE_MS: "30000"
+      REFRESH_BATCH_PEER_CAP: "9"
+    stop_grace_period: 300s
+    deploy: { replicas: 2 }      # safe ONLY because of the lease
+```
+
+Before scaling `worker-maint` past 1, check three things:
+
+- **Pool.** Each replica opens `DB_CONNECTION_LIMIT` connections against the shared pooler; `replicas: 2` on both services is 16 connections before Vercel asks for any.
+- **`WORKER_RESCORE_EVERY`.** Every maintenance replica runs `rescoreStaleTooFresh` on its own counter, so N replicas means N× the baseline top-up scrapes. That sweep needs its own lease (or `WORKER_RESCORE_EVERY=0` on all but one) before scaling — this is the G24 double-spend returning by a different route.
+- **Coalescing.** Two replicas halve the effective batch size: each claims a leader from the same window, and one of the two yields on the lease. If the goal is cheaper scrapes rather than faster ones, one replica with a longer `REFRESH_COALESCE_MS` beats two replicas.
+
+### 14.6 Deliberately not done
 
 - **Phase B result reuse.** The lease prevents two concurrent scrapes; it does not let a workspace refreshing `@foo` 10 minutes after another skip Apify. That needs the cached result + superset rule in §3 and is the next real saving.
 - **G8 normalization.** `create_source` still stores the raw query and `Source`'s unique key is on it, so `@Foo` and `foo` remain separate sources that happen to share a canonical key. Fixing it properly means migrating stored queries, not just centralising the function.
