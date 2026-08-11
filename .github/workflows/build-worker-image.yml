@@ -59,7 +59,6 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           APIFY_API_KEY: ${{ secrets.APIFY_API_KEY }}
           APIFY_SPEND_CAP_CENTS: ${{ vars.APIFY_SPEND_CAP_CENTS }}
-          APIFY_TIKTOK_ACTOR_ID: ${{ vars.APIFY_TIKTOK_ACTOR_ID }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_VIDEO_MODEL: ${{ vars.OPENROUTER_VIDEO_MODEL }}
           OPENROUTER_VIDEO_MODE: ${{ vars.OPENROUTER_VIDEO_MODE }}
@@ -84,7 +83,6 @@ jobs:
           printf 'GEMINI_API_KEY=%s\n' "$GEMINI_API_KEY"        >> "$out"
           printf 'APIFY_API_KEY=%s\n' "$APIFY_API_KEY"          >> "$out"
           printf 'APIFY_SPEND_CAP_CENTS=%s\n' "$APIFY_SPEND_CAP_CENTS" >> "$out"
-          printf 'APIFY_TIKTOK_ACTOR_ID=%s\n' "$APIFY_TIKTOK_ACTOR_ID" >> "$out"
           printf 'OPENROUTER_API_KEY=%s\n' "$OPENROUTER_API_KEY" >> "$out"
           printf 'OPENROUTER_VIDEO_MODEL=%s\n' "$OPENROUTER_VIDEO_MODEL" >> "$out"
           printf 'OPENROUTER_VIDEO_MODE=%s\n' "$OPENROUTER_VIDEO_MODE" >> "$out"
