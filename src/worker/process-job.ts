@@ -15,7 +15,7 @@
 
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import {
-  claimNextJob, completeJob, failJob, enqueueAnalyzeJob,
+  claimNextJob, completeJob, failJob, enqueueAnalyzeJob, REFRESH_BATCH_PEER_CAP,
   type MediaJobRow, type AnalyzeJobPayload, type FetchJobPayload,
 } from '../lib/jobs.js';
 import { CREDIT_COSTS, refundCredits } from '../lib/credits.js';
@@ -41,6 +41,15 @@ export interface JobProcessResult {
 }
 
 const DEFAULT_REFRESH_REQUIRES_MS = 30_000;
+
+/**
+ * Budget reserved per extra batch member for fan-out (persist + score +
+ * thumbnail ingest for that source). A time-boxed caller (Vercel, 45s reserve)
+ * uses it to decide how many peers it can honestly serve; taking ten peers
+ * with 30s left is how a batch gets killed halfway and leaves paid-for work
+ * stuck in `running`.
+ */
+const REFRESH_FANOUT_MS_PER_PEER = 4_000;
 
 export async function processClaimedJob(
   job: MediaJobRow,
@@ -98,29 +107,94 @@ export async function processClaimedJob(
       await failJob(job.id, 'insufficient budget remaining; requeued for next drain');
       return { ok: false, error: 'insufficient budget remaining; requeued for next drain', requeued: true };
     }
+    // Phase A multi-tenant batching: claim other queued refreshes of the SAME
+    // canonical (platform, sourceType, normalized query) so N workspaces
+    // tracking @foo share one Apify run. Credits still settle per workspace
+    // inside runBatchedRefresh. See docs/apify-multi-tenant-batching-plan.md.
+    let batchJobs: MediaJobRow[] = [job];
     try {
-      const { runRefresh } = await import('../lib/refresh.js');
-      const result = await runRefresh({
-        workspaceId: job.workspaceId,
-        sourceId: job.sourceId,
-        limitOverride: (JSON.parse(job.payloadJson || '{}') as { limitOverride?: number }).limitOverride,
-        // Stable across every retry of this job (minted once at enqueue) — see
-        // the opId doc comment in src/lib/refresh.ts.
-        opId: job.opId ?? undefined,
-        preAuthCredits: job.preAuthCredits ?? undefined,
+      const { normalizeQuery } = await import('../lib/canonical-query.js');
+      const { runBatchedRefresh } = await import('../lib/refresh.js');
+      const { claimRefreshPeersForCanonical } = await import('../lib/jobs.js');
+
+      const leaderSource = await db.source.findFirst({
+        where: { id: job.sourceId },
+        select: { platform: true, sourceType: true, query: true },
       });
-      if (!result.ok) {
-        const message = result.errors.join('; ') || result.refusal || 'refresh refused';
-        const { terminal } = await failJob(job.id, message);
-        console.warn(`[worker] refresh job ${job.id} refused (terminal=${terminal}): ${message}`);
-        return { ok: false, error: message };
+
+      // Fan-out (persist + score + thumbs per source) costs budget too, so a
+      // time-boxed caller takes fewer peers than an unbounded VPS worker.
+      const peerCap = opts?.deadlineMs
+        ? Math.max(0, Math.min(
+            REFRESH_BATCH_PEER_CAP,
+            Math.floor((opts.deadlineMs - Date.now() - requires) / REFRESH_FANOUT_MS_PER_PEER),
+          ))
+        : REFRESH_BATCH_PEER_CAP;
+
+      const peers = leaderSource && peerCap > 0
+        ? await claimRefreshPeersForCanonical({
+            excludeJobId: job.id,
+            platform: leaderSource.platform,
+            sourceType: leaderSource.sourceType,
+            queryNorm: normalizeQuery(leaderSource.sourceType, leaderSource.query),
+            limit: peerCap,
+          })
+        : [];
+
+      batchJobs = [job, ...peers];
+      if (peers.length > 0) {
+        console.log(
+          `[worker] refresh batch: leader=${job.id} peers=${peers.length} `
+          + `canonical=${leaderSource?.platform}/${leaderSource?.sourceType}/${leaderSource?.query}`,
+        );
       }
-      await completeJob(job.id, null);
-      return { ok: true };
+
+      const parseLimit = (payloadJson: string | null | undefined) => {
+        try {
+          return (JSON.parse(payloadJson || '{}') as { limitOverride?: number }).limitOverride;
+        } catch {
+          return undefined;
+        }
+      };
+
+      const results = await runBatchedRefresh(
+        batchJobs.map((j) => ({
+          workspaceId: j.workspaceId,
+          sourceId: j.sourceId!,
+          jobId: j.id,
+          // Stable across every retry of this job (minted once at enqueue) —
+          // see the opId doc comment in src/lib/refresh.ts.
+          opId: j.opId ?? undefined,
+          preAuthCredits: j.preAuthCredits ?? undefined,
+          limitOverride: parseLimit(j.payloadJson),
+        })),
+      );
+
+      // sourceId is unique globally — safe map key for pairing results back.
+      const resultBySource = new Map<string, (typeof results)[number]>();
+      for (const r of results) resultBySource.set(r.sourceId, r);
+
+      let leaderResult: JobProcessResult = { ok: true };
+      for (const j of batchJobs) {
+        const result = resultBySource.get(j.sourceId!);
+        if (!result || !result.ok) {
+          const message = result
+            ? (result.errors.join('; ') || result.refusal || 'refresh refused')
+            : 'no result from batch';
+          const { terminal } = await failJob(j.id, message);
+          console.warn(`[worker] refresh job ${j.id} refused (terminal=${terminal}): ${message}`);
+          if (j.id === job.id) leaderResult = { ok: false, error: message };
+          continue;
+        }
+        await completeJob(j.id, null);
+      }
+      return leaderResult;
     } catch (err) {
       const message = (err as Error).message;
-      const { terminal } = await failJob(job.id, message);
-      console.warn(`[worker] refresh job ${job.id} failed (terminal=${terminal}): ${message}`);
+      for (const j of batchJobs) {
+        const { terminal } = await failJob(j.id, message);
+        console.warn(`[worker] refresh job ${j.id} failed (terminal=${terminal}): ${message}`);
+      }
       return { ok: false, error: message };
     }
   }

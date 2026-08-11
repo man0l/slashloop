@@ -324,6 +324,99 @@ export async function claimNextJob(kind = 'analyze'): Promise<MediaJobRow | null
   return rows[0] ?? null;
 }
 
+/**
+ * Max other refresh jobs claimed alongside the leader for one Apify scrape.
+ * Bounds fan-out work (persist/score/thumbs per source) inside the 60s worker.
+ */
+export const REFRESH_BATCH_PEER_CAP = 9;
+
+type QueuedRefreshPeerRow = {
+  id: string;
+  workspaceId: string;
+  sourceId: string;
+  platform: string;
+  sourceType: string;
+  query: string;
+  payloadJson: string;
+  opId: string | null;
+  preAuthCredits: number | null;
+};
+
+/**
+ * Find queued refresh jobs whose Source matches platform + sourceType, then
+ * filter by canonical query in JS (normalization is not expressible cleanly
+ * in SQL). Claim the matching ids atomically.
+ *
+ * Used so multi-tenant refreshes of the same TikTok target share one scrape.
+ */
+export async function claimRefreshPeersForCanonical(opts: {
+  excludeJobId: string;
+  platform: string;
+  sourceType: string;
+  /** Already-normalized query (see canonical-query.ts). */
+  queryNorm: string;
+  limit?: number;
+}): Promise<MediaJobRow[]> {
+  const { normalizeQuery } = await import('./canonical-query.js');
+  const cap = opts.limit ?? REFRESH_BATCH_PEER_CAP;
+
+  // Peek a wider candidate set, then claim only matching ids. FOR UPDATE is
+  // applied at claim time so we do not hold locks across the JS filter.
+  const candidates = await db.$queryRaw<QueuedRefreshPeerRow[]>`
+    SELECT mj."id",
+           mj."workspaceId",
+           mj."sourceId",
+           mj."payloadJson",
+           mj."opId",
+           mj."preAuthCredits",
+           s."platform",
+           s."sourceType",
+           s."query"
+      FROM "MediaJob" mj
+      JOIN "Source" s ON s."id" = mj."sourceId"
+     WHERE mj."status" = 'queued'
+       AND mj."kind" = 'refresh'
+       AND mj."id" <> ${opts.excludeJobId}
+       AND s."platform" = ${opts.platform}
+       AND s."sourceType" = ${opts.sourceType}
+     ORDER BY mj."createdAt" ASC
+     LIMIT 40
+  `;
+
+  const matchIds = candidates
+    .filter((c) => normalizeQuery(c.sourceType, c.query) === opts.queryNorm)
+    .slice(0, cap)
+    .map((c) => c.id);
+
+  if (matchIds.length === 0) return [];
+
+  return claimJobsByIds(matchIds);
+}
+
+/** Atomically claim a set of queued job ids (SKIP LOCKED — missing/raced ids are skipped). */
+export async function claimJobsByIds(ids: string[]): Promise<MediaJobRow[]> {
+  if (ids.length === 0) return [];
+  // Prisma.$queryRaw cannot expand arrays into IN ($1,$2) without Prisma.join
+  // in all versions — claim one-by-one with SKIP LOCKED is fine for N≤9.
+  const claimed: MediaJobRow[] = [];
+  for (const id of ids) {
+    const rows = await db.$queryRaw<MediaJobRow[]>`
+      UPDATE "MediaJob"
+         SET "status" = 'running',
+             "startedAt" = now(),
+             "attempts" = "attempts" + 1
+       WHERE "id" = (
+         SELECT "id" FROM "MediaJob"
+          WHERE "id" = ${id} AND "status" = 'queued'
+          FOR UPDATE SKIP LOCKED
+       )
+      RETURNING *
+    `;
+    if (rows[0]) claimed.push(rows[0]);
+  }
+  return claimed;
+}
+
 export async function completeJob(id: string, analysisId: string | null): Promise<void> {
   await db.mediaJob.update({
     where: { id },

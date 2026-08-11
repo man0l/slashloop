@@ -155,6 +155,13 @@ export interface ApifyScrapeOptions {
   sourceType: 'creator' | 'keyword' | 'hashtag';
   query: string; // handle, keyword phrase, or hashtag (with or without #)
   limit: number; // max results
+  /**
+   * Creator scrapes only. Maps to clockworks `oldestPostDateUnified` —
+   * only return videos posted on/after this time (PAY_PER_EVENT date-filter
+   * add-on, ~$0.001). Used by incremental refresh so we pay for new posts,
+   * not the creator's already-known catalogue.
+   */
+  postedAfter?: Date;
 }
 
 export interface ApifyScrapeResult {
@@ -216,17 +223,23 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
   const apiKey = process.env.APIFY_API_KEY;
   if (!apiKey) throw new Error('APIFY_API_KEY is not set. Add it to .env (or the MCP server env block in your client config).');
 
-  // Pre-authorize cost
-  const estimatedCostCents = Math.ceil(opts.limit * ESTIMATED_COST_PER_RESULT_CENTS + ESTIMATED_ACTOR_START_COST_CENTS);
-  await assertApifyCap(opts.workspaceId, estimatedCostCents);
-
   // Build the actor input. clockworks/tiktok-scraper accepts:
   //   - hashtags: array of hashtags (without #)
   //   - searchQueries: array of keywords
   //   - profiles: array of usernames (for sourceType=creator)
   //   - resultsPerPage: integer
+  //   - profileSorting: latest | popular | oldest (creators)
+  //   - oldestPostDateUnified: ISO/relative date filter (creators, ~$0.001)
   // See https://apify.com/clockworks/tiktok-scraper/input-schema
   const hashtag = opts.query.replace(/^#/, '').trim();
+  // Date-filter add-on is a flat ~$0.001 when set — bake it into the estimate
+  // so the spend-cap pre-auth stays conservative.
+  const dateFilterCents = opts.postedAfter && opts.sourceType === 'creator' ? 0.1 : 0;
+  const estimatedCostCents = Math.ceil(
+    opts.limit * ESTIMATED_COST_PER_RESULT_CENTS + ESTIMATED_ACTOR_START_COST_CENTS + dateFilterCents,
+  );
+  await assertApifyCap(opts.workspaceId, estimatedCostCents);
+
   const input: Record<string, unknown> = {
     resultsPerPage: opts.limit,
     // Have the actor copy cover images into its key-value store and list the
@@ -236,9 +249,9 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
     // (src/lib/media.ts) and only falls back to the TikTok CDN when the actor
     // returns none — `mediaUrls` is documented as sometimes empty.
     //
-    // Costs a little more actor work per run. Videos are NOT downloaded here:
-    // that stays on the analyze path (downloadTikTokVideo), which pulls one
-    // video on demand rather than 50 speculatively.
+    // PPE does not charge the video-download event for covers (observed live).
+    // Videos are NOT downloaded here: that stays on the analyze path
+    // (downloadTikTokVideo), which pulls one video on demand.
     shouldDownloadCovers: true,
     shouldDownloadVideos: false,
     shouldDownloadSlideshowImages: false,
@@ -246,6 +259,18 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
 
   if (opts.sourceType === 'creator') {
     input.profiles = [opts.query.replace(/^@/, '').trim()];
+    // Latest-first is the actor default; set explicitly so a future schema
+    // change cannot silently switch us to "popular" (which re-returns the
+    // same evergreen hits every refresh).
+    input.profileSorting = 'latest';
+    // Pinned posts are almost never "new outliers" — skip them so a small
+    // resultsPerPage is not wasted on the same two pins every run.
+    input.excludePinnedPosts = true;
+    if (opts.postedAfter) {
+      // Absolute ISO. Relative forms ("2 days") also work; absolute is
+      // unambiguous against our watermark.
+      input.oldestPostDateUnified = opts.postedAfter.toISOString();
+    }
   } else if (opts.sourceType === 'hashtag') {
     input.hashtags = [hashtag];
   } else {
@@ -254,7 +279,11 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
   }
 
   const context = `${opts.sourceType}="${opts.query}"`;
-  console.log(`[apify] calling TikTok scraper (actor=${primaryTikTokActorId()}) for ${context} limit=${opts.limit} (est cost: ${estimatedCostCents}c)`);
+  const watermarkNote = opts.postedAfter ? ` postedAfter=${opts.postedAfter.toISOString()}` : '';
+  console.log(
+    `[apify] calling TikTok scraper (actor=${primaryTikTokActorId()}) for ${context} `
+    + `limit=${opts.limit}${watermarkNote} (est cost: ${estimatedCostCents}c)`,
+  );
 
   let { rawItems, actorId } = await runTikTokActorWithFallback(input, apiKey, context);
   let items = normalizeItems(rawItems);
