@@ -9,13 +9,17 @@
 //
 // Contract: the caller has already CLAIMED the job (status running, attempts+1).
 // This function either completes it, fails it (requeue or terminal), or — for
-// a refresh job that can't fit the caller's remaining budget — returns
+// a refresh job that can't fit the caller's remaining budget, or whose
+// canonical query is already being scraped by another container — returns
 // `{ ok: false, requeued: true }` so the caller can stop claiming.
+//
+// A refresh job may take OTHER queued refresh jobs with it: peers tracking the
+// same canonical query share one Apify run and are completed/failed here too.
 // ---------------------------------------------------------------------------
 
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import {
-  claimNextJob, completeJob, failJob, enqueueAnalyzeJob, REFRESH_BATCH_PEER_CAP,
+  claimNextJob, completeJob, failJob, enqueueAnalyzeJob,
   type MediaJobRow, type AnalyzeJobPayload, type FetchJobPayload,
 } from '../lib/jobs.js';
 import { CREDIT_COSTS, refundCredits } from '../lib/credits.js';
@@ -90,9 +94,11 @@ export async function processClaimedJob(
     }
   }
 
-  // refresh jobs: scrape + persist + score a whole SOURCE. Credits are
-  // pre-authorised and settled inside runRefresh, so these rows carry no opId
-  // and the reclaim path has nothing to refund.
+  // refresh jobs: scrape + persist + score a whole SOURCE, for this job and
+  // for every peer job that wants the same canonical query. Credits are
+  // pre-authorised at enqueue and settled per workspace inside
+  // runBatchedRefresh; refunds are issued HERE, and only when the job has
+  // terminally failed, so a requeued attempt stays paid for (G4).
   if (job.kind === 'refresh') {
     if (!job.sourceId) {
       await failJob(job.id, 'refresh job has no sourceId');
@@ -111,25 +117,44 @@ export async function processClaimedJob(
     // canonical (platform, sourceType, normalized query) so N workspaces
     // tracking @foo share one Apify run. Credits still settle per workspace
     // inside runBatchedRefresh. See docs/apify-multi-tenant-batching-plan.md.
+    const {
+      claimRefreshPeersForCanonical, refreshBatchingEnabled, refreshBatchPeerCap,
+      acquireCanonicalLock, releaseCanonicalLock,
+    } = await import('../lib/jobs.js');
+    const { normalizeQuery, canonicalKey } = await import('../lib/canonical-query.js');
+    const { runBatchedRefresh } = await import('../lib/refresh.js');
+
+    const leaderSource = await db.source.findFirst({
+      where: { id: job.sourceId },
+      select: { platform: true, sourceType: true, query: true },
+    });
+    const key = leaderSource
+      ? canonicalKey(leaderSource.platform, leaderSource.sourceType, leaderSource.query)
+      : null;
+
+    // One Apify run per canonical query across ALL worker containers. Without
+    // this, two `WORKER_KINDS=refresh` containers can lead batches for the same
+    // query simultaneously — two scrapes, which is the spend batching exists to
+    // remove. The loser requeues; by the time it retries, the winner's results
+    // are in the DB and its own refresh is either already applied (it was a
+    // peer) or now an incremental no-op.
+    const lockOwner = `${process.env.HOSTNAME ?? 'worker'}:${job.id}`;
+    if (key && !(await acquireCanonicalLock(key, lockOwner))) {
+      await failJob(job.id, `another worker is already scraping ${key}; requeued`);
+      return { ok: false, error: 'canonical scrape already in progress', requeued: true };
+    }
+
     let batchJobs: MediaJobRow[] = [job];
     try {
-      const { normalizeQuery } = await import('../lib/canonical-query.js');
-      const { runBatchedRefresh } = await import('../lib/refresh.js');
-      const { claimRefreshPeersForCanonical } = await import('../lib/jobs.js');
-
-      const leaderSource = await db.source.findFirst({
-        where: { id: job.sourceId },
-        select: { platform: true, sourceType: true, query: true },
-      });
-
       // Fan-out (persist + score + thumbs per source) costs budget too, so a
       // time-boxed caller takes fewer peers than an unbounded VPS worker.
+      const configuredCap = refreshBatchingEnabled() ? refreshBatchPeerCap() : 0;
       const peerCap = opts?.deadlineMs
         ? Math.max(0, Math.min(
-            REFRESH_BATCH_PEER_CAP,
+            configuredCap,
             Math.floor((opts.deadlineMs - Date.now() - requires) / REFRESH_FANOUT_MS_PER_PEER),
           ))
-        : REFRESH_BATCH_PEER_CAP;
+        : configuredCap;
 
       const peers = leaderSource && peerCap > 0
         ? await claimRefreshPeersForCanonical({
@@ -142,12 +167,6 @@ export async function processClaimedJob(
         : [];
 
       batchJobs = [job, ...peers];
-      if (peers.length > 0) {
-        console.log(
-          `[worker] refresh batch: leader=${job.id} peers=${peers.length} `
-          + `canonical=${leaderSource?.platform}/${leaderSource?.sourceType}/${leaderSource?.query}`,
-        );
-      }
 
       const parseLimit = (payloadJson: string | null | undefined) => {
         try {
@@ -168,20 +187,43 @@ export async function processClaimedJob(
           preAuthCredits: j.preAuthCredits ?? undefined,
           limitOverride: parseLimit(j.payloadJson),
         })),
+        // The queue owns retries, so the queue owns the refund: a pre-auth is
+        // only returned once the job gives up for good (G4).
+        { deferRefund: true },
       );
 
       // sourceId is unique globally — safe map key for pairing results back.
       const resultBySource = new Map<string, (typeof results)[number]>();
       for (const r of results) resultBySource.set(r.sourceId, r);
 
+      // Telemetry that survives log aggregation: one line per batch with the
+      // numbers §10's savings ratio is computed from.
+      const leaderResultForLog = resultBySource.get(job.sourceId);
+      console.log(
+        `[worker] refresh batch canonical=${key ?? 'unknown'} size=${batchJobs.length} `
+        + `apifyCents=${leaderResultForLog?.costCents ?? 0} `
+        + `items=${leaderResultForLog?.itemsPulled ?? 0} `
+        + `subscribers=${results.map(r => `${r.sourceId.slice(0, 8)}:${r.newVideos}new/${r.creditsCharged}cr`).join(',')}`,
+      );
+
       let leaderResult: JobProcessResult = { ok: true };
       for (const j of batchJobs) {
         const result = resultBySource.get(j.sourceId!);
+        // Per-subscriber settlement. One member failing (no credits, bad
+        // source, persist error) must not fail members whose videos were
+        // already written and billed — retrying those would re-apply a scrape
+        // that already landed.
         if (!result || !result.ok) {
           const message = result
             ? (result.errors.join('; ') || result.refusal || 'refresh refused')
             : 'no result from batch';
           const { terminal } = await failJob(j.id, message);
+          if (terminal && result?.pendingRefundCredits && j.opId) {
+            await refundCredits(
+              j.workspaceId, result.pendingRefundCredits, 'refresh_source',
+              `${j.opId}:fail`, 'call_failed',
+            ).catch(e => console.warn(`[worker] refund failed for ${j.id}: ${(e as Error).message}`));
+          }
           console.warn(`[worker] refresh job ${j.id} refused (terminal=${terminal}): ${message}`);
           if (j.id === job.id) leaderResult = { ok: false, error: message };
           continue;
@@ -190,12 +232,28 @@ export async function processClaimedJob(
       }
       return leaderResult;
     } catch (err) {
+      // Only jobs with nothing persisted may be requeued. A member whose videos
+      // already landed is completed instead — Video.scrapedAt is the same
+      // evidence reclaimStuckJobs uses to refuse a re-scrape.
       const message = (err as Error).message;
       for (const j of batchJobs) {
+        const landed = j.startedAt
+          ? await db.video.findFirst({
+              where: { sourceId: j.sourceId!, scrapedAt: { gt: j.startedAt } },
+              select: { id: true },
+            })
+          : null;
+        if (landed) {
+          await completeJob(j.id, null);
+          console.warn(`[worker] refresh job ${j.id} errored after its videos landed — completing, not retrying`);
+          continue;
+        }
         const { terminal } = await failJob(j.id, message);
         console.warn(`[worker] refresh job ${j.id} failed (terminal=${terminal}): ${message}`);
       }
       return { ok: false, error: message };
+    } finally {
+      if (key) await releaseCanonicalLock(key, lockOwner);
     }
   }
 

@@ -62,11 +62,17 @@ export async function POST(request: Request): Promise<Response> {
   const reclaimed = await reclaimStuckJobs();
 
   // Same idea for scores stuck at 'too_fresh' — the 48h window has usually
-  // passed by the next drain. Spends real Apify credits (bounded).
-  const rescoredStale = await rescoreStaleTooFresh().catch((err) => {
-    console.warn(`[jobs] rescoreStaleTooFresh failed: ${(err as Error).message}`);
-    return { creatorsRescraped: 0, sourcesRescoredOnly: 0 };
-  });
+  // passed by the next drain. Spends real Apify credits (bounded), which is
+  // why it must run in exactly ONE place: the VPS maintenance worker already
+  // runs it every WORKER_RESCORE_EVERY iterations, so doing it here as well
+  // meant the same baseline top-up scrapes were bought twice per cycle.
+  const vpsActive = Boolean(process.env.WORKER_URL || process.env.WORKER_ACTIVE);
+  const rescoredStale = vpsActive
+    ? { creatorsRescraped: 0, sourcesRescoredOnly: 0, skipped: 'vps_worker_owns_this' as const }
+    : await rescoreStaleTooFresh().catch((err) => {
+        console.warn(`[jobs] rescoreStaleTooFresh failed: ${(err as Error).message}`);
+        return { creatorsRescraped: 0, sourcesRescoredOnly: 0 };
+      });
 
   while (Date.now() - startedAt < RESERVE_MS) {
     // When the VPS workers (src/worker) are running they handle EVERY job kind
@@ -75,7 +81,6 @@ export async function POST(request: Request): Promise<Response> {
     // beyond this endpoint's budget. So with WORKER_URL set, Vercel claims
     // nothing; it still reclaims stuck rows and runs rescoreStaleTooFresh
     // above, and only processes jobs directly when no VPS worker is active.
-    const vpsActive = Boolean(process.env.WORKER_URL || process.env.WORKER_ACTIVE);
     if (vpsActive) break;
 
     const job = (await claimNextJob('fetch'))

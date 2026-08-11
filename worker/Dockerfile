@@ -45,4 +45,11 @@ RUN if [ -f .worker-env ]; then \
     fi
 
 # The queue drainer. No server — it self-polls the MediaJob table.
+#
+# Deploy with a stop grace period long enough for one in-flight job: SIGTERM
+# only sets a flag the loop checks BETWEEN jobs, and a batched refresh is a
+# ~170s scrape plus fan-out across up to 10 sources. `stop_grace_period: 300s`
+# in compose (or --stop-timeout 300). The default 10s SIGKILLs a batch that has
+# already been billed. See docs/apify-multi-tenant-batching-plan.md §13.3.
+STOPSIGNAL SIGTERM
 CMD ["bun", "run", "worker"]

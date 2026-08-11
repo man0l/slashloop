@@ -28,6 +28,7 @@ import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } f
 import { ingestThumbnails, type ThumbIngestTarget } from './media.js';
 import { enqueueRescoreJob } from './jobs.js';
 import { resolveRefreshPlan, type RefreshPlan } from './refresh-policy.js';
+import { canonicalKey } from './canonical-query.js';
 import type { NormalizedVideo } from '../normalizers.js';
 
 /**
@@ -68,6 +69,25 @@ export interface RunRefreshResult {
   limitUsed?: number;
   /** >1 when this result was produced by a multi-tenant batch scrape. */
   batchSize?: number;
+  /**
+   * Credits still held from the pre-auth after a failure, which the CALLER
+   * must refund — but only once the job is terminally failed. A requeued job
+   * keeps the debit so its retry (same idempotent `:preauth` refId) is paid
+   * for. Only set when the caller passed `deferRefund`.
+   */
+  pendingRefundCredits?: number;
+  /** Canonical key this run scraped under — for batch telemetry (§7). */
+  canonicalKey?: string;
+}
+
+export interface RefreshExecOptions {
+  /**
+   * Queue callers own retry, so they own the refund: leave the pre-auth
+   * debited on failure and refund it from the job's terminal branch. Direct
+   * callers (scoring.ts baseline rescrape) have no retry and must refund
+   * inline, which is the default.
+   */
+  deferRefund?: boolean;
 }
 
 export interface RefreshSubscriber {
@@ -124,6 +144,12 @@ export async function applyScrapeItems(opts: {
   let itemsConsidered = 0;
   const thumbTargets: ThumbIngestTarget[] = [];
 
+  // Which items survive the per-source filters, in one pass, before any DB
+  // work. Fan-out multiplies every query by the number of subscribers, so the
+  // existence check below is ONE findMany for the whole page rather than one
+  // findFirst per item — a 10-member batch of 5 items went from 50 round-trips
+  // to 10 on a pool that is only DB_CONNECTION_LIMIT (4) wide per container.
+  const candidates: NormalizedVideo[] = [];
   for (const nv of items) {
     if (postedAfter && new Date(nv.postedAt) < postedAfter) {
       skippedBeforeWatermark++;
@@ -133,17 +159,25 @@ export async function applyScrapeItems(opts: {
       skippedOld++;
       continue;
     }
-    itemsConsidered++;
+    candidates.push(nv);
+  }
+  itemsConsidered = candidates.length;
 
-    // SAME SOURCE only — not global. Two workspaces tracking the same TikTok
-    // each need their own Video row for isolation, retention, and scoring.
-    const existing = await db.video.findFirst({
-      where: { platform: nv.platform, externalId: nv.externalId, sourceId },
-      select: { id: true },
-    });
-    if (existing) {
+  // SAME SOURCE only — not global. Two workspaces tracking the same TikTok
+  // each need their own Video row for isolation, retention, and scoring.
+  const existingRows = candidates.length > 0
+    ? await db.video.findMany({
+        where: { sourceId, externalId: { in: candidates.map(c => c.externalId) } },
+        select: { id: true, platform: true, externalId: true },
+      })
+    : [];
+  const existingByKey = new Map(existingRows.map(r => [`${r.platform}|${r.externalId}`, r.id]));
+
+  for (const nv of candidates) {
+    const existingId = existingByKey.get(`${nv.platform}|${nv.externalId}`);
+    if (existingId) {
       await db.video.update({
-        where: { id: existing.id },
+        where: { id: existingId },
         data: {
           views: nv.views,
           likes: nv.likes,
@@ -159,30 +193,62 @@ export async function applyScrapeItems(opts: {
       continue;
     }
 
-    const created = await db.video.create({
-      data: {
-        sourceId,
-        platform: nv.platform,
-        externalId: nv.externalId,
-        url: nv.url,
-        thumbnailUrl: nv.thumbnailUrl,
-        creatorHandle: nv.creatorHandle,
-        creatorFollowers: nv.creatorFollowers,
-        caption: nv.caption,
-        postedAt: new Date(nv.postedAt),
-        views: nv.views,
-        likes: nv.likes,
-        comments: nv.comments,
-        shares: nv.shares,
-        saves: nv.saves,
-        durationSec: nv.durationSec,
-        transcript: nv.transcript,
-        transcriptSource: nv.transcriptSource,
-        rawJson: JSON.stringify(nv.raw),
-        isBaselineSample: isBaselineOnly,
-      } as any,
-      select: { id: true },
-    });
+    let created: { id: string };
+    try {
+      created = await db.video.create({
+        data: {
+          sourceId,
+          platform: nv.platform,
+          externalId: nv.externalId,
+          url: nv.url,
+          thumbnailUrl: nv.thumbnailUrl,
+          creatorHandle: nv.creatorHandle,
+          creatorFollowers: nv.creatorFollowers,
+          caption: nv.caption,
+          postedAt: new Date(nv.postedAt),
+          views: nv.views,
+          likes: nv.likes,
+          comments: nv.comments,
+          shares: nv.shares,
+          saves: nv.saves,
+          durationSec: nv.durationSec,
+          transcript: nv.transcript,
+          transcriptSource: nv.transcriptSource,
+          rawJson: JSON.stringify(nv.raw),
+          isBaselineSample: isBaselineOnly,
+        } as any,
+        select: { id: true },
+      });
+    } catch (err) {
+      // Unique violation on (sourceId, platform, externalId): another worker
+      // applied the same shared scrape to this source between our read and our
+      // write. That is a normal race now that two worker containers can drain
+      // refresh, and the row it lost to is the row we wanted — treat it as an
+      // update, never as a failure. Without the index this was a silent
+      // duplicate instead.
+      if ((err as { code?: string }).code !== 'P2002') throw err;
+      const raced = await db.video.findFirst({
+        where: { sourceId, platform: nv.platform, externalId: nv.externalId },
+        select: { id: true },
+      });
+      if (!raced) throw err;
+      await db.video.update({
+        where: { id: raced.id },
+        data: {
+          views: nv.views,
+          likes: nv.likes,
+          comments: nv.comments,
+          shares: nv.shares,
+          saves: nv.saves,
+          creatorFollowers: nv.creatorFollowers,
+          ...(isBaselineOnly ? {} : { isBaselineSample: false }),
+        } as any,
+      });
+      updatedVideos++;
+      skippedKnown++;
+      continue;
+    }
+
     newVideos++;
     if (!isBaselineOnly) {
       thumbTargets.push({
@@ -276,13 +342,15 @@ async function settleAndApply(opts: {
   limit: number;
   items: NormalizedVideo[];
   scrapeCostCents: number;
-  /** Only the batch leader records Apify cost on RefreshRun. */
-  attributeApifyCost: boolean;
+  /** Apify cents attributed to THIS source's RefreshRun (pro-rata in a batch). */
+  attributedCostCents: number;
   opId: string;
   preAuthCredits: number;
   creditBalanceTotal: number;
   policyReason?: string;
   batchNote?: string;
+  canonicalKey?: string;
+  deferRefund?: boolean;
   startTime: number;
 }): Promise<RunRefreshResult> {
   const base = {
@@ -292,9 +360,9 @@ async function settleAndApply(opts: {
     sourceType: opts.sourceType,
   };
 
-  // Charge credits for items that mattered to THIS source (new or updated),
-  // not for peers' watermarks. Floor at 0 when the scrape returned nothing
-  // usable so we refund the full pre-auth.
+  // Charge credits for items that mattered to THIS source, not for peers'
+  // watermarks. Floor at 0 when the scrape returned nothing usable so we
+  // refund the full pre-auth.
   let apply: ApplyResult;
   try {
     apply = await applyScrapeItems({
@@ -305,27 +373,44 @@ async function settleAndApply(opts: {
       modeLabel: opts.modeLabel,
       postedAfter: opts.isBaselineOnly ? undefined : opts.planPostedAfter,
       limit: opts.limit,
-      costCents: opts.attributeApifyCost ? opts.scrapeCostCents : 0,
+      costCents: opts.attributedCostCents,
       policyNote: opts.policyReason,
       batchNote: opts.batchNote,
     });
   } catch (err) {
-    // Persist failed — still settle credits for what Apify returned so we do
-    // not keep a full pre-auth locked. Refund everything; surface the error.
-    const creditBalance = await refundCredits(
-      opts.workspaceId, opts.preAuthCredits, 'refresh_source', `${opts.opId}:fail`, 'call_failed',
-    );
+    // Persist failed. Whether the pre-auth comes back depends on whether this
+    // attempt was the LAST one: a requeued job keeps its debit so the retry
+    // (which replays the same idempotent `:preauth` refId and therefore
+    // charges nothing) is still paid for. Refunding here and requeueing made
+    // every retry free — see G4 in docs/apify-multi-tenant-batching-plan.md.
+    if (!opts.deferRefund) {
+      const creditBalance = await refundCredits(
+        opts.workspaceId, opts.preAuthCredits, 'refresh_source', `${opts.opId}:fail`, 'call_failed',
+      );
+      return {
+        ok: false, ...base,
+        itemsPulled: opts.items.length, newVideos: 0, costCents: 0,
+        creditsCharged: 0, creditsRemaining: creditBalance.total,
+        errors: [(err as Error).message], rescoreQueued: false,
+        durationMs: Date.now() - opts.startTime,
+        mode: opts.modeLabel, limitUsed: opts.limit,
+      };
+    }
     return {
       ok: false, ...base,
       itemsPulled: opts.items.length, newVideos: 0, costCents: 0,
-      creditsCharged: 0, creditsRemaining: creditBalance.total,
+      creditsCharged: 0, creditsRemaining: opts.creditBalanceTotal,
+      pendingRefundCredits: opts.preAuthCredits,
       errors: [(err as Error).message], rescoreQueued: false,
       durationMs: Date.now() - opts.startTime,
       mode: opts.modeLabel, limitUsed: opts.limit,
     };
   }
 
-  const billable = apply.newVideos + apply.updatedVideos;
+  // Bill NEW videos only. Charging for `updatedVideos` too meant a workspace
+  // that already held all five results paid full price for a stats refresh —
+  // exactly the waste multi-tenant batching exists to remove (§4, G9).
+  const billable = apply.newVideos;
   const actualCredits = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * billable);
   const refundAmount = opts.preAuthCredits - actualCredits;
   let creditsRemaining = opts.creditBalanceTotal;
@@ -368,7 +453,7 @@ async function settleAndApply(opts: {
     ok: true, ...base,
     itemsPulled: opts.items.length,
     newVideos: apply.newVideos,
-    costCents: opts.attributeApifyCost ? opts.scrapeCostCents : 0,
+    costCents: opts.attributedCostCents,
     creditsCharged: actualCredits,
     creditsRemaining,
     errors: apply.errors,
@@ -376,6 +461,7 @@ async function settleAndApply(opts: {
     durationMs: Date.now() - opts.startTime,
     mode: opts.modeLabel,
     limitUsed: opts.limit,
+    canonicalKey: opts.canonicalKey,
   };
 }
 
@@ -392,6 +478,7 @@ export async function runRefresh(opts: {
   preAuthCredits?: number;
   sourceTypeOverride?: 'creator' | 'keyword' | 'hashtag';
   queryOverride?: string;
+  deferRefund?: boolean;
 }): Promise<RunRefreshResult> {
   // Baseline overrides cannot join a tenant batch (different query shape).
   if (opts.sourceTypeOverride || opts.queryOverride) {
@@ -403,7 +490,7 @@ export async function runRefresh(opts: {
     opId: opts.opId,
     preAuthCredits: opts.preAuthCredits,
     limitOverride: opts.limitOverride,
-  }]);
+  }], { deferRefund: opts.deferRefund });
   return results[0]!;
 }
 
@@ -415,6 +502,7 @@ async function runRefreshSolo(opts: {
   preAuthCredits?: number;
   sourceTypeOverride?: 'creator' | 'keyword' | 'hashtag';
   queryOverride?: string;
+  deferRefund?: boolean;
 }): Promise<RunRefreshResult> {
   const { workspaceId, sourceId, limitOverride } = opts;
   const startTime = Date.now();
@@ -483,22 +571,33 @@ async function runRefreshSolo(opts: {
     costCents = result.costCents;
     if (result.notices.length > 0) errors.push(...result.notices);
   } catch (err) {
+    // Deferred refund (queue caller): keep the debit so a retry is still paid
+    // for; the caller refunds from the terminal branch. See G4.
+    const settleFailure = async () => {
+      if (opts.deferRefund) return { total: creditBalance!.total, pending: preAuthCredits };
+      const bal = await refundCredits(
+        workspaceId, preAuthCredits, 'refresh_source', `${opId}:fail`, 'call_failed',
+      );
+      return { total: bal.total, pending: undefined as number | undefined };
+    };
     if (err instanceof SpendCapExceededError) {
-      creditBalance = await refundCredits(workspaceId, preAuthCredits, 'refresh_source', `${opId}:fail`, 'call_failed');
+      const settledFail = await settleFailure();
       return {
         ok: false, refusal: 'cap_breached',
         refusalDetail: await getApifyCapStatus(workspaceId), ...base,
         itemsPulled: 0, newVideos: 0, costCents: 0, creditsCharged: 0,
-        creditsRemaining: creditBalance.total,
+        creditsRemaining: settledFail.total,
+        pendingRefundCredits: settledFail.pending,
         errors: [err.message], rescoreQueued: false, durationMs: Date.now() - startTime,
         mode: modeLabel, limitUsed: limit,
       };
     }
-    const bal = await refundCredits(workspaceId, preAuthCredits, 'refresh_source', `${opId}:fail`, 'call_failed');
+    const settledFail = await settleFailure();
     return {
       ok: false, ...base,
       itemsPulled: 0, newVideos: 0, costCents: 0, creditsCharged: 0,
-      creditsRemaining: bal.total,
+      creditsRemaining: settledFail.total,
+      pendingRefundCredits: settledFail.pending,
       errors: [(err as Error).message], rescoreQueued: false,
       durationMs: Date.now() - startTime, mode: modeLabel, limitUsed: limit,
     };
@@ -515,11 +614,12 @@ async function runRefreshSolo(opts: {
     limit,
     items,
     scrapeCostCents: costCents,
-    attributeApifyCost: true,
+    attributedCostCents: costCents,
     opId,
     preAuthCredits,
     creditBalanceTotal: creditBalance.total,
     policyReason: errors.length ? errors.join(' | ') : undefined,
+    deferRefund: opts.deferRefund,
     startTime,
   });
   return settled;
@@ -532,6 +632,7 @@ async function runRefreshSolo(opts: {
  */
 export async function runBatchedRefresh(
   members: RefreshSubscriber[],
+  exec?: RefreshExecOptions,
 ): Promise<RunRefreshResult[]> {
   if (members.length === 0) return [];
   const startTime = Date.now();
@@ -655,11 +756,23 @@ export async function runBatchedRefresh(
   const platform = leader.source.platform;
   const sourceType = leader.source.sourceType as 'creator' | 'keyword' | 'hashtag';
   const query = leader.source.query;
+  const key = canonicalKey(platform, sourceType, query);
+
+  // Whose spend cap authorises a SHARED scrape. Charging it to `ready[0]`
+  // meant one arbitrary tenant's $5 cap paid for nine other tenants' work and
+  // could breach on their behalf, aborting the whole batch (G1/G3). With
+  // PLATFORM_WORKSPACE_ID set the shared network cost sits on the platform
+  // and each subscriber gets a pro-rata `scrape_share` UsageLog row for
+  // reporting, which does not count against anyone's cap.
+  const platformWorkspaceId = process.env.PLATFORM_WORKSPACE_ID?.trim();
+  const scrapeWorkspaceId = ready.length > 1 && platformWorkspaceId
+    ? platformWorkspaceId
+    : leader.member.workspaceId;
 
   let scrape: ApifyScrapeResult;
   try {
     scrape = await scrapeSource({
-      workspaceId: leader.member.workspaceId,
+      workspaceId: scrapeWorkspaceId,
       platform,
       sourceType,
       query,
@@ -667,43 +780,78 @@ export async function runBatchedRefresh(
       postedAfter,
     });
   } catch (err) {
-    // Refund every ready member — scrape never landed.
+    // Scrape never landed. Nobody is charged for it, but the pre-auth only
+    // comes back when the caller says this attempt was the last one (G4).
     const failed: RunRefreshResult[] = [];
     for (const r of ready) {
-      const bal = await refundCredits(
-        r.member.workspaceId, r.preAuthCredits, 'refresh_source', `${r.opId}:fail`, 'call_failed',
-      );
+      let creditsRemaining = r.creditBalanceTotal;
+      let pending: number | undefined;
+      if (exec?.deferRefund) {
+        pending = r.preAuthCredits;
+      } else {
+        const bal = await refundCredits(
+          r.member.workspaceId, r.preAuthCredits, 'refresh_source', `${r.opId}:fail`, 'call_failed',
+        );
+        creditsRemaining = bal.total;
+      }
       failed.push({
         ok: false,
         refusal: err instanceof SpendCapExceededError ? 'cap_breached' : undefined,
         refusalDetail: err instanceof SpendCapExceededError
-          ? await getApifyCapStatus(r.member.workspaceId)
+          ? await getApifyCapStatus(scrapeWorkspaceId)
           : undefined,
         sourceId: r.source.id,
         query: r.source.query,
         platform: r.source.platform,
         sourceType: r.source.sourceType,
         itemsPulled: 0, newVideos: 0, costCents: 0, creditsCharged: 0,
-        creditsRemaining: bal.total,
+        creditsRemaining,
+        pendingRefundCredits: pending,
         errors: [(err as Error).message],
         rescoreQueued: false,
         durationMs: Date.now() - startTime,
         mode: r.plan.mode,
         limitUsed: limit,
         batchSize: ready.length,
+        canonicalKey: key,
       });
     }
     return [...early, ...failed];
   }
 
+  // Pro-rata, integer cents, remainder to the leader — so per-source cost
+  // analytics stay meaningful instead of one row holding the whole batch and
+  // N-1 rows holding zero (G2).
+  const share = Math.floor(scrape.costCents / ready.length);
+  const remainder = scrape.costCents - share * ready.length;
+
   const batchNote = ready.length > 1
     ? `Multi-tenant batch: ${ready.length} sources shared one Apify scrape `
-      + `(canonical ${platform}/${sourceType}/${query}); Apify cost attributed to leader only`
+      + `(canonical ${key}); Apify cost ${scrape.costCents}c split pro-rata`
+      + (scrapeWorkspaceId === platformWorkspaceId ? '; spend cap charged to the platform workspace' : '')
     : undefined;
 
   const applied: RunRefreshResult[] = [];
   for (let i = 0; i < ready.length; i++) {
     const r = ready[i]!;
+    const attributedCostCents = share + (i === 0 ? remainder : 0);
+
+    // Per-subscriber COGS visibility. `scrape_share` is deliberately NOT the
+    // 'scrape' kind the cap sums over — the real spend was already recorded
+    // once against scrapeWorkspaceId; this row exists so a workspace's true
+    // Apify cost can be reported without being billed twice.
+    if (ready.length > 1) {
+      await db.usageLog.create({
+        data: {
+          workspaceId: r.member.workspaceId,
+          kind: 'scrape_share',
+          provider: 'apify',
+          units: 1,
+          costCents: attributedCostCents,
+        },
+      }).catch(() => { /* reporting only — never fail a refresh over it */ });
+    }
+
     const result = await settleAndApply({
       workspaceId: r.member.workspaceId,
       sourceId: r.source.id,
@@ -716,12 +864,14 @@ export async function runBatchedRefresh(
       limit: r.plan.limit,
       items: scrape.items,
       scrapeCostCents: scrape.costCents,
-      attributeApifyCost: i === 0,
+      attributedCostCents,
       opId: r.opId,
       preAuthCredits: r.preAuthCredits,
       creditBalanceTotal: r.creditBalanceTotal,
       policyReason: scrape.notices.length ? scrape.notices.join(' | ') : undefined,
       batchNote,
+      canonicalKey: key,
+      deferRefund: exec?.deferRefund,
       startTime,
     });
     result.batchSize = ready.length;

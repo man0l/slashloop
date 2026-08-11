@@ -307,6 +307,17 @@ export async function latestFetchErrors(
  * case the retry limit exists to bound.
  */
 export async function claimNextJob(kind = 'analyze'): Promise<MediaJobRow | null> {
+  // Refresh jobs are held back for a short coalescing window so multi-tenant
+  // batching has something to batch.
+  //
+  // Phase A was designed against a per-minute Vercel cron, where a minute of
+  // enqueues piled up and one drain grouped them. The VPS worker polls every
+  // WORKER_IDLE_MS (3s) and would claim a refresh the instant it appears —
+  // peers queued two seconds later then scrape separately, and the batching is
+  // dead code in production. Waiting costs a background loop nothing: refresh
+  // latency is already minutes end to end (await_job is built for it).
+  const holdMs = kind === 'refresh' ? refreshCoalesceMs() : 0;
+  const claimableBefore = new Date(Date.now() - holdMs);
   const rows = await db.$queryRaw<MediaJobRow[]>`
     UPDATE "MediaJob"
        SET "status" = 'running',
@@ -315,6 +326,7 @@ export async function claimNextJob(kind = 'analyze'): Promise<MediaJobRow | null
      WHERE "id" = (
        SELECT "id" FROM "MediaJob"
         WHERE "status" = 'queued' AND "kind" = ${kind}
+          AND "createdAt" <= ${claimableBefore}
         ORDER BY "createdAt" ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
@@ -325,10 +337,104 @@ export async function claimNextJob(kind = 'analyze'): Promise<MediaJobRow | null
 }
 
 /**
- * Max other refresh jobs claimed alongside the leader for one Apify scrape.
- * Bounds fan-out work (persist/score/thumbs per source) inside the 60s worker.
+ * How long a queued refresh job waits before any worker may claim it, letting
+ * peers for the same canonical query accumulate. 0 disables the hold (the old
+ * claim-immediately behaviour).
  */
-export const REFRESH_BATCH_PEER_CAP = 9;
+export function refreshCoalesceMs(): number {
+  // Nothing to coalesce for when batching is off — claim immediately.
+  if (!refreshBatchingEnabled()) return 0;
+  const raw = process.env.REFRESH_COALESCE_MS;
+  if (raw == null || raw.trim() === '') return 30_000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 30_000;
+}
+
+/** Master switch for multi-tenant batching — off means one scrape per job. */
+export function refreshBatchingEnabled(): boolean {
+  return (process.env.REFRESH_BATCHING_ENABLED ?? '1') !== '0';
+}
+
+/**
+ * Max other refresh jobs claimed alongside the leader for one Apify scrape.
+ * Bounds fan-out work (persist/score/thumbs per source) inside one invocation.
+ * Override with REFRESH_BATCH_PEER_CAP so a batch can be narrowed in prod
+ * without a redeploy.
+ */
+export const REFRESH_BATCH_PEER_CAP_DEFAULT = 9;
+
+export function refreshBatchPeerCap(): number {
+  const raw = process.env.REFRESH_BATCH_PEER_CAP;
+  const n = raw == null ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : REFRESH_BATCH_PEER_CAP_DEFAULT;
+}
+
+/** @deprecated use refreshBatchPeerCap() — kept so callers compile unchanged. */
+export const REFRESH_BATCH_PEER_CAP = REFRESH_BATCH_PEER_CAP_DEFAULT;
+
+// ---------------------------------------------------------------------------
+// Canonical scrape lock — one Apify run per canonical query across containers
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a canonical-scrape lease is held before another worker may steal
+ * it. Must comfortably exceed one scrape plus its fan-out; a worker killed
+ * mid-batch (redeploy) blocks that query only until this expires.
+ */
+export const CANONICAL_LOCK_TTL_MS = 10 * 60_000;
+
+/**
+ * Take the lease for one canonical query, or fail immediately.
+ *
+ * WORKER_KINDS lets several containers drain `refresh` at once. SKIP LOCKED
+ * stops two of them claiming the same JOB, but nothing stopped two of them
+ * leading batches for the same canonical query at the same moment — two Apify
+ * runs for `@foo`, which is precisely the spend batching exists to remove.
+ *
+ * This is a TTL row, NOT `pg_advisory_lock`. Session-level advisory locks are
+ * wrong here: the workers connect through the Supabase pooler in transaction
+ * pooling mode, where the backend holding the lock is returned to the pool
+ * after each statement — the unlock can land on a different backend and the
+ * lock leaks for the life of the process. A row with an expiry needs no
+ * session affinity and self-heals when a worker is SIGKILLed mid-batch.
+ *
+ * The single UPSERT is the atomic part: `ON CONFLICT … WHERE expiresAt < now()`
+ * lets exactly one caller win, and losers get zero rows back rather than
+ * blocking.
+ */
+export async function acquireCanonicalLock(
+  key: string,
+  owner: string,
+  ttlMs = CANONICAL_LOCK_TTL_MS,
+): Promise<boolean> {
+  const expiresAt = new Date(Date.now() + ttlMs);
+  try {
+    const rows = await db.$queryRaw<Array<{ lockedBy: string }>>`
+      INSERT INTO "CanonicalScrapeLock" ("key", "lockedBy", "lockedAt", "expiresAt")
+      VALUES (${key}, ${owner}, now(), ${expiresAt})
+      ON CONFLICT ("key") DO UPDATE
+         SET "lockedBy" = EXCLUDED."lockedBy",
+             "lockedAt" = now(),
+             "expiresAt" = EXCLUDED."expiresAt"
+       WHERE "CanonicalScrapeLock"."expiresAt" < now()
+   RETURNING "lockedBy"
+    `;
+    return rows[0]?.lockedBy === owner;
+  } catch (err) {
+    // Table not deployed yet (migration pending): fall back to the previous
+    // behaviour rather than refusing every refresh. Duplicate scrapes are a
+    // cost bug; refusing all refreshes is an outage.
+    console.warn(`[jobs] canonical lock unavailable, proceeding unlocked: ${(err as Error).message}`);
+    return true;
+  }
+}
+
+/** Release a lease we own. A lease we no longer own is left alone. */
+export async function releaseCanonicalLock(key: string, owner: string): Promise<void> {
+  await db.$executeRaw`
+    DELETE FROM "CanonicalScrapeLock" WHERE "key" = ${key} AND "lockedBy" = ${owner}
+  `.catch(() => { /* expiry clears it anyway */ });
+}
 
 type QueuedRefreshPeerRow = {
   id: string;
@@ -358,7 +464,8 @@ export async function claimRefreshPeersForCanonical(opts: {
   limit?: number;
 }): Promise<MediaJobRow[]> {
   const { normalizeQuery } = await import('./canonical-query.js');
-  const cap = opts.limit ?? REFRESH_BATCH_PEER_CAP;
+  const cap = opts.limit ?? refreshBatchPeerCap();
+  if (cap <= 0) return [];
 
   // Peek a wider candidate set, then claim only matching ids. FOR UPDATE is
   // applied at claim time so we do not hold locks across the JS filter.
@@ -377,16 +484,26 @@ export async function claimRefreshPeersForCanonical(opts: {
      WHERE mj."status" = 'queued'
        AND mj."kind" = 'refresh'
        AND mj."id" <> ${opts.excludeJobId}
+       AND (mj."deadlineAt" IS NULL OR mj."deadlineAt" > now())
        AND s."platform" = ${opts.platform}
        AND s."sourceType" = ${opts.sourceType}
      ORDER BY mj."createdAt" ASC
      LIMIT 40
   `;
 
-  const matchIds = candidates
-    .filter((c) => normalizeQuery(c.sourceType, c.query) === opts.queryNorm)
-    .slice(0, cap)
-    .map((c) => c.id);
+  // One job per sourceId. Two queued refreshes for the SAME source would be
+  // two subscribers pointing at one set of Video rows: the second settles
+  // against zero new videos but still burns its own pre-auth round trip, and
+  // the caller's result-by-sourceId map can only pair one of them.
+  const seenSources = new Set<string>([]);
+  const matchIds: string[] = [];
+  for (const c of candidates) {
+    if (normalizeQuery(c.sourceType, c.query) !== opts.queryNorm) continue;
+    if (seenSources.has(c.sourceId)) continue;
+    seenSources.add(c.sourceId);
+    matchIds.push(c.id);
+    if (matchIds.length >= cap) break;
+  }
 
   if (matchIds.length === 0) return [];
 
