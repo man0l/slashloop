@@ -68,7 +68,7 @@ Both runners call the same `processClaimedJob`, so batching is implemented once 
 2. **Lease**: the leader takes `CanonicalScrapeLock` for `canonicalKey(platform, sourceType, query)`. A second container that wants the same query requeues instead of starting a second Apify run.
 3. **Claim peers**: queued refresh jobs with the same canonical key, up to `REFRESH_BATCH_PEER_CAP` (env-tunable), skipping expired deadlines and deduping by `sourceId`. A time-boxed caller scales the cap down by `REFRESH_FANOUT_MS_PER_PEER`.
 4. **Union plan**: `limit = max(plan.limit)`; `postedAfter = min(watermarks)` for creators, and only when *every* member has one (any bootstrap member widens to no filter).
-5. **One** `scrapeSource` call, authorised against `PLATFORM_WORKSPACE_ID` when set so no tenant's spend cap pays for other tenants.
+5. **One** `scrapeSource` call, with the cap asserted per member against its own 1/N share so no tenant's cap pays for another's work.
 6. **Fan-out**: per subscriber, `applyScrapeItems` re-applies that source's own `postedAfter`, bulk-checks existing videos in one query, and treats a unique-violation as an update. Credits settle per workspace on **new videos only**; Apify cents are split pro-rata across `RefreshRun` rows plus a `scrape_share` `UsageLog` row each.
 7. **Settle**: each job completes or fails independently; a pre-auth is refunded only when its job terminally fails.
 
@@ -137,7 +137,7 @@ This is the largest saving for "everyone tracks #buildinpublic".
 | Debit **per workspace**, never share a ledger | Multi-tenant isolation | ✅ |
 | Charge for **value received**, not raw Apify line item | Workspace A may already hold 4/5 results → charge less than B | ✅ G9 fixed |
 | `credits = ceil(1.5 × newVideos)` for incremental | Aligns with "new outliers only" | ✅ `settleAndApply` bills `newVideos` only |
-| Platform absorbs true Apify COGS | Or mark up and track margin in `UsageLog` | ✅ `PLATFORM_WORKSPACE_ID` + pro-rata `scrape_share` rows |
+| A shared run is a shared purchase, split N ways | The platform *is* the tenants — a synthetic platform workspace would hide real COGS from every cap | ✅ `splitSpend()` + one real `scrape` row per sharer |
 | Cap / insufficient credits: **skip that subscriber**, do not fail the whole batch | One broke tenant must not block others | ✅ credits per member; the shared scrape no longer draws on a tenant's cap |
 | Idempotent `opId` per MediaJob | Keep existing retry safety | ✅ refund deferred to the terminal branch, so a retry is still paid for |
 
@@ -145,11 +145,18 @@ This is the largest saving for "everyone tracks #buildinpublic".
 
 ### Apify COGS attribution ✅ shipped (resolved G1/G2)
 
-The first cut (`attributeApifyCost: i === 0`) made one arbitrary tenant carry the whole batch, both in `RefreshRun.costCents` and — worse — in their monthly spend cap. Now:
+The first cut (`attributeApifyCost: i === 0`) made one arbitrary tenant carry the whole batch, both in `RefreshRun.costCents` and — worse — in their monthly spend cap.
 
-1. A **platform workspace** (env `PLATFORM_WORKSPACE_ID`) owns shared scrapes: when a batch has more than one member and the env is set, `scrapeSource` asserts and records the cap against it, not against `ready[0]`. Unset = previous behaviour, so this is opt-in per environment.
-2. `RefreshRun.costCents` = `floor(scrapeCostCents / batchSize)` per source, remainder to the leader, so per-source cost analytics stay meaningful — §10's savings metric is computed from these rows.
-3. One `UsageLog` row per subscriber with the pro-rata share, under kind `scrape_share`. Deliberately **not** the `scrape` kind the cap sums over: the real spend was recorded once against the scrape owner, and this row exists so a workspace's true COGS can be reported without being billed twice.
+An intermediate design routed shared scrapes to a **platform workspace** (`PLATFORM_WORKSPACE_ID`) and gave subscribers non-counting `scrape_share` rows. That was **dropped**: the platform *is* the tenants, so a synthetic workspace is a fake row invented to satisfy a per-workspace cap, and it turns a real cost into an untracked one (nobody's cap sees a shared scrape, so batching becomes a way to spend without limit).
+
+The shipped rule is simpler and truer: **a shared run is a shared purchase, split N ways.**
+
+1. `scrapeSource` takes `costShareWorkspaceIds`. `splitSpend()` divides the estimate and the actual spend into integer cents (remainder to the first sharer; a workspace with two sources in the batch pays two shares).
+2. The cap is asserted **per sharer against its own share**, so a tenant near its ceiling can refuse its slice without aborting the batch, and no tenant's cap is consumed by another's work.
+3. `recordApifySpend` writes one real `scrape` row per sharing workspace for its share — the same kind the cap sums over. Ten tenants sharing a $0.019 run each carry a fifth of a cent, which is exactly what they consumed.
+4. `RefreshRun.costCents` = `floor(scrapeCostCents / batchSize)` per source, remainder to the leader, so per-source analytics stay meaningful — §10's savings metric is computed from these rows.
+
+No environment variable, no synthetic tenant, and the accounting identity holds: **sum of recorded spend = what Apify actually charged.**
 
 ---
 
@@ -290,7 +297,7 @@ Findings from reading `src/lib/refresh.ts`, `refresh-policy.ts`, `canonical-quer
 
 | # | Gap | Where | Status |
 |---|---|---|---|
-| **G1** | Batch scrape ran as `ready[0].workspaceId`, so the whole batch hit the leader's spend cap; peers showed $0 Apify spend forever | `runBatchedRefresh` → `scrapeSource` | ✅ **fixed** — `PLATFORM_WORKSPACE_ID` owns shared scrapes |
+| **G1** | Batch scrape ran as `ready[0].workspaceId`, so the whole batch hit the leader's spend cap; peers showed $0 Apify spend forever | `runBatchedRefresh` → `scrapeSource` | ✅ **fixed** — cost split N ways, cap asserted per sharer |
 | **G2** | Only the leader got `attributeApifyCost`; peers wrote `RefreshRun.costCents = 0` | `settleAndApply` | ✅ **fixed** — pro-rata cents per source + `scrape_share` UsageLog |
 | **G3** | The real `assertApifyCap` inside the scrape ran on the leader only; a leader breach failed **every** member | `runBatchedRefresh` | ✅ **fixed** — the shared scrape no longer draws on a tenant's cap |
 | **G4** | Failure refunded the pre-auth under `${opId}:fail`, then `failJob` requeued; the retry replayed the idempotent debit and charged nothing | `refresh.ts` + `processClaimedJob` | ✅ **fixed** — `deferRefund`, refund only on the terminal branch |
@@ -404,7 +411,7 @@ Everything below is on `feat/apify-multi-tenant-batching`, merged with `master` 
 
 1. Apply both migrations (`supabase db push` or the SQL directly). The lock acquire fails **open** with a warning if `CanonicalScrapeLock` is missing, so code can ship before the migration — but duplicate scrapes stay possible until it lands.
 2. `prisma generate` (postinstall already does it) — the `Video` compound unique is new.
-3. Set on the maintenance worker: `REFRESH_COALESCE_MS=30000`, `REFRESH_BATCH_PEER_CAP=9`, optionally `PLATFORM_WORKSPACE_ID`.
+3. Optional on the maintenance worker: `REFRESH_COALESCE_MS` (default 30000), `REFRESH_BATCH_PEER_CAP` (default 9). No workspace-id config is needed — cost attribution is automatic.
 4. Set `stop_grace_period: 300s` on both slashloop services **and** `WATCHTOWER_TIMEOUT=300s` on the watchtower service in `salonease/docker-compose.prod.yml` — watchtower passes its own stop timeout and ignores `stop_grace_period`. Still the one gap the code cannot close by itself (§14.4).
 5. Watch `[worker] refresh batch canonical=… size=…`. `size=1` on every line means the hold is too short for the enqueue pattern, not that grouping is broken.
 
@@ -445,7 +452,7 @@ Lease TTL (`CANONICAL_LOCK_TTL_MS`, 10 min) is deliberately shorter than `STUCK_
 
 **Losing the race costs nothing.** The loser calls `yieldJob`, which requeues *and gives the attempt back* — `attempts` increments at claim time, so using `failJob` here would let three lost races terminally fail a refresh that never attempted anything. The same applies to the Vercel budget-requeue path.
 
-**Not set on the VPS today:** `PLATFORM_WORKSPACE_ID` (so a batched scrape's spend cap still falls back to the leader's workspace — §4 attribution is in the code but inactive until it is set), and none of the batching envs, which means the defaults apply: batching on, 30s coalescing hold, peer cap 9.
+**No extra config needed on the VPS:** cost attribution is automatic (per-sharer split), and the batching envs all have working defaults — batching on, 30s coalescing hold, peer cap 9.
 
 ### 14.5 Running a second worker container
 

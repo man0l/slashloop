@@ -758,21 +758,19 @@ export async function runBatchedRefresh(
   const query = leader.source.query;
   const key = canonicalKey(platform, sourceType, query);
 
-  // Whose spend cap authorises a SHARED scrape. Charging it to `ready[0]`
-  // meant one arbitrary tenant's $5 cap paid for nine other tenants' work and
-  // could breach on their behalf, aborting the whole batch (G1/G3). With
-  // PLATFORM_WORKSPACE_ID set the shared network cost sits on the platform
-  // and each subscriber gets a pro-rata `scrape_share` UsageLog row for
-  // reporting, which does not count against anyone's cap.
-  const platformWorkspaceId = process.env.PLATFORM_WORKSPACE_ID?.trim();
-  const scrapeWorkspaceId = ready.length > 1 && platformWorkspaceId
-    ? platformWorkspaceId
-    : leader.member.workspaceId;
+  // A shared scrape is a shared purchase: the cap check and the recorded
+  // Apify spend are split pro-rata across everyone in the batch (see
+  // splitSpend in apify.ts). Charging the whole run to `ready[0]` let one
+  // arbitrary tenant's cap pay for nine others and breach on their behalf,
+  // aborting the batch (G1/G3). No platform/system workspace is needed —
+  // the cost genuinely belongs to these tenants, in Nths.
+  const costShareWorkspaceIds = ready.map(r => r.member.workspaceId);
 
   let scrape: ApifyScrapeResult;
   try {
     scrape = await scrapeSource({
-      workspaceId: scrapeWorkspaceId,
+      workspaceId: leader.member.workspaceId,
+      costShareWorkspaceIds,
       platform,
       sourceType,
       query,
@@ -798,7 +796,7 @@ export async function runBatchedRefresh(
         ok: false,
         refusal: err instanceof SpendCapExceededError ? 'cap_breached' : undefined,
         refusalDetail: err instanceof SpendCapExceededError
-          ? await getApifyCapStatus(scrapeWorkspaceId)
+          ? await getApifyCapStatus(r.member.workspaceId)
           : undefined,
         sourceId: r.source.id,
         query: r.source.query,
@@ -827,8 +825,8 @@ export async function runBatchedRefresh(
 
   const batchNote = ready.length > 1
     ? `Multi-tenant batch: ${ready.length} sources shared one Apify scrape `
-      + `(canonical ${key}); Apify cost ${scrape.costCents}c split pro-rata`
-      + (scrapeWorkspaceId === platformWorkspaceId ? '; spend cap charged to the platform workspace' : '')
+      + `(canonical ${key}); Apify cost ${scrape.costCents}c split pro-rata `
+      + `across ${new Set(costShareWorkspaceIds).size} workspace(s)`
     : undefined;
 
   const applied: RunRefreshResult[] = [];
@@ -836,21 +834,9 @@ export async function runBatchedRefresh(
     const r = ready[i]!;
     const attributedCostCents = share + (i === 0 ? remainder : 0);
 
-    // Per-subscriber COGS visibility. `scrape_share` is deliberately NOT the
-    // 'scrape' kind the cap sums over — the real spend was already recorded
-    // once against scrapeWorkspaceId; this row exists so a workspace's true
-    // Apify cost can be reported without being billed twice.
-    if (ready.length > 1) {
-      await db.usageLog.create({
-        data: {
-          workspaceId: r.member.workspaceId,
-          kind: 'scrape_share',
-          provider: 'apify',
-          units: 1,
-          costCents: attributedCostCents,
-        },
-      }).catch(() => { /* reporting only — never fail a refresh over it */ });
-    }
+    // No extra UsageLog row here: scrapeSource already wrote one real
+    // `scrape` row per sharing workspace for its pro-rata share, so each
+    // workspace's cap and COGS reporting see exactly what it consumed.
 
     const result = await settleAndApply({
       workspaceId: r.member.workspaceId,

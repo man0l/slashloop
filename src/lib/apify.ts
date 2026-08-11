@@ -144,6 +144,33 @@ async function runTikTokActorWithFallback(
   }
 }
 
+/**
+ * Split one run's cost across the workspaces that share it.
+ *
+ * Integer cents, remainder to the first sharer, and a workspace appearing
+ * twice (two of its sources tracking the same canonical query) pays twice —
+ * it consumed two of the N shares. Never rounds a share to 0 when there is
+ * cost to attribute: a cap that can be evaded by joining a big enough batch
+ * is not a cap.
+ */
+export function splitSpend(
+  workspaceIds: string[],
+  totalCents: number,
+): Array<{ workspaceId: string; cents: number }> {
+  const ids = workspaceIds.length > 0 ? workspaceIds : [];
+  if (ids.length === 0) return [];
+  if (ids.length === 1) return [{ workspaceId: ids[0]!, cents: totalCents }];
+
+  const per = Math.floor(totalCents / ids.length);
+  const remainder = totalCents - per * ids.length;
+  const byWorkspace = new Map<string, number>();
+  ids.forEach((id, idx) => {
+    const share = per + (idx === 0 ? remainder : 0);
+    byWorkspace.set(id, (byWorkspace.get(id) ?? 0) + share);
+  });
+  return [...byWorkspace].map(([workspaceId, cents]) => ({ workspaceId, cents }));
+}
+
 // Estimated cost per result, in cents — FREE tier ($0.0037/result), the most
 // expensive tier, used as a conservative upper bound for the pre-auth check.
 const ESTIMATED_COST_PER_RESULT_CENTS = 0.37;
@@ -152,6 +179,16 @@ const ESTIMATED_ACTOR_START_COST_CENTS = 0.1;
 
 export interface ApifyScrapeOptions {
   workspaceId: string;
+  /**
+   * Every workspace this ONE actor run is being made on behalf of, when a
+   * multi-tenant batch shares a scrape. The cap check and the recorded spend
+   * are split pro-rata across them, because that is literally what happened:
+   * ten tenants sharing a $0.019 run consumed a fifth of a cent each, not
+   * $0.019 each, and not $0.019 for whichever one the worker claimed first.
+   *
+   * Omit for a single-tenant scrape; it defaults to [workspaceId].
+   */
+  costShareWorkspaceIds?: string[];
   sourceType: 'creator' | 'keyword' | 'hashtag';
   query: string; // handle, keyword phrase, or hashtag (with or without #)
   limit: number; // max results
@@ -238,7 +275,12 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
   const estimatedCostCents = Math.ceil(
     opts.limit * ESTIMATED_COST_PER_RESULT_CENTS + ESTIMATED_ACTOR_START_COST_CENTS + dateFilterCents,
   );
-  await assertApifyCap(opts.workspaceId, estimatedCostCents);
+
+  // Cap check per SHARER, not per run. A batched scrape is a shared purchase:
+  // asserting the full estimate against one workspace let one tenant's cap be
+  // consumed by (and breach on behalf of) nine others.
+  const sharers = splitSpend(opts.costShareWorkspaceIds ?? [opts.workspaceId], estimatedCostCents);
+  for (const s of sharers) await assertApifyCap(s.workspaceId, s.cents);
 
   const input: Record<string, unknown> = {
     resultsPerPage: opts.limit,
@@ -323,7 +365,9 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
 
   // Record actual cost (we use the estimate since Apify's per-call billing
   // is not returned in the response — the real invoice lands later).
-  await recordApifySpend(opts.workspaceId, spentCents, null);
+  for (const s of splitSpend(opts.costShareWorkspaceIds ?? [opts.workspaceId], spentCents)) {
+    await recordApifySpend(s.workspaceId, s.cents, null);
+  }
 
   return {
     items,

@@ -6,6 +6,7 @@ import {
   refreshCoalesceMs,
 } from './jobs.js';
 import { canonicalKey, normalizeQuery } from './canonical-query.js';
+import { splitSpend } from './apify.js';
 
 const ENV_KEYS = ['REFRESH_BATCH_PEER_CAP', 'REFRESH_BATCHING_ENABLED', 'REFRESH_COALESCE_MS'] as const;
 
@@ -83,5 +84,30 @@ describe('lease contention must not consume retries', () => {
     // than failJob: with three lives, three lost races would terminally fail a
     // refresh that never attempted a scrape.
     expect(MAX_ATTEMPTS).toBeLessThanOrEqual(5);
+  });
+});
+
+describe('splitSpend — a shared run is a shared purchase', () => {
+  test('single tenant pays the whole run', () => {
+    expect(splitSpend(['w1'], 19)).toEqual([{ workspaceId: 'w1', cents: 19 }]);
+  });
+
+  test('splits evenly, remainder to the first sharer, sums to the total', () => {
+    const parts = splitSpend(['w1', 'w2', 'w3'], 19);
+    expect(parts.reduce((a, p) => a + p.cents, 0)).toBe(19);
+    expect(parts.find(p => p.workspaceId === 'w1')!.cents).toBe(7); // 6 + 1
+    expect(parts.find(p => p.workspaceId === 'w2')!.cents).toBe(6);
+  });
+
+  test('a workspace with two sources in the batch pays two shares', () => {
+    const parts = splitSpend(['w1', 'w1', 'w2', 'w3'], 20);
+    expect(parts).toHaveLength(3);
+    expect(parts.find(p => p.workspaceId === 'w1')!.cents).toBe(10); // 5+5
+    expect(parts.reduce((a, p) => a + p.cents, 0)).toBe(20);
+  });
+
+  test('never invents spend out of nothing', () => {
+    expect(splitSpend([], 19)).toEqual([]);
+    expect(splitSpend(['w1', 'w2'], 0).reduce((a, p) => a + p.cents, 0)).toBe(0);
   });
 });
