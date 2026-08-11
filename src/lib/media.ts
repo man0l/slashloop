@@ -384,7 +384,7 @@ export function frameUrlAt(signedUrl: string, timestampSec: number): string {
 export function resolveThumbUrl(
   video: { thumbKey: string | null; thumbnailUrl: string },
 ): string | null {
-  // isStorageEnabled() guards publicUrl(), which needs SUPABASE_URL.
+  // isStorageEnabled() guards publicUrl() (R2 public base or Supabase URL).
   if (video.thumbKey && isStorageEnabled()) {
     return publicUrl(thumbBucket(), video.thumbKey);
   }

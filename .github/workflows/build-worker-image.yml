@@ -71,6 +71,14 @@ jobs:
           PUBLIC_URL: ${{ vars.PUBLIC_URL }}
           WORKER_IDLE_MS: ${{ vars.WORKER_IDLE_MS }}
           WORKER_RESCORE_EVERY: ${{ vars.WORKER_RESCORE_EVERY }}
+          # Cloudflare R2 (preferred media backend when set — see src/lib/storage.ts)
+          R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_THUMB_BUCKET: ${{ vars.R2_THUMB_BUCKET }}
+          R2_MEDIA_BUCKET: ${{ vars.R2_MEDIA_BUCKET }}
+          R2_THUMB_PUBLIC_BASE: ${{ vars.R2_THUMB_PUBLIC_BASE }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           set -e
           out="$GITHUB_WORKSPACE/.worker-env"
@@ -95,9 +103,17 @@ jobs:
           printf 'PUBLIC_URL=%s\n' "$PUBLIC_URL"                >> "$out"
           printf 'WORKER_IDLE_MS=%s\n' "$WORKER_IDLE_MS"        >> "$out"
           printf 'WORKER_RESCORE_EVERY=%s\n' "$WORKER_RESCORE_EVERY" >> "$out"
+          printf 'R2_ENDPOINT=%s\n' "$R2_ENDPOINT"              >> "$out"
+          printf 'R2_ACCOUNT_ID=%s\n' "$R2_ACCOUNT_ID"          >> "$out"
+          printf 'R2_THUMB_BUCKET=%s\n' "$R2_THUMB_BUCKET"      >> "$out"
+          printf 'R2_MEDIA_BUCKET=%s\n' "$R2_MEDIA_BUCKET"      >> "$out"
+          printf 'R2_THUMB_PUBLIC_BASE=%s\n' "$R2_THUMB_PUBLIC_BASE" >> "$out"
+          printf 'R2_ACCESS_KEY_ID=%s\n' "$R2_ACCESS_KEY_ID"    >> "$out"
+          printf 'R2_SECRET_ACCESS_KEY=%s\n' "$R2_SECRET_ACCESS_KEY" >> "$out"
           ls -la "$out"
           echo "lines: $(wc -l < "$out")"
           echo "video-model-marker: $(grep -c '^OPENROUTER_VIDEO_MODEL=' "$out")"
+          echo "r2-endpoint-marker: $(grep -c '^R2_ENDPOINT=' "$out")"
 
       - uses: docker/setup-buildx-action@v3
 
