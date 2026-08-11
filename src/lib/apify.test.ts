@@ -23,13 +23,13 @@ mock.module('./spend-cap.js', () => ({
 const { downloadTikTokVideo, primaryTikTokActorId, resolveVideoBinaryUrl } = await import('./apify.js');
 
 const REAL_FETCH = globalThis.fetch;
-let fetchHandler: ((url: string, init?: RequestInit) => Promise<Response>) | null = null;
+let fetchHandler: ((url: string, init?: RequestInit) => Response | Promise<Response>) | null = null;
 
 beforeEach(() => {
   process.env.APIFY_API_KEY = 'apify_test_key';
   globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
     if (!fetchHandler) throw new Error('no fetch handler registered for this test');
-    return fetchHandler(String(url), init);
+    return Promise.resolve(fetchHandler(String(url), init));
   }) as typeof fetch;
 });
 
@@ -48,7 +48,7 @@ function binaryResponse(bytes = 2048): Response {
   return new Response(new Uint8Array(bytes).fill(7), { status: 200, headers: { 'Content-Type': 'video/mp4' } });
 }
 
-async function runDownload(handler: (url: string, init?: RequestInit) => Promise<Response>) {
+async function runDownload(handler: (url: string, init?: RequestInit) => Response | Promise<Response>) {
   const dir = mkdtempSync(join(tmpdir(), 'apify-test-'));
   const outputPath = join(dir, 'video.mp4');
   fetchHandler = handler;
