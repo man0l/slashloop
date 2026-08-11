@@ -34,8 +34,53 @@ const APIFY_API_BASE = 'https://api.apify.com/v2';
 const DEFAULT_TIKTOK_ACTOR_ID = 'clockworks~tiktok-scraper';
 
 /** The actor to try first. Defaults to the production-proven clockworks actor. */
-function primaryTikTokActorId(): string {
+export function primaryTikTokActorId(): string {
   return process.env.APIFY_TIKTOK_ACTOR_ID?.trim() || DEFAULT_TIKTOK_ACTOR_ID;
+}
+
+// ---------------------------------------------------------------------------
+// Video-binary URL resolution — which URL to HTTP-GET for the actual MP4.
+//
+// The actor is asked to download the video into its own key-value store
+// (shouldDownloadVideos: true). It then surfaces the public KV-store URL in
+// `mediaUrls[0]` / `videoMeta.downloadAddr` — fetch THOSE; no token needed and
+// no TikTok origin in the path.
+//
+// `videoMeta.playAddr` / `raw.videoUrl` point at TikTok's own CDN, which
+// 403s "Access Denied" from datacenter/server IPs (Contabo, Vercel, ...).
+// The code refuses those rather than attempting the download and burning an
+// Apify credit on a guaranteed-blocked request — the analysis degrades to
+// text with a clear reason instead of a raw 403 HTML error.
+// ---------------------------------------------------------------------------
+
+export interface ResolvedVideoBinary {
+  url: string;
+  /** 'kv_store' = Apify key-value store (what we should use);
+   *  'tiktok_cdn' = TikTok's own CDN (403s from servers — refuse). */
+  source: 'kv_store' | 'tiktok_cdn';
+}
+
+export function resolveVideoBinaryUrl(rawItem: unknown): ResolvedVideoBinary | null {
+  const raw = (rawItem ?? {}) as Record<string, unknown>;
+  const videoMeta = (raw.videoMeta ?? raw.video ?? {}) as Record<string, unknown>;
+
+  // Apify KV-store URL — the good path (clockworks stores the MP4 here).
+  const mediaUrls = raw.mediaUrls;
+  if (Array.isArray(mediaUrls) && typeof mediaUrls[0] === 'string' && mediaUrls[0]) {
+    return { url: mediaUrls[0], source: 'kv_store' };
+  }
+  if (typeof videoMeta.downloadAddr === 'string' && videoMeta.downloadAddr) {
+    return { url: videoMeta.downloadAddr, source: 'kv_store' };
+  }
+
+  // Everything left is TikTok's CDN — refuse it.
+  const playAddr = videoMeta.playAddr;
+  if (Array.isArray(playAddr) && typeof playAddr[0] === 'string' && playAddr[0]) {
+    return { url: playAddr[0], source: 'tiktok_cdn' };
+  }
+  if (typeof playAddr === 'string' && playAddr) return { url: playAddr, source: 'tiktok_cdn' };
+  if (typeof raw.videoUrl === 'string' && raw.videoUrl) return { url: raw.videoUrl, source: 'tiktok_cdn' };
+  return null;
 }
 
 /** POST to one actor's run-sync-get-dataset-items endpoint; throws on any non-2xx or non-array response. */
@@ -302,23 +347,22 @@ export async function downloadTikTokVideo(opts: ApifyDownloadOptions): Promise<A
   }
 
   const raw = rawItems[0];
-  const videoMeta = raw.videoMeta || raw.video || {};
 
   // Pick the Apify key-value-store URL for the real video binary. Only
   // present when shouldDownloadVideos=true was set in the input. NOTE:
   // `musicMeta.playUrl` is the AUDIO-ONLY stream (misleading name) and
   // MUST NOT be used — Gemini rejects it with code 13 "file failed to be
-  // processed". The KV-store URLs are public (no token needed to GET).
-  const cdnUrl: string | undefined =
-    (Array.isArray(raw.mediaUrls) && raw.mediaUrls[0]) ||
-    videoMeta.downloadAddr ||
-    (Array.isArray(videoMeta.playAddr) && videoMeta.playAddr[0]) ||
-    videoMeta.playAddr ||
-    raw.videoUrl ||
-    undefined;
-  if (!cdnUrl) {
-    throw new Error('No video CDN URL in Apify response (video may be deleted, restricted, or download failed)');
+  // processed". If the actor only returned a TikTok CDN URL (playAddr /
+  // videoUrl), refuse it — see resolveVideoBinaryUrl: TikTok's CDN 403s
+  // datacenter IPs, so attempting it would burn an Apify credit for nothing.
+  const resolved = resolveVideoBinaryUrl(raw);
+  if (!resolved) {
+    throw new Error('Apify returned no video binary (mediaUrls/downloadAddr absent) — video may be deleted or restricted');
   }
+  if (resolved.source === 'tiktok_cdn') {
+    throw new Error(`Actor did not store the video (only a TikTok CDN URL available — cannot download from a server IP); falling back to text analysis`);
+  }
+  const cdnUrl = resolved.url;
 
   // HTTP GET the MP4 binary from Apify's key-value store. These records
   // are public, but we send headers anyway in case we ever fall back to

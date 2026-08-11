@@ -24,6 +24,7 @@ export type FetchErrorCode =
   | 'video_not_found'
   | 'video_unavailable'
   | 'apify_cdn_failed'
+  | 'apify_not_stored'
   | 'apify_actor_error'
   | 'download_failed'
   | 'openrouter_balance'
@@ -53,6 +54,9 @@ export function classifyFetchError(lastError: string | null): FetchErrorInfo | n
   }
   if (/no video cdn url/i.test(msg)) {
     return { code: 'video_unavailable', message: 'No downloadable video file (deleted, restricted, or region-locked).' };
+  }
+  if (/did not store the video|only a tiktok cdn url/i.test(msg)) {
+    return { code: 'apify_not_stored', message: 'The scrape actor did not save the video to Apify storage (only a TikTok CDN URL — blocked from servers). Text fallback was used.' };
   }
   if (/tik tok cdn download failed|cdn download failed/i.test(msg)) {
     return { code: 'apify_cdn_failed', message: 'TikTok CDN refused the download.' };
