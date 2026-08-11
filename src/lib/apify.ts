@@ -60,17 +60,33 @@ export interface ResolvedVideoBinary {
   source: 'kv_store' | 'tiktok_cdn';
 }
 
+/** TikTok's CDN hosts that 403 datacenter IPs. Apify KV-store records live on
+ *  apify/r2/cloudfront hosts instead — so if a URL came back on one of these
+ *  even from mediaUrls/downloadAddr (some actor runs drop the CDN URL there),
+ *  refuse it rather than fetch a guaranteed 403. */
+export function isTikTokCdnUrl(url: string): boolean {
+  return /(?:^|\.)tiktokcdn\.com|(?:^|\.)tiktok\.com\/|v\d+(?:-webapp)?\.us\.tiktok|(?:^|\.)tik-tok\.com\//i.test(url);
+}
+
+/** True when the URL came from a "trusted" field but still points at TikTok's
+ *  CDN — treat it as tiktok_cdn so the downloader refuses it. */
+function refusedCdn(url: string): ResolvedVideoBinary {
+  return { url, source: 'tiktok_cdn' };
+}
+
 export function resolveVideoBinaryUrl(rawItem: unknown): ResolvedVideoBinary | null {
   const raw = (rawItem ?? {}) as Record<string, unknown>;
   const videoMeta = (raw.videoMeta ?? raw.video ?? {}) as Record<string, unknown>;
 
-  // Apify KV-store URL — the good path (clockworks stores the MP4 here).
+  // Apify KV-store URL — the good path (clockworks stores the MP4 here). But
+  // guarantee the URL is actually Apify storage, not a TikTok CDN host that
+  // some actor runs surface through these fields.
   const mediaUrls = raw.mediaUrls;
   if (Array.isArray(mediaUrls) && typeof mediaUrls[0] === 'string' && mediaUrls[0]) {
-    return { url: mediaUrls[0], source: 'kv_store' };
+    return isTikTokCdnUrl(mediaUrls[0]) ? refusedCdn(mediaUrls[0]) : { url: mediaUrls[0], source: 'kv_store' };
   }
   if (typeof videoMeta.downloadAddr === 'string' && videoMeta.downloadAddr) {
-    return { url: videoMeta.downloadAddr, source: 'kv_store' };
+    return isTikTokCdnUrl(videoMeta.downloadAddr) ? refusedCdn(videoMeta.downloadAddr) : { url: videoMeta.downloadAddr, source: 'kv_store' };
   }
 
   // Everything left is TikTok's CDN — refuse it.

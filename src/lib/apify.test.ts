@@ -20,7 +20,7 @@ mock.module('./spend-cap.js', () => ({
   getApifyCapStatus: async () => ({ currentSpendCents: 0, capCents: 1000, remainingCents: 1000 }),
 }));
 
-const { downloadTikTokVideo, primaryTikTokActorId, resolveVideoBinaryUrl } = await import('./apify.js');
+const { downloadTikTokVideo, primaryTikTokActorId, resolveVideoBinaryUrl, isTikTokCdnUrl } = await import('./apify.js');
 
 const REAL_FETCH = globalThis.fetch;
 let fetchHandler: ((url: string, init?: RequestInit) => Response | Promise<Response>) | null = null;
@@ -79,6 +79,24 @@ describe('resolveVideoBinaryUrl', () => {
   test('prefers the Apify KV-store URL from mediaUrls[0]', () => {
     const r = resolveVideoBinaryUrl({ mediaUrls: ['https://kv.test/media/abc.mp4'], videoMeta: { playAddr: ['https://v16.tiktokcdn.com/x.mp4'] } });
     expect(r).toEqual({ url: 'https://kv.test/media/abc.mp4', source: 'kv_store' });
+  });
+
+  test('refuses a TikTok CDN URL even when the actor puts it in mediaUrls[0]', () => {
+    const url = 'https://v16-webapp-prime.us.tiktok.com/video/abc';
+    const r = resolveVideoBinaryUrl({ mediaUrls: [url], videoMeta: {} });
+    expect(r).toEqual({ url, source: 'tiktok_cdn' });
+    expect(isTikTokCdnUrl(url)).toBe(true);
+  });
+
+  test('refuses a TikTok CDN URL even when the actor puts it in downloadAddr', () => {
+    const url = 'https://v19.tiktokcdn.com/video/abc';
+    const r = resolveVideoBinaryUrl({ videoMeta: { downloadAddr: url } });
+    expect(r?.source).toBe('tiktok_cdn');
+  });
+
+  test('does not refuse a real Apify KV-store downloadAddr', () => {
+    const r = resolveVideoBinaryUrl({ videoMeta: { downloadAddr: 'https://kv.rd.apify.net/v2/abc' } });
+    expect(r).toEqual({ url: 'https://kv.rd.apify.net/v2/abc', source: 'kv_store' });
   });
 
   test('falls back to videoMeta.downloadAddr (also KV store)', () => {
