@@ -69,10 +69,19 @@ export async function POST(request: Request): Promise<Response> {
   });
 
   while (Date.now() - startedAt < RESERVE_MS) {
-    const job = (await claimNextJob('fetch'))
-      ?? (await claimNextJob('analyze'))
-      ?? (await claimNextJob('rescore'))
-      ?? (await claimNextJob('refresh'));
+    // When the VPS worker (src/worker) is running, it handles the long-legged
+    // analyze and fetch jobs with no 60s ceiling — Vercel must NOT compete for
+    // those (it can't finish a video analysis in 60s, wastes an attempt + a
+    // credit, and wedges the job). Set WORKER_URL (or any truthy value) to
+    // signal that the VPS worker is active; Vercel then drains only the quick
+    // rescore/refresh jobs and still reclaims stuck rows.
+    const vpsActive = Boolean(process.env.WORKER_URL || process.env.WORKER_ACTIVE);
+    const job = vpsActive
+      ? (await claimNextJob('rescore')) ?? (await claimNextJob('refresh'))
+      : (await claimNextJob('fetch'))
+        ?? (await claimNextJob('analyze'))
+        ?? (await claimNextJob('rescore'))
+        ?? (await claimNextJob('refresh'));
     if (!job) break;
 
     const result = await processClaimedJob(job, {
