@@ -2,7 +2,9 @@
 
 **Goal:** One Apify actor run can serve many workspaces (tenants) that track the same TikTok creator/hashtag/keyword, so we pay **once per unique query**, not once per tenant.
 
-**Status:** Phase A implemented (see §9). Incremental "new outliers" refresh is in `src/lib/refresh-policy.ts`. **A code audit (§12) found 10 open gaps in the shipped Phase A path — 6 of them touch money. Read §12 before extending this to Phase B.**
+**Status:** Phase A implemented (see §9). Incremental "new outliers" refresh is in `src/lib/refresh-policy.ts`. **A code audit (§12) found 14 open gaps in the shipped Phase A path — 7 of them touch money. Read §12 before extending this to Phase B.**
+
+**Rebased on `master` @ `0a32167`.** The queue no longer drains on Vercel: refresh jobs run on a long-lived VPS worker (`src/worker/index.ts`, `WORKER_KINDS`), which changes what Phase A can actually coalesce — see §3.0 and G22.
 
 ---
 
@@ -42,12 +44,28 @@ Normalization must match `SuggestionDismissal` / create_source rules so the same
 
 ## 3. Architecture (phased)
 
+### 3.0 Execution topology (as of `master` @ `0a32167`)
+
+Batching assumptions changed when the queue moved off Vercel. Current shape:
+
+| Runner | Claims | Budget | Runs `rescoreStaleTooFresh` |
+|---|---|---|---|
+| VPS video worker (`WORKER_KINDS=analyze,fetch`) | analyze, fetch | none (long-lived loop) | no |
+| VPS maintenance worker (`WORKER_KINDS=refresh,rescore`) | **refresh**, rescore | none | yes, every `WORKER_RESCORE_EVERY` iterations |
+| Vercel `POST /api/jobs/analyze` | **nothing** while `WORKER_URL` is set | 45s reserve | **yes, every minute** |
+
+Both runners call the same `processClaimedJob`, so batching is implemented once and applies to both. Three consequences for this plan:
+
+1. **The coalescing window collapsed (G22).** Phase A was designed against a per-minute Vercel drain, where a minute of enqueues piled up and one drain could group them. The VPS loop idles `WORKER_IDLE_MS` (default 3s) and claims a refresh the moment it appears, so by the time peers are queued the leader has usually already scraped. In-process coalescing now only fires on a genuine backlog (a `refresh_due_sources` burst enqueuing many rows at once). **This is the strongest argument for moving to Phase B**, whose TTL cache coalesces across *time* rather than within one claim.
+2. **Multi-instance is real, not hypothetical.** `WORKER_KINDS` exists precisely so several containers run from one image. Two maintenance workers can each lead a batch for the *same* canonical query at the same time: `claimNextJob`/`claimJobsByIds` use `FOR UPDATE SKIP LOCKED` so no *job* is double-claimed, but nothing stops two concurrent Apify runs for the same query. The DB lease (Phase B) and the unique index (G7) are now prerequisites, not niceties.
+3. **The budget guard is mostly dead code on the real path.** `deadlineMs` is undefined on the VPS worker, so `peerCap` is the full `REFRESH_BATCH_PEER_CAP` and no refresh is ever requeued for lack of budget. Fan-out timeouts are now a Vercel-fallback-only concern (`WORKER_URL` unset).
+
 ### Phase A — In-process coalescing (fast, single deploy)
 
-**When:** Job worker drains refresh jobs (`src/worker/process-job.ts`, shared by the Vercel drain and the VPS worker).
+**When:** the shared job switch `processClaimedJob` (`src/worker/process-job.ts`) handles a `refresh` job — on the VPS maintenance worker in production, on Vercel only when no VPS worker is active.
 
 1. Claim a `refresh` job (leader).
-2. Claim queued peer jobs with the same `canonicalKey(platform, sourceType, query)`.
+2. Claim queued peer jobs with the same `canonicalKey(platform, sourceType, query)`, up to `REFRESH_BATCH_PEER_CAP`; a time-boxed caller scales that down by `REFRESH_FANOUT_MS_PER_PEER`.
 3. For that group:
    - Compute a **union plan**:
      - `limit = max(plan.limit across members)`
@@ -55,8 +73,8 @@ Normalization must match `SuggestionDismissal` / create_source rules so the same
    - **One** `scrapeSource` call.
    - For each workspace/source in the group, run **persist+score only** (`applyScrapeItems`), re-applying that source's own `postedAfter`, and debit **that** workspace's credits.
 
-**Pros:** No new tables; works on one drain invocation.
-**Cons:** Only batches jobs queued in the same drain window; multi-instance drains need a DB lease (Phase B).
+**Pros:** No new tables; one code path for both runners.
+**Cons:** Only batches jobs that are *already queued* when the leader is claimed — which on a 3s-idle VPS loop is rarely more than one (G22). Concurrent maintenance workers can still duplicate a scrape (G23). Both are fixed by Phase B, which is now the priority rather than an optimisation.
 
 ### Phase B — DB-backed scrape lease (correct multi-instance)
 
@@ -75,11 +93,13 @@ CanonicalScrapeSubscriber
 ```
 
 1. `enqueueRefreshJob` → also upsert "want scrape for canonical key".
-2. Leader worker takes lease (`UPDATE … WHERE status=queued`).
+2. Leader worker takes lease (`UPDATE … WHERE status=queued … FOR UPDATE SKIP LOCKED`).
 3. Runs Apify once, writes results.
 4. Fan-out workers (or same worker) apply results per subscriber and settle credits.
 
 **TTL:** Cache results 15–60 minutes so a second workspace refreshing the same creator within the window **reuses** without Apify.
+
+**Why this is now step 1, not step 5.** With refresh running on a continuously-draining VPS worker (§3.0), in-process coalescing almost never has peers to coalesce, and two maintenance containers can scrape the same query concurrently. The lease does both jobs Phase A cannot: it de-duplicates *across time* (TTL reuse, so a workspace refreshing `@foo` 20 minutes after another pays nothing) and *across processes* (one lease holder per canonical query). On the current topology Phase B is where essentially all of the savings live.
 
 **Cache-hit rule (was undefined — gap G11).** A cached scrape may serve a new subscriber **only if its plan is a superset** of what that subscriber needs:
 
@@ -173,6 +193,8 @@ Batching should:
 
 **Not yet sized:** `rescoreStaleTooFresh` runs an unbatched baseline scrape on every drain. It is deliberately excluded from batching, but it is a recurring Apify cost that the savings metric in §10 must report separately rather than hide.
 
+**Double-charged today (G24).** `WORKER_KINDS` moved the periodic stale-score top-up onto the maintenance worker "to avoid double Apify spend", but `api/jobs/analyze.ts` still calls `rescoreStaleTooFresh()` unconditionally — it runs *before* the `vpsActive` break. So with a VPS worker deployed, both Vercel (every minute, via pg_cron) and the maintenance worker (every `WORKER_RESCORE_EVERY` iterations) run baseline rescrapes against the same sources. Gate the Vercel call behind the same `vpsActive` check, or move the sweep behind a lease.
+
 ---
 
 ## 7. API / job surface changes
@@ -181,10 +203,13 @@ Batching should:
 |---|---|
 | `enqueueRefreshJob` | Optional `canonicalKey`; pre-auth from the resolved plan, not raw `videoLimit` (G10) |
 | `runRefresh` | Split into `scrapeCanonical()` + `applyScrapeToSource()` ✅ (`runBatchedRefresh` + `applyScrapeItems`) |
-| `processClaimedJob` | Group-by-canonical before scrape ✅ (both workers share it) |
+| `processClaimedJob` | Group-by-canonical before scrape ✅ (both runners share it; peer cap scales with `deadlineMs` when the caller is time-boxed) |
+| `src/worker/index.ts` | No change needed — batching rides inside `processClaimedJob`. A refresh-only container (`WORKER_KINDS=refresh,rescore`) is the natural place to add a coalescing delay (G22) |
+| `api/jobs/analyze.ts` | Gate `rescoreStaleTooFresh()` behind the same `vpsActive` check the claim loop uses (G24) |
 | `refresh_source` tool | Unchanged UX; may complete faster when cache hit |
 | Observability | Persist `batchSize`, `canonicalKey`, `apifyCostCents`, `subscribers` — not `console.log` only (G21) |
 | Kill switch | `REFRESH_BATCHING_ENABLED` env flag + tunable `REFRESH_BATCH_PEER_CAP`, so batching can be turned off without a redeploy (G20) |
+| Connection pool | Fan-out is one `findFirst` + one write **per item per subscriber**; with `DB_CONNECTION_LIMIT=4` per container and several workers, a 10-member batch is a burst of hundreds of round-trips on a small pool (G25) |
 
 ---
 
@@ -193,6 +218,9 @@ Batching should:
 | Risk | Mitigation |
 |---|---|
 | One tenant's huge `videoLimit` inflates batch | Cap merge with `REFRESH_INCREMENTAL_CAP` / bootstrap cap; ignore pathological overrides in scheduled path |
+| **Continuous VPS drain leaves nothing to coalesce** | Hold refresh jobs for a short coalescing window (claim only rows older than `REFRESH_COALESCE_MS`, ~20–60s) on the maintenance worker, and/or ship Phase B's TTL cache |
+| **Two maintenance containers scrape the same query at once** | Phase B lease; until then run exactly one container with `refresh` in `WORKER_KINDS` |
+| **Fan-out saturates a 4-connection Prisma pool** | Batch the per-item existence check into one `findMany` on `externalId IN (...)`, then bulk-write; raise `DB_CONNECTION_LIMIT` for the maintenance worker |
 | **Leader's spend cap absorbs the whole batch** | Platform workspace for shared scrapes (§4); until then, bounded by `REFRESH_BATCH_PEER_CAP` |
 | **Leader's cap breach aborts solvent peers** | Check cap against the scrape-owning workspace only; refuse the member, not the batch |
 | PII / cross-tenant leakage | Only share public TikTok metadata; no workspace names in shared rows |
@@ -208,19 +236,19 @@ Batching should:
 
 1. **Done:** New-outlier policy (`refresh-policy.ts` + apify date filter + lower limits).
 2. **Done:** Refactor `runRefresh` → `applyScrapeItems` + `runBatchedRefresh` (`src/lib/refresh.ts`).
-3. **Done — Phase A:** Peer claim by canonical key (`claimRefreshPeersForCanonical` in `src/lib/jobs.ts`, wired in `src/worker/process-job.ts` so the Vercel drain and the VPS worker share it). One Apify scrape, fan-out persist/score, per-workspace credits. Video lookup scoped to `sourceId`. Peer count scales with the caller's remaining budget.
-4. **Next — Phase A hardening (do before Phase B):**
+3. **Done — Phase A:** Peer claim by canonical key (`claimRefreshPeersForCanonical` in `src/lib/jobs.ts`, wired in `src/worker/process-job.ts` so both runners share it). One Apify scrape, fan-out persist/score, per-workspace credits. Video lookup scoped to `sourceId`. Peer count scales with the caller's remaining budget.
+4. **Next — cheap correctness fixes (hours, ship together):**
+   - G24 gate Vercel's `rescoreStaleTooFresh` behind `vpsActive` — currently double-spending Apify every minute
    - G9 bill `newVideos` only (or an explicit "stats refresh" price for updates)
-   - G1/G2 platform workspace + pro-rata cost attribution
-   - G3 per-member spend-cap isolation
    - G4 refund only on terminal failure
    - G5 per-subscriber failure isolation in the fan-out loop
    - G7 unique index + upsert
-   - G8 single normalization function
    - G20 kill switch
-5. **Phase B:** `CanonicalScrape` lease + 30m result reuse with the superset rule.
-6. **Phase C:** Scheduled distinct-query crawl + creator packing (hashtag packing blocked on attribution).
-7. Metrics dashboard: Apify $ / distinct query / day vs jobs / day (savings ratio).
+   - Run exactly one container with `refresh` in `WORKER_KINDS` until the lease lands (G23)
+5. **Then — Phase B (promoted: this is where the savings now are, see §3.0):** `CanonicalScrape` lease + 30m result reuse with the superset rule. Optionally pair it with a `REFRESH_COALESCE_MS` claim delay (G22) so in-process batching still contributes.
+6. **Then — attribution:** G1/G2 platform workspace + pro-rata cost, G3 per-member spend-cap isolation, G8 single normalization, G10 plan-aware pre-auth.
+7. **Phase C:** Scheduled distinct-query crawl + creator packing (hashtag packing blocked on attribution).
+8. Metrics dashboard: Apify $ / distinct query / day vs jobs / day (savings ratio).
 
 ---
 
@@ -265,7 +293,7 @@ SELECT "sourceId", platform, "externalId", count(*)
 
 ## 12. Audit — open gaps in shipped Phase A
 
-Findings from reading `src/lib/refresh.ts`, `refresh-policy.ts`, `canonical-query.ts`, `jobs.ts`, `worker/process-job.ts`, `spend-cap.ts`, `credits.ts`, `prisma/schema.prisma`. Ordered by money impact.
+Findings from reading `src/lib/refresh.ts`, `refresh-policy.ts`, `canonical-query.ts`, `jobs.ts`, `worker/process-job.ts`, `worker/index.ts`, `api/jobs/analyze.ts`, `spend-cap.ts`, `credits.ts`, `db.ts`, `prisma/schema.prisma` at `master` @ `0a32167`. Ordered by money impact.
 
 | # | Gap | Where | Impact |
 |---|---|---|---|
@@ -280,6 +308,19 @@ Findings from reading `src/lib/refresh.ts`, `refresh-policy.ts`, `canonical-quer
 | **G9** | Billing is `newVideos + updatedVideos`; §4 says `newVideos` | `settleAndApply` | A workspace that already held all 5 results pays full price — the exact waste this plan exists to remove |
 | **G10** | `enqueueRefreshJob` pre-auths `1.5 × videoLimit`, ignoring the refresh policy the worker will apply | `jobs.ts`, `tools/schedule.ts` | Over-locked credits; scheduled runs queue too few sources |
 
+### Topology gaps (new — introduced by the move to VPS workers)
+
+| # | Gap | Where | Impact |
+|---|---|---|---|
+| **G22** | The VPS loop claims a refresh within `WORKER_IDLE_MS` (3s) of enqueue, so peers are rarely queued yet. Phase A's coalescing assumed a per-minute Vercel drain accumulating a backlog | `worker/index.ts` + `processClaimedJob` | Phase A's headline saving mostly does not fire in production; only `refresh_due_sources` bursts batch |
+| **G23** | `WORKER_KINDS` allows N maintenance containers. `SKIP LOCKED` stops double-*claiming a job*, nothing stops two containers leading concurrent batches for the **same canonical query** | `worker/index.ts` | Duplicate Apify runs — the exact spend this plan exists to remove — plus duplicate `Video` rows while G7 is open |
+| **G24** | `api/jobs/analyze.ts` calls `rescoreStaleTooFresh()` **before** the `vpsActive` break, while the maintenance worker also runs it. The `WORKER_KINDS` commit claims only one runner does | `api/jobs/analyze.ts` | Baseline top-up scrapes billed twice per cycle whenever a VPS worker is deployed |
+| **G25** | Fan-out does a `findFirst` + write per item **per subscriber**, sequentially, against a `DB_CONNECTION_LIMIT=4` pool shared by two worker containers | `applyScrapeItems`, `db.ts` | A 10-member batch is hundreds of serialized round-trips; pool contention slows every other job |
+
 Deferred-design gaps (Phase B/C, folded into §3 above): **G11** cache-hit superset rule, **G12** shared-cache retention/RLS, **G13** duplicate pre-auth source of truth, **G14** lease timeout recovery, **G15** hashtag packing attribution, **G16** unsolicited-crawl solvency gate.
 
 Process gaps: **G17** no tests for the batching path (only `canonical-query` and `refresh-policy` are covered) — needed cases: mixed bootstrap/incremental watermark merge, per-source `postedAfter` re-filter, insolvent member skipped without aborting, scrape failure refunding all members, cost attributed exactly once. **G20** no kill switch. **G21** batch telemetry is `console.log` only, so the savings ratio cannot be computed after the fact.
+
+### Verification note
+
+Before/after measurement must now be taken on the **maintenance worker's** logs, not Vercel's: with `WORKER_URL` set, `POST /api/jobs/analyze` reports `processed: 0` for every drain and tells you nothing about refresh behaviour. Grep the worker for `[worker] refresh batch:` — if that line is rare while refresh volume is high, you are seeing G22, not a bug in the grouping.
