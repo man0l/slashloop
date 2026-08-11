@@ -52,4 +52,10 @@ describe('classifyFetchError', () => {
     expect(info?.code).toBe('openrouter_balance');
     expect(info?.message.toLowerCase()).toContain('top up');
   });
+
+  test('actor-did-not-store message -> apify_not_stored (TikTok CDN refusal)', () => {
+    const info = classifyFetchError('Actor did not store the video (only a TikTok CDN URL available — cannot download from a server IP); falling back to text analysis');
+    expect(info?.code).toBe('apify_not_stored');
+    expect(info?.message.toLowerCase()).toContain('text fallback');
+  });
 });
