@@ -2,9 +2,9 @@
 
 **Goal:** One Apify actor run can serve many workspaces (tenants) that track the same TikTok creator/hashtag/keyword, so we pay **once per unique query**, not once per tenant.
 
-**Status:** Phase A implemented (see §9). Incremental "new outliers" refresh is in `src/lib/refresh-policy.ts`. **A code audit (§12) found 14 open gaps in the shipped Phase A path — 7 of them touch money. Read §12 before extending this to Phase B.**
+**Status:** Phase A implemented (see §9). Incremental "new outliers" refresh is in `src/lib/refresh-policy.ts`. **A code audit (§12) found 15 open gaps in the shipped Phase A path — 7 of them touch money. Read §12 before extending this to Phase B.**
 
-**Rebased on `master` @ `0a32167`.** The queue no longer drains on Vercel: refresh jobs run on a long-lived VPS worker (`src/worker/index.ts`, `WORKER_KINDS`), which changes what Phase A can actually coalesce — see §3.0 and G22.
+**Rebased on `master` @ `0a32167`.** The queue no longer drains on Vercel: refresh jobs run on a long-lived VPS worker (`src/worker/index.ts`, `WORKER_KINDS`), which changes what Phase A can actually coalesce — see §3.0 and G22. **§13 assesses whether the remaining phases are buildable on that worker topology (short answer: yes, with three deployment gates).**
 
 ---
 
@@ -316,6 +316,7 @@ Findings from reading `src/lib/refresh.ts`, `refresh-policy.ts`, `canonical-quer
 | **G23** | `WORKER_KINDS` allows N maintenance containers. `SKIP LOCKED` stops double-*claiming a job*, nothing stops two containers leading concurrent batches for the **same canonical query** | `worker/index.ts` | Duplicate Apify runs — the exact spend this plan exists to remove — plus duplicate `Video` rows while G7 is open |
 | **G24** | `api/jobs/analyze.ts` calls `rescoreStaleTooFresh()` **before** the `vpsActive` break, while the maintenance worker also runs it. The `WORKER_KINDS` commit claims only one runner does | `api/jobs/analyze.ts` | Baseline top-up scrapes billed twice per cycle whenever a VPS worker is deployed |
 | **G25** | Fan-out does a `findFirst` + write per item **per subscriber**, sequentially, against a `DB_CONNECTION_LIMIT=4` pool shared by two worker containers | `applyScrapeItems`, `db.ts` | A 10-member batch is hundreds of serialized round-trips; pool contention slows every other job |
+| **G26** | `SIGTERM` only sets `shuttingDown`, checked *between* jobs; the in-flight job runs on and Docker `SIGKILL`s it after the (default 10s) grace period | `worker/index.ts` + deploy config | A redeploy mid-batch kills scrape + fan-out; with G4/G5 open that corrupts up to 10 ledgers and wedges those refreshes for 15 min. See §13.3 |
 
 Deferred-design gaps (Phase B/C, folded into §3 above): **G11** cache-hit superset rule, **G12** shared-cache retention/RLS, **G13** duplicate pre-auth source of truth, **G14** lease timeout recovery, **G15** hashtag packing attribution, **G16** unsolicited-crawl solvency gate.
 
@@ -324,3 +325,55 @@ Process gaps: **G17** no tests for the batching path (only `canonical-query` and
 ### Verification note
 
 Before/after measurement must now be taken on the **maintenance worker's** logs, not Vercel's: with `WORKER_URL` set, `POST /api/jobs/analyze` reports `processed: 0` for every drain and tells you nothing about refresh behaviour. Grep the worker for `[worker] refresh batch:` — if that line is rare while refresh volume is high, you are seeing G22, not a bug in the grouping.
+
+---
+
+## 13. Worker feasibility — can this actually be built on the VPS workers?
+
+**Verdict: yes, and most of it is easier on a long-lived worker than it was on Vercel.** Nothing in Phases B or C needs infrastructure the project does not already have. What is genuinely blocking is deployment-shaped, not code-shaped: the plan cannot be *scaled out* (more refresh containers) until the lease exists, and it cannot survive a redeploy until the batch failure paths are fixed.
+
+### 13.1 What the worker makes easier
+
+| Item | Why the VPS worker helps |
+|---|---|
+| **Phase B lease** | On Vercel a lease holder had a 45s reserve and a real chance of dying mid-scrape, stranding a `running` lease for `STUCK_AFTER_MINUTES`. The worker has no ceiling, so one holder can carry a ~170s scrape to completion. Same `UPDATE … FOR UPDATE SKIP LOCKED` primitive `claimNextJob` already uses — no new machinery |
+| **Coalescing delay (G22)** | `claimNextJob` is already `ORDER BY "createdAt" ASC`; restoring the batching window is `AND "createdAt" < now() - interval 'REFRESH_COALESCE_MS'` for `kind='refresh'`. Waiting costs a background loop nothing, whereas on Vercel it would burn invocation budget. Refresh latency is already measured in minutes (`await_job` is built for it), so a 30s hold is invisible to users |
+| **Migrations** | No `prisma migrate` framework in play — `supabase/migrations/*.sql` + a `schema.prisma` edit + `db push`. `CanonicalScrape` + `CanonicalScrapeSubscriber` is one file |
+| **Long scrapes** | Phase C's packed multi-profile runs are longer than any single-profile run today. Only the worker can run them at all |
+| **Budget guard** | `deadlineMs` is undefined on the worker, so `peerCap` is simply the constant and no refresh is ever requeued for lack of budget. The guard is now Vercel-fallback-only — inert, not broken |
+
+### 13.2 Ordinary work, no worker-specific difficulty
+
+G1/G2 (platform workspace + pro-rata attribution), G3 (per-member cap isolation), G7 (unique index + upsert), G9 (bill `newVideos`), G10 (plan-aware pre-auth), G20 (kill switch), G25 (bulk `findMany`/`createMany` instead of per-item round-trips).
+
+### 13.3 The three real gates
+
+**1. Refresh must stay a singleton until the lease lands (G23).**
+A second `WORKER_KINDS=refresh,rescore` replica today means two concurrent Apify runs for the same canonical query — it makes spend *worse*. No compose file lives in this repo, so nothing in-tree prevents `replicas: 2`. Until Phase B:
+
+- exactly one container may include `refresh` in `WORKER_KINDS`;
+- worth a startup guard — log loudly (or refuse to claim `refresh`) unless an explicit `REFRESH_WORKER_SINGLETON=1` is set, so the constraint is enforced by the image rather than by memory.
+
+**2. Container stop grace must exceed a whole batch (new — G26).**
+`src/worker/index.ts` handles `SIGTERM` by setting `shuttingDown`, but the flag is only checked *between* jobs: the in-flight job keeps running. Docker's default 10s grace then `SIGKILL`s it. A redeploy landing mid-batch therefore kills the scrape and the fan-out, and with **G4** (refunded pre-auth + requeue ⇒ the retry replays the idempotent debit and is free) and **G5** (the catch-all fails every member, including ones already applied and billed) still open, that corrupts up to `REFRESH_BATCH_PEER_CAP` tenants' ledgers and wedges their refreshes for `STUCK_AFTER_MINUTES` (15). Master ships worker images to GHCR continuously, so this is a likely event, not a theoretical one.
+
+Fix: `stop_grace_period: 300s` on the maintenance service (scrape ~170s + fan-out headroom), and fix G4/G5 **before** widening the peer cap. A mid-batch kill is survivable only when each subscriber settles independently.
+
+**3. Pool math before wider batches (G25).**
+`DB_CONNECTION_LIMIT=4` per container against the Supabase pooler, and fan-out is a `findFirst` + write per item **per subscriber**, serialized, while the video worker competes for the same pool. Bulk the existence check (`externalId IN (...)` once per source) before raising `REFRESH_BATCH_PEER_CAP`.
+
+### 13.4 Not doable regardless of runner
+
+Hashtag/keyword packing in Phase C (G15): a packed actor run returns a flat item list with no signal for which hashtag matched, so fan-out cannot attribute results to the right `Source`. Creator packing is fine — `creatorHandle` is on every normalized item. This is an actor-input limitation, not an infrastructure one.
+
+### 13.5 Recommended sequence
+
+1. **G24** — gate Vercel's `rescoreStaleTooFresh` behind `vpsActive`. Pure win, one condition, stops a live double-spend.
+2. **G4 + G5 + G26** — make a batch survive a redeploy: refund only on terminal failure, isolate per-subscriber failures, raise `stop_grace_period`.
+3. **G7** — unique index + upsert, so replayed fan-out is idempotent.
+4. **G22** — `REFRESH_COALESCE_MS` claim delay: the cheapest way to make Phase A fire at all on this topology.
+5. **Phase B** — `CanonicalScrape` lease + TTL reuse (§3, superset rule).
+6. **Scale out** — only now is a second refresh container safe.
+7. **Attribution** — G1/G2/G3, then G8/G10.
+
+Steps 1–4 are hours of work and remove real spend. Step 5 is where the structural saving lives on the current topology.
