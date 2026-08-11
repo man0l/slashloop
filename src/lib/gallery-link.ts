@@ -63,6 +63,8 @@ export interface GalleryLinkOptions {
   sourceId?: string;
   minOutlier?: number;
   minViews?: number;
+  /** Friendly backend key for the "Analyzed by" toolbar, e.g. 'openrouter'. */
+  analyzedBy?: 'openrouter';
   density?: 'large' | 'medium' | 'small' | 'list';
   /** Origin to build against when PUBLIC_URL is unset (e.g. the request host). */
   origin?: string;
@@ -101,6 +103,7 @@ export async function signGalleryUrl(
   if (opts.sourceId) qs.set('sourceId', opts.sourceId);
   if (opts.minOutlier && opts.minOutlier > 0) qs.set('minOutlier', String(opts.minOutlier));
   if (opts.minViews && opts.minViews > 0) qs.set('minViews', String(opts.minViews));
+  if (opts.analyzedBy) qs.set('analyzedBy', opts.analyzedBy);
   if (opts.density) qs.set('density', opts.density);
 
   return `${origin}/gallery?${qs.toString()}`;

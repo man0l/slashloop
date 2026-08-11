@@ -26,7 +26,7 @@ import { ResourceTemplate, type McpServer } from '@modelcontextprotocol/sdk/serv
 
 const GALLERY_URI = 'ui://slashloop/gallery.html';
 /** RFC 6570 template so hosts can resources/read a source-scoped gallery. */
-const GALLERY_URI_TEMPLATE = 'ui://slashloop/gallery.html{?sourceId,minOutlier,density}';
+const GALLERY_URI_TEMPLATE = 'ui://slashloop/gallery.html{?sourceId,minOutlier,analyzedBy,density}';
 
 /**
  * Cards inlined into the HTML for client-side filters. Larger than the old
@@ -48,8 +48,31 @@ export interface BuildCardsOptions {
   density?: GalleryFilters['density'];
   /** Server-side ranking. Default 'outlier_score' — see the sort split below. */
   sortBy?: GalleryFilters['sortBy'];
+  /**
+   * Restrict to videos whose most recent analysis ran on this backend (friendly
+   * key, e.g. 'openrouter'), ordered most-recently-analyzed first. Intended for
+   * the site's Gallery page filter; also plumbed through show_gallery.
+   */
+  analyzedBy?: 'openrouter';
   /** Resolve a specific workspace (REST API) instead of the caller's primary one (MCP tools). */
   workspaceId?: string;
+}
+
+/** Friendly keys the UI exposes in "Analyzed by" → stored Analysis.backend prefixes. */
+const OPENROUTER_BACKEND = 'openrouter-video';
+const ANALYZED_BY_BACKEND: Record<NonNullable<BuildCardsOptions['analyzedBy']>, string> = {
+  openrouter: OPENROUTER_BACKEND,
+};
+
+/**
+ * Map a stored Analysis.backend (id + optional suffix, e.g. ' (fallback)') to
+ * the friendly key exposed in the gallery's "Analyzed by" toolbar, or null when
+ * that backend has no public filter key yet.
+ */
+function analyzedByKeyOf(backend: string | undefined): GalleryCard['analyzedBy'] {
+  if (!backend) return null;
+  if (backend.startsWith(OPENROUTER_BACKEND)) return 'openrouter';
+  return null;
 }
 
 /**
@@ -78,15 +101,21 @@ export async function buildCards(
   const workspace = await requireWorkspace(opts.workspaceId ? { workspaceId: opts.workspaceId } : undefined);
   const limit = Math.min(Math.max(opts.limit ?? GALLERY_POOL, 1), 60);
   const sortBy = opts.sortBy ?? 'outlier_score';
+  const analyzedBy = opts.analyzedBy ?? undefined;
+  const analyzedBackend = analyzedBy ? ANALYZED_BY_BACKEND[analyzedBy] : undefined;
 
   const where: {
     source: { workspaceId: string };
     sourceId?: string;
     views?: { gte: number };
+    analyses?: { some: { backend: { contains: string } } };
     isBaselineSample: false;
   } = { source: { workspaceId: workspace.id }, isBaselineSample: false };
   if (opts.sourceId) where.sourceId = opts.sourceId;
   if (opts.minViews && opts.minViews > 0) where.views = { gte: opts.minViews };
+  // `contains` rather than equality: stored Analysis.backend carries a suffix
+  // for fallback runs (e.g. 'openrouter-video (fallback)'), see analysis/index.ts.
+  if (analyzedBackend) where.analyses = { some: { backend: { contains: analyzedBackend } } };
 
   // minOutlier was previously only echoed back in `filters` for the standalone
   // HTML gallery's own client-side JS to apply — the JSON route (site's
@@ -99,7 +128,27 @@ export async function buildCards(
 
   let ranked: VideoCardRow[];
 
-  if (sortBy === 'views' || sortBy === 'newest') {
+  if (analyzedBackend) {
+    // "Recently analyzed" pool: videos whose most recent analysis ran on the
+    // requested backend, newest analysis first. Recent analyses are often on
+    // older posts, so pre-fetch a generous buffer by a stable key rather than
+    // the default score ordering, then sort by analysis recency in memory.
+    // Prisma can't order by a to-many relation scalar, so `take` + in-memory
+    // sort is the only way to rank by latest-analysis date here.
+    const videos = await db.video.findMany({
+      where: minOutlier > 0 ? { ...where, score: { is: { outlierScore: { gte: minOutlier } } } } : where,
+      include,
+      orderBy: { postedAt: 'desc' },
+      take: Math.max(limit * 4, 200),
+    });
+    // The `some` filter above also matches a video whose newest analysis is a
+    // different backend (an old OpenRouter run superseded by a newer Gemini
+    // one) — keep only rows whose latest analysis is the requested backend.
+    ranked = videos
+      .filter(v => v.analyses[0]?.backend.startsWith(analyzedBackend))
+      .sort((a, b) => (b.analyses[0]?.createdAt.getTime() ?? 0) - (a.analyses[0]?.createdAt.getTime() ?? 0))
+      .slice(0, limit);
+  } else if (sortBy === 'views' || sortBy === 'newest') {
     // Single query, no scored/unscored split needed — views and postedAt are
     // never null, so a plain ORDER BY already returns the true top-N.
     // A minOutlier filter here necessarily excludes unscored videos too —
@@ -155,6 +204,7 @@ export async function buildCards(
     minViews: opts.minViews && opts.minViews > 0 ? opts.minViews : 0,
     sortBy,
     density: opts.density,
+    analyzedBy: analyzedBy ?? undefined,
   };
 
   // signedMediaUrl() makes a real HTTP call to Supabase Storage for every
@@ -203,6 +253,8 @@ export async function buildCards(
       outlierScore: v.score?.outlierScore ?? null,
       durationSec: v.durationSec,
       postedAt: v.postedAt.getTime(),
+      analyzedBy: analyzedByKeyOf(v.analyses[0]?.backend),
+      analyzedAt: v.analyses[0] ? v.analyses[0].createdAt.getTime() : null,
       mediaUrl: media[i]!.url,
       keyMoments,
       // Only show a scrape error when there is no stored video to watch — a
@@ -264,12 +316,14 @@ export function registerGalleryApp(server: McpServer) {
       description:
         'Render the workspace\'s top videos as an interactive gallery inside the conversation — '
         + 'stored thumbnails, inline playback where a video is still stored, clickable key moments, '
-        + 'and in-UI filters (outlier score dropdown, min views, sort). '
+        + 'and in-UI filters (outlier score dropdown, min views, sort, analyzed by backend). '
         + 'ALWAYS call this after a successful refresh_source (or track+refresh) so the user can SEE '
         + 'the scraped videos rather than only a text count. Also use when the user wants to view, '
         + 'browse, or look at their outliers/videos. Sorted by outlier score by default. '
         + 'Pass minOutlierScore (e.g. 5 or 10) to pre-select the outlier filter. '
         + 'Pass sourceId after refreshing a specific source to scope the gallery to that scrape. '
+        + 'Pass analyzedBy (e.g. "openrouter") to show only videos whose most recent analysis ran on '
+        + 'that backend, newest analysis first. '
         + 'Returns a galleryUrl as well: if the gallery does not render inline in this host, '
         + 'surface that URL to the user as a clickable link — it opens the same interactive '
         + 'gallery in their browser. '
@@ -290,6 +344,10 @@ export function registerGalleryApp(server: McpServer) {
           .min(0)
           .optional()
           .describe('Pre-select min views filter (0, 10000, 100000, 1000000, 10000000)'),
+        analyzedBy: z
+          .enum(['openrouter'])
+          .optional()
+          .describe('Show only videos whose most recent analysis ran on this backend, newest first'),
         limit: z
           .number()
           .min(1)
@@ -305,18 +363,20 @@ export function registerGalleryApp(server: McpServer) {
       // also set below so hosts that honour call-time overrides can apply sourceId.
       _meta: { ui: { resourceUri: GALLERY_URI } },
     },
-    async ({ sourceId, minOutlierScore, minViews, limit, density }) => {
+    async ({ sourceId, minOutlierScore, minViews, analyzedBy, limit, density }) => {
       const { cards, filters } = await buildCards({
         sourceId,
         limit,
         minOutlier: minOutlierScore,
         minViews,
+        analyzedBy,
         density,
       });
       // Prefer a query-scoped URI when filtering so resources/read can match.
       const qs = new URLSearchParams();
       if (sourceId) qs.set('sourceId', sourceId);
       if (minOutlierScore && minOutlierScore > 0) qs.set('minOutlier', String(minOutlierScore));
+      if (analyzedBy) qs.set('analyzedBy', analyzedBy);
       if (density) qs.set('density', density);
       const q = qs.toString();
       const resourceUri = q ? `${GALLERY_URI}?${q}` : GALLERY_URI;
@@ -338,6 +398,7 @@ export function registerGalleryApp(server: McpServer) {
         sourceId,
         minOutlier: minOutlierScore,
         minViews,
+        analyzedBy,
         density,
       });
 
@@ -478,12 +539,16 @@ export function registerGalleryApp(server: McpServer) {
       const rawMin = variables.minOutlier;
       const minRaw = Array.isArray(rawMin) ? rawMin[0] : rawMin;
       const minOutlier = minRaw != null && minRaw !== '' ? Number(minRaw) : undefined;
+      const rawAnalyzed = variables.analyzedBy;
+      const analyzedRaw = Array.isArray(rawAnalyzed) ? rawAnalyzed[0] : rawAnalyzed;
+      const analyzedBy = analyzedRaw === 'openrouter' ? analyzedRaw : undefined;
       const rawDensity = variables.density;
       const dRaw = Array.isArray(rawDensity) ? rawDensity[0] : rawDensity;
       const density = dRaw === 'large' || dRaw === 'medium' || dRaw === 'small' || dRaw === 'list' ? dRaw : undefined;
       const { html, cspOrigin } = await buildGalleryHtml({
         sourceId: typeof sourceId === 'string' ? sourceId : undefined,
         minOutlier: Number.isFinite(minOutlier) ? minOutlier : undefined,
+        analyzedBy,
         density,
       });
       return {

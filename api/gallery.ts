@@ -96,6 +96,15 @@ function densityOf(raw: string | null) {
   return raw === 'large' || raw === 'medium' || raw === 'small' || raw === 'list' ? raw : undefined;
 }
 
+/** Friendly "Analyzed by" keys accepted by both routes ('' / absent = any). */
+const ANALYZED_BY_VALUES = new Set<GalleryFilters['analyzedBy']>(['openrouter']);
+
+function analyzedByOf(raw: string | null): GalleryFilters['analyzedBy'] | undefined {
+  return raw && (ANALYZED_BY_VALUES.has(raw as GalleryFilters['analyzedBy']))
+    ? (raw as GalleryFilters['analyzedBy'])
+    : undefined;
+}
+
 export async function OPTIONS(): Promise<Response> {
   return corsPreflight();
 }
@@ -127,6 +136,7 @@ async function handleData(request: Request, url: URL): Promise<Response> {
       limit: Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined,
       minOutlier: Number.isFinite(minOutlierRaw) && minOutlierRaw > 0 ? minOutlierRaw : undefined,
       minViews: Number.isFinite(minViewsRaw) && minViewsRaw > 0 ? minViewsRaw : undefined,
+      analyzedBy: analyzedByOf(url.searchParams.get('analyzedBy')),
     }),
   );
 
@@ -162,6 +172,7 @@ export async function GET(request: Request): Promise<Response> {
         sourceId: url.searchParams.get('sourceId') ?? undefined,
         minOutlier: num(url.searchParams.get('minOutlier')),
         minViews: num(url.searchParams.get('minViews')),
+        analyzedBy: analyzedByOf(url.searchParams.get('analyzedBy')),
         density: densityOf(url.searchParams.get('density')),
       }),
     );

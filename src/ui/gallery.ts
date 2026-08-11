@@ -36,6 +36,12 @@ export interface GalleryCard {
   durationSec: number | null;
   /** Epoch ms the video was posted — drives the "newest" sort. */
   postedAt: number;
+  /** Friendly key of the backend behind the most recent analysis, or null when
+   *  the video has never been analysed — feeds the "Analyzed by" toolbar. */
+  analyzedBy: 'openrouter' | null;
+  /** Epoch ms the most recent analysis was created — drives "recently analyzed"
+   *  ordering when an "Analyzed by" backend is selected. */
+  analyzedAt: number | null;
   /** Signed URL for the stored MP4, null when nothing is stored (or it expired). */
   mediaUrl: string | null;
   /** Why this video couldn't be scraped by the fetch worker (Apify etc.), when
@@ -58,6 +64,12 @@ export interface GalleryFilters {
   minViews?: number;
   /** Sort key for the visible set. */
   sortBy?: 'outlier_score' | 'views' | 'newest';
+  /**
+   * Initial "Analyzed by" backend for the toolbar ('' = any). Choosing a
+   * backend shows only videos whose most recent analysis ran there, ordered
+   * most-recently-analyzed first.
+   */
+  analyzedBy?: 'openrouter';
   /**
    * Thumbnail density in the Claude iframe:
    * large / medium / small grids, or list (smallest thumbs, one row each).
@@ -104,6 +116,8 @@ function cardHtml(c: GalleryCard): string {
            data-score="${score}"
            data-views="${c.views}"
            data-posted="${c.postedAt}"
+           data-analyzed-by="${esc(c.analyzedBy ?? '')}"
+           data-analyzed-at="${c.analyzedAt ?? ''}"
            data-has-media="${c.mediaUrl ? '1' : '0'}"
            data-fetch-error="${c.fetchError ? esc(c.fetchError.code) : ''}"
            data-handle="${esc(c.creatorHandle.toLowerCase())}">
@@ -138,6 +152,7 @@ function toolbarHtml(filters: GalleryFilters): string {
   const minOutlier = filters.minOutlier ?? 0;
   const minViews = filters.minViews ?? 0;
   const sortBy = filters.sortBy ?? 'outlier_score';
+  const analyzedBy = filters.analyzedBy ?? '';
   const density = filters.density ?? 'medium';
 
   return `
@@ -171,6 +186,13 @@ function toolbarHtml(filters: GalleryFilters): string {
         <option value="outlier_score"${selectedAttr(sortBy, 'outlier_score')}>Outlier score</option>
         <option value="views"${selectedAttr(sortBy, 'views')}>Most views</option>
         <option value="newest"${selectedAttr(sortBy, 'newest')}>Newest</option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">Analyzed by</span>
+      <select id="f-analyzed" aria-label="Analysis backend">
+        <option value=""${selectedAttr(analyzedBy, '')}>Any</option>
+        <option value="openrouter"${selectedAttr(analyzedBy, 'openrouter')}>OpenRouter</option>
       </select>
     </label>
     <label class="field">
@@ -318,6 +340,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
   var sortEl = document.getElementById('f-sort');
   var densityEl = document.getElementById('f-density');
   var mediaEl = document.getElementById('f-media');
+  var analyzedEl = document.getElementById('f-analyzed');
   var countEl = document.getElementById('f-count');
   var emptyEl = document.getElementById('empty-filter');
   var prevEl = document.getElementById('f-prev');
@@ -346,10 +369,15 @@ ${cards.length ? toolbarHtml(filters) : ''}
     return Array.prototype.slice.call(grid.querySelectorAll('.card'));
   }
 
-  function matches(card, minScore, minViews, needMedia) {
+  function matches(card, minScore, minViews, needMedia, analyzedBy) {
     var score = parseFloat(card.getAttribute('data-score')) || 0;
     var views = parseInt(card.getAttribute('data-views'), 10) || 0;
     var hasMedia = card.getAttribute('data-has-media') === '1';
+    if (analyzedBy) {
+      // data-analyzed-by is the friendly backend key; "" means never analyzed.
+      var ab = card.getAttribute('data-analyzed-by') || '';
+      if (ab.indexOf(analyzedBy) !== 0) return false;
+    }
     return score >= minScore && views >= minViews && (!needMedia || hasMedia);
   }
 
@@ -359,6 +387,12 @@ ${cards.length ? toolbarHtml(filters) : ''}
       var bv = parseFloat(b.getAttribute('data-score')) || 0;
       var aw = parseInt(a.getAttribute('data-views'), 10) || 0;
       var bw = parseInt(b.getAttribute('data-views'), 10) || 0;
+      if (sortBy === 'analyzed') {
+        // Most recently analyzed first — drives the "Analyzed by" filter.
+        var aa = parseInt(a.getAttribute('data-analyzed-at'), 10) || 0;
+        var ba = parseInt(b.getAttribute('data-analyzed-at'), 10) || 0;
+        return ba - aa || bv - av;
+      }
       if (sortBy === 'views') return bw - aw || bv - av;
       if (sortBy === 'newest') {
         var ap = parseInt(a.getAttribute('data-posted'), 10) || 0;
@@ -374,7 +408,11 @@ ${cards.length ? toolbarHtml(filters) : ''}
 
     var minScore = parseFloat(outlierEl.value) || 0;
     var minViews = parseInt(viewsEl && viewsEl.value, 10) || 0;
-    var sortBy = (sortEl && sortEl.value) || 'outlier_score';
+    var analyzedBy = (analyzedEl && analyzedEl.value) || '';
+    // "Analyzed by" is a one-control filter: picking a backend both narrows the
+    // set and reorders it by recency (same as the site's Gallery page), so the
+    // explicit sort select is ignored while it's active.
+    var sortBy = analyzedBy ? 'analyzed' : (sortEl && sortEl.value) || 'outlier_score';
     var density = (densityEl && densityEl.value) || 'medium';
     var needMedia = mediaEl && mediaEl.checked;
     var ps = pageSize();
@@ -386,7 +424,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
     var matched = [];
     var rest = [];
     list.forEach(function (card) {
-      if (matches(card, minScore, minViews, needMedia)) matched.push(card);
+      if (matches(card, minScore, minViews, needMedia, analyzedBy)) matched.push(card);
       else rest.push(card);
     });
     matched = sortCards(matched, sortBy);
@@ -456,6 +494,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
   if (sortEl) sortEl.addEventListener('change', onFilterChange);
   if (densityEl) densityEl.addEventListener('change', onFilterChange);
   if (mediaEl) mediaEl.addEventListener('change', onFilterChange);
+  if (analyzedEl) analyzedEl.addEventListener('change', onFilterChange);
   if (prevEl) prevEl.addEventListener('click', function () { page -= 1; apply(false); });
   if (nextEl) nextEl.addEventListener('click', function () { page += 1; apply(false); });
   apply(true);
