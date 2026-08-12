@@ -26,7 +26,7 @@ import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
 import { batchScoreVideos } from '../scoring.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } from './credits.js';
 import { ingestThumbnails, type ThumbIngestTarget } from './media.js';
-import { enqueueRescoreJob } from './jobs.js';
+import { enqueueRescoreJob, enqueueThumbJob } from './jobs.js';
 import { resolveRefreshPlan, type RefreshPlan } from './refresh-policy.js';
 import { canonicalKey } from './canonical-query.js';
 import type { NormalizedVideo } from '../normalizers.js';
@@ -293,13 +293,34 @@ export async function applyScrapeItems(opts: {
 
   if (thumbTargets.length > 0) {
     const batch = thumbTargets.slice(0, THUMB_INGEST_MAX_PER_RUN);
-    const deferred = thumbTargets.length - batch.length;
+    const overflow = thumbTargets.slice(THUMB_INGEST_MAX_PER_RUN);
     const ingest = await ingestThumbnails(workspaceId, batch);
     if (ingest.failed > 0) {
       errors.push(`Thumbnail ingest: ${ingest.failed}/${ingest.stored + ingest.failed} failed`);
     }
-    if (deferred > 0) {
-      errors.push(`Thumbnail ingest: ${deferred} deferred to stay inside the worker budget (cosmetic only)`);
+    // Queue the overflow instead of dropping it. Each deferred cover becomes a
+    // cheap `thumb` job (see src/lib/jobs.ts enqueueThumbJob) that a worker
+    // drains shortly after — inside the source CDN URL's lifetime. Before this,
+    // these stayed thumbStatus 'none' forever and the gallery fell back to the
+    // expiring TikTok CDN URL. No Apify/AI spend, so no credits or opId.
+    let enqueued = 0;
+    for (const t of overflow) {
+      try {
+        await enqueueThumbJob({
+          workspaceId,
+          videoId: t.videoId,
+          payload: { thumbnailUrl: t.thumbnailUrl, coverDownloadUrl: t.coverDownloadUrl ?? null },
+        });
+        enqueued++;
+      } catch (err) {
+        errors.push(`Thumb enqueue failed for ${t.videoId.slice(0, 8)}: ${(err as Error).message}`);
+      }
+    }
+    if (overflow.length > 0) {
+      errors.push(
+        `Thumbnail ingest: ${overflow.length} beyond the per-run cap of ${THUMB_INGEST_MAX_PER_RUN} `
+        + `queued as thumb jobs (${enqueued} enqueued)`,
+      );
     }
   }
 

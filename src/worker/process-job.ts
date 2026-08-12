@@ -20,8 +20,9 @@
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import {
   claimNextJob, completeJob, failJob, yieldJob, enqueueAnalyzeJob,
-  type MediaJobRow, type AnalyzeJobPayload, type FetchJobPayload,
+  type MediaJobRow, type AnalyzeJobPayload, type FetchJobPayload, type ThumbJobPayload,
 } from '../lib/jobs.js';
+import { ingestThumbnails, type ThumbIngestTarget } from '../lib/media.js';
 import { CREDIT_COSTS, refundCredits } from '../lib/credits.js';
 import { tagJobFailure } from '../lib/gemini-errors.js';
 import { db } from '../db.js';
@@ -330,6 +331,47 @@ export async function processClaimedJob(
       }
 
       console.warn(`[worker] fetch job ${job.id} failed (terminal=${terminal}): ${message}`);
+      return { ok: false, error: message };
+    }
+  }
+
+  // thumb jobs: fetch + store ONE cover image that a refresh deferred past
+  // THUMB_INGEST_MAX_PER_RUN. No Apify, no AI — a single image fetch — so no
+  // opId/preAuthCredits and nothing to refund. Idempotent: a row already
+  // 'stored' (e.g. a backfill re-run) completes as a no-op.
+  if (job.kind === 'thumb') {
+    try {
+      if (!videoId) throw new Error('thumb job has no videoId');
+      const video = await db.video.findUnique({
+        where: { id: videoId },
+        select: { id: true, platform: true, thumbnailUrl: true, thumbKey: true, thumbStatus: true },
+      });
+      // Deleted by the retention/listing sweep between enqueue and drain —
+      // nothing to ingest, and not a retryable error.
+      if (!video) { await completeJob(job.id, null); return { ok: true }; }
+      if (video.thumbStatus === 'stored' && video.thumbKey) {
+        await completeJob(job.id, null);
+        return { ok: true };
+      }
+      const payload = JSON.parse(job.payloadJson || '{}') as ThumbJobPayload;
+      const target: ThumbIngestTarget = {
+        videoId: video.id,
+        platform: video.platform,
+        // Prefer the URL captured at enqueue; fall back to the stored CDN URL.
+        thumbnailUrl: payload.thumbnailUrl || video.thumbnailUrl,
+        coverDownloadUrl: payload.coverDownloadUrl ?? undefined,
+      };
+      const ingest = await ingestThumbnails(job.workspaceId, [target]);
+      if (ingest.failed > 0) throw new Error('thumbnail fetch/store failed');
+      // stored>0 = done. skipped (storage disabled, or a non-tiktok row) is a
+      // no-op rather than a failure — retrying won't help, and a backfill will
+      // pick the row up once storage is back on.
+      await completeJob(job.id, null);
+      return { ok: true };
+    } catch (err) {
+      const message = (err as Error).message;
+      const { terminal } = await failJob(job.id, message);
+      console.warn(`[worker] thumb job ${job.id} failed (terminal=${terminal}): ${message}`);
       return { ok: false, error: message };
     }
   }

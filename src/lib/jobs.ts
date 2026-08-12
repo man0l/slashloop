@@ -102,6 +102,39 @@ export async function enqueueFetchJob(opts: {
   }) as unknown as Promise<MediaJobRow>;
 }
 
+/**
+ * A deferred thumbnail ingest — the cover for a video a refresh pulled beyond
+ * THUMB_INGEST_MAX_PER_RUN. Free to run (one image fetch, no Apify spend, no AI
+ * credits), so like `fetch` it carries no opId/preAuthCredits and
+ * reclaimStuckJobs never tries to refund it.
+ *
+ * The worker drains these shortly after they are queued, inside the source CDN
+ * URL's lifetime. Before this kind existed the overflow stayed thumbStatus
+ * 'none' forever and the gallery fell back to the short-lived TikTok CDN URL.
+ */
+export interface ThumbJobPayload {
+  /** Source-CDN URL captured at enqueue; the worker falls back to the Video row. */
+  thumbnailUrl?: string;
+  /** Apify key-value-store URL captured at enqueue (preferred, public). Unset on backfill. */
+  coverDownloadUrl?: string | null;
+}
+
+export async function enqueueThumbJob(opts: {
+  workspaceId: string;
+  videoId: string;
+  payload?: ThumbJobPayload;
+}): Promise<MediaJobRow> {
+  return db.mediaJob.create({
+    data: {
+      workspaceId: opts.workspaceId,
+      videoId: opts.videoId,
+      kind: 'thumb',
+      status: 'queued',
+      payloadJson: JSON.stringify(opts.payload ?? {}),
+    },
+  }) as unknown as Promise<MediaJobRow>;
+}
+
 // ---------------------------------------------------------------------------
 // Enqueue
 // ---------------------------------------------------------------------------

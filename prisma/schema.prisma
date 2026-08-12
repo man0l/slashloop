@@ -436,8 +436,8 @@ model MediaJob {
   videoId     String?
   /// Set for source-scoped kinds. A refresh targets a Source, not a Video.
   sourceId    String?
-  /// analyze | fetch | refresh. Named rather than implied so work like this
-  /// shares the queue instead of growing a second one.
+  /// analyze | fetch | refresh | rescore | thumb. Named rather than implied so
+  /// work like this shares the queue instead of growing a second one.
   kind        String    @default("analyze")
   /// Hard wall clock for callers waiting on this job. await_job refuses to
   /// report shouldKeepPolling once past it, so a waiter terminates even if the

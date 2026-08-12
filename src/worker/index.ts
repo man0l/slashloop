@@ -28,8 +28,11 @@ const RESCORE_EVERY = Number(process.env.WORKER_RESCORE_EVERY ?? 60);
 
 // Which MediaJob kinds this worker claims. WORKER_KINDS is a comma-separated
 // list (e.g. "analyze,fetch" for video-only, or "refresh,rescore" for a
-// maintenance worker). Unset = drain everything (fetch,analyze,rescore,refresh).
-const ALL_KINDS = ['fetch', 'analyze', 'rescore', 'refresh'] as const;
+// maintenance worker). Unset = drain everything (fetch,analyze,thumb,rescore,refresh).
+// Order is priority: `thumb` sits just after analyze because it is cheap, fast,
+// and time-sensitive — the cover must be ingested before the source CDN URL
+// expires, so a backlog clears ahead of the slower rescore/refresh kinds.
+const ALL_KINDS = ['fetch', 'analyze', 'thumb', 'rescore', 'refresh'] as const;
 function workerKinds(): string[] {
   const raw = (process.env.WORKER_KINDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
   return raw.length ? raw : [...ALL_KINDS];
