@@ -28,6 +28,7 @@ import { batchScoreVideos } from '../scoring.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } from './credits.js';
 import { ingestThumbnails, type ThumbIngestTarget } from './media.js';
 import { enqueueRescoreJob, enqueueThumbJob } from './jobs.js';
+import { enqueueMissingCreatorBaselines } from './creator-baselines.js';
 import { resolveRefreshPlan, type RefreshPlan } from './refresh-policy.js';
 import { canonicalKey } from './canonical-query.js';
 import { infoNote } from './refresh-notes.js';
@@ -322,6 +323,22 @@ export async function applyScrapeItems(opts: {
 
   if (newVideos > 0 || updatedVideos > 0) {
     await batchScoreVideos(sourceId).catch(err => errors.push(`Scoring failed: ${(err as Error).message}`));
+    // Hashtag/keyword hits are usually one video per creator. Queue 5 more
+    // from each thin-history creator so the next score is `actual` (vs their
+    // own median) instead of a 2000x estimate against a tiny tag median.
+    if (!isBaselineOnly) {
+      try {
+        const deepen = await enqueueMissingCreatorBaselines({ workspaceId, sourceId });
+        if (deepen.queued > 0) {
+          errors.push(infoNote(
+            `Creator baselines: queued ${deepen.queued} creator scrape(s) `
+            + `(5 extra videos each) for ${deepen.handles.join(', ')}`,
+          ));
+        }
+      } catch (err) {
+        errors.push(`Creator baseline enqueue failed: ${(err as Error).message}`);
+      }
+    }
   }
 
   if (thumbTargets.length > 0) {

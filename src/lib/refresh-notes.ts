@@ -37,6 +37,7 @@ const LEGACY_INFO_PREFIXES = [
   'Already known:',
   'Multi-tenant batch:',
   'Resumed dataset ',
+  'Creator baselines:',
 ];
 
 /** True when a log line is bookkeeping rather than a failure. */

@@ -23,6 +23,7 @@ describe('refresh log classification', () => {
       'Multi-tenant batch: 2 sources shared one Apify scrape',
       'Resumed dataset abc123 from a previous attempt — no new Apify run, 0c',
       'Thumbnail ingest: 4 beyond the per-run cap of 15 queued as thumb jobs (4 enqueued)',
+      'Creator baselines: queued 3 creator scrape(s) (5 extra videos each) for jaredrhod',
     ];
     expect(failureLines(legacy)).toEqual([]);
   });
