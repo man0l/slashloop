@@ -175,6 +175,28 @@ export async function enqueueAnalyzeJob(opts: {
  */
 export interface RefreshJobPayload {
   limitOverride?: number;
+  /**
+   * Baseline / too_fresh follow-up: scrape this type+query instead of the
+   * source's own. Must not join a tenant batch (different query shape).
+   * Drained by the refresh worker so scoring scrapes use the same provider
+   * (proxy) as hashtag refreshes.
+   */
+  sourceTypeOverride?: 'creator' | 'keyword' | 'hashtag';
+  queryOverride?: string;
+}
+
+export function parseRefreshJobPayload(raw: string | null | undefined): RefreshJobPayload {
+  try {
+    const parsed = JSON.parse(raw || '{}') as RefreshJobPayload;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** True when this refresh must run solo (creator override / baseline top-up). */
+export function isSoloRefreshPayload(payload: RefreshJobPayload): boolean {
+  return Boolean(payload.sourceTypeOverride || payload.queryOverride);
 }
 
 export async function enqueueRefreshJob(opts: {

@@ -1,5 +1,6 @@
 import { db } from './db.js';
 import { subHours } from 'date-fns';
+import { enqueueRefreshJob, outstandingJobForSource } from './lib/jobs.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -313,17 +314,23 @@ const BASELINE_RESCRAPE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
  * the 0x placeholder but didn't reflect the video's actual current
  * performance.
  *
- * So this spends real Apify credits to re-fetch current stats before
+ * So this spends real scrape credits to re-fetch current stats before
  * rescoring — but scoped to the video's CREATOR, not the source that
  * originally discovered it. Outlier scoring compares a video to its
  * creator's own baseline (computeCreatorBaseline), built from that
  * creator's videos across every source that has ever found them. Re-running
  * a hashtag/keyword source's own query again mostly surfaces a different
  * set of creators each time and rarely re-includes the specific stale
- * video at all — a creator-scoped scrape (runRefresh's sourceTypeOverride/
- * queryOverride, src/lib/refresh.ts) targets the actual person the score is
+ * video at all — a creator-scoped scrape (refresh job payload
+ * sourceTypeOverride/queryOverride) targets the actual person the score is
  * measured against, regardless of which source's bookkeeping the resulting
  * rows are attributed to.
+ *
+ * The scrape itself is a `refresh` job so the dedicated scraper worker
+ * (SCRAPER_PROVIDER=proxy) owns it. This function only decides WHO to
+ * queue. Running runRefresh inline here used to scrape from whichever
+ * process called it (the rescore/maintenance worker), which did not have
+ * the proxy provider set and fell through to Apify.
  *
  * Grouped by (creatorHandle, platform, workspaceId) — the same creator can
  * be stale in more than one source within a workspace (dedupe to one scrape
@@ -407,33 +414,38 @@ export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: numbe
       continue;
     }
 
-    let rescraped = false;
+    let queued = false;
     try {
-      // Dynamic import, matching the existing pattern in api/jobs/analyze.ts —
-      // avoids a static circular import between scoring.ts and refresh.ts
-      // (refresh.ts already imports batchScoreVideos from here).
-      const { runRefresh } = await import('./lib/refresh.js');
-      const result = await runRefresh({
-        workspaceId,
-        sourceId,
-        limitOverride: STALE_RESCRAPE_LIMIT,
-        sourceTypeOverride: 'creator',
-        queryOverride: creatorHandle,
-      });
-      if (result.ok) {
-        rescraped = true;
-        creatorsRescraped++;
+      const outstanding = await outstandingJobForSource(sourceId, 'refresh');
+      if (outstanding) {
+        console.log(
+          `[scoring] stale too_fresh: ${creatorHandle} skipped — refresh already ${outstanding.status} on ${sourceId.slice(0, 8)}`,
+        );
       } else {
-        console.warn(`[scoring] stale too_fresh rescrape refused for creator ${creatorHandle}: ${result.refusal ?? result.errors.join('; ')}`);
+        await enqueueRefreshJob({
+          workspaceId,
+          sourceId,
+          videoLimit: STALE_RESCRAPE_LIMIT,
+          deadlineAt: new Date(Date.now() + 30 * 60 * 1000),
+          payload: {
+            limitOverride: STALE_RESCRAPE_LIMIT,
+            sourceTypeOverride: 'creator',
+            queryOverride: creatorHandle,
+          },
+        });
+        queued = true;
+        creatorsRescraped++;
+        console.log(
+          `[scoring] stale too_fresh: queued creator scrape @${creatorHandle} via refresh worker (limit=${STALE_RESCRAPE_LIMIT})`,
+        );
       }
     } catch (err) {
-      console.warn(`[scoring] stale too_fresh rescrape failed for creator ${creatorHandle}: ${(err as Error).message}`);
+      console.warn(`[scoring] stale too_fresh enqueue failed for creator ${creatorHandle}: ${(err as Error).message}`);
     }
 
-    // runRefresh already rescored internally when it persisted/updated
-    // anything — only fall back to the free, stale-data recompute when the
-    // paid path didn't run at all.
-    if (!rescraped) {
+    // The refresh worker will persist + score. Only fall back to the free,
+    // stale-data recompute when we could not even queue the scrape.
+    if (!queued) {
       await batchScoreVideos(sourceId).catch((err) => {
         console.warn(`[scoring] fallback rescore failed for source ${sourceId}: ${(err as Error).message}`);
       });

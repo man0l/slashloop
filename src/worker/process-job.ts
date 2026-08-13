@@ -20,6 +20,7 @@
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import {
   claimNextJob, completeJob, failJob, yieldJob, enqueueAnalyzeJob,
+  parseRefreshJobPayload, isSoloRefreshPayload,
   type MediaJobRow, type AnalyzeJobPayload, type FetchJobPayload, type ThumbJobPayload,
 } from '../lib/jobs.js';
 import { ingestThumbnails, type ThumbIngestTarget } from '../lib/media.js';
@@ -118,6 +119,59 @@ export async function processClaimedJob(
       await yieldJob(job.id, 'insufficient budget remaining; requeued for next drain');
       return { ok: false, error: 'insufficient budget remaining; requeued for next drain', requeued: true };
     }
+
+    // Creator-override / baseline top-up jobs (too_fresh follow-up) scrape a
+    // different query than the source row. They cannot join a tenant batch —
+    // that would re-scrape the hashtag. runRefresh routes these to the solo
+    // path; the refresh worker still owns the scrape so proxy/Apify matches
+    // every other refresh.
+    const refreshPayload = parseRefreshJobPayload(job.payloadJson);
+    if (isSoloRefreshPayload(refreshPayload)) {
+      const { runRefresh } = await import('../lib/refresh.js');
+      try {
+        const result = await runRefresh({
+          workspaceId: job.workspaceId,
+          sourceId: job.sourceId,
+          limitOverride: refreshPayload.limitOverride,
+          sourceTypeOverride: refreshPayload.sourceTypeOverride,
+          queryOverride: refreshPayload.queryOverride,
+          opId: job.opId ?? undefined,
+          preAuthCredits: job.preAuthCredits ?? undefined,
+          deferRefund: true,
+        });
+        if (!result.ok) {
+          const message = failureLines(result.errors).join('; ') || result.refusal || 'refresh refused';
+          const { terminal } = await failJob(job.id, message);
+          if (terminal && result.pendingRefundCredits && job.opId) {
+            await refundCredits(
+              job.workspaceId, result.pendingRefundCredits, 'refresh_source',
+              `${job.opId}:fail`, 'call_failed',
+            ).catch(e => console.warn(`[worker] refund failed for ${job.id}: ${(e as Error).message}`));
+          }
+          console.warn(`[worker] refresh job ${job.id} refused (terminal=${terminal}): ${message}`);
+          return { ok: false, error: message };
+        }
+        await completeJob(job.id, null);
+        return { ok: true };
+      } catch (err) {
+        const message = (err as Error).message;
+        const landed = job.startedAt
+          ? await db.video.findFirst({
+              where: { sourceId: job.sourceId!, scrapedAt: { gt: job.startedAt } },
+              select: { id: true },
+            })
+          : null;
+        if (landed) {
+          await completeJob(job.id, null);
+          console.warn(`[worker] refresh job ${job.id} errored after its videos landed — completing, not retrying`);
+          return { ok: true };
+        }
+        const { terminal } = await failJob(job.id, message);
+        console.warn(`[worker] refresh job ${job.id} failed (terminal=${terminal}): ${message}`);
+        return { ok: false, error: message };
+      }
+    }
+
     // Phase A multi-tenant batching: claim other queued refreshes of the SAME
     // canonical (platform, sourceType, normalized query) so N workspaces
     // tracking @foo share one Apify run. Credits still settle per workspace
@@ -177,13 +231,8 @@ export async function processClaimedJob(
 
       batchJobs = [job, ...peers];
 
-      const parseLimit = (payloadJson: string | null | undefined) => {
-        try {
-          return (JSON.parse(payloadJson || '{}') as { limitOverride?: number }).limitOverride;
-        } catch {
-          return undefined;
-        }
-      };
+      const parseLimit = (payloadJson: string | null | undefined) =>
+        parseRefreshJobPayload(payloadJson).limitOverride;
 
       // Did a previous attempt at THIS job already pay for a scrape? If so,
       // re-read that dataset instead of buying it again. This is the retry
