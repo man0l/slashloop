@@ -462,6 +462,101 @@ export async function acquireCanonicalLock(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Scrape receipts — never buy the same dataset twice
+//
+// A refresh job that fails after the scrape (worker killed, persist error,
+// budget exhausted mid-fan-out) is requeued and re-runs the actor from
+// scratch. Measured across 215 refresh jobs: 77 were retried, for 139 EXTRA
+// actor runs, all of them re-buying results Apify was still holding. That is
+// ~27% of the Apify bill spent on data already paid for.
+//
+// The dataset behind a finished run stays readable, and reading it is not a
+// billed actor run. So the fix is bookkeeping: write down where the data
+// landed, and hand that back on the next attempt.
+//
+// Stored inside the existing payloadJson rather than in new columns — the
+// receipt is per-attempt scratch, not a domain entity, and this needs no
+// migration to start saving money.
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a receipt is trusted. Short on purpose: a refresh is supposed to
+ * return CURRENT results, so resuming an hours-old dataset would save money by
+ * serving stale data. Long enough to cover a retry, not long enough to matter
+ * editorially.
+ */
+export const SCRAPE_RECEIPT_TTL_MS = 20 * 60_000;
+
+export interface ScrapeReceipt {
+  datasetId: string;
+  runId?: string | null;
+  /** Guards against replaying one query's dataset into another's refresh. */
+  canonicalKey: string;
+  /** Epoch ms. */
+  at: number;
+}
+
+/**
+ * Pull a still-valid receipt out of a job payload.
+ *
+ * Returns undefined for anything suspect — wrong query, too old, malformed.
+ * A bad receipt must degrade to "scrape again" (costs money) and never to
+ * "apply someone else's results" (corrupts a source).
+ */
+export function readScrapeReceipt(
+  payloadJson: string | null | undefined,
+  canonicalKey: string,
+  now = Date.now(),
+  ttlMs = SCRAPE_RECEIPT_TTL_MS,
+): ScrapeReceipt | undefined {
+  let receipt: ScrapeReceipt | undefined;
+  try {
+    receipt = (JSON.parse(payloadJson || '{}') as { scrapeReceipt?: ScrapeReceipt }).scrapeReceipt;
+  } catch {
+    return undefined;
+  }
+  if (!receipt?.datasetId || typeof receipt.datasetId !== 'string') return undefined;
+  if (receipt.canonicalKey !== canonicalKey) return undefined;
+  if (typeof receipt.at !== 'number' || now - receipt.at > ttlMs) return undefined;
+  return receipt;
+}
+
+/** Merge a receipt into a payload without disturbing the rest of it. */
+export function withScrapeReceipt(payloadJson: string | null | undefined, receipt: ScrapeReceipt): string {
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = JSON.parse(payloadJson || '{}') as Record<string, unknown>;
+  } catch {
+    payload = {};
+  }
+  return JSON.stringify({ ...payload, scrapeReceipt: receipt });
+}
+
+/**
+ * Attach a receipt to every job that shared the scrape, so whichever of them
+ * is retried can resume. Best-effort: failing to save a receipt costs money on
+ * a retry that may never happen, and must not fail the refresh that just
+ * succeeded.
+ */
+export async function recordScrapeReceipt(
+  jobIds: string[],
+  receipt: ScrapeReceipt,
+): Promise<void> {
+  for (const id of jobIds) {
+    try {
+      const job = await db.mediaJob.findUnique({ where: { id }, select: { payloadJson: true } });
+      if (!job) continue;
+      await db.mediaJob.update({
+        where: { id },
+        data: { payloadJson: withScrapeReceipt(job.payloadJson, receipt) },
+      });
+    } catch (err) {
+      console.warn(`[jobs] could not record scrape receipt on job ${id}: ${(err as Error).message}`);
+    }
+  }
+}
+
 /** Release a lease we own. A lease we no longer own is left alone. */
 export async function releaseCanonicalLock(key: string, owner: string): Promise<void> {
   await db.$executeRaw`

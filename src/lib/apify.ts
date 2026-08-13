@@ -99,8 +99,155 @@ export function resolveVideoBinaryUrl(rawItem: unknown): ResolvedVideoBinary | n
   return null;
 }
 
-/** POST to one actor's run-sync-get-dataset-items endpoint; throws on any non-2xx or non-array response. */
-async function runTikTokActor(actorId: string, input: Record<string, unknown>, apiKey: string): Promise<any[]> {
+/**
+ * What one actor invocation produced, plus the receipt needed to get it again
+ * without paying twice.
+ *
+ * `runId`/`datasetId` are the whole point: a dataset already bought can be
+ * re-read for free forever, but only if we wrote down where it is. Measured
+ * over 215 refresh jobs, 77 were retried for 139 EXTRA actor runs — every one
+ * of them re-buying results Apify was still holding, because the run id was
+ * discarded. They are null when the run came back through the legacy sync
+ * endpoint, which does not report them.
+ */
+export interface ActorRunResult {
+  rawItems: any[];
+  runId: string | null;
+  datasetId: string | null;
+  /**
+   * Apify's own billed figure for the run, in cents, when it reported one.
+   * Null means "not available" — NOT "free". Apify's docs warn the first
+   * response after completion can still carry preliminary costs, so this is
+   * treated as better-than-modelled rather than authoritative.
+   */
+  billedCents: number | null;
+}
+
+/** Terminal run statuses per the Apify run lifecycle. */
+const TERMINAL_RUN_STATUSES = new Set([
+  'SUCCEEDED', 'FAILED', 'TIMED-OUT', 'ABORTED',
+]);
+
+/** Longest we will wait for one actor run before giving up on it. */
+const RUN_POLL_TIMEOUT_MS = 5 * 60_000;
+/** Apify caps server-side waiting at 60s per call; we re-issue until timeout. */
+const RUN_WAIT_SECONDS = 60;
+
+function usdToCents(usd: unknown): number | null {
+  if (typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0) return null;
+  return Math.ceil(usd * 100);
+}
+
+/**
+ * Read a dataset we have already paid for. Storage reads are not billed as
+ * actor runs, which is what makes a retry free.
+ */
+export async function fetchDatasetItems(datasetId: string, apiKey: string): Promise<any[]> {
+  const url = `${APIFY_API_BASE}/datasets/${datasetId}/items?token=${apiKey}&clean=true&format=json`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Apify dataset ${datasetId} read failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+  const items = await res.json();
+  if (!Array.isArray(items)) {
+    throw new Error(`Apify dataset ${datasetId} returned a non-array response`);
+  }
+  return items;
+}
+
+/**
+ * Start a run and wait for it, keeping the run id.
+ *
+ * Deliberately NOT run-sync-get-dataset-items: that endpoint answers with the
+ * items and nothing else, so the run id and its dataset are unrecoverable the
+ * moment the call returns. Start-then-wait costs one extra HTTP round trip and
+ * buys the ability to never pay for the same scrape twice.
+ */
+async function runTikTokActorResumable(
+  actorId: string,
+  input: Record<string, unknown>,
+  apiKey: string,
+): Promise<ActorRunResult> {
+  const startRes = await fetch(
+    `${APIFY_API_BASE}/acts/${actorId}/runs?token=${apiKey}&waitForFinish=${RUN_WAIT_SECONDS}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  );
+  if (!startRes.ok) {
+    const text = await startRes.text();
+    throw new Error(`Apify actor ${actorId} failed to start (${startRes.status}): ${text.slice(0, 500)}`);
+  }
+
+  const started = ((await startRes.json()) as { data?: Record<string, unknown> })?.data;
+  const runId = typeof started?.id === 'string' ? started.id : undefined;
+  let datasetId = typeof started?.defaultDatasetId === 'string' ? started.defaultDatasetId : undefined;
+  let status = typeof started?.status === 'string' ? started.status : 'READY';
+  let billedCents = usdToCents(started?.usageTotalUsd);
+
+  if (!runId || !datasetId) {
+    throw new Error(`Apify actor ${actorId} start response carried no run id or dataset id`);
+  }
+
+  // waitForFinish caps at 60s server-side; re-ask until terminal or timeout.
+  const deadline = Date.now() + RUN_POLL_TIMEOUT_MS;
+  while (!TERMINAL_RUN_STATUSES.has(status)) {
+    if (Date.now() > deadline) {
+      throw new Error(
+        `Apify run ${runId} still ${status} after ${Math.round(RUN_POLL_TIMEOUT_MS / 1000)}s — giving up`,
+      );
+    }
+    const pollRes = await fetch(
+      `${APIFY_API_BASE}/actor-runs/${runId}?token=${apiKey}&waitForFinish=${RUN_WAIT_SECONDS}`,
+    );
+    if (!pollRes.ok) {
+      const text = await pollRes.text();
+      throw new Error(`Apify run ${runId} poll failed (${pollRes.status}): ${text.slice(0, 300)}`);
+    }
+    const run = ((await pollRes.json()) as { data?: Record<string, unknown> })?.data;
+    if (typeof run?.status === 'string') status = run.status;
+    if (typeof run?.defaultDatasetId === 'string') datasetId = run.defaultDatasetId;
+    billedCents = usdToCents(run?.usageTotalUsd) ?? billedCents;
+  }
+
+  if (status !== 'SUCCEEDED') {
+    // The run still consumed money, and the caller still needs the receipt to
+    // avoid re-running it blindly — but there is no usable dataset.
+    throw new ApifyRunFailedError(actorId, runId, datasetId, status, billedCents);
+  }
+
+  if (!datasetId) throw new Error(`Apify run ${runId} finished without a dataset id`);
+  return { rawItems: await fetchDatasetItems(datasetId, apiKey), runId, datasetId, billedCents };
+}
+
+/** A run that started, cost money, and did not succeed. Carries its receipt. */
+export class ApifyRunFailedError extends Error {
+  constructor(
+    public readonly actorId: string,
+    public readonly runId: string,
+    public readonly datasetId: string | undefined,
+    public readonly status: string,
+    public readonly billedCents: number | null,
+  ) {
+    super(`Apify actor ${actorId} run ${runId} ended ${status}`);
+    this.name = 'ApifyRunFailedError';
+  }
+}
+
+/**
+ * Legacy blocking call. Kept as the fallback for the resumable path: it is the
+ * invocation this integration has always used, so if start-then-wait is
+ * refused (permissions, an actor that only supports sync, an API change) a
+ * scrape still happens — just without a reusable receipt.
+ */
+async function runTikTokActorSync(
+  actorId: string,
+  input: Record<string, unknown>,
+  apiKey: string,
+): Promise<ActorRunResult> {
   const url = `${APIFY_API_BASE}/acts/${actorId}/run-sync-get-dataset-items?token=${apiKey}`;
   const res = await fetch(url, {
     method: 'POST',
@@ -117,7 +264,32 @@ async function runTikTokActor(actorId: string, input: Record<string, unknown>, a
   if (!Array.isArray(rawItems)) {
     throw new Error(`Apify actor ${actorId} returned non-array response: ${JSON.stringify(rawItems).slice(0, 200)}`);
   }
-  return rawItems;
+  return { rawItems, runId: null, datasetId: null, billedCents: null };
+}
+
+/** Escape hatch: set to '0' to force the legacy sync endpoint everywhere. */
+export function resumableRunsEnabled(): boolean {
+  return (process.env.APIFY_RESUMABLE_RUNS ?? '1') !== '0';
+}
+
+async function runTikTokActor(
+  actorId: string,
+  input: Record<string, unknown>,
+  apiKey: string,
+): Promise<ActorRunResult> {
+  if (!resumableRunsEnabled()) return runTikTokActorSync(actorId, input, apiKey);
+  try {
+    return await runTikTokActorResumable(actorId, input, apiKey);
+  } catch (err) {
+    // A run that started and failed is a real failure — retrying it on the
+    // sync endpoint would start a SECOND billed run, which is the exact waste
+    // this path exists to remove.
+    if (err instanceof ApifyRunFailedError) throw err;
+    console.warn(
+      `[apify] resumable run failed for ${actorId} (${(err as Error).message}) — falling back to the sync endpoint`,
+    );
+    return runTikTokActorSync(actorId, input, apiKey);
+  }
 }
 
 /**
@@ -130,17 +302,25 @@ async function runTikTokActorWithFallback(
   input: Record<string, unknown>,
   apiKey: string,
   context: string,
-): Promise<{ rawItems: any[]; actorId: string }> {
+  /**
+   * Resumable runs are for SOURCE SCRAPES, where a killed worker otherwise
+   * re-buys a whole page. A single-video download keeps nothing worth
+   * resuming — the output is an MP4 we store ourselves, one result, and the
+   * extra start/poll round trip would buy nothing. Sync is right there.
+   */
+  mode: 'resumable' | 'sync' = 'resumable',
+): Promise<ActorRunResult & { actorId: string }> {
+  const run = mode === 'sync' ? runTikTokActorSync : runTikTokActor;
   const primary = primaryTikTokActorId();
   try {
-    return { rawItems: await runTikTokActor(primary, input, apiKey), actorId: primary };
+    return { ...await run(primary, input, apiKey), actorId: primary };
   } catch (err) {
     if (primary === DEFAULT_TIKTOK_ACTOR_ID) throw err;
     console.error(
       `[apify:actor-fallback] primary actor ${primary} failed for ${context} — falling back to ${DEFAULT_TIKTOK_ACTOR_ID}. `
       + `Reason: ${(err as Error).message}`,
     );
-    return { rawItems: await runTikTokActor(DEFAULT_TIKTOK_ACTOR_ID, input, apiKey), actorId: DEFAULT_TIKTOK_ACTOR_ID };
+    return { ...await run(DEFAULT_TIKTOK_ACTOR_ID, input, apiKey), actorId: DEFAULT_TIKTOK_ACTOR_ID };
   }
 }
 
@@ -225,13 +405,29 @@ export interface ApifyScrapeOptions {
    * per-video analysis downloads that bill against the same cap.
    */
   refId?: string;
+  /**
+   * A dataset this caller already paid for. When set, the items are read back
+   * from Apify storage and NO actor run is started — the retry path.
+   *
+   * Only pass a receipt for an equivalent request (same query, same or wider
+   * page): the items are whatever the original run returned.
+   */
+  resumeDatasetId?: string;
 }
 
 export interface ApifyScrapeResult {
   items: NormalizedVideo[];
-  costCents: number; // actual cost charged (estimate for now)
+  costCents: number; // what we recorded as spent on this call (0 when resumed)
   rawCount: number;
+  /**
+   * Receipt for the actor run that produced these items. Persist it: a retry
+   * that passes `resumeDatasetId` back in gets the same data for free instead
+   * of starting a second billed run.
+   */
   actorRunId: string | null;
+  datasetId: string | null;
+  /** True when this call re-read a dataset instead of paying for a new run. */
+  resumed: boolean;
   /**
    * Human-readable reasons the actor returned no usable videos.
    *
@@ -301,6 +497,35 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
   // Pre-auth against the WORST case: every requested result comes back.
   const estimatedCostCents = apifyRunCostCents(opts.limit, dateFiltered);
 
+  // Already bought? Re-read it. This is the retry path: the dataset is still
+  // sitting in Apify storage, reading it is not a billed actor run, and the
+  // spend cap has nothing to authorise because no new money is being spent.
+  // Skipping this check is what turned 77 retried jobs into 139 extra runs.
+  if (opts.resumeDatasetId) {
+    try {
+      const rawItems = await fetchDatasetItems(opts.resumeDatasetId, apiKey);
+      console.log(
+        `[apify] resumed dataset ${opts.resumeDatasetId} for ${opts.sourceType}="${opts.query}" `
+        + `(${rawItems.length} records, no new actor run, 0c)`,
+      );
+      return {
+        items: normalizeItems(rawItems),
+        costCents: 0,
+        rawCount: rawItems.length,
+        actorRunId: null,
+        datasetId: opts.resumeDatasetId,
+        resumed: true,
+        notices: collectNotices(rawItems),
+      };
+    } catch (err) {
+      // Expired, deleted, or unreadable — fall through and scrape properly.
+      // A failed free read must never block a refresh.
+      console.warn(
+        `[apify] could not resume dataset ${opts.resumeDatasetId} (${(err as Error).message}) — scraping again`,
+      );
+    }
+  }
+
   // Cap check per SHARER, not per run. A batched scrape is a shared purchase:
   // asserting the full estimate against one workspace let one tenant's cap be
   // consumed by (and breach on behalf of) nine others.
@@ -352,7 +577,8 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
     + `limit=${opts.limit}${watermarkNote} (est cost: ${estimatedCostCents}c)`,
   );
 
-  let { rawItems, actorId } = await runTikTokActorWithFallback(input, apiKey, context);
+  let { rawItems, actorId, runId, datasetId, billedCents } =
+    await runTikTokActorWithFallback(input, apiKey, context);
   let items = normalizeItems(rawItems);
   let notices = collectNotices(rawItems);
   // Bill what the run actually returned, not what we asked for. Recording the
@@ -381,7 +607,8 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
       `[apify] ${actorId} returned 0 usable videos for ${context} (${notices.join(' | ')}) `
       + `— retrying against ${DEFAULT_TIKTOK_ACTOR_ID}`,
     );
-    const retryRawItems = await runTikTokActor(DEFAULT_TIKTOK_ACTOR_ID, input, apiKey);
+    const retry = await runTikTokActor(DEFAULT_TIKTOK_ACTOR_ID, input, apiKey);
+    const retryRawItems = retry.rawItems;
     const retryItems = normalizeItems(retryRawItems);
     // A second full actor run really was started and really did return
     // records — bill it on its own dataset size, same as the first.
@@ -394,6 +621,11 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
       items = retryItems;
       notices = collectNotices(retryRawItems);
       actorId = DEFAULT_TIKTOK_ACTOR_ID;
+      // The receipt must follow the data: resuming would otherwise hand back
+      // the FIRST actor's empty dataset and silently undo the retry.
+      runId = retry.runId;
+      datasetId = retry.datasetId;
+      billedCents = retry.billedCents == null ? billedCents : (billedCents ?? 0) + retry.billedCents;
     }
     // Retry also came back empty: keep the primary's notices — they're more
     // specific than a second identical "nothing found".
@@ -403,18 +635,24 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
     console.warn(`[apify] ${rawItems.length} record(s) returned, 0 usable videos: ${notices.join(' | ')}`);
   }
 
-  // Record cost per sharing workspace. Still modelled (Apify's per-call
-  // billing is not in the response; the real invoice lands later) but now
-  // modelled from the returned dataset size rather than the request.
-  for (const s of splitSpend(opts.costShareWorkspaceIds ?? [opts.workspaceId], spentCents)) {
+  // Prefer Apify's own figure over ours. billedCents comes from the run
+  // object's usageTotalUsd, which is what the account is actually charged;
+  // everything else here is a model of it. Apify warns the figure can still
+  // be preliminary immediately after completion, so it is used only when
+  // present and never allowed to exceed what the cap pre-authorised.
+  const recordedCents = billedCents == null ? spentCents : Math.min(billedCents, estimatedCostCents);
+
+  for (const s of splitSpend(opts.costShareWorkspaceIds ?? [opts.workspaceId], recordedCents)) {
     await recordApifySpend(s.workspaceId, s.cents, opts.refId ?? null, 'source_scrape');
   }
 
   return {
     items,
-    costCents: spentCents,
+    costCents: recordedCents,
     rawCount: rawItems.length,
-    actorRunId: null,
+    actorRunId: runId,
+    datasetId,
+    resumed: false,
     notices,
   };
 }
@@ -471,7 +709,7 @@ export async function downloadTikTokVideo(opts: ApifyDownloadOptions): Promise<A
 
   console.log(`[apify] fetching single video (actor=${primaryTikTokActorId()}) ${opts.videoUrl} (est cost: ${ESTIMATED_DOWNLOAD_COST_CENTS}c)`);
 
-  const { rawItems } = await runTikTokActorWithFallback(input, apiKey, opts.videoUrl);
+  const { rawItems } = await runTikTokActorWithFallback(input, apiKey, opts.videoUrl, 'sync');
   if (rawItems.length === 0) {
     throw new Error(`Apify returned no items for video URL: ${opts.videoUrl}`);
   }

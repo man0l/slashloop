@@ -78,6 +78,14 @@ export interface RunRefreshResult {
   pendingRefundCredits?: number;
   /** Canonical key this run scraped under — for batch telemetry (§7). */
   canonicalKey?: string;
+  /**
+   * The dataset that produced these items. Persist it against the job: a
+   * retry that hands it back re-reads the results instead of starting (and
+   * paying for) a second actor run.
+   */
+  datasetId?: string;
+  /** True when this run re-read an already-purchased dataset — cost 0. */
+  resumedFromDataset?: boolean;
 }
 
 export interface RefreshExecOptions {
@@ -88,6 +96,22 @@ export interface RefreshExecOptions {
    * inline, which is the default.
    */
   deferRefund?: boolean;
+  /**
+   * A dataset this job already paid for on a previous attempt. Passed to
+   * Apify instead of starting a new run — the difference between a retry
+   * that costs nothing and one that buys the same page twice.
+   */
+  resumeDatasetId?: string;
+  /**
+   * Called the moment a scrape is paid for, BEFORE any persisting.
+   *
+   * Placement is the whole point. The failure this exists for is a worker
+   * killed part-way through fan-out ("Worker did not report back; attempts
+   * exhausted"): the money is gone, the data is not saved, and the retry
+   * re-buys it. Handing the receipt over after the fan-out would miss exactly
+   * that case. Awaited, so a receipt is durable before the risky work starts.
+   */
+  onScrapePaid?: (receipt: { datasetId: string; canonicalKey: string }) => Promise<void>;
 }
 
 export interface RefreshSubscriber {
@@ -807,6 +831,7 @@ export async function runBatchedRefresh(
       // every member. Attributing it to the leader's source would overstate
       // that source and zero out its peers.
       refId: key,
+      resumeDatasetId: exec?.resumeDatasetId,
     });
   } catch (err) {
     // Scrape never landed. Nobody is charged for it, but the pre-auth only
@@ -848,17 +873,38 @@ export async function runBatchedRefresh(
     return [...early, ...failed];
   }
 
+  // The scrape is paid for and the dataset exists. Persist the receipt now,
+  // before persisting/scoring/thumbnailing any of it — everything below this
+  // line can die and take the results with it, and the retry must be able to
+  // pick the dataset back up instead of buying it again. Never for a resumed
+  // run: re-stamping the receipt would keep a stale dataset alive forever.
+  if (exec?.onScrapePaid && scrape.datasetId && !scrape.resumed) {
+    await exec.onScrapePaid({ datasetId: scrape.datasetId, canonicalKey: key })
+      .catch(err => console.warn(`[refresh] scrape receipt not saved: ${(err as Error).message}`));
+  }
+
   // Pro-rata, integer cents, remainder to the leader — so per-source cost
   // analytics stay meaningful instead of one row holding the whole batch and
   // N-1 rows holding zero (G2).
   const share = Math.floor(scrape.costCents / ready.length);
   const remainder = scrape.costCents - share * ready.length;
 
-  const batchNote = ready.length > 1
-    ? `Multi-tenant batch: ${ready.length} sources shared one Apify scrape `
+  const notes: string[] = [];
+  if (ready.length > 1) {
+    notes.push(
+      `Multi-tenant batch: ${ready.length} sources shared one Apify scrape `
       + `(canonical ${key}); Apify cost ${scrape.costCents}c split pro-rata `
-      + `across ${new Set(costShareWorkspaceIds).size} workspace(s)`
-    : undefined;
+      + `across ${new Set(costShareWorkspaceIds).size} workspace(s)`,
+    );
+  }
+  if (scrape.resumed) {
+    // Visible in RefreshRun.errorsJson so a 0c run reads as "already paid for"
+    // rather than looking like a refresh that mysteriously cost nothing.
+    notes.push(
+      `Resumed dataset ${scrape.datasetId} from a previous attempt — no new Apify run, 0c`,
+    );
+  }
+  const batchNote = notes.length ? notes.join(' | ') : undefined;
 
   const applied: RunRefreshResult[] = [];
   for (let i = 0; i < ready.length; i++) {
@@ -893,6 +939,8 @@ export async function runBatchedRefresh(
       startTime,
     });
     result.batchSize = ready.length;
+    result.datasetId = scrape.datasetId ?? undefined;
+    result.resumedFromDataset = scrape.resumed;
     if (scrape.notices.length && !result.errors.some(e => scrape.notices.includes(e))) {
       result.errors = [...scrape.notices, ...result.errors];
     }

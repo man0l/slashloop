@@ -13,11 +13,14 @@ import { join } from 'node:path';
 
 // Stub spend-cap so downloadTikTokVideo runs without a DB — assertApifyCap /
 // recordApifySpend become no-ops. Must be registered before apify.js imports it.
+// Spread the real module before stubbing: mock.module is process-global, so a
+// partial stub deletes exports for every other test file too.
+const realSpendCap = await import('./spend-cap.js');
+
 mock.module('./spend-cap.js', () => ({
+  ...realSpendCap,
   assertApifyCap: async () => {},
   recordApifySpend: async () => {},
-  SpendCapExceededError: class SpendCapExceededError extends Error {},
-  getApifyCapStatus: async () => ({ currentSpendCents: 0, capCents: 1000, remainingCents: 1000 }),
 }));
 
 const { downloadTikTokVideo, primaryTikTokActorId, resolveVideoBinaryUrl, isTikTokCdnUrl } = await import('./apify.js');

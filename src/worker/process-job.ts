@@ -124,6 +124,7 @@ export async function processClaimedJob(
     const {
       claimRefreshPeersForCanonical, refreshBatchingEnabled, refreshBatchPeerCap,
       acquireCanonicalLock, releaseCanonicalLock,
+      readScrapeReceipt, recordScrapeReceipt,
     } = await import('../lib/jobs.js');
     const { normalizeQuery, canonicalKey } = await import('../lib/canonical-query.js');
     const { runBatchedRefresh } = await import('../lib/refresh.js');
@@ -183,6 +184,17 @@ export async function processClaimedJob(
         }
       };
 
+      // Did a previous attempt at THIS job already pay for a scrape? If so,
+      // re-read that dataset instead of buying it again. This is the retry
+      // path that was quietly costing ~27% of the Apify bill.
+      const receipt = key ? readScrapeReceipt(job.payloadJson, key) : undefined;
+      if (receipt) {
+        console.log(
+          `[worker] resuming dataset ${receipt.datasetId} for ${key} `
+          + `(attempt ${job.attempts}) — no new Apify run`,
+        );
+      }
+
       const results = await runBatchedRefresh(
         batchJobs.map((j) => ({
           workspaceId: j.workspaceId,
@@ -194,9 +206,21 @@ export async function processClaimedJob(
           preAuthCredits: j.preAuthCredits ?? undefined,
           limitOverride: parseLimit(j.payloadJson),
         })),
-        // The queue owns retries, so the queue owns the refund: a pre-auth is
-        // only returned once the job gives up for good (G4).
-        { deferRefund: true },
+        {
+          // The queue owns retries, so the queue owns the refund: a pre-auth
+          // is only returned once the job gives up for good (G4).
+          deferRefund: true,
+          resumeDatasetId: receipt?.datasetId,
+          // Fires as soon as Apify has been paid, before any persisting, so a
+          // worker killed during fan-out still leaves a resumable receipt on
+          // every member of the batch.
+          onScrapePaid: async ({ datasetId, canonicalKey }) => {
+            await recordScrapeReceipt(
+              batchJobs.map(j => j.id),
+              { datasetId, canonicalKey, at: Date.now() },
+            );
+          },
+        },
       );
 
       // sourceId is unique globally — safe map key for pairing results back.
