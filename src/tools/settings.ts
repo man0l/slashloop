@@ -9,8 +9,11 @@ import { requireWorkspace } from '../context.js';
 import { loadAnalysisConfig, updateAnalysisConfig, DEFAULT_CONFIG, COST_ESTIMATES, BATCH_COST_ESTIMATES } from '../analysis/index.js';
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import { getApifyCapStatus, getApifySpendBreakdown, decodeApifyRefId } from '../lib/spend-cap.js';
+import { activeProviderFor, formatProxyCheap, listScrapers, proxyCheapBandwidth, scrapeCapKind, trafficStatus } from '../lib/scrapers/index.js';
+import { proxyConfig } from '../lib/scrapers/proxy-http.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance, resolveBillingWorkspace } from '../lib/credits.js';
 import { retentionCeiling, validateRetentionDays } from '../lib/retention.js';
+import { failureLines, infoLines } from '../lib/refresh-notes.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerSettingsTools(server: McpServer) {
@@ -276,7 +279,10 @@ export function registerSettingsTools(server: McpServer) {
           platform: l.source.platform,
           itemsPulled: l.itemsPulled,
           newVideos: l.newVideos,
-          errors: JSON.parse(l.errorsJson),
+          // The stored log holds both kinds of line; split them so a support
+          // read shows real failures apart from run bookkeeping.
+          errors: failureLines(JSON.parse(l.errorsJson)),
+          notes: infoLines(JSON.parse(l.errorsJson)),
           costCents: l.costCents,
           ranAt: l.ranAt.toISOString(),
         })), null, 2) }],
@@ -461,11 +467,25 @@ export function registerSettingsTools(server: McpServer) {
   // recent cap_breach events. Use this before/after refresh_source to
   // confirm you're still under the $5 testing cap.
   server.tool('get_apify_spend_status',
-    'Check Apify spend against the platform-wide testing cap (default $5), and this workspace\'s own credit balance (what refresh_source/analyze_video/etc actually draw against). Shows current monthly spend, cap, percent used, breach state, and recent cap_breach audit events.',
+    'Check scraper spend against the active provider cap (Apify dollars by default, or proxy GB when SCRAPER_PROVIDER=proxy), plus this workspace\'s credit balance. Shows current monthly spend, cap, percent used, breach state, and recent cap_breach audit events.',
     {},
     async () => {
       const workspace = await requireWorkspace();
       const billingWorkspace = await resolveBillingWorkspace(workspace);
+
+      const scraper = {
+        provider: activeProviderFor('tiktok'),
+        configured: listScrapers(),
+        env: process.env.SCRAPER_PROVIDER?.trim() || 'apify',
+        proxyConfigured: proxyConfig() !== null,
+        capKind: scrapeCapKind('tiktok'),
+      };
+      const proxyTraffic = scraper.capKind === 'proxy'
+        ? await trafficStatus(workspace.id)
+        : null;
+      const vendorBandwidth = scraper.capKind === 'proxy'
+        ? await proxyCheapBandwidth().catch(() => null)
+        : null;
 
       const status = await getApifyCapStatus(workspace.id);
       // Split the same cap money by what it bought. A single "scrape" total
@@ -494,6 +514,10 @@ export function registerSettingsTools(server: McpServer) {
 
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
+          scraper,
+          proxyTraffic,
+          vendorBandwidth,
+          vendorBandwidthDisplay: formatProxyCheap(vendorBandwidth),
           status,
           credits,
           message: status.breached

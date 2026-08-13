@@ -21,14 +21,16 @@
 import { randomUUID } from 'node:crypto';
 import { subMonths } from 'date-fns';
 import { db } from '../db.js';
-import { scrapeSource, type ApifyScrapeResult } from './apify.js';
+import { scrapeSource, scrapeCapKind, trafficStatus, type ScrapeResult } from './scrapers/index.js';
 import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
+import { TrafficCapExceededError } from './scrapers/bandwidth.js';
 import { batchScoreVideos } from '../scoring.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } from './credits.js';
 import { ingestThumbnails, type ThumbIngestTarget } from './media.js';
 import { enqueueRescoreJob, enqueueThumbJob } from './jobs.js';
 import { resolveRefreshPlan, type RefreshPlan } from './refresh-policy.js';
 import { canonicalKey } from './canonical-query.js';
+import { infoNote } from './refresh-notes.js';
 import type { NormalizedVideo } from '../normalizers.js';
 
 /**
@@ -286,32 +288,36 @@ export async function applyScrapeItems(opts: {
     }
   }
 
+  // policyNote carries Apify's own notices (a failed record, an unusable
+  // result) — those are real, leave them untagged. Everything below is
+  // bookkeeping: still written to RefreshRun.errorsJson for support, tagged
+  // with INFO_PREFIX so the UI never renders it as a refresh warning.
   if (opts.policyNote) errors.push(opts.policyNote);
-  if (opts.batchNote) errors.push(opts.batchNote);
+  if (opts.batchNote) errors.push(infoNote(opts.batchNote));
   if (!isBaselineOnly) {
-    errors.push(
+    errors.push(infoNote(
       `Refresh policy: mode=${modeLabel} limit=${limit}`
       + (postedAfter ? ` postedAfter=${postedAfter.toISOString()}` : '')
       + (opts.dry ? ` (dry source — narrowed page)` : ''),
-    );
+    ));
   }
   if (skippedOld > 0) {
-    errors.push(
+    errors.push(infoNote(
       `Recency filter: ${skippedOld} of ${items.length} scraped videos were older than `
-      + `${RECENCY_CUTOFF_MONTHS} months and were not saved (cosmetic only)`,
-    );
+      + `${RECENCY_CUTOFF_MONTHS} months and were not saved`,
+    ));
   }
   if (skippedBeforeWatermark > 0) {
-    errors.push(
+    errors.push(infoNote(
       `Per-source watermark: ${skippedBeforeWatermark} items older than this source's `
       + `postedAfter were ignored after a widened batch scrape`,
-    );
+    ));
   }
   if (skippedKnown > 0 && modeLabel === 'incremental') {
-    errors.push(
+    errors.push(infoNote(
       `Already known: ${skippedKnown}/${itemsConsidered || items.length} results were existing videos `
       + `(stats updated; not new outliers)`,
-    );
+    ));
   }
 
   if (newVideos > 0 || updatedVideos > 0) {
@@ -344,10 +350,10 @@ export async function applyScrapeItems(opts: {
       }
     }
     if (overflow.length > 0) {
-      errors.push(
+      errors.push(infoNote(
         `Thumbnail ingest: ${overflow.length} beyond the per-run cap of ${THUMB_INGEST_MAX_PER_RUN} `
         + `queued as thumb jobs (${enqueued} enqueued)`,
-      );
+      ));
     }
   }
 
@@ -575,7 +581,17 @@ async function runRefreshSolo(opts: {
     sourceId, query: effectiveQuery, platform: source.platform, sourceType: effectiveSourceType,
   };
 
-  if (source.platform !== 'shorts') {
+  if (scrapeCapKind(source.platform) === 'proxy') {
+    const capStatus = await trafficStatus(workspaceId);
+    if (capStatus.breached) {
+      return {
+        ok: false, refusal: 'cap_breached', refusalDetail: capStatus, ...base,
+        itemsPulled: 0, newVideos: 0, costCents: 0, creditsCharged: 0, creditsRemaining: 0,
+        errors: ['Proxy traffic cap already breached'], rescoreQueued: false,
+        durationMs: Date.now() - startTime, mode: modeLabel, limitUsed: limit,
+      };
+    }
+  } else if (source.platform !== 'shorts') {
     const capStatus = await getApifyCapStatus(workspaceId);
     if (capStatus.breached) {
       return {
@@ -631,7 +647,7 @@ async function runRefreshSolo(opts: {
       );
       return { total: bal.total, pending: undefined as number | undefined };
     };
-    if (err instanceof SpendCapExceededError) {
+    if (err instanceof SpendCapExceededError || err instanceof TrafficCapExceededError) {
       const settledFail = await settleFailure();
       return {
         ok: false, refusal: 'cap_breached',
@@ -723,7 +739,20 @@ export async function runBatchedRefresh(
       continue;
     }
 
-    if (source.platform !== 'shorts') {
+    if (scrapeCapKind(source.platform) === 'proxy') {
+      const capStatus = await trafficStatus(member.workspaceId);
+      if (capStatus.breached) {
+        early.push({
+          ok: false, refusal: 'cap_breached', refusalDetail: capStatus,
+          sourceId: source.id, query: source.query, platform: source.platform,
+          sourceType: source.sourceType,
+          itemsPulled: 0, newVideos: 0, costCents: 0, creditsCharged: 0, creditsRemaining: 0,
+          errors: ['Proxy traffic cap already breached'], rescoreQueued: false,
+          durationMs: Date.now() - startTime,
+        });
+        continue;
+      }
+    } else if (source.platform !== 'shorts') {
       const capStatus = await getApifyCapStatus(member.workspaceId);
       if (capStatus.breached) {
         early.push({
@@ -817,7 +846,7 @@ export async function runBatchedRefresh(
   // the cost genuinely belongs to these tenants, in Nths.
   const costShareWorkspaceIds = ready.map(r => r.member.workspaceId);
 
-  let scrape: ApifyScrapeResult;
+  let scrape: ScrapeResult;
   try {
     scrape = await scrapeSource({
       workspaceId: leader.member.workspaceId,
@@ -850,10 +879,13 @@ export async function runBatchedRefresh(
       }
       failed.push({
         ok: false,
-        refusal: err instanceof SpendCapExceededError ? 'cap_breached' : undefined,
+        refusal: err instanceof SpendCapExceededError || err instanceof TrafficCapExceededError
+          ? 'cap_breached' : undefined,
         refusalDetail: err instanceof SpendCapExceededError
           ? await getApifyCapStatus(r.member.workspaceId)
-          : undefined,
+          : err instanceof TrafficCapExceededError
+            ? await trafficStatus(r.member.workspaceId)
+            : undefined,
         sourceId: r.source.id,
         query: r.source.query,
         platform: r.source.platform,

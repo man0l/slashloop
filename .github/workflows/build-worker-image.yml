@@ -79,6 +79,10 @@ jobs:
           R2_THUMB_PUBLIC_BASE: ${{ vars.R2_THUMB_PUBLIC_BASE }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SCRAPER_PROXY_URL: ${{ secrets.SCRAPER_PROXY_URL }}
+          PROXY_CHEAP_API_KEY: ${{ secrets.PROXY_CHEAP_API_KEY }}
+          PROXY_CHEAP_API_SECRET: ${{ secrets.PROXY_CHEAP_API_SECRET }}
+          PROXY_TRAFFIC_CAP_GB: ${{ vars.PROXY_TRAFFIC_CAP_GB }}
         run: |
           set -e
           out="$GITHUB_WORKSPACE/.worker-env"
@@ -110,6 +114,11 @@ jobs:
           printf 'R2_THUMB_PUBLIC_BASE=%s\n' "$R2_THUMB_PUBLIC_BASE" >> "$out"
           printf 'R2_ACCESS_KEY_ID=%s\n' "$R2_ACCESS_KEY_ID"    >> "$out"
           printf 'R2_SECRET_ACCESS_KEY=%s\n' "$R2_SECRET_ACCESS_KEY" >> "$out"
+          printf 'SCRAPER_PROXY_URL=%s\n' "$SCRAPER_PROXY_URL"       >> "$out"
+          printf 'PROXY_CHEAP_API_KEY=%s\n' "$PROXY_CHEAP_API_KEY"   >> "$out"
+          printf 'PROXY_CHEAP_API_SECRET=%s\n' "$PROXY_CHEAP_API_SECRET" >> "$out"
+          printf 'PROXY_TRAFFIC_CAP_GB=%s\n' "$PROXY_TRAFFIC_CAP_GB" >> "$out"
+          printf 'SCRAPER_PROXY_COUNTRY=US\n'                        >> "$out"
           ls -la "$out"
           echo "lines: $(wc -l < "$out")"
           echo "video-model-marker: $(grep -c '^OPENROUTER_VIDEO_MODEL=' "$out")"

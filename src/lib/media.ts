@@ -251,9 +251,10 @@ export async function ingestVideoFile(
  * seeking work, independent of an analysis run. Reuses the exact download +
  * ingest legs as the analyze path (analyzeVideoWithDownload), minus Gemini.
  *
- * TikTok only — downloadTikTokVideo drives the clockworks/tiktok-scraper
- * actor. Apify spend is asserted + recorded inside downloadTikTokVideo, so the
- * fetch flow is governed by the Apify spend cap, not AI credits. On ANY failure
+ * TikTok only — downloadVideo goes through the configured scraper (Apify by
+ * default, or the residential proxy when SCRAPER_PROVIDER=proxy). Spend is
+ * asserted + recorded inside the adapter, so the fetch flow is governed by
+ * that provider's cap, not AI credits. On ANY failure
  * the video is marked mediaStatus='failed' and the REAL error is rethrown —
  * the worker's failJob persists it as the job's lastError, which is what the
  * gallery's ⛔ fetch-error surface (src/lib/fetch-errors.ts) reads. Swallowing
@@ -273,13 +274,13 @@ export async function downloadAndStoreVideo(
   const { mkdtempSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
-  const { downloadTikTokVideo } = await import('./apify.js');
+  const { downloadVideo } = await import('./scrapers/index.js');
 
   const tmpDir = mkdtempSync(join(tmpdir(), 'slashloop-fetch-'));
   const filePath = join(tmpDir, `video_${videoId.slice(0, 8)}.mp4`);
 
   try {
-    const dl = await downloadTikTokVideo({ workspaceId, videoUrl, outputPath: filePath });
+    const dl = await downloadVideo({ workspaceId, videoUrl, outputPath: filePath, platform: 'tiktok' });
     const { statSync } = await import('node:fs');
     if (statSync(filePath).size < 1024) throw new Error('downloaded file too small');
 

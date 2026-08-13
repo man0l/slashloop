@@ -82,7 +82,7 @@ while (!shuttingDown) {
     // scores stuck at 'too_fresh' usually clear by the next check. Runs every
     // N iterations (a few minutes at the default idle) instead of per minute —
     // only on the maintenance worker.
-    if (doesMaintenance && ++iteration % RESCORE_EVERY === 0) {
+    if (doesMaintenance && RESCORE_EVERY > 0 && ++iteration % RESCORE_EVERY === 0) {
       await rescoreStaleTooFresh().catch((err) => {
         console.warn(`[worker] rescoreStaleTooFresh failed: ${(err as Error).message}`);
       });

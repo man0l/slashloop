@@ -20,6 +20,7 @@ import {
   refreshSourceForWorkspace,
 } from '../lib/sources-service.js';
 import { seedSourceCandidates, verifySourceCandidate, dismissSuggestion } from '../lib/suggestions.js';
+import { failureLines } from '../lib/refresh-notes.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerSourceTools(server: McpServer) {
@@ -198,9 +199,9 @@ export function registerSourceTools(server: McpServer) {
         case 'cap_breached':
           return {
             content: [{ type: 'text' as const, text: JSON.stringify({
-              error: 'APIFY SPEND CAP ALREADY BREACHED',
+              error: 'SCRAPER CAP ALREADY BREACHED',
               capStatus: result.capStatus,
-              message: 'Refresh refused. Raise APIFY_SPEND_CAP_CENTS in .env or wait until next month.',
+              message: 'Refresh refused. Raise APIFY_SPEND_CAP_CENTS or PROXY_TRAFFIC_CAP_GB in .env, or wait until next month.',
             }, null, 2) }],
             isError: true,
           };
@@ -233,7 +234,10 @@ export function registerSourceTools(server: McpServer) {
               costCents: result.costCents,
               costDisplay: `$${(result.costCents / 100).toFixed(4)}`,
               durationMs: result.durationMs,
-              errors: result.errors.length ? result.errors : undefined,
+              // Failures only. The bookkeeping lines (page size chosen, how
+              // many results were already known) live in RefreshRun.errorsJson
+              // and read back via get_refresh_logs — they are not warnings.
+              errors: failureLines(result.errors).length ? failureLines(result.errors) : undefined,
               apifyCapStatus: result.apifyCapStatus,
               creditsCharged: result.creditsCharged,
               creditsRemaining: result.creditsRemaining,

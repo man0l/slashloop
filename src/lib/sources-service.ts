@@ -14,9 +14,11 @@
 import { randomUUID } from 'node:crypto';
 import type { Source, Workspace } from '@prisma/client';
 import { db } from '../db.js';
-import { scrapeSource } from './apify.js';
+import { scrapeCapKind, scrapeSource, trafficStatus } from './scrapers/index.js';
 import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
+import { TrafficCapExceededError } from './scrapers/bandwidth.js';
 import { batchScoreVideos } from '../scoring.js';
+import { infoNote } from './refresh-notes.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } from './credits.js';
 import { ingestThumbnails, type ThumbIngestTarget } from './media.js';
 import { enqueueRefreshJob, enqueueRescoreJob, outstandingJobForSource, dispatchWorker } from './jobs.js';
@@ -229,9 +231,9 @@ export type RefreshSourceResult =
       deadlineAt: string;
       workerDispatched: boolean;
     }
-  | { kind: 'cap_breached'; capStatus: Awaited<ReturnType<typeof getApifyCapStatus>> }
+  | { kind: 'cap_breached'; capStatus: Awaited<ReturnType<typeof getApifyCapStatus>> | Awaited<ReturnType<typeof trafficStatus>> }
   | { kind: 'insufficient_credits'; err: InsufficientCreditsError }
-  | { kind: 'spend_cap_exceeded'; message: string; capStatus: Awaited<ReturnType<typeof getApifyCapStatus>>; creditsRemaining: number }
+  | { kind: 'spend_cap_exceeded'; message: string; capStatus: Awaited<ReturnType<typeof getApifyCapStatus>> | Awaited<ReturnType<typeof trafficStatus>>; creditsRemaining: number }
   | {
       kind: 'done';
       message: string;
@@ -319,15 +321,20 @@ export async function refreshSourceForWorkspace(
   // Same audit line the queued path writes (settleAndApply). Without it an
   // inline run leaves a RefreshRun with errorsJson='[]' and no record of what
   // page size or watermark it chose, which is how a policy regression hides.
-  errors.push(
+  errors.push(infoNote(
     `Refresh policy: mode=${plan.mode} limit=${limit}`
     + (plan.postedAfter ? ` postedAfter=${plan.postedAfter.toISOString()}` : '')
     + (plan.dry ? ' (dry source — narrowed page)' : ''),
-  );
+  ));
 
-  // Pre-flight: platform-wide Apify cap (unrelated to this workspace's
-  // credit balance — a circuit breaker against a bug or runaway deploy).
-  if (source.platform !== 'shorts') {
+  // Pre-flight: the ledger that belongs to the *active* scraper. A breached
+  // Apify cap must not block the proxy path, and vice versa.
+  if (scrapeCapKind(source.platform) === 'proxy') {
+    const capStatus = await trafficStatus(source.workspaceId);
+    if (capStatus.breached) {
+      return { kind: 'cap_breached', capStatus };
+    }
+  } else if (source.platform !== 'shorts') {
     const capStatus = await getApifyCapStatus(source.workspaceId);
     if (capStatus.breached) {
       return { kind: 'cap_breached', capStatus };
@@ -438,13 +445,15 @@ export async function refreshSourceForWorkspace(
       await batchScoreVideos(sourceId).catch(err => errors.push(`Scoring failed: ${(err as Error).message}`));
     }
   } catch (err) {
-    if (err instanceof SpendCapExceededError) {
+    if (err instanceof SpendCapExceededError || err instanceof TrafficCapExceededError) {
       // Cap breach — refuse, refund the full pre-auth, and report.
       creditBalance = await refundCredits(workspace.id, preAuthCredits, 'refresh_source', `${opId}:fail`, 'call_failed');
       return {
         kind: 'spend_cap_exceeded',
         message: err.message,
-        capStatus: await getApifyCapStatus(source.workspaceId),
+        capStatus: err instanceof TrafficCapExceededError
+          ? await trafficStatus(source.workspaceId)
+          : await getApifyCapStatus(source.workspaceId),
         creditsRemaining: creditBalance.total,
       };
     }

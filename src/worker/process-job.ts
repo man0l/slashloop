@@ -25,6 +25,7 @@ import {
 import { ingestThumbnails, type ThumbIngestTarget } from '../lib/media.js';
 import { CREDIT_COSTS, refundCredits } from '../lib/credits.js';
 import { tagJobFailure } from '../lib/gemini-errors.js';
+import { failureLines } from '../lib/refresh-notes.js';
 import { db } from '../db.js';
 
 export interface JobProcessOptions {
@@ -246,7 +247,7 @@ export async function processClaimedJob(
         // that already landed.
         if (!result || !result.ok) {
           const message = result
-            ? (result.errors.join('; ') || result.refusal || 'refresh refused')
+            ? (failureLines(result.errors).join('; ') || result.refusal || 'refresh refused')
             : 'no result from batch';
           const { terminal } = await failJob(j.id, message);
           if (terminal && result?.pendingRefundCredits && j.opId) {

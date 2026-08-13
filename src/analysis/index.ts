@@ -437,11 +437,10 @@ export async function analyzeVideoWithDownload(
 
   // If the backend needs a video file, download it via Apify.
   //
-  // TikTok only: downloadTikTokVideo drives the clockworks/tiktok-scraper
-  // actor, so a reels/shorts URL would pre-authorize spend against the cap
-  // and then fail inside the actor. Those platforms have no scraper yet
-  // (scrapeSource throws for both), but create_source still accepts them —
-  // so the guard is on platform, not on whether a row can exist.
+  // TikTok only: downloadVideo goes through the configured scraper. Reels
+  // and shorts still have no working adapter (the Apify path throws for
+  // both), but create_source still accepts them — so the guard is on
+  // platform, not on whether a row can exist.
   // Phase 2.2: with a live Files API handle there is nothing to download OR
   // upload — Gemini already holds the video. This is the case §2.2 called
   // "needs no download at all, from any source", and it skips both the Apify
@@ -456,7 +455,7 @@ export async function analyzeVideoWithDownload(
       const { mkdtempSync } = await import('node:fs');
       const { tmpdir } = await import('node:os');
       const { join } = await import('node:path');
-      const { downloadTikTokVideo } = await import('../lib/apify.js');
+      const { downloadVideo } = await import('../lib/scrapers/index.js');
 
       const tmpDir = mkdtempSync(join(tmpdir(), 'slashloop-'));
       videoFilePath = join(tmpDir, `video_${videoId.slice(0, 8)}.mp4`);
@@ -480,11 +479,12 @@ export async function analyzeVideoWithDownload(
       if (cached) {
         console.log(`[analysis] Reusing stored MP4 (${(cached.bytes / 1024 / 1024).toFixed(2)}MB) — skipped Apify`);
       } else {
-        console.log(`[analysis] Downloading video via Apify: ${video.url}...`);
-        const dl = await downloadTikTokVideo({
+        console.log(`[analysis] Downloading video via scraper: ${video.url}...`);
+        const dl = await downloadVideo({
           workspaceId,
           videoUrl: video.url,
           outputPath: videoFilePath,
+          platform: 'tiktok',
         });
 
         // Sanity-check the file landed and has real content
@@ -492,7 +492,7 @@ export async function analyzeVideoWithDownload(
         const stat = statSync(videoFilePath);
         if (stat.size < 1024) throw new Error('Downloaded file too small');
 
-        console.log(`[analysis] Downloaded ${(stat.size / 1024 / 1024).toFixed(2)}MB (Apify cost: ${dl.costCents}c)`);
+        console.log(`[analysis] Downloaded ${(stat.size / 1024 / 1024).toFixed(2)}MB (${dl.provider ?? 'scraper'} cost: ${dl.costCents}c)`);
 
         // Cache the MP4 so a re-analysis inside the retention window doesn't
         // have to pay Apify again. Never throws — the download already

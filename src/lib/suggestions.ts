@@ -24,7 +24,7 @@ import { z } from 'zod/v4';
 import type { Workspace } from '@prisma/client';
 import { db } from '../db.js';
 import { callModelText } from './llm.js';
-import { scrapeSource } from './apify.js';
+import { scrapeCapKind, scrapeSource, trafficStatus } from './scrapers/index.js';
 import { getApifyCapStatus } from './spend-cap.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from './credits.js';
 
@@ -216,10 +216,18 @@ export async function dismissSuggestion(workspace: Workspace, candidate: Pick<Se
  * other candidates are being verified.
  */
 export async function verifySourceCandidate(workspace: Workspace, candidate: SeedCandidate): Promise<VerifyCandidateResult> {
-  const capStatus = await getApifyCapStatus(workspace.id);
-  if (capStatus.breached) {
-    const balance = await creditBalance(workspace.id);
-    return { ok: true, verified: false, creditsCharged: 0, creditsRemaining: balance.total, error: 'Apify spend cap breached.' };
+  if (scrapeCapKind('tiktok') === 'proxy') {
+    const capStatus = await trafficStatus(workspace.id);
+    if (capStatus.breached) {
+      const balance = await creditBalance(workspace.id);
+      return { ok: true, verified: false, creditsCharged: 0, creditsRemaining: balance.total, error: 'Proxy traffic cap breached.' };
+    }
+  } else {
+    const capStatus = await getApifyCapStatus(workspace.id);
+    if (capStatus.breached) {
+      const balance = await creditBalance(workspace.id);
+      return { ok: true, verified: false, creditsCharged: 0, creditsRemaining: balance.total, error: 'Apify spend cap breached.' };
+    }
   }
 
   const verifyOpId = randomUUID();
