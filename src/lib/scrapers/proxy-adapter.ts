@@ -100,6 +100,12 @@ export async function runTikTokProxyScrape(
         };
       }
     } else if (opts.sourceType === 'keyword' && raw.length < req.limit) {
+      const asTag = await resolveChallengeId(opts.query);
+      if (asTag) {
+        const tagged = await fetchHashtagPosts(opts.query, asTag, req);
+        raw = dedupeItems([...raw, ...tagged.items]);
+        notices.push(...tagged.notices);
+      }
       const extra = await fetchSearchPosts(opts.query, req);
       raw = dedupeItems([...raw, ...extra.items]);
       notices.push(...extra.notices);

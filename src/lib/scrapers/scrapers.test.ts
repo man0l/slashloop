@@ -18,6 +18,8 @@ import { extractVideoId, pickSmallestVariant } from './proxy-adapter.js';
 import { parseProxyUrl, proxyFetch, resetDispatcher, withStickySession } from './proxy-http.js';
 import {
   createTimeFromItemId,
+  challengeIdFromFrontity,
+  challengeItemListUrl,
   creatorItemListUrl,
   dedupeItems,
   embedPageUrl,
@@ -217,6 +219,17 @@ describe('tiktok-web helpers', () => {
     });
     expect(embedPageUrl('creator', '@JawHacks')).toBe('https://www.tiktok.com/embed/@JawHacks');
     expect(embedPageUrl('hashtag', '#vibecoding')).toBe('https://www.tiktok.com/embed/tag/vibecoding');
+  });
+
+  test('challengeIdFromFrontity and challengeItemListUrl are the hashtag latest path', () => {
+    const html = `<script id="__FRONTITY_CONNECT_STATE__">${JSON.stringify({
+      source: { data: { '/embed/tag/mewing': { embedInfo: { id: '1362460', videoCount: 1 }, videoList: [] } } },
+    })}</script>`;
+    expect(challengeIdFromFrontity(html)).toBe('1362460');
+    const url = challengeItemListUrl('1362460', '0', 15);
+    expect(url).toContain('/api/challenge/item_list/');
+    expect(url).toContain('challengeID=1362460');
+    expect(url).toContain('from_page=hashtag');
   });
 
   test('creatorItemListUrl is the yt-dlp user playlist endpoint', () => {
@@ -493,5 +506,60 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
     expect(result.items[0]?.caption).toBe('from embed');
     expect(result.items[0]?.views).toBe(1_000);
     expect(result.items[0]?.postedAt).toBe(new Date(1_671_391_444 * 1000).toISOString());
+  });
+
+  test('hashtag scrape prefers signed challenge item_list over evergreen embed', async () => {
+    clearLookupCaches();
+    const now = Math.floor(Date.now() / 1000);
+    const embedHtml = `<script id="__FRONTITY_CONNECT_STATE__">${JSON.stringify({
+      source: {
+        data: {
+          '/embed/tag/mewing': {
+            embedInfo: { id: '1362460', videoCount: 9 },
+            videoList: [{
+              id: '7396100831218633989',
+              desc: 'old viral',
+              coverUrl: 'https://cdn.example/c.jpg',
+              playCount: 62_000_000,
+              authorUniqueId: 'old',
+            }],
+          },
+        },
+      },
+    })}</script>`;
+    const http: TikTokHttp = {
+      async getJson(url) {
+        if (url.includes('/api/challenge/item_list/')) {
+          return {
+            json: {
+              itemList: [{
+                id: '7670597177768545566',
+                desc: 'fresh',
+                createTime: now,
+                author: { uniqueId: 'onlysonazone' },
+                stats: { playCount: 1_800_000, diggCount: 10 },
+                video: { cover: 'https://cdn.example/n.jpg' },
+              }],
+              hasMore: false,
+              cursor: '1',
+            },
+            status: 200, ok: true, text: '{}', bytes: 20,
+          };
+        }
+        return { json: null, status: 200, ok: true, text: '', bytes: 0 };
+      },
+      async getText() {
+        return { json: null, status: 200, ok: true, text: embedHtml, bytes: embedHtml.length };
+      },
+    };
+    const result = await runTikTokProxyScrape({
+      workspaceId: 'ws-test',
+      platform: 'tiktok',
+      sourceType: 'hashtag',
+      query: 'mewing',
+      limit: 10,
+    }, http);
+    expect(result.items.some(v => v.externalId === '7670597177768545566')).toBe(true);
+    expect(result.items[0]?.externalId).toBe('7670597177768545566');
   });
 });

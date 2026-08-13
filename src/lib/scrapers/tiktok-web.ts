@@ -192,6 +192,66 @@ function randomHex(n: number): string {
  * yt-dlp TikTokUserIE._build_web_query. First cursor is Date.now() ms, not 0.
  * This is the list endpoint that still returns itemList when TLS looks like Chrome.
  */
+/** Lift the numeric challenge id out of an embed tag page. */
+export function challengeIdFromFrontity(html: string): string | null {
+  const data = extractFrontityJson(html);
+  if (!data) return null;
+  const found: string[] = [];
+  const walk = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { for (const n of node) walk(n); return; }
+    const o = node as Record<string, unknown>;
+    const info = o.embedInfo;
+    if (info && typeof info === 'object') {
+      const id = (info as { id?: unknown }).id;
+      if (id != null && /^\d{3,}$/.test(String(id))) found.push(String(id));
+    }
+    for (const k of Object.keys(o)) walk(o[k]);
+  };
+  walk(data);
+  return found[0] ?? null;
+}
+
+/**
+ * yt-dlp / web-app hashtag latest feed. Requires X-Bogus (impersonate-http).
+ * `from_page=hashtag` is what the live 2026-08-13 probe used.
+ */
+export function challengeItemListUrl(challengeId: string, cursor: string | number, count: number): string {
+  const qs = new URLSearchParams({
+    aid: AID,
+    app_language: 'en',
+    app_name: 'tiktok_web',
+    browser_language: 'en-US',
+    browser_name: 'Mozilla',
+    browser_online: 'true',
+    browser_platform: 'Win32',
+    browser_version: '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    challengeID: challengeId,
+    channel: 'tiktok_web',
+    cookie_enabled: 'true',
+    count: String(count),
+    coverFormat: '2',
+    cursor: String(cursor),
+    device_id: webDeviceId(),
+    device_platform: 'web_pc',
+    focus_state: 'true',
+    from_page: 'hashtag',
+    history_len: '2',
+    is_fullscreen: 'false',
+    is_page_visible: 'true',
+    language: 'en',
+    os: 'windows',
+    priority_region: '',
+    referer: '',
+    region: 'US',
+    screen_height: '1080',
+    screen_width: '1920',
+    tz_name: 'UTC',
+    webcast_language: 'en',
+  });
+  return `${WEB_BASE}/api/challenge/item_list/?${qs.toString()}`;
+}
+
 export function creatorItemListUrl(secUid: string, cursorMs: string | number, count: number): string {
   const qs = new URLSearchParams({
     aid: AID,
@@ -409,7 +469,13 @@ export async function fetchEmbedItems(
       Referer: `${WEB_BASE}/`,
     });
     if (!res.ok || !res.text) continue;
+    const cid = challengeIdFromFrontity(res.text);
+    if (cid && sourceType !== 'creator') {
+      const cacheKey = q.toLowerCase();
+      if (cacheKey) cacheSet(challengeIdCache, cacheKey, cid);
+    }
     let items = itemsFromFrontity(res.text);
+    if (!items.length && !cid) continue;
     if (!items.length) continue;
 
     // Embed playlists mix viral + recent. Newest-first so a small limit
@@ -715,10 +781,23 @@ export async function resolveChallengeId(name: string): Promise<string | null> {
     buildUrl('/api/challenge/detail/', { challengeName: clean }),
     apiHeaders(`${WEB_BASE}/tag/${clean}`),
   );
-  const id = json?.challengeInfo?.challenge?.id;
-  if (typeof id !== 'string' || !id) return null;
-  cacheSet(challengeIdCache, clean, id);
-  return id;
+  const id = json?.challengeInfo?.challenge?.id ?? json?.challengeInfo?.challenge?.challengeID;
+  if (id != null && /^\d{3,}$/.test(String(id))) {
+    cacheSet(challengeIdCache, clean, String(id));
+    return String(id);
+  }
+
+  const getter = currentHttp.getText ?? unsignedHttp.getText;
+  const page = await getter!(`${WEB_BASE}/embed/tag/${encodeURIComponent(clean)}`, {
+    Accept: 'text/html,application/xhtml+xml',
+    Referer: `${WEB_BASE}/`,
+  });
+  const fromEmbed = page.ok && page.text ? challengeIdFromFrontity(page.text) : null;
+  if (fromEmbed) {
+    cacheSet(challengeIdCache, clean, fromEmbed);
+    return fromEmbed;
+  }
+  return null;
 }
 
 export async function fetchHashtagPosts(
@@ -728,11 +807,7 @@ export async function fetchHashtagPosts(
 ): Promise<{ items: any[]; notices: string[] }> {
   const clean = name.replace(/^#/, '').trim().toLowerCase();
   return collectPages(
-    (cursor, count) => buildUrl('/api/challenge/item_list/', {
-      challengeID: challengeId,
-      count,
-      cursor,
-    }),
+    (cursor, count) => challengeItemListUrl(challengeId, cursor, count),
     `${WEB_BASE}/tag/${clean}`,
     req,
   );

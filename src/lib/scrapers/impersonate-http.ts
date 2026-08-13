@@ -12,6 +12,7 @@
 
 import { meterBytes } from './bandwidth.js';
 import { proxyConfig } from './proxy-http.js';
+import { signTikTokUrl } from './sign.js';
 import { isWafChallenge, solveWafCookies, type WafCookie } from './waf.js';
 import type { TikTokHttp, TikTokHttpResult } from './tiktok-web.js';
 
@@ -70,6 +71,15 @@ export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
   });
   const jar = new CookieJar();
   console.log('[proxy:impit] chrome TLS via residential proxy');
+  try {
+    const warm = await client.fetch('https://www.tiktok.com/', {
+      headers: { 'User-Agent': CHROME_UA, Accept: 'text/html' },
+    });
+    jar.absorb(warm.headers);
+    await warm.text().catch(() => '');
+  } catch {
+    // first API call can still sign; cookies just help
+  }
 
   async function once(url: string, headers: Record<string, string> | undefined, maxBytes: number): Promise<TikTokHttpResult> {
     const hdrs: Record<string, string> = {
@@ -80,7 +90,8 @@ export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
     const cookie = jar.header();
     if (cookie) hdrs.Cookie = cookie;
 
-    const res = await client.fetch(url, { headers: hdrs, redirect: 'follow' });
+    const signed = signTikTokUrl(url, hdrs['User-Agent'] ?? CHROME_UA);
+    const res = await client.fetch(signed, { headers: hdrs, redirect: 'follow' });
     jar.absorb(res.headers);
     const text = await res.text();
     const bytes = Math.min(text.length, maxBytes);
