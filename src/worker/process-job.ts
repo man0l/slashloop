@@ -369,7 +369,13 @@ export async function processClaimedJob(
       // mode for openrouter-video, or Phase 2.1 cache) instead of downloading
       // from Apify again.
       const fPayload = JSON.parse(job.payloadJson || '{}') as FetchJobPayload;
-      if (fPayload.enqueueAnalysis && job.opId) {
+      // opId is minted on the analyze_video call and stored in the fetch
+      // payload. MediaJob.opId is often null on fetch rows (enqueueFetchJob
+      // does not copy it), so requiring job.opId silently skipped the Gemini
+      // step after a successful download — the gallery sat on "analyzing"
+      // forever. Prefer the payload, fall back to the column.
+      const chainOpId = fPayload.opId || job.opId;
+      if (fPayload.enqueueAnalysis && chainOpId) {
         // The fetch job's payload came from the API, so the backend string is
         // only trusted if it matches a real analyzer — narrow before handing
         // it to enqueueAnalyzeJob, whose payload type is the closed union.
@@ -378,7 +384,7 @@ export async function processClaimedJob(
           workspaceId: job.workspaceId,
           videoId,
           payload: { forceBackend: fb === 'gemini-native' || fb === 'gemini-text' || fb === 'openrouter-video' ? fb : undefined },
-          opId: job.opId,
+          opId: chainOpId,
         });
       }
 

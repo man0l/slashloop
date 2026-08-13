@@ -98,6 +98,9 @@ export async function enqueueFetchJob(opts: {
       kind: 'fetch',
       status: 'queued',
       payloadJson: JSON.stringify(opts.payload ?? {}),
+      // Copy the analyze pre-auth opId onto the row so reclaim/refund and the
+      // fetch→analyze chain can see it without re-parsing payloadJson.
+      opId: opts.payload?.opId ?? null,
     },
   }) as unknown as Promise<MediaJobRow>;
 }
