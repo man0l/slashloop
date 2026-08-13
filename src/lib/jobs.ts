@@ -597,6 +597,20 @@ export async function claimRefreshPeersForCanonical(opts: {
 
   // Peek a wider candidate set, then claim only matching ids. FOR UPDATE is
   // applied at claim time so we do not hold locks across the JS filter.
+  //
+  // Deliberately NOT filtered on deadlineAt, unlike an earlier version.
+  // deadlineAt (5 min) says whether a CALLER is still waiting for an answer,
+  // not whether the work is still worth doing — and claimNextJob ignores it,
+  // so an expired job runs as a batch LEADER regardless. Excluding it only
+  // from the peer list meant a late job could not share a scrape it was about
+  // to pay for on its own.
+  //
+  // That inverted the feature exactly where it pays. Batching helps a burst;
+  // the worker drains serially at roughly one job a minute, so in a 9-source
+  // sync everything after the fifth is already past a 5-minute deadline by the
+  // time a leader looks for peers. Measured p90 queue wait is 935s. Joining a
+  // batch is strictly cheaper for the peer than scraping alone, and the
+  // deadline is honoured where it belongs — await_job stops promising results.
   const candidates = await db.$queryRaw<QueuedRefreshPeerRow[]>`
     SELECT mj."id",
            mj."workspaceId",
@@ -612,7 +626,6 @@ export async function claimRefreshPeersForCanonical(opts: {
      WHERE mj."status" = 'queued'
        AND mj."kind" = 'refresh'
        AND mj."id" <> ${opts.excludeJobId}
-       AND (mj."deadlineAt" IS NULL OR mj."deadlineAt" > now())
        AND s."platform" = ${opts.platform}
        AND s."sourceType" = ${opts.sourceType}
      ORDER BY mj."createdAt" ASC
@@ -714,6 +727,78 @@ export async function failJob(id: string, message: string): Promise<{ terminal: 
     },
   });
   return { terminal };
+}
+
+/**
+ * Fail `queued` rows nobody ever drained, and give the credits back.
+ *
+ * reclaimStuckJobs only ever looked at `running`, so this whole class of job
+ * was invisible to recovery: a row that is never CLAIMED has no startedAt, so
+ * it can sit queued forever with the caller's pre-auth debited. Nothing
+ * refunds it, nothing reports it, and get_source shows a refresh that is
+ * perpetually about to happen. Every path that fails a claimed job refunds;
+ * the one that never gets claimed did not.
+ *
+ * The threshold is deliberately far above normal latency rather than near the
+ * 5-minute deadline. The queue is legitimately slow — refresh drains serially
+ * at about one job a minute, measured p90 wait 935s and max 1937s — so
+ * cancelling at the deadline would kill work that was going to run fine. This
+ * is for a queue that is not draining at all (worker down, WORKER_KINDS
+ * misconfigured, pg_cron disabled), which is an outage, not a backlog.
+ */
+export const QUEUED_ABANDONED_AFTER_MINUTES = 90;
+
+export async function failAbandonedQueuedJobs(
+  olderThanMinutes = QUEUED_ABANDONED_AFTER_MINUTES,
+): Promise<{ failed: number; refunded: number }> {
+  const cutoff = new Date(Date.now() - olderThanMinutes * 60_000);
+  const abandoned = await db.mediaJob.findMany({
+    // startedAt null is the discriminator: a job that has run and been
+    // requeued is reclaimStuckJobs' business and may legitimately be old.
+    where: { status: 'queued', createdAt: { lt: cutoff }, startedAt: null },
+    select: {
+      id: true, workspaceId: true, opId: true, kind: true, preAuthCredits: true,
+      createdAt: true,
+    },
+  });
+
+  let failed = 0;
+  let refunded = 0;
+
+  for (const job of abandoned) {
+    const waitedMin = Math.round((Date.now() - +job.createdAt) / 60_000);
+    await db.mediaJob.update({
+      where: { id: job.id },
+      data: {
+        status: 'failed',
+        finishedAt: new Date(),
+        lastError:
+          `Never claimed by any worker after ${waitedMin} minutes — the queue is not draining. `
+          + `Credits were refunded; re-run the refresh once workers are healthy.`,
+      },
+    });
+    failed++;
+
+    // Same refund contract as reclaimStuckJobs: refund what was actually
+    // pre-authorised, keyed on the job's own opId so credits.ts can make it
+    // idempotent and the two reclaim paths cannot double-refund.
+    if (job.opId) {
+      try {
+        await refundCredits(
+          job.workspaceId,
+          job.preAuthCredits ?? CREDIT_COSTS.analyzeVideo,
+          job.kind === 'refresh' ? 'refresh_source' : 'analyze_video',
+          `${job.opId}:fail`,
+          'call_failed',
+        );
+        refunded++;
+      } catch (err) {
+        console.warn(`[jobs] refund on abandoned-queue sweep failed for ${job.id}: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  return { failed, refunded };
 }
 
 /**

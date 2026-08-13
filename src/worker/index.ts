@@ -19,7 +19,7 @@
 //       WORKER_IDLE_MS (default 3000) controls the poll interval when idle.
 // ---------------------------------------------------------------------------
 
-import { claimNextJob, reclaimStuckJobs } from '../lib/jobs.js';
+import { claimNextJob, reclaimStuckJobs, failAbandonedQueuedJobs } from '../lib/jobs.js';
 import { processClaimedJob } from './process-job.js';
 import { rescoreStaleTooFresh } from '../scoring.js';
 
@@ -60,6 +60,22 @@ while (!shuttingDown) {
     const reclaimed = await reclaimStuckJobs();
     if (reclaimed.requeued || reclaimed.failed) {
       console.log(`[worker] reclaimed stuck: requeued=${reclaimed.requeued} failed=${reclaimed.failed} refunded=${reclaimed.refunded}`);
+    }
+
+    // Jobs that were never claimed at all. Only the maintenance worker runs
+    // this: it is a whole-queue sweep, and having every container race to do
+    // it would multiply the work without changing the outcome.
+    if (doesMaintenance) {
+      const abandoned = await failAbandonedQueuedJobs().catch((err) => {
+        console.warn(`[worker] abandoned-queue sweep failed: ${(err as Error).message}`);
+        return { failed: 0, refunded: 0 };
+      });
+      if (abandoned.failed) {
+        console.warn(
+          `[worker] failed ${abandoned.failed} never-claimed job(s), refunded ${abandoned.refunded} `
+          + `— the queue was not draining`,
+        );
+      }
     }
 
     // Same idea as the Vercel worker's per-invocation rescoreStaleTooFresh:
