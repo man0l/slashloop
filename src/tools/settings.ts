@@ -8,7 +8,7 @@ import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
 import { loadAnalysisConfig, updateAnalysisConfig, DEFAULT_CONFIG, COST_ESTIMATES, BATCH_COST_ESTIMATES } from '../analysis/index.js';
 import { analyzeVideoWithDownload } from '../analysis/index.js';
-import { getApifyCapStatus } from '../lib/spend-cap.js';
+import { getApifyCapStatus, getApifySpendBreakdown, decodeApifyRefId } from '../lib/spend-cap.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance, resolveBillingWorkspace } from '../lib/credits.js';
 import { retentionCeiling, validateRetentionDays } from '../lib/retention.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -468,6 +468,13 @@ export function registerSettingsTools(server: McpServer) {
       const billingWorkspace = await resolveBillingWorkspace(workspace);
 
       const status = await getApifyCapStatus(workspace.id);
+      // Split the same cap money by what it bought. A single "scrape" total
+      // blends source refreshes with the per-video MP4 downloads that
+      // gemini-native analysis pays Apify for. Measured on live data, 46% of
+      // the Apify ledger could not be traced to any RefreshRun at all — the
+      // point of this split is that the next person can tell WHICH activity
+      // that untraceable money belonged to instead of guessing.
+      const breakdown = await getApifySpendBreakdown(workspace.id);
       const credits = { planCredits: billingWorkspace.planCredits, packCredits: billingWorkspace.packCredits, total: billingWorkspace.planCredits + billingWorkspace.packCredits, planKey: billingWorkspace.planKey };
 
       // Recent cap_breach events (last 30 days)
@@ -499,11 +506,22 @@ export function registerSettingsTools(server: McpServer) {
             at: b.createdAt.toISOString(),
             attemptedCostCents: b.costCents,
           })),
-          recentScrapeEvents: scrapeLogs.map(l => ({
-            at: l.createdAt.toISOString(),
-            costCents: l.costCents,
-            refId: l.refId,
-          })),
+          spendBreakdown: {
+            totalCents: breakdown.totalCents,
+            sourceScrapeCents: breakdown.byActivity.source_scrape.cents,
+            videoDownloadCents: breakdown.byActivity.video_download.cents,
+            unattributedLegacyCents: breakdown.byActivity.legacy.cents,
+            note: 'source_scrape = source refreshes; video_download = per-video MP4 pulls for gemini-native analysis; legacy = charges recorded before spend was tagged.',
+          },
+          recentScrapeEvents: scrapeLogs.map(l => {
+            const { activity, ref } = decodeApifyRefId(l.refId);
+            return {
+              at: l.createdAt.toISOString(),
+              costCents: l.costCents,
+              activity,
+              ref,
+            };
+          }),
         }, null, 2) }],
       };
     });

@@ -316,6 +316,15 @@ export async function refreshSourceForWorkspace(
   let costCents = 0;
   const errors: string[] = [];
 
+  // Same audit line the queued path writes (settleAndApply). Without it an
+  // inline run leaves a RefreshRun with errorsJson='[]' and no record of what
+  // page size or watermark it chose, which is how a policy regression hides.
+  errors.push(
+    `Refresh policy: mode=${plan.mode} limit=${limit}`
+    + (plan.postedAfter ? ` postedAfter=${plan.postedAfter.toISOString()}` : '')
+    + (plan.dry ? ' (dry source — narrowed page)' : ''),
+  );
+
   // Pre-flight: platform-wide Apify cap (unrelated to this workspace's
   // credit balance — a circuit breaker against a bug or runaway deploy).
   if (source.platform !== 'shorts') {
@@ -347,6 +356,14 @@ export async function refreshSourceForWorkspace(
       sourceType: source.sourceType as 'creator' | 'keyword' | 'hashtag',
       query: source.query,
       limit,
+      // The watermark is half the policy: without it this path pays for the
+      // creator's already-known catalogue every run, exactly what the plan
+      // was resolved to avoid. Only the queued path was passing it, so this
+      // one silently bought a full page of known videos. Currently reachable
+      // only with an explicit async:false (INLINE_REFRESH_MAX_VIDEOS is 0),
+      // which is precisely why it could rot unnoticed.
+      postedAfter: plan.postedAfter,
+      refId: sourceId,
     });
 
     itemsPulled = result.items.length;

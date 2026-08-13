@@ -185,6 +185,7 @@ export async function recordApifySpend(
   workspaceId: string,
   costCents: number,
   refId: string | null = null,
+  activity: ApifySpendActivity = 'source_scrape',
 ): Promise<void> {
   await db.usageLog.create({
     data: {
@@ -193,7 +194,98 @@ export async function recordApifySpend(
       provider: 'apify',
       units: 1,
       costCents,
-      refId,
+      refId: encodeApifyRefId(activity, refId),
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Spend attribution — what did this Apify money actually buy?
+//
+// Every Apify charge lands in UsageLog as kind='scrape', because every one of
+// them is Apify money and must count against the same monthly cap. But two
+// very different activities share that row: refreshing a SOURCE (the listing
+// scrape) and downloading ONE VIDEO's MP4 for gemini-native analysis.
+//
+// Until this existed, both wrote refId=null, so a ledger showing $22.95 of
+// "scraping" was really scrape + analysis downloads mixed together, and none
+// of it could be traced back to the source or video that caused it. That made
+// the refresh-policy savings unmeasurable: RefreshRun costs summed to roughly
+// half the scrape ledger and the gap looked like leakage when most of it was
+// analysis downloads doing exactly what they were asked to.
+//
+// No migration: the activity is encoded as a prefix on the existing refId
+// column ("source_scrape:<sourceId>"). Rows written before this change have
+// refId=null and report as 'legacy'.
+// ---------------------------------------------------------------------------
+
+/** What an Apify charge bought. */
+export type ApifySpendActivity =
+  /** A listing scrape for a source refresh (clockworks profile/hashtag/search). */
+  | 'source_scrape'
+  /** One video's MP4 pulled for gemini-native analysis. */
+  | 'video_download';
+
+const APIFY_SPEND_ACTIVITIES: ApifySpendActivity[] = ['source_scrape', 'video_download'];
+
+export function encodeApifyRefId(
+  activity: ApifySpendActivity,
+  refId: string | null,
+): string {
+  return refId ? `${activity}:${refId}` : activity;
+}
+
+/**
+ * Recover the activity from a stored refId. Rows predating the prefix
+ * convention report 'legacy' — they are genuinely unattributable, and
+ * pretending otherwise would silently misreport historical spend.
+ */
+export function decodeApifyRefId(
+  refId: string | null | undefined,
+): { activity: ApifySpendActivity | 'legacy'; ref: string | null } {
+  if (!refId) return { activity: 'legacy', ref: null };
+  for (const activity of APIFY_SPEND_ACTIVITIES) {
+    if (refId === activity) return { activity, ref: null };
+    if (refId.startsWith(`${activity}:`)) {
+      return { activity, ref: refId.slice(activity.length + 1) };
+    }
+  }
+  return { activity: 'legacy', ref: refId };
+}
+
+export interface ApifySpendBreakdown {
+  totalCents: number;
+  byActivity: Record<ApifySpendActivity | 'legacy', { cents: number; charges: number }>;
+}
+
+/**
+ * Split a workspace's Apify spend by what it bought. Defaults to the current
+ * calendar month so it lines up with the cap.
+ */
+export async function getApifySpendBreakdown(
+  workspaceId: string,
+  since?: Date,
+): Promise<ApifySpendBreakdown> {
+  const now = new Date();
+  const from = since ?? new Date(now.getFullYear(), now.getMonth(), 1);
+  const logs = await db.usageLog.findMany({
+    where: { workspaceId, kind: 'scrape', provider: 'apify', createdAt: { gte: from } },
+    select: { costCents: true, refId: true },
+  });
+
+  const byActivity = {
+    source_scrape: { cents: 0, charges: 0 },
+    video_download: { cents: 0, charges: 0 },
+    legacy: { cents: 0, charges: 0 },
+  } as ApifySpendBreakdown['byActivity'];
+
+  let totalCents = 0;
+  for (const l of logs) {
+    const { activity } = decodeApifyRefId(l.refId);
+    byActivity[activity].cents += l.costCents;
+    byActivity[activity].charges += 1;
+    totalCents += l.costCents;
+  }
+
+  return { totalCents, byActivity };
 }

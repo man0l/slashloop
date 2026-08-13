@@ -127,6 +127,8 @@ export async function applyScrapeItems(opts: {
   limit: number;
   /** Apify cost attributed to the RefreshRun (leader pays full; peers 0). */
   costCents: number;
+  /** Page was narrowed because the source has produced nothing new lately. */
+  dry?: boolean;
   policyNote?: string;
   batchNote?: string;
 }): Promise<ApplyResult> {
@@ -265,7 +267,8 @@ export async function applyScrapeItems(opts: {
   if (!isBaselineOnly) {
     errors.push(
       `Refresh policy: mode=${modeLabel} limit=${limit}`
-      + (postedAfter ? ` postedAfter=${postedAfter.toISOString()}` : ''),
+      + (postedAfter ? ` postedAfter=${postedAfter.toISOString()}` : '')
+      + (opts.dry ? ` (dry source — narrowed page)` : ''),
     );
   }
   if (skippedOld > 0) {
@@ -360,6 +363,7 @@ async function settleAndApply(opts: {
   isBaselineOnly: boolean;
   modeLabel: string;
   planPostedAfter?: Date;
+  planDry?: boolean;
   limit: number;
   items: NormalizedVideo[];
   scrapeCostCents: number;
@@ -395,6 +399,7 @@ async function settleAndApply(opts: {
       postedAfter: opts.isBaselineOnly ? undefined : opts.planPostedAfter,
       limit: opts.limit,
       costCents: opts.attributedCostCents,
+      dry: opts.planDry,
       policyNote: opts.policyReason,
       batchNote: opts.batchNote,
     });
@@ -587,6 +592,7 @@ async function runRefreshSolo(opts: {
       sourceType: effectiveSourceType,
       query: effectiveQuery,
       limit,
+      refId: sourceId,
     });
     items = result.items;
     costCents = result.costCents;
@@ -797,6 +803,10 @@ export async function runBatchedRefresh(
       query,
       limit,
       postedAfter,
+      // Canonical key, not a sourceId: in a batch this ONE charge belongs to
+      // every member. Attributing it to the leader's source would overstate
+      // that source and zero out its peers.
+      refId: key,
     });
   } catch (err) {
     // Scrape never landed. Nobody is charged for it, but the pre-auth only
@@ -868,6 +878,7 @@ export async function runBatchedRefresh(
       isBaselineOnly: false,
       modeLabel: r.plan.mode,
       planPostedAfter: r.plan.postedAfter,
+      planDry: r.plan.dry,
       limit: r.plan.limit,
       items: scrape.items,
       scrapeCostCents: scrape.costCents,

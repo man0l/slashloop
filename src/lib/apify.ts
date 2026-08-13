@@ -176,6 +176,26 @@ export function splitSpend(
 const ESTIMATED_COST_PER_RESULT_CENTS = 0.37;
 // Flat per-run "actor start" fee, in cents — tier-independent at $0.001.
 const ESTIMATED_ACTOR_START_COST_CENTS = 0.1;
+// Date-filter add-on (oldestPostDateUnified), flat ~$0.001 when set.
+const ESTIMATED_DATE_FILTER_COST_CENTS = 0.1;
+
+/**
+ * What one actor run costs, in cents, for a given number of DATASET RECORDS.
+ *
+ * clockworks bills PAY_PER_EVENT: a flat actor start plus a per-result event.
+ * `results` is therefore the raw dataset size, not the count that survived
+ * normalization — an error/notice record is still a billed result.
+ *
+ * Passing the REQUESTED limit gives the conservative pre-auth estimate;
+ * passing what actually came back gives the figure worth recording.
+ */
+export function apifyRunCostCents(results: number, dateFiltered: boolean): number {
+  return Math.ceil(
+    Math.max(0, results) * ESTIMATED_COST_PER_RESULT_CENTS
+    + ESTIMATED_ACTOR_START_COST_CENTS
+    + (dateFiltered ? ESTIMATED_DATE_FILTER_COST_CENTS : 0),
+  );
+}
 
 export interface ApifyScrapeOptions {
   workspaceId: string;
@@ -199,6 +219,12 @@ export interface ApifyScrapeOptions {
    * not the creator's already-known catalogue.
    */
   postedAfter?: Date;
+  /**
+   * What this scrape is for — recorded on the UsageLog row so Apify spend can
+   * be traced back to the source that caused it, and told apart from the
+   * per-video analysis downloads that bill against the same cap.
+   */
+  refId?: string;
 }
 
 export interface ApifyScrapeResult {
@@ -271,10 +297,9 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
   const hashtag = opts.query.replace(/^#/, '').trim();
   // Date-filter add-on is a flat ~$0.001 when set — bake it into the estimate
   // so the spend-cap pre-auth stays conservative.
-  const dateFilterCents = opts.postedAfter && opts.sourceType === 'creator' ? 0.1 : 0;
-  const estimatedCostCents = Math.ceil(
-    opts.limit * ESTIMATED_COST_PER_RESULT_CENTS + ESTIMATED_ACTOR_START_COST_CENTS + dateFilterCents,
-  );
+  const dateFiltered = !!opts.postedAfter && opts.sourceType === 'creator';
+  // Pre-auth against the WORST case: every requested result comes back.
+  const estimatedCostCents = apifyRunCostCents(opts.limit, dateFiltered);
 
   // Cap check per SHARER, not per run. A batched scrape is a shared purchase:
   // asserting the full estimate against one workspace let one tenant's cap be
@@ -330,7 +355,17 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
   let { rawItems, actorId } = await runTikTokActorWithFallback(input, apiKey, context);
   let items = normalizeItems(rawItems);
   let notices = collectNotices(rawItems);
-  let spentCents = estimatedCostCents;
+  // Bill what the run actually returned, not what we asked for. Recording the
+  // requested limit made the refresh policy look like it was saving money by
+  // construction: shrink `limit`, watch the recorded cost fall, whether or not
+  // Apify returned fewer results. A creator watermark run that came back with
+  // 1 result was booked at 3c on a 5-result estimate — a 3x overstatement, and
+  // the direction that matters, since the cap then refuses work already paid
+  // for. Never above the pre-auth: that is what the cap approved.
+  let spentCents = Math.min(
+    estimatedCostCents,
+    apifyRunCostCents(rawItems.length, dateFiltered),
+  );
 
   // runTikTokActorWithFallback only falls back to the default actor on an
   // HTTP failure. A misconfigured non-default actor (wrong input shape for
@@ -348,7 +383,12 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
     );
     const retryRawItems = await runTikTokActor(DEFAULT_TIKTOK_ACTOR_ID, input, apiKey);
     const retryItems = normalizeItems(retryRawItems);
-    spentCents += estimatedCostCents; // a second full actor run, same est. size
+    // A second full actor run really was started and really did return
+    // records — bill it on its own dataset size, same as the first.
+    spentCents += Math.min(
+      estimatedCostCents,
+      apifyRunCostCents(retryRawItems.length, dateFiltered),
+    );
     if (retryItems.length > 0) {
       rawItems = retryRawItems;
       items = retryItems;
@@ -363,10 +403,11 @@ export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrap
     console.warn(`[apify] ${rawItems.length} record(s) returned, 0 usable videos: ${notices.join(' | ')}`);
   }
 
-  // Record actual cost (we use the estimate since Apify's per-call billing
-  // is not returned in the response — the real invoice lands later).
+  // Record cost per sharing workspace. Still modelled (Apify's per-call
+  // billing is not in the response; the real invoice lands later) but now
+  // modelled from the returned dataset size rather than the request.
   for (const s of splitSpend(opts.costShareWorkspaceIds ?? [opts.workspaceId], spentCents)) {
-    await recordApifySpend(s.workspaceId, s.cents, null);
+    await recordApifySpend(s.workspaceId, s.cents, opts.refId ?? null, 'source_scrape');
   }
 
   return {
@@ -478,8 +519,16 @@ export async function downloadTikTokVideo(opts: ApifyDownloadOptions): Promise<A
   const { writeFileSync } = await import('node:fs');
   writeFileSync(opts.outputPath, buffer);
 
-  // Record actual cost (estimated — real invoice lands later)
-  await recordApifySpend(opts.workspaceId, ESTIMATED_DOWNLOAD_COST_CENTS, null);
+  // Record actual cost (estimated — real invoice lands later). Tagged as a
+  // video download so it is not mistaken for source-refresh spend: both bill
+  // against the same Apify cap, but only one of them is the refresh policy's
+  // to answer for.
+  await recordApifySpend(
+    opts.workspaceId,
+    ESTIMATED_DOWNLOAD_COST_CENTS,
+    opts.videoUrl,
+    'video_download',
+  );
 
   return {
     costCents: ESTIMATED_DOWNLOAD_COST_CENTS,
