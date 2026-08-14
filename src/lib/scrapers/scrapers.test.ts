@@ -12,6 +12,7 @@ import {
   listScrapers,
   resolveProviderName,
   scrapeCapKind,
+  selectDownloadAdapter,
   ScraperUnavailableError,
 } from './index.js';
 import { extractVideoId, pickSmallestVariant } from './proxy-adapter.js';
@@ -40,6 +41,7 @@ const ENV_KEYS = [
   'SCRAPER_PROVIDER',
   'SCRAPER_FALLBACK_PROVIDER',
   'SCRAPER_PROXY_URL',
+  'APIFY_API_KEY',
   'PROXY_TRAFFIC_CAP_GB',
   'PROXY_COST_CENTS_PER_GB',
   'SCRAPER_PROXY_COUNTRY',
@@ -92,6 +94,34 @@ describe('resolveProviderName', () => {
 
   test('listScrapers includes both built-in adapters', () => {
     expect(listScrapers()).toEqual(expect.arrayContaining(['apify', 'proxy']));
+  });
+});
+
+describe('selectDownloadAdapter (exclusive — no fallback)', () => {
+  test('uses proxy for TikTok when SCRAPER_PROXY_URL is set, even if SCRAPER_PROVIDER=apify', () => {
+    process.env.SCRAPER_PROVIDER = 'apify';
+    process.env.APIFY_API_KEY = 'test-key';
+    process.env.SCRAPER_PROXY_URL = 'user:pass@gateway.example.com:8080';
+    expect(selectDownloadAdapter('tiktok').name).toBe('proxy');
+  });
+
+  test('uses apify when the proxy is not configured', () => {
+    process.env.SCRAPER_PROVIDER = 'apify';
+    process.env.APIFY_API_KEY = 'test-key';
+    expect(selectDownloadAdapter('tiktok').name).toBe('apify');
+  });
+
+  test('an explicit provider wins and does not fall back', () => {
+    process.env.SCRAPER_PROXY_URL = 'user:pass@gateway.example.com:8080';
+    process.env.APIFY_API_KEY = 'test-key';
+    expect(selectDownloadAdapter('tiktok', 'apify').name).toBe('apify');
+  });
+
+  test('does not substitute apify when proxy is named but unconfigured', () => {
+    process.env.SCRAPER_PROVIDER = 'proxy';
+    process.env.APIFY_API_KEY = 'test-key';
+    expect(() => selectDownloadAdapter('tiktok', 'proxy')).toThrow(ScraperUnavailableError);
+    expect(() => selectDownloadAdapter('tiktok', 'proxy')).toThrow(/SCRAPER_PROXY_URL/);
   });
 });
 

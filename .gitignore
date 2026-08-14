@@ -53,6 +53,11 @@ server.log
 _tmp_*
 _rescore*
 
+# Local Contabo log tailer (SSH host + compose path, not project source)
+tail-worker.sh
+tail-worker.cmd
+tail-worker
+
 # Local screenshots and gallery snapshots (root only)
 /gallery-*.png
 /gallery-*.md

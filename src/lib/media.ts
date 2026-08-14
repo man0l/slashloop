@@ -251,8 +251,8 @@ export async function ingestVideoFile(
  * seeking work, independent of an analysis run. Reuses the exact download +
  * ingest legs as the analyze path (analyzeVideoWithDownload), minus Gemini.
  *
- * TikTok only — downloadVideo goes through the configured scraper (Apify by
- * default, or the residential proxy when SCRAPER_PROVIDER=proxy). Spend is
+ * TikTok only — downloadVideo uses the residential proxy when
+ * SCRAPER_PROXY_URL is set, otherwise Apify. Exclusive, no fallback. Spend is
  * asserted + recorded inside the adapter, so the fetch flow is governed by
  * that provider's cap, not AI credits. On ANY failure
  * the video is marked mediaStatus='failed' and the REAL error is rethrown —

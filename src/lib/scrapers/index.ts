@@ -4,15 +4,14 @@
 //   SCRAPER_PROVIDER=apify   (default) — Apify actors, billed per result
 //   SCRAPER_PROVIDER=proxy             — direct TikTok, billed per gigabyte
 //
-// Callers import `scrapeSource` / `downloadVideo` from here and never name a
-// vendor. The default is `apify` deliberately: it is the path with production
-// mileage, so an unset env var keeps existing deployments byte-for-byte on the
-// behaviour they already have.
+// Exclusive. There is no fallback from one provider to the other: a proxy
+// miss that silently bills Apify is a surprise invoice, and the reverse
+// hides a misconfigured SCRAPER_PROXY_URL for months.
 //
-// SCRAPER_FALLBACK_PROVIDER (optional) names a provider to retry with when the
-// primary is unconfigured or fails outright. It is OFF by default, because a
-// silent fallback from a per-GB provider to a per-result one is a surprise
-// invoice — it should be opted into, not inherited.
+// Single-video MP4s (fetch / analyze) are the case the residential proxy
+// exists for — TikTok's CDN 403s datacenter IPs, so Apify was only buying
+// a KV-stored binary at ~1c/video. When SCRAPER_PROXY_URL is set, downloads
+// go through proxy and only proxy. List scrapes still follow SCRAPER_PROVIDER.
 // ---------------------------------------------------------------------------
 
 import { apifyAdapter, APIFY_PROVIDER } from './apify-adapter.js';
@@ -79,34 +78,32 @@ export function getScraper(name?: string): ScraperAdapter {
   return adapter;
 }
 
-function fallbackAdapter(primary: ScraperAdapter): ScraperAdapter | null {
-  const raw = process.env.SCRAPER_FALLBACK_PROVIDER?.trim();
-  if (!raw) return null;
-  const name = resolveProviderName(raw);
-  if (name === primary.name) return null;
-  const adapter = REGISTRY.get(name);
-  return adapter && adapter.isConfigured() ? adapter : null;
+/** The named adapter, or throw. Never substitutes the other provider. */
+function requireAdapter(platform: string, name?: string): ScraperAdapter {
+  const adapter = getScraper(name);
+  if (!adapter.supports(platform)) {
+    throw new ScraperUnavailableError(adapter.name, `it does not support platform "${platform}"`);
+  }
+  if (!adapter.isConfigured()) {
+    throw new ScraperUnavailableError(adapter.name, adapter.configurationHint());
+  }
+  return adapter;
 }
 
-/** Pick the adapter that can actually serve this platform, right now. */
-function selectFor(platform: string, name?: string): ScraperAdapter {
-  const primary = getScraper(name);
-  if (primary.supports(platform) && primary.isConfigured()) return primary;
+/**
+ * Single-video download adapter.
+ *
+ * Proxy when SCRAPER_PROXY_URL is set (TikTok CDN needs a residential exit).
+ * Otherwise the exclusive SCRAPER_PROVIDER. An explicit `name` wins, so
+ * tests can still force Apify.
+ */
+export function selectDownloadAdapter(platform = 'tiktok', name?: string): ScraperAdapter {
+  if (name?.trim()) return requireAdapter(platform, name);
 
-  const fallback = fallbackAdapter(primary);
-  if (fallback && fallback.supports(platform)) {
-    console.warn(
-      `[scrapers] ${primary.name} cannot serve ${platform} `
-      + `(${primary.supports(platform) ? 'not configured' : 'unsupported platform'}) — `
-      + `falling back to ${fallback.name}`,
-    );
-    return fallback;
-  }
+  const proxy = REGISTRY.get(PROXY_PROVIDER_NAME);
+  if (platform === 'tiktok' && proxy?.isConfigured()) return proxy;
 
-  if (!primary.supports(platform)) {
-    throw new ScraperUnavailableError(primary.name, `it does not support platform "${platform}"`);
-  }
-  throw new ScraperUnavailableError(primary.name, primary.configurationHint());
+  return requireAdapter(platform);
 }
 
 // ---------------------------------------------------------------------------
@@ -116,21 +113,21 @@ function selectFor(platform: string, name?: string): ScraperAdapter {
 export async function scrapeSource(
   opts: ScrapeOptions & { platform: string; provider?: string },
 ): Promise<ScrapeResult> {
-  const adapter = selectFor(opts.platform, opts.provider);
+  const adapter = requireAdapter(opts.platform, opts.provider);
   return adapter.scrape(opts);
 }
 
 export async function downloadVideo(
   opts: DownloadOptions & { platform?: string; provider?: string },
 ): Promise<DownloadResult> {
-  const adapter = selectFor(opts.platform ?? 'tiktok', opts.provider);
+  const adapter = selectDownloadAdapter(opts.platform ?? 'tiktok', opts.provider);
   return adapter.downloadVideo(opts);
 }
 
 /** Which provider a given platform would use right now — for status output. */
 export function activeProviderFor(platform = 'tiktok'): string {
   try {
-    return selectFor(platform).name;
+    return requireAdapter(platform).name;
   } catch {
     return resolveProviderName();
   }

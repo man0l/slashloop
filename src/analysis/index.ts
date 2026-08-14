@@ -435,7 +435,8 @@ export async function analyzeVideoWithDownload(
   const needsFile = backend === 'gemini-native'
     || (openRouterVideoEnabled() && !storedMedia.url);
 
-  // If the backend needs a video file, download it via Apify.
+  // If the backend needs a video file, download it via the exclusive scraper
+  // (proxy when SCRAPER_PROXY_URL is set, otherwise Apify).
   //
   // TikTok only: downloadVideo goes through the configured scraper. Reels
   // and shorts still have no working adapter (the Apify path throws for
