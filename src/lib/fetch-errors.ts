@@ -52,7 +52,10 @@ export function classifyFetchError(lastError: string | null): FetchErrorInfo | n
   if (/returned no items/i.test(msg) || /watch page had no playable video/i.test(msg) || /returned no video detail/i.test(msg)) {
     return { code: 'video_not_found', message: 'TikTok could not find this video by URL (deleted or unavailable).' };
   }
-  if (/no video cdn url/i.test(msg)) {
+  if (/photo\/slideshow/i.test(msg)) {
+    return { code: 'video_unavailable', message: 'This TikTok is a photo slideshow, not a video — nothing to download.' };
+  }
+  if (/no playable url/i.test(msg) || /no video cdn url/i.test(msg)) {
     return { code: 'video_unavailable', message: 'No downloadable video file (deleted, restricted, or region-locked).' };
   }
   if (/did not store the video|only a tiktok cdn url/i.test(msg)) {

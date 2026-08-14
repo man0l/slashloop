@@ -262,25 +262,38 @@ export async function ingestVideoFile(
  * returned no result" and hid whether it was a spend cap, an Apify actor
  * failure, a TikTok CDN refusal, or a deleted video.
  */
+export async function persistSlideshow(videoId: string, images: string[]): Promise<void> {
+  const row = await db.video.findUnique({ where: { id: videoId }, select: { rawJson: true } });
+  let raw: Record<string, unknown> = {};
+  try { raw = JSON.parse(row?.rawJson || '{}') as Record<string, unknown>; } catch { raw = {}; }
+  raw.postKind = 'slideshow';
+  raw.slideshowImages = images;
+  await db.video.update({
+    where: { id: videoId },
+    data: { rawJson: JSON.stringify(raw), mediaStatus: 'slideshow' },
+  });
+  console.log(`[media] stored slideshow (${images.length} slides) for ${videoId}`);
+}
+
 export async function downloadAndStoreVideo(
   workspaceId: string,
   videoId: string,
   videoUrl: string,
-): Promise<{ bytes: number }> {
-  if (!isStorageEnabled()) {
-    throw new Error('media storage disabled — cannot store the video (STORAGE_MEDIA_BUCKET not configured)');
-  }
+): Promise<{ bytes: number; slideshow?: boolean }> {
+  const { downloadVideo } = await import('./scrapers/index.js');
 
   const { mkdtempSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
-  const { downloadVideo } = await import('./scrapers/index.js');
 
   const tmpDir = mkdtempSync(join(tmpdir(), 'slashloop-fetch-'));
   const filePath = join(tmpDir, `video_${videoId.slice(0, 8)}.mp4`);
 
   try {
     const dl = await downloadVideo({ workspaceId, videoUrl, outputPath: filePath, platform: 'tiktok' });
+    if (!isStorageEnabled()) {
+      throw new Error('media storage disabled — cannot store the video (STORAGE_MEDIA_BUCKET not configured)');
+    }
     const { statSync } = await import('node:fs');
     if (statSync(filePath).size < 1024) throw new Error('downloaded file too small');
 
@@ -289,6 +302,11 @@ export async function downloadAndStoreVideo(
 
     return { bytes: dl.sizeBytes };
   } catch (err) {
+    const slides = (err as { name?: string; images?: string[] } | null);
+    if (slides?.name === 'SlideshowPostError' && Array.isArray(slides.images) && slides.images.length > 0) {
+      await persistSlideshow(videoId, slides.images);
+      return { bytes: 0, slideshow: true };
+    }
     await db.video.update({ where: { id: videoId }, data: { mediaStatus: 'failed' } }).catch(() => {});
     throw err;
   } finally {

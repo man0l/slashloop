@@ -86,6 +86,18 @@ export interface ScraperAdapter {
   downloadVideo(opts: DownloadOptions): Promise<DownloadResult>;
 }
 
+/** Photo carousel — no MP4, but slide URLs can be previewed. */
+export class SlideshowPostError extends Error {
+  constructor(public readonly images: string[]) {
+    super(
+      images.length
+        ? `TikTok post is a photo/slideshow (${images.length} slides, no MP4)`
+        : 'TikTok post is a photo/slideshow (no MP4) — cannot fetch a video file',
+    );
+    this.name = 'SlideshowPostError';
+  }
+}
+
 /** Thrown when the selected provider cannot serve the request at all. */
 export class ScraperUnavailableError extends Error {
   constructor(public readonly provider: string, reason: string) {

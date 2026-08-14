@@ -29,6 +29,12 @@ describe('classifyFetchError', () => {
     expect(classifyFetchError('No video CDN URL in Apify response (video may be deleted, restricted, or download failed)')?.code).toBe('video_unavailable');
   });
 
+  test('photo slideshow -> video_unavailable with a clear message', () => {
+    const info = classifyFetchError('TikTok post is a photo/slideshow (no MP4) — cannot fetch a video file');
+    expect(info?.code).toBe('video_unavailable');
+    expect(info?.message.toLowerCase()).toContain('slideshow');
+  });
+
   test('CDN download failed -> apify_cdn_failed', () => {
     expect(classifyFetchError('TikTok CDN download failed (403): nope')?.code).toBe('apify_cdn_failed');
   });

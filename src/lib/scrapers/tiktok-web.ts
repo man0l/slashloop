@@ -350,12 +350,58 @@ export function extractRehydrationJson(html: string): any | null {
   return extractJsonAfterMarker(html, REHYDRATION_MARKER);
 }
 
-/** Playable `video` object from a watch-page rehydration blob. */
-export function videoFromWatchHtml(html: string): any | null {
+/** Full itemStruct from a watch-page rehydration blob. */
+export function itemStructFromWatchHtml(html: string): any | null {
   if (!html) return null;
   const data = extractRehydrationJson(html);
-  const video = data?.__DEFAULT_SCOPE__?.['webapp.video-detail']?.itemInfo?.itemStruct?.video;
+  const struct = data?.__DEFAULT_SCOPE__?.['webapp.video-detail']?.itemInfo?.itemStruct;
+  return struct && typeof struct === 'object' ? struct : null;
+}
+
+/** Playable `video` object from a watch-page rehydration blob. */
+export function videoFromWatchHtml(html: string): any | null {
+  const video = itemStructFromWatchHtml(html)?.video;
   return video && typeof video === 'object' ? video : null;
+}
+
+/** HTTP URLs of a TikTok photo/slideshow, in display order. */
+export function extractSlideshowImages(struct: any): string[] {
+  const post = struct?.imagePost;
+  if (!post || typeof post !== 'object') return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const take = (u: unknown) => {
+    if (typeof u === 'string' && u.startsWith('http') && !seen.has(u)) {
+      seen.add(u);
+      out.push(u);
+    }
+  };
+  const walk = (node: unknown): void => {
+    if (node == null) return;
+    if (typeof node === 'string') { take(node); return; }
+    if (Array.isArray(node)) { for (const n of node) walk(n); return; }
+    if (typeof node !== 'object') return;
+    const o = node as Record<string, unknown>;
+    if (Array.isArray(o.urlList)) o.urlList.forEach(take);
+    if (Array.isArray(o.UrlList)) o.UrlList.forEach(take);
+    if (o.imageURL) walk(o.imageURL);
+    if (o.imageUrl) walk(o.imageUrl);
+    if (o.displayImage) walk(o.displayImage);
+    if (Array.isArray(o.images)) walk(o.images);
+  };
+  walk(post.images ?? post);
+  return out;
+}
+
+export function slideshowImagesFromRaw(rawJson: string | null | undefined): string[] {
+  if (!rawJson) return [];
+  try {
+    const raw = JSON.parse(rawJson) as { slideshowImages?: unknown };
+    if (!Array.isArray(raw.slideshowImages)) return [];
+    return raw.slideshowImages.filter((u): u is string => typeof u === 'string' && u.startsWith('http'));
+  } catch {
+    return [];
+  }
 }
 
 export function extractFrontityJson(html: string): any | null {

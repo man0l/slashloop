@@ -44,6 +44,8 @@ export interface GalleryCard {
   analyzedAt: number | null;
   /** Signed URL for the stored MP4, null when nothing is stored (or it expired). */
   mediaUrl: string | null;
+  /** Photo-carousel URLs when the TikTok is a slideshow (no MP4). */
+  slideshowImages: string[];
   /** Why this video couldn't be scraped by the fetch worker (Apify etc.), when
    *  it has no stored video — lets the card show an error icon + tooltip. */
   fetchError: { code: string; message: string } | null;

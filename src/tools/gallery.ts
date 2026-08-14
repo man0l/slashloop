@@ -18,6 +18,7 @@ import { registerAppTool, registerAppResource, RESOURCE_MIME_TYPE } from '@model
 import { db } from '../db.js';
 import { requireWorkspace, currentUserId } from '../context.js';
 import { resolveThumbUrl, signedMediaUrl } from '../lib/media.js';
+import { slideshowImagesFromRaw } from '../lib/scrapers/tiktok-web.js';
 import { latestFetchErrors } from '../lib/jobs.js';
 import { signGalleryUrl, ttlHumanized } from '../lib/gallery-link.js';
 import { withNextSteps, analyzeCostLabel } from '../lib/next-steps.js';
@@ -239,6 +240,7 @@ export async function buildCards(
       } catch { /* a malformed analysis costs its key moments, nothing else */ }
     }
 
+    const slideshowImages = slideshowImagesFromRaw(v.rawJson);
     return {
       id: v.id,
       index: i + 1,
@@ -256,10 +258,13 @@ export async function buildCards(
       analyzedBy: analyzedByKeyOf(v.analyses[0]?.backend),
       analyzedAt: v.analyses[0] ? v.analyses[0].createdAt.getTime() : null,
       mediaUrl: media[i]!.url,
+      slideshowImages,
       keyMoments,
-      // Only show a scrape error when there is no stored video to watch — a
-      // video that eventually got stored didn't "fail to scrape".
-      fetchError: media[i]!.url ? null : (fetchErrors[v.id] ?? null),
+      // Only show a scrape error when there is no stored video or slideshow
+      // to watch — a video that eventually got stored didn't "fail to scrape".
+      fetchError: (media[i]!.url || slideshowImages.length)
+        ? null
+        : (fetchErrors[v.id] ?? null),
     };
   });
 

@@ -12,6 +12,7 @@ import type { AnalysisResult } from '../analysis/types.js';
 import { loadAnalysisConfig } from '../analysis/config.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from './credits.js';
 import { resolveThumbUrl, signedMediaUrl } from './media.js';
+import { slideshowImagesFromRaw } from './scrapers/tiktok-web.js';
 import { enqueueAnalyzeJob, enqueueFetchJob, dispatchWorker, latestReportingJobForVideo, type MediaJobRow } from './jobs.js';
 import { classifyGeminiError, errorCodeFor, parseJobLastError, friendlyGeminiMessage, type GeminiErrorCode } from './gemini-errors.js';
 
@@ -110,6 +111,8 @@ export interface VideoDetailForWorkspace {
   thumbUrl: string | null;
   /** Signed playback URL — only set once the video is actually stored (see media-storage-plan.md). null until then. */
   mediaUrl: string | null;
+  /** Photo-carousel URLs when the TikTok is a slideshow (no MP4). */
+  slideshowImages: string[];
   creatorHandle: string;
   caption: string;
   views: number;
@@ -155,6 +158,7 @@ export async function getVideoDetailForWorkspace(workspace: Workspace, videoId: 
     id: video.id,
     thumbUrl: resolveThumbUrl(video),
     mediaUrl: media.url,
+    slideshowImages: slideshowImagesFromRaw(video.rawJson),
     creatorHandle: video.creatorHandle,
     caption: video.caption,
     views: video.views,

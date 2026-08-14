@@ -16,7 +16,7 @@ import {
   ScraperUnavailableError,
 } from './index.js';
 import { extractHandle, extractVideoId, listPlayableVariants, pickSmallestVariant, resolvePlayableVideo } from './proxy-adapter.js';
-import { videoFromWatchHtml } from './tiktok-web.js';
+import { extractSlideshowImages, videoFromWatchHtml } from './tiktok-web.js';
 import { parseProxyUrl, proxyFetch, resetDispatcher, withStickySession } from './proxy-http.js';
 import {
   createTimeFromItemId,
@@ -352,6 +352,44 @@ describe('proxy adapter helpers', () => {
     expect(urls).toEqual(['https://www.tiktok.com/@mr.paidsocial/video/7672558938923076877']);
   });
 
+  test('resolvePlayableVideo rejects a photo/slideshow post', async () => {
+    const payload = {
+      __DEFAULT_SCOPE__: {
+        'webapp.video-detail': {
+          itemInfo: {
+            itemStruct: {
+              imagePost: { images: [{ imageURL: { urlList: ['https://cdn.example/1.jpg'] } }] },
+              video: { playAddr: '', downloadAddr: '', duration: 0 },
+            },
+          },
+        },
+      },
+    };
+    const html = `<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">${JSON.stringify(payload)}</script>`;
+    const http: TikTokHttp = {
+      async getJson() { return { json: null, status: 200, ok: true, text: '', bytes: 0 }; },
+      async getText() {
+        return { json: null, status: 200, ok: true, text: html, bytes: html.length };
+      },
+    };
+    await expect(resolvePlayableVideo(
+      'https://www.tiktok.com/@emirailab/video/7656450385845996830',
+      '7656450385845996830',
+      http,
+    )).rejects.toMatchObject({ name: 'SlideshowPostError', images: ['https://cdn.example/1.jpg'] });
+  });
+
+  test('extractSlideshowImages walks imageURL.urlList', () => {
+    expect(extractSlideshowImages({
+      imagePost: {
+        images: [
+          { imageURL: { urlList: ['https://cdn.example/a.jpg'] } },
+          { imageURL: { urlList: ['https://cdn.example/b.jpg'] } },
+        ],
+      },
+    })).toEqual(['https://cdn.example/a.jpg', 'https://cdn.example/b.jpg']);
+  });
+
   test('pickSmallestVariant takes the cheapest declared rung', () => {
     const pick = pickSmallestVariant({
       bitrateInfo: [
@@ -368,6 +406,10 @@ describe('proxy adapter helpers', () => {
       url: 'https://cdn.example/only.mp4',
       label: 'playAddr',
     });
+    expect(pickSmallestVariant({ playAddr: { UrlList: ['https://cdn.example/obj.mp4'] } })).toMatchObject({
+      url: 'https://cdn.example/obj.mp4',
+    });
+    expect(pickSmallestVariant({ playAddr: '' })).toBeNull();
     expect(pickSmallestVariant({})).toBeNull();
   });
 

@@ -36,12 +36,15 @@ import { createImpersonatedHttp } from './impersonate-http.js';
 import {
   dedupeItems, estimateScrapeBytes, fetchCreatorPosts, fetchEmbedItems,
   fetchHashtagPosts, fetchSearchPosts, hydrateItemStats, normalizeWebItems,
-  resolveChallengeId, resolveCreator, unsignedHttp, videoFromWatchHtml,
-  withTikTokHttp,
+  extractSlideshowImages, resolveChallengeId, resolveCreator, unsignedHttp,
+  itemStructFromWatchHtml, withTikTokHttp,
   type TikTokHttp,
 } from './tiktok-web.js';
 import { splitSpend } from '../apify.js';
-import type { DownloadOptions, DownloadResult, ScrapeOptions, ScrapeResult, ScraperAdapter } from './types.js';
+import {
+  SlideshowPostError,
+  type DownloadOptions, type DownloadResult, type ScrapeOptions, type ScrapeResult, type ScraperAdapter,
+} from './types.js';
 
 export const PROXY_PROVIDER_NAME = 'proxy';
 
@@ -308,13 +311,19 @@ export async function resolvePlayableVideo(
     Accept: 'text/html,application/xhtml+xml',
     Referer: referer,
   });
-  const video = page.ok ? videoFromWatchHtml(page.text) : null;
-  if (video) return video;
+  const struct = page.ok ? itemStructFromWatchHtml(page.text) : null;
+  if (struct?.imagePost) {
+    throw new SlideshowPostError(extractSlideshowImages(struct));
+  }
+  const video = struct?.video && typeof struct.video === 'object' ? struct.video : null;
+  if (video && listPlayableVariants(video).length > 0) return video;
 
   const rehydrate = Boolean(page.text?.includes('__UNIVERSAL_DATA_FOR_REHYDRATION__'));
   throw new Error(
-    `TikTok watch page had no playable video (http=${page.status}, rehydrate=${rehydrate}) `
-    + '— the post may be deleted, private, or region-blocked',
+    video
+      ? 'TikTok returned no playable URL for this video'
+      : `TikTok watch page had no playable video (http=${page.status}, rehydrate=${rehydrate}) `
+        + '— the post may be deleted, private, or region-blocked',
   );
 }
 
@@ -342,11 +351,14 @@ export function listPlayableVariants(video: any): VideoVariant[] {
     ladder.push(v);
   };
 
-  const bitrateInfo = Array.isArray(video?.bitrateInfo) ? video.bitrateInfo : [];
+  const bitrateInfo = [
+    ...(Array.isArray(video?.bitrateInfo) ? video.bitrateInfo : []),
+    ...(Array.isArray(video?.bitRate) ? video.bitRate : []),
+  ];
   for (const rung of bitrateInfo) {
-    const url = firstUrl(rung?.PlayAddr?.UrlList ?? rung?.playAddr?.urlList);
+    const url = firstUrl(rung?.PlayAddr ?? rung?.playAddr ?? rung?.play_addr);
     if (!url) continue;
-    const size = Number(rung?.PlayAddr?.DataSize ?? rung?.DataSize ?? rung?.dataSize);
+    const size = Number(rung?.PlayAddr?.DataSize ?? rung?.playAddr?.DataSize ?? rung?.DataSize ?? rung?.dataSize);
     push({
       url,
       declaredBytes: Number.isFinite(size) && size > 0 ? size : null,
@@ -354,7 +366,10 @@ export function listPlayableVariants(video: any): VideoVariant[] {
     });
   }
 
-  const fallback = firstUrl(video?.playAddr) ?? firstUrl(video?.downloadAddr);
+  const fallback = firstUrl(video?.playAddr)
+    ?? firstUrl(video?.PlayAddr)
+    ?? firstUrl(video?.downloadAddr)
+    ?? firstUrl(video?.DownloadAddr);
   if (fallback) push({ url: fallback, declaredBytes: null, label: 'playAddr' });
 
   return ladder.sort((a, b) => {
@@ -370,9 +385,17 @@ export function pickSmallestVariant(video: any): VideoVariant | null {
 }
 
 function firstUrl(v: unknown): string | null {
-  if (typeof v === 'string' && v.startsWith('http')) return v;
+  if (typeof v === 'string') return v.startsWith('http') ? v : null;
   if (Array.isArray(v)) {
-    for (const x of v) if (typeof x === 'string' && x.startsWith('http')) return x;
+    for (const x of v) {
+      const u = firstUrl(x);
+      if (u) return u;
+    }
+    return null;
+  }
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    return firstUrl(o.UrlList ?? o.urlList ?? o.Url ?? o.url);
   }
   return null;
 }
