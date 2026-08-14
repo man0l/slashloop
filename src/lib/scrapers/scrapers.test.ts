@@ -648,4 +648,70 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
     expect(result.items.some(v => v.externalId === '7670597177768545566')).toBe(true);
     expect(result.items[0]?.externalId).toBe('7670597177768545566');
   });
+
+  test('dry limit=2 still asks the latest hashtag feed, not only embed popular', async () => {
+    clearLookupCaches();
+    const now = Math.floor(Date.now() / 1000);
+    const embedHtml = `<script id="__FRONTITY_CONNECT_STATE__">${JSON.stringify({
+      source: {
+        data: {
+          '/embed/tag/mewing': {
+            embedInfo: { id: '1362460', videoCount: 9 },
+            videoList: [
+              {
+                id: '7396100831218633989',
+                desc: 'old viral a',
+                coverUrl: 'https://cdn.example/c.jpg',
+                playCount: 62_000_000,
+                authorUniqueId: 'old',
+              },
+              {
+                id: '7396100831218633990',
+                desc: 'old viral b',
+                coverUrl: 'https://cdn.example/d.jpg',
+                playCount: 40_000_000,
+                authorUniqueId: 'old2',
+              },
+            ],
+          },
+        },
+      },
+    })}</script>`;
+    let itemListCalled = false;
+    const http: TikTokHttp = {
+      async getJson(url) {
+        if (url.includes('/api/challenge/item_list/')) {
+          itemListCalled = true;
+          return {
+            json: {
+              itemList: [{
+                id: '7670597177768545566',
+                desc: 'fresh',
+                createTime: now,
+                author: { uniqueId: 'onlysonazone' },
+                stats: { playCount: 1_800_000, diggCount: 10 },
+                video: { cover: 'https://cdn.example/n.jpg' },
+              }],
+              hasMore: false,
+              cursor: '1',
+            },
+            status: 200, ok: true, text: '{}', bytes: 20,
+          };
+        }
+        return { json: null, status: 200, ok: true, text: '', bytes: 0 };
+      },
+      async getText() {
+        return { json: null, status: 200, ok: true, text: embedHtml, bytes: embedHtml.length };
+      },
+    };
+    const result = await runTikTokProxyScrape({
+      workspaceId: 'ws-test',
+      platform: 'tiktok',
+      sourceType: 'hashtag',
+      query: 'mewing',
+      limit: 2,
+    }, http);
+    expect(itemListCalled).toBe(true);
+    expect(result.items[0]?.externalId).toBe('7670597177768545566');
+  });
 });

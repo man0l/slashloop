@@ -88,7 +88,10 @@ export async function runTikTokProxyScrape(
           notices: [`Could not resolve TikTok profile "${opts.query}" — it may not exist, be private, or be region-blocked`],
         };
       }
-    } else if (opts.sourceType === 'hashtag' && raw.length < req.limit) {
+    } else if (opts.sourceType === 'hashtag') {
+      // Always hit the latest item_list. Embed is a popular/evergreen
+      // playlist — with a dry limit of 2 it used to fill the page and skip
+      // this call, so recency dropped both results as >3 months old.
       const challengeId = await resolveChallengeId(opts.query);
       if (challengeId) {
         const extra = await fetchHashtagPosts(opts.query, challengeId, req);
@@ -101,7 +104,7 @@ export async function runTikTokProxyScrape(
           notices: [`Could not resolve TikTok hashtag "${opts.query}" — it may not exist or has no posts`],
         };
       }
-    } else if (opts.sourceType === 'keyword' && raw.length < req.limit) {
+    } else if (opts.sourceType === 'keyword') {
       const asTag = await resolveChallengeId(opts.query);
       if (asTag) {
         const tagged = await fetchHashtagPosts(opts.query, asTag, req);
