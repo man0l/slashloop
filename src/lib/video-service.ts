@@ -11,8 +11,7 @@ import { analyzeVideoWithDownload } from '../analysis/index.js';
 import type { AnalysisResult } from '../analysis/types.js';
 import { loadAnalysisConfig } from '../analysis/config.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from './credits.js';
-import { resolveThumbUrl, signedMediaUrl } from './media.js';
-import { slideshowImagesFromRaw } from './scrapers/tiktok-web.js';
+import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls } from './media.js';
 import { enqueueAnalyzeJob, enqueueFetchJob, dispatchWorker, latestReportingJobForVideo, type MediaJobRow } from './jobs.js';
 import { classifyGeminiError, errorCodeFor, parseJobLastError, friendlyGeminiMessage, type GeminiErrorCode } from './gemini-errors.js';
 
@@ -158,7 +157,7 @@ export async function getVideoDetailForWorkspace(workspace: Workspace, videoId: 
     id: video.id,
     thumbUrl: resolveThumbUrl(video),
     mediaUrl: media.url,
-    slideshowImages: slideshowImagesFromRaw(video.rawJson),
+    slideshowImages: resolveSlideshowUrls(video.rawJson),
     creatorHandle: video.creatorHandle,
     caption: video.caption,
     views: video.views,

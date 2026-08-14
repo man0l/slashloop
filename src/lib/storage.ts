@@ -82,6 +82,11 @@ export function mediaPath(workspaceId: string, videoId: string): string {
   return `${workspaceId}/${videoId}.mp4`;
 }
 
+/** Public thumb-bucket key for one photo-carousel slide. */
+export function slideshowPath(workspaceId: string, videoId: string, index: number): string {
+  return `${workspaceId}/${videoId}/slides/${String(index).padStart(2, '0')}.jpg`;
+}
+
 // ---- R2 / S3 client -------------------------------------------------------
 
 let r2Client: S3Client | null = null;

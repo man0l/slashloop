@@ -13,8 +13,9 @@
 import { db } from '../db.js';
 import {
   isStorageEnabled, putObject, publicUrl, signUrl, signedUrlTtlSeconds,
-  thumbBucket, mediaBucket, thumbPath, mediaPath,
+  thumbBucket, mediaBucket, thumbPath, mediaPath, slideshowPath,
 } from './storage.js';
+import { slideshowImagesFromRaw, slideshowKeysFromRaw } from './scrapers/tiktok-web.js';
 
 /**
  * Only needed for the SOURCE-CDN fallback. TikTok's CDN 403s bare requests, so
@@ -262,17 +263,50 @@ export async function ingestVideoFile(
  * returned no result" and hid whether it was a spend cap, an Apify actor
  * failure, a TikTok CDN refusal, or a deleted video.
  */
-export async function persistSlideshow(videoId: string, images: string[]): Promise<void> {
+export function resolveSlideshowUrls(rawJson: string | null | undefined): string[] {
+  const keys = slideshowKeysFromRaw(rawJson);
+  if (keys.length && isStorageEnabled()) {
+    try {
+      return keys.map(k => publicUrl(thumbBucket(), k));
+    } catch {
+      // R2 public base missing — fall through to any leftover CDN URLs.
+    }
+  }
+  return slideshowImagesFromRaw(rawJson);
+}
+
+export async function persistSlideshow(
+  workspaceId: string,
+  videoId: string,
+  slides: Array<{ buffer: Buffer; contentType: string }>,
+): Promise<string[]> {
+  if (!isStorageEnabled()) {
+    throw new Error('media storage disabled — cannot store slideshow slides');
+  }
+  const keys: string[] = [];
+  for (let i = 0; i < slides.length; i++) {
+    const slide = slides[i]!;
+    const path = slideshowPath(workspaceId, videoId, i);
+    await putObject({
+      bucket: thumbBucket(),
+      path,
+      body: new Uint8Array(slide.buffer),
+      contentType: slide.contentType || 'image/jpeg',
+    });
+    keys.push(path);
+  }
   const row = await db.video.findUnique({ where: { id: videoId }, select: { rawJson: true } });
   let raw: Record<string, unknown> = {};
   try { raw = JSON.parse(row?.rawJson || '{}') as Record<string, unknown>; } catch { raw = {}; }
   raw.postKind = 'slideshow';
-  raw.slideshowImages = images;
+  raw.slideshowKeys = keys;
+  delete raw.slideshowImages;
   await db.video.update({
     where: { id: videoId },
     data: { rawJson: JSON.stringify(raw), mediaStatus: 'slideshow' },
   });
-  console.log(`[media] stored slideshow (${images.length} slides) for ${videoId}`);
+  console.log(`[media] stored slideshow (${keys.length} slides) in R2 for ${videoId}`);
+  return keys;
 }
 
 export async function downloadAndStoreVideo(
@@ -286,13 +320,18 @@ export async function downloadAndStoreVideo(
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
 
+  if (!isStorageEnabled()) {
+    throw new Error('media storage disabled — cannot store the video (STORAGE_MEDIA_BUCKET not configured)');
+  }
+
   const tmpDir = mkdtempSync(join(tmpdir(), 'slashloop-fetch-'));
   const filePath = join(tmpDir, `video_${videoId.slice(0, 8)}.mp4`);
 
   try {
     const dl = await downloadVideo({ workspaceId, videoUrl, outputPath: filePath, platform: 'tiktok' });
-    if (!isStorageEnabled()) {
-      throw new Error('media storage disabled — cannot store the video (STORAGE_MEDIA_BUCKET not configured)');
+    if (dl.slideshow?.length) {
+      await persistSlideshow(workspaceId, videoId, dl.slideshow);
+      return { bytes: dl.sizeBytes, slideshow: true };
     }
     const { statSync } = await import('node:fs');
     if (statSync(filePath).size < 1024) throw new Error('downloaded file too small');
@@ -302,11 +341,6 @@ export async function downloadAndStoreVideo(
 
     return { bytes: dl.sizeBytes };
   } catch (err) {
-    const slides = (err as { name?: string; images?: string[] } | null);
-    if (slides?.name === 'SlideshowPostError' && Array.isArray(slides.images) && slides.images.length > 0) {
-      await persistSlideshow(videoId, slides.images);
-      return { bytes: 0, slideshow: true };
-    }
     await db.video.update({ where: { id: videoId }, data: { mediaStatus: 'failed' } }).catch(() => {});
     throw err;
   } finally {

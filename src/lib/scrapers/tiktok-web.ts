@@ -393,6 +393,17 @@ export function extractSlideshowImages(struct: any): string[] {
   return out;
 }
 
+export function slideshowKeysFromRaw(rawJson: string | null | undefined): string[] {
+  if (!rawJson) return [];
+  try {
+    const raw = JSON.parse(rawJson) as { slideshowKeys?: unknown };
+    if (!Array.isArray(raw.slideshowKeys)) return [];
+    return raw.slideshowKeys.filter((k): k is string => typeof k === 'string' && k.length > 0);
+  } catch {
+    return [];
+  }
+}
+
 export function slideshowImagesFromRaw(rawJson: string | null | undefined): string[] {
   if (!rawJson) return [];
   try {

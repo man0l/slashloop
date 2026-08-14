@@ -62,6 +62,11 @@ export interface DownloadOptions {
   outputPath: string;
 }
 
+export interface DownloadedSlide {
+  buffer: Buffer;
+  contentType: string;
+}
+
 export interface DownloadResult {
   costCents: number;
   sizeBytes: number;
@@ -70,6 +75,8 @@ export interface DownloadResult {
   actorRunId: string | null;
   provider?: string;
   bytesUsed?: number;
+  /** Photo-carousel bytes, downloaded via the same Impit session. */
+  slideshow?: DownloadedSlide[];
 }
 
 export interface ScraperAdapter {

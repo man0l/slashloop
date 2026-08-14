@@ -16,7 +16,8 @@ import {
   ScraperUnavailableError,
 } from './index.js';
 import { extractHandle, extractVideoId, listPlayableVariants, pickSmallestVariant, resolvePlayableVideo } from './proxy-adapter.js';
-import { extractSlideshowImages, videoFromWatchHtml } from './tiktok-web.js';
+import { extractSlideshowImages, slideshowKeysFromRaw, videoFromWatchHtml } from './tiktok-web.js';
+import { slideshowPath } from '../storage.js';
 import { parseProxyUrl, proxyFetch, resetDispatcher, withStickySession } from './proxy-http.js';
 import {
   createTimeFromItemId,
@@ -388,6 +389,14 @@ describe('proxy adapter helpers', () => {
         ],
       },
     })).toEqual(['https://cdn.example/a.jpg', 'https://cdn.example/b.jpg']);
+  });
+
+  test('slideshowKeysFromRaw and slideshowPath are the R2 layout', () => {
+    expect(slideshowPath('ws-1', 'vid-1', 3)).toBe('ws-1/vid-1/slides/03.jpg');
+    expect(slideshowKeysFromRaw(JSON.stringify({
+      postKind: 'slideshow',
+      slideshowKeys: ['ws-1/vid-1/slides/00.jpg', 'ws-1/vid-1/slides/01.jpg'],
+    }))).toEqual(['ws-1/vid-1/slides/00.jpg', 'ws-1/vid-1/slides/01.jpg']);
   });
 
   test('pickSmallestVariant takes the cheapest declared rung', () => {

@@ -244,17 +244,37 @@ export const proxyAdapter: ScraperAdapter = {
     await assertProxyBudget(opts.workspaceId, maxVideoBytes());
 
     const http = (await createImpersonatedHttp()) ?? unsignedHttp;
-    const video = await resolvePlayableVideo(opts.videoUrl, itemId, http);
-
-    const variants = listPlayableVariants(video);
-    if (!variants.length) throw new Error('TikTok returned no playable URL for this video');
-
-    const ceiling = maxVideoBytes();
     const handle = extractHandle(opts.videoUrl);
     const watchUrl = handle
       ? `https://www.tiktok.com/@${handle}/video/${itemId}`
       : opts.videoUrl;
 
+    let video: any;
+    try {
+      video = await resolvePlayableVideo(opts.videoUrl, itemId, http);
+    } catch (err) {
+      if (err instanceof SlideshowPostError && err.images.length > 0) {
+        const slides = await downloadSlideshowSlides(err.images, watchUrl, http);
+        const sizeBytes = slides.reduce((n, s) => n + s.buffer.length, 0);
+        const costCents = await recordTrafficBytes(opts.workspaceId, sizeBytes, opts.videoUrl);
+        console.log(`[proxy] downloaded ${slides.length} slideshow slides (${fmtBytes(sizeBytes)})`);
+        return {
+          costCents,
+          sizeBytes,
+          cdnUrl: err.images[0] ?? '',
+          actorRunId: null,
+          provider: PROXY_PROVIDER_NAME,
+          bytesUsed: sizeBytes,
+          slideshow: slides,
+        };
+      }
+      throw err;
+    }
+
+    const variants = listPlayableVariants(video);
+    if (!variants.length) throw new Error('TikTok returned no playable URL for this video');
+
+    const ceiling = maxVideoBytes();
     const { pick, buffer } = await downloadFirstWorking(variants, watchUrl, ceiling, http);
 
     if (buffer.length < 1024) {
@@ -398,6 +418,35 @@ function firstUrl(v: unknown): string | null {
     return firstUrl(o.UrlList ?? o.urlList ?? o.Url ?? o.url);
   }
   return null;
+}
+
+const MAX_SLIDE_BYTES = 5 * 1024 * 1024;
+const MAX_SLIDES = 20;
+
+async function downloadSlideshowSlides(
+  urls: string[],
+  referer: string,
+  http: TikTokHttp,
+): Promise<Array<{ buffer: Buffer; contentType: string }>> {
+  const getter = http.getBuffer;
+  if (!getter) throw new Error('TikTok HTTP client cannot fetch binary');
+  const slides: Array<{ buffer: Buffer; contentType: string }> = [];
+  for (const url of urls.slice(0, MAX_SLIDES)) {
+    const result = await getter(url, {
+      Referer: referer,
+      Origin: 'https://www.tiktok.com',
+      Accept: 'image/avif,image/webp,image/apng,image/*,*/*',
+    }, MAX_SLIDE_BYTES);
+    if (!result.ok) {
+      throw new Error(`TikTok slideshow image failed (${result.status}) via proxy`);
+    }
+    if (result.buffer.length < 512) {
+      throw new Error(`Slideshow image too small (${result.buffer.length} bytes)`);
+    }
+    slides.push({ buffer: result.buffer, contentType: 'image/jpeg' });
+  }
+  if (!slides.length) throw new Error('TikTok slideshow had no downloadable images');
+  return slides;
 }
 
 async function downloadBinary(

@@ -17,8 +17,7 @@ import type { Prisma } from '@prisma/client';
 import { registerAppTool, registerAppResource, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { db } from '../db.js';
 import { requireWorkspace, currentUserId } from '../context.js';
-import { resolveThumbUrl, signedMediaUrl } from '../lib/media.js';
-import { slideshowImagesFromRaw } from '../lib/scrapers/tiktok-web.js';
+import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls } from '../lib/media.js';
 import { latestFetchErrors } from '../lib/jobs.js';
 import { signGalleryUrl, ttlHumanized } from '../lib/gallery-link.js';
 import { withNextSteps, analyzeCostLabel } from '../lib/next-steps.js';
@@ -240,7 +239,7 @@ export async function buildCards(
       } catch { /* a malformed analysis costs its key moments, nothing else */ }
     }
 
-    const slideshowImages = slideshowImagesFromRaw(v.rawJson);
+    const slideshowImages = resolveSlideshowUrls(v.rawJson);
     return {
       id: v.id,
       index: i + 1,
