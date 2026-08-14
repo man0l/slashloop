@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 
 import { meterBytes } from './bandwidth.js';
-import { proxyConfig, withStickySession } from './proxy-http.js';
+import { proxyConfig } from './proxy-http.js';
 import { signTikTokUrl } from './sign.js';
 import { isWafChallenge, solveWafCookies, type WafCookie } from './waf.js';
 import type { TikTokHttp, TikTokHttpBufferResult, TikTokHttpResult } from './tiktok-web.js';
@@ -52,6 +52,30 @@ interface ImpitLike {
   fetch(url: string, init?: RequestInit): Promise<Response>;
 }
 
+function isConnectFail(err: unknown): boolean {
+  return /CONNECT tunnel/i.test(String((err as Error)?.message ?? err));
+}
+
+/** Same Impit client; retry only a flaky CONNECT, never a different provider. */
+async function fetchThrough(
+  client: ImpitLike,
+  url: string,
+  headers: Record<string, string>,
+): Promise<Response> {
+  let last: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await client.fetch(url, { headers, redirect: 'follow' });
+    } catch (err) {
+      last = err;
+      if (!isConnectFail(err) || attempt === 2) throw err;
+      console.warn(`[proxy:impit] CONNECT failed, retry ${attempt + 1}/2: ${(err as Error).message}`);
+      await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
+    }
+  }
+  throw last;
+}
+
 export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
   const cfg = proxyConfig();
   if (!cfg) return null;
@@ -64,17 +88,17 @@ export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
     return null;
   }
 
-  // Pin one residential IP for the whole client. TikTok CDN tokens are
-  // bound to the exit that requested the watch page — a rotate between
-  // HTML and MP4 is a 403.
-  const sticky = withStickySession(cfg);
+  // One Impit client for HTML + MP4. Do not add Proxy-Cheap `_session-`:
+  // `password_country-US_session-…` makes the gateway return CONNECT 500
+  // (probed 2026-08-14). The client still reuses its CONNECT tunnel, so
+  // the watch page and the CDN download share an exit without the suffix.
   const client = new Impit({
     browser: 'chrome',
-    proxyUrl: sticky.url,
+    proxyUrl: cfg.url,
     ignoreTlsErrors: true,
   });
   const jar = new CookieJar();
-  console.log('[proxy:impit] chrome TLS via sticky residential proxy');
+  console.log('[proxy:impit] chrome TLS via residential proxy');
   try {
     const warm = await client.fetch('https://www.tiktok.com/', {
       headers: { 'User-Agent': CHROME_UA, Accept: 'text/html' },
@@ -95,7 +119,7 @@ export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
     if (cookie) hdrs.Cookie = cookie;
 
     const signed = signTikTokUrl(url, hdrs['User-Agent'] ?? CHROME_UA);
-    const res = await client.fetch(signed, { headers: hdrs, redirect: 'follow' });
+    const res = await fetchThrough(client, signed, hdrs);
     jar.absorb(res.headers);
     const text = await res.text();
     const bytes = Math.min(text.length, maxBytes);
@@ -136,7 +160,7 @@ export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
     if (cookie) hdrs.Cookie = cookie;
     // CDN URLs are not /api/ — signTikTokUrl is a no-op, but skip it anyway
     // so we never mutate a signed playAddr query string.
-    const res = await client.fetch(url, { headers: hdrs, redirect: 'follow' });
+    const res = await fetchThrough(client, url, hdrs);
     jar.absorb(res.headers);
     const raw = Buffer.from(await res.arrayBuffer());
     const truncated = raw.length > maxBytes;
