@@ -253,3 +253,26 @@ Stage Summary:
 - Two backends remain: gemini-native (default, video upload) and gemini-text (fallback, text-only). Both use the same Gemini model. Both apply the 50% batch discount in run_auto_analyze.
 - Cost profile is now even cheaper: gemini-text on Flash-Lite is $0.001 interactive / $0.0005 batch — half of what GLM frames cost ($0.01 / no batch discount).
 - All tool inventories, cost tables, Prisma defaults, env examples, and docs reflect the Gemini-only reality.
+
+---
+Task ID: 7
+Agent: main
+Task: Keyword-driven discover pipeline (MCP `discover` + REST + site Discover screen)
+
+Work Log:
+- The old discover surface was `discover_search`, a deprecated alias of `search_library` (library-only search, no network). Removed the alias; `search_library` unchanged.
+- New src/lib/discovery.ts, the shared pipeline, following suggestions.ts conventions (fast/slow split, credit pre-auth + settle/refund, nothing persisted until the user tracks):
+  * expandDiscoverySeeds(workspace, keywords) — one Gemini call expands the niche into seed hashtags/keywords (3 credits, skipped+free when user inputs fill all slots). The LLM never proposes creators. Inputs classified by prefix (@creator/#hashtag/keyword), deduped against tracked sources + SuggestionDismissal, capped at MAX_SEEDS=6.
+  * mineDiscoverSeed(workspace, seed) — one real probe scrape (5 videos) per call: spend-cap checks, ceil(1.5x5)=8 credit pre-auth, mines hashtags from captions (regex, per-video counts, avg views) and creators grouped by handle (>=2 appearances, median views, followers), settles/refunds per actual videos returned.
+  * aggregateDiscovery(mines, excludedKeys) — pure merge/rank helper (hashtags by frequency then avg views; creators by median-of-seed-medians then appearances), unit-tested in src/lib/discovery.test.ts.
+- New MCP tool `discover` (src/tools/discover.ts, registered in src/register-tools.ts): keywords array -> expand -> concurrent mines -> aggregate -> withNextSteps payload (seeds with probe results, deadSeeds, suggestions grouped with evidence strings, credits) + create_source next-steps for top picks.
+- REST (api/sources.ts + vercel.json rewrites, no new function file — 12-function cap): POST /api/sources/discover (action=discover, fast expansion) and POST /api/sources/discover/mine (action=discover-mine, one probe per call so the UI renders progressively — the exact reason suggestions.ts is split). Dismissal reuses POST /api/sources/suggest/dismiss.
+- CREDIT_COSTS.discoverSeeds = 3 added to src/lib/credits.ts.
+- Skills: rewrote .claude/skills/discover/SKILL.md + claude-plugin/skills/discover/SKILL.md (they had diverged; now identical) for the /discover <keywords> flow — call discover, relay verified suggestions, track picks via create_source + refresh_source with cost warnings.
+- Site (slashloop-site): src/lib/discover.js client; new /discover page (src/pages/Discover.jsx) — multi-keyword search bar (comma/newline separated), seed chips that flip as probes land, client-side aggregation mirroring aggregateDiscovery (median calculation matched exactly), suggestion cards in three groups (probed seeds / mined hashtags / mined creators) with evidence lines, Track (createSource + queued first refresh) and dismiss; App.jsx lazy route + Discover nav link before Sources.
+- README tool inventory refreshed to the real 44-tool list (was stale at 32, missing suggest/jobs/schedule/fetch/baselines/gallery/search_library).
+
+Stage Summary:
+- Worst-case cost per discover run: 3 (AI) + 6 seeds x 5 videos x 1.5 = 48 credits; empty/failed probes refunded; nothing persisted until tracked.
+- MCP `discover` and the site Discover screen hit the same service module — behavior cannot drift between surfaces.
+- Verified: bun test (discovery/canonical-query/refresh-policy/llm — 42 pass), tsc typecheck + typecheck:vercel clean, site vitest 34 pass, site vite build clean (Discover chunk 11.1 kB). Full `bun test` suite hangs on unrelated pre-existing tests (live DB/network wait) — not from this change.

@@ -4,6 +4,8 @@
 // PATCH  /api/sources/:id { workspaceId, ... }       — update a source.
 // DELETE /api/sources/:id?workspaceId=...           — delete a source.
 // POST   /api/sources/:id/refresh { workspaceId }   — queue a refresh.
+// POST   /api/sources/discover { keywords[] }       — AI-expand keywords into seed probes (fast).
+// POST   /api/sources/discover/mine { seed }        — probe ONE seed + mine hashtags/creators.
 //
 // One file, not four: the Hobby plan caps a deployment at 12 Serverless
 // Functions (see api/jobs/analyze.ts for the same constraint hitting the job
@@ -21,6 +23,7 @@ import {
   refreshSourceForWorkspace,
 } from '../src/lib/sources-service.js';
 import { seedSourceCandidates, verifySourceCandidate, dismissSuggestion, type SeedCandidate } from '../src/lib/suggestions.js';
+import { expandDiscoverySeeds, mineDiscoverSeed, type DiscoverySeed } from '../src/lib/discovery.js';
 
 export async function OPTIONS(): Promise<Response> {
   return corsPreflight();
@@ -121,6 +124,61 @@ export async function POST(request: Request): Promise<Response> {
         // type completeness, since refreshSourceForWorkspace always queues here.
         return jsonResponse(200, result);
     }
+  }
+
+  if (action === 'discover') {
+    let body: { workspaceId?: string; keywords?: unknown };
+    try {
+      body = (await request.json()) as { workspaceId?: string; keywords?: unknown };
+    } catch {
+      return jsonResponse(400, { error: 'invalid_json' });
+    }
+
+    const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+    if (!auth.ok) return auth.response;
+
+    // Expansion only — fast (one Gemini call), no scraping yet. The caller
+    // (Discover screen) probes each returned seed with its own separate
+    // action=discover-mine call, so results render as they land instead of
+    // the request blocking on the slowest probe (same split as suggest).
+    const keywords = Array.isArray(body.keywords) ? body.keywords.filter((k): k is string => typeof k === 'string' && k.trim() !== '') : [];
+    if (keywords.length === 0) return jsonResponse(400, { error: 'keywords must be a non-empty array of strings' });
+
+    const result = await expandDiscoverySeeds(auth.workspace, keywords);
+    if (!result.ok) {
+      return jsonResponse(422, {
+        error: 'discover_failed',
+        message: result.errors[0] ?? 'Could not expand keywords into seeds.',
+        creditsCharged: result.creditsCharged,
+        creditsRemaining: result.creditsRemaining,
+      });
+    }
+    return jsonResponse(200, result);
+  }
+
+  if (action === 'discover-mine') {
+    let body: { workspaceId?: string } & Partial<DiscoverySeed>;
+    try {
+      body = (await request.json()) as { workspaceId?: string } & Partial<DiscoverySeed>;
+    } catch {
+      return jsonResponse(400, { error: 'invalid_json' });
+    }
+
+    const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+    if (!auth.ok) return auth.response;
+
+    if (!body.sourceType || !SOURCE_TYPES.has(body.sourceType)) {
+      return jsonResponse(400, { error: 'sourceType must be one of creator, keyword, hashtag' });
+    }
+    if (!body.query) return jsonResponse(400, { error: 'query is required' });
+
+    const result = await mineDiscoverSeed(auth.workspace, {
+      sourceType: body.sourceType as DiscoverySeed['sourceType'],
+      query: body.query,
+      rationale: body.rationale ?? '',
+      origin: body.origin === 'input' ? 'input' : 'ai',
+    });
+    return jsonResponse(200, result);
   }
 
   if (action === 'suggest') {

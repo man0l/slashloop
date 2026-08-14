@@ -57,6 +57,10 @@ export const CREDIT_COSTS = {
    *  each candidate against Apify is billed separately, at
    *  refreshSourcePerVideo, per candidate (src/lib/suggestions.ts). */
   suggestSources: 3,
+  /** discover — one Gemini text call to expand the user's keywords into seed
+   *  hashtags/keywords. Probing each seed against TikTok is billed separately,
+   *  at refreshSourcePerVideo, per seed (src/lib/discovery.ts). */
+  discoverSeeds: 3,
 } as const;
 
 export const FREE_TIER_PLAN_CREDITS = 300;

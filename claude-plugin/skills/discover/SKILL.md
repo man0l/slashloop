@@ -1,17 +1,23 @@
 ---
 name: discover
-description: Search already-pulled videos by keyword, creator, or hashtag to find outlier/viral hits. Use to find videos that are already in the database.
-argument-hint: "<query> [platform]"
-allowed-tools: mcp__plugin_slashloop_slashloop__search_library, mcp__plugin_slashloop_slashloop__create_source, mcp__plugin_slashloop_slashloop__refresh_source, mcp__plugin_slashloop_slashloop__list_sources, mcp__plugin_slashloop_slashloop__await_job, mcp__plugin_slashloop_slashloop__get_job_status
+description: Discover trackable TikTok sources (hashtags, creators, keywords) from a few niche keywords or hashtags. Live — probes real TikTok data before suggesting anything.
+argument-hint: "<keywords, #hashtags and/or @handles>"
+allowed-tools: mcp__plugin_slashloop_slashloop__discover, mcp__plugin_slashloop_slashloop__create_source, mcp__plugin_slashloop_slashloop__refresh_source, mcp__plugin_slashloop_slashloop__list_sources, mcp__plugin_slashloop_slashloop__await_job, mcp__plugin_slashloop_slashloop__get_job_status, mcp__plugin_slashloop_slashloop__search_library
 ---
 
-Search pulled videos with the `search_library` MCP tool. Pass the user's query
-($ARGUMENTS) + platform if stated (tiktok | reels | shorts; default tiktok).
+Run the `discover` MCP tool with the user's niche ($ARGUMENTS) split into a
+keywords array — plain terms, #hashtags and @handles all work.
 
-This only filters videos **already in the DB** — it does not hit the live
-network. If results are empty or thin, **do not just tell the user to run more
-commands** — offer to do it inline: call `create_source` for the query, then
-`refresh_source` to pull videos (warn once: live Apify scrape, ~cost), then
-re-run `search_library`. Get the go-ahead once before spending.
+**Warn once before spending**: the AI seed expansion costs 3 credits and each
+seed probe is ~1.5 credits per video sampled (≤ ~45 credits worst case, empty
+probes refunded). Get an explicit go-ahead first.
 
-Summarize the top hits with views and `outlier_score`.
+Relay the results plainly: which seeds came back live (with sample counts),
+which died (`deadSeeds`), then the verified suggestions — mined hashtags
+("seen in N of M sampled videos, avg X views"), creators (median views,
+followers), and the probed seeds themselves. Every suggestion was checked
+against real TikTok data — say so, it's the point.
+
+Ask which ones to track. For each pick: `create_source` (free), then
+`refresh_source` (costs ~1.5 credits/video — confirm separately before the
+first refresh). Nothing is tracked automatically.

@@ -237,16 +237,29 @@ populating the env vars above from a real Stripe account.
 
 ---
 
-## Tool inventory (32 tools)
+## Tool inventory (44 tools)
 
 | Module | Tools |
 |---|---|
-| Sources (6) | list_sources, get_source, create_source, update_source, delete_source, refresh_source |
-| Feed (3) | get_feed, discover_search, get_outlier_summary |
+| Sources (8) | list_sources, get_source, create_source, update_source, delete_source, refresh_source, suggest_sources, dismiss_suggested_source |
+| Discover (1) | discover |
+| Feed (3) | get_feed, search_library, get_outlier_summary |
 | Video (3) | get_video, analyze_video, get_video_transcript |
 | Hooks (3) | list_hooks, extract_hook, generate_hook_variations |
 | Creative (11) | list_boards, get_board, create_board, save_to_board, export_board, list_ideas, create_idea, update_idea_status, create_brief, get_brief, export_brief |
 | Settings (6) | get_usage, get_settings, update_settings, get_refresh_logs, run_auto_analyze, get_apify_spend_status |
+| Gallery (1) | show_gallery |
+| Fetch (1) | fetch_videos |
+| Baselines (2) | deepen_baselines, rescore_sources |
+| Jobs (2) | await_job, get_job_status |
+| Schedule (2) | list_due_sources, refresh_due_sources |
+
+`discover` is the keyword-driven front door: paste a niche (keywords, #hashtags,
+@handles) → AI expands into seed keywords → each seed gets a small real probe
+scrape → hashtags + creators are mined from sampled captions with view
+evidence → pick from verified suggestions to track. The site's Discover screen
+(`/discover`) drives the same pipeline over REST (`POST /api/sources/discover`
++ `/api/sources/discover/mine`).
 
 ---
 

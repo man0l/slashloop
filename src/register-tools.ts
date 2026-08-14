@@ -3,6 +3,7 @@
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerSourceTools } from './tools/sources.js';
+import { registerDiscoverTools } from './tools/discover.js';
 import { registerFeedTools } from './tools/feed.js';
 import { registerVideoTools } from './tools/video.js';
 import { registerHookTools } from './tools/hooks.js';
@@ -17,6 +18,7 @@ import { registerScheduleTools } from './tools/schedule.js';
 /** Register the full product tool surface, plus the gallery MCP App (§4). */
 export function registerAllTools(server: McpServer) {
   registerSourceTools(server);
+  registerDiscoverTools(server);
   registerFeedTools(server);
   registerVideoTools(server);
   registerHookTools(server);

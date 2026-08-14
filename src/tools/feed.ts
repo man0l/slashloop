@@ -224,10 +224,10 @@ export function registerFeedTools(server: McpServer) {
   // reads like live search; it only queries videos already scraped into this
   // workspace. A new user searches a term with an empty library, gets nothing,
   // and reasonably concludes the product is broken — when the real answer is
-  // "track it, then refresh".
-  //
-  // `discover_search` stays registered below as a deprecated alias so existing
-  // skills, saved prompts and habits keep working.
+  // "track it, then refresh". The `discover_search` alias was removed when the
+  // new `discover` tool (live, keyword-driven source discovery) took over the
+  // discover name; use that for finding NEW sources, this for searching what
+  // is already scraped.
   const searchLibrary = {
     description:
       'Search videos ALREADY pulled into this workspace by keyword, hashtag or creator handle. '
@@ -320,11 +320,10 @@ export function registerFeedTools(server: McpServer) {
 
   server.tool('search_library', searchLibrary.description, searchLibrary.schema, searchLibraryHandler);
 
-  // Deprecated alias. Same handler, so behaviour cannot drift between the two.
-  server.tool('discover_search',
-    `[DEPRECATED — use search_library] ${searchLibrary.description}`,
-    searchLibrary.schema,
-    searchLibraryHandler);
+  // The old name for search_library was `discover_search` (removed once the
+  // real `discover` tool — keyword-driven source discovery — took the name).
+  // History: the rename happened because "discover_search" read like live
+  // search while it only queries already-scraped videos.
 
   // ---- get_outlier_summary ----
   server.tool('get_outlier_summary',

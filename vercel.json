@@ -47,6 +47,14 @@
       "dest": "/api/sources?action=suggest-dismiss"
     },
     {
+      "src": "^/api/sources/discover/mine$",
+      "dest": "/api/sources?action=discover-mine"
+    },
+    {
+      "src": "^/api/sources/discover$",
+      "dest": "/api/sources?action=discover"
+    },
+    {
       "src": "^/api/sources/suggest$",
       "dest": "/api/sources?action=suggest"
     },
