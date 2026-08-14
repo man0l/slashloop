@@ -11,10 +11,10 @@
 // ---------------------------------------------------------------------------
 
 import { meterBytes } from './bandwidth.js';
-import { proxyConfig } from './proxy-http.js';
+import { proxyConfig, withStickySession } from './proxy-http.js';
 import { signTikTokUrl } from './sign.js';
 import { isWafChallenge, solveWafCookies, type WafCookie } from './waf.js';
-import type { TikTokHttp, TikTokHttpResult } from './tiktok-web.js';
+import type { TikTokHttp, TikTokHttpBufferResult, TikTokHttpResult } from './tiktok-web.js';
 
 const CHROME_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -64,13 +64,17 @@ export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
     return null;
   }
 
+  // Pin one residential IP for the whole client. TikTok CDN tokens are
+  // bound to the exit that requested the watch page — a rotate between
+  // HTML and MP4 is a 403.
+  const sticky = withStickySession(cfg);
   const client = new Impit({
     browser: 'chrome',
-    proxyUrl: cfg.url,
+    proxyUrl: sticky.url,
     ignoreTlsErrors: true,
   });
   const jar = new CookieJar();
-  console.log('[proxy:impit] chrome TLS via residential proxy');
+  console.log('[proxy:impit] chrome TLS via sticky residential proxy');
   try {
     const warm = await client.fetch('https://www.tiktok.com/', {
       headers: { 'User-Agent': CHROME_UA, Accept: 'text/html' },
@@ -117,6 +121,30 @@ export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
     return once(url, headers, maxBytes);
   }
 
+  async function getBuffer(
+    url: string,
+    headers: Record<string, string> | undefined,
+    maxBytes: number,
+  ): Promise<TikTokHttpBufferResult> {
+    const hdrs: Record<string, string> = {
+      'User-Agent': CHROME_UA,
+      'Accept-Language': 'en-US,en;q=0.9',
+      Accept: 'video/mp4,video/*,*/*',
+      ...(headers ?? {}),
+    };
+    const cookie = jar.header();
+    if (cookie) hdrs.Cookie = cookie;
+    // CDN URLs are not /api/ — signTikTokUrl is a no-op, but skip it anyway
+    // so we never mutate a signed playAddr query string.
+    const res = await client.fetch(url, { headers: hdrs, redirect: 'follow' });
+    jar.absorb(res.headers);
+    const raw = Buffer.from(await res.arrayBuffer());
+    const truncated = raw.length > maxBytes;
+    const buffer = truncated ? raw.subarray(0, maxBytes) : raw;
+    meterBytes(buffer.length);
+    return { status: res.status, ok: res.ok, buffer, bytes: buffer.length };
+  }
+
   return {
     async getJson(url, headers) {
       return withWaf(url, { Accept: 'application/json, text/plain, */*', ...(headers ?? {}) }, JSON_MAX);
@@ -124,6 +152,9 @@ export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
     async getText(url, headers) {
       const r = await withWaf(url, { Accept: 'text/html,application/xhtml+xml', ...(headers ?? {}) }, HTML_MAX);
       return { ...r, json: null };
+    },
+    async getBuffer(url, headers, maxBytes) {
+      return getBuffer(url, headers, maxBytes ?? 12 * 1024 * 1024);
     },
   };
 }

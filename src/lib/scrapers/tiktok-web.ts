@@ -25,7 +25,7 @@
 // per handle per day turns a ~90KB tax on every refresh into a rounding error.
 // ---------------------------------------------------------------------------
 
-import { proxyFetch, proxyFetchJson } from './proxy-http.js';
+import { proxyFetch, proxyFetchBuffer, proxyFetchJson } from './proxy-http.js';
 import { normalizeTikTok, type NormalizedVideo } from '../../normalizers.js';
 
 export interface TikTokHttpResult {
@@ -36,10 +36,19 @@ export interface TikTokHttpResult {
   bytes: number;
 }
 
+export interface TikTokHttpBufferResult {
+  status: number;
+  ok: boolean;
+  buffer: Buffer;
+  bytes: number;
+}
+
 /** Pluggable transport so the adapter can swap unsigned HTTP for a signed in-page fetch. */
 export interface TikTokHttp {
   getJson(url: string, headers?: Record<string, string>): Promise<TikTokHttpResult>;
   getText?(url: string, headers?: Record<string, string>): Promise<TikTokHttpResult>;
+  /** Binary GET. Same session as getText when the client is Impit. */
+  getBuffer?(url: string, headers?: Record<string, string>, maxBytes?: number): Promise<TikTokHttpBufferResult>;
 }
 
 export const unsignedHttp: TikTokHttp = {
@@ -54,6 +63,14 @@ export const unsignedHttp: TikTokHttp = {
       stopWhen: pageBlobComplete,
     });
     return { json: null, status: result.status, ok: result.ok, text: result.text, bytes: result.bytes };
+  },
+  async getBuffer(url, headers, maxBytes) {
+    const result = await proxyFetchBuffer(url, {
+      headers,
+      maxBytes: maxBytes ?? 12 * 1024 * 1024,
+      compress: false,
+    });
+    return { status: result.status, ok: result.ok, buffer: result.buffer, bytes: result.bytes };
   },
 };
 

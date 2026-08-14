@@ -31,7 +31,7 @@ import {
   bytesToCents, fmtBytes, recordTrafficBytes,
 } from './bandwidth.js';
 import { assertProxyBudget } from './budget.js';
-import { proxyConfig, proxyFetchBuffer } from './proxy-http.js';
+import { proxyConfig } from './proxy-http.js';
 import { createImpersonatedHttp } from './impersonate-http.js';
 import {
   dedupeItems, estimateScrapeBytes, fetchCreatorPosts, fetchEmbedItems,
@@ -240,24 +240,16 @@ export const proxyAdapter: ScraperAdapter = {
     const http = (await createImpersonatedHttp()) ?? unsignedHttp;
     const video = await resolvePlayableVideo(opts.videoUrl, itemId, http);
 
-    const pick = pickSmallestVariant(video);
-    if (!pick) throw new Error('TikTok returned no playable URL for this video');
+    const variants = listPlayableVariants(video);
+    if (!variants.length) throw new Error('TikTok returned no playable URL for this video');
 
-    console.log(
-      `[proxy] downloading ${itemId} via ${pick.label}`
-      + `${pick.declaredBytes ? ` (~${fmtBytes(pick.declaredBytes)})` : ''}`,
-    );
-    if (pick.declaredBytes && pick.declaredBytes > maxVideoBytes()) {
-      throw new Error(
-        `Video is ${fmtBytes(pick.declaredBytes)}, above the ${fmtBytes(maxVideoBytes())} `
-        + 'SCRAPER_PROXY_MAX_VIDEO_MB ceiling — refusing to spend the traffic',
-      );
-    }
+    const ceiling = maxVideoBytes();
+    const handle = extractHandle(opts.videoUrl);
+    const watchUrl = handle
+      ? `https://www.tiktok.com/@${handle}/video/${itemId}`
+      : opts.videoUrl;
 
-    // Binary, so it goes through proxyFetch's stream cap rather than the JSON
-    // helper. Residential exit is mandatory here: TikTok's CDN 403s datacenter
-    // IPs, which is the whole reason the Apify path had to buy an actor run.
-    const buffer = await downloadBinary(pick.url, maxVideoBytes());
+    const { pick, buffer } = await downloadFirstWorking(variants, watchUrl, ceiling, http);
 
     if (buffer.length < 1024) {
       throw new Error(`Downloaded file too small (${buffer.length} bytes) — likely an error page`);
@@ -338,29 +330,40 @@ export interface VideoVariant {
  * smallest turns a 6MB download into ~1.5MB for identical usefulness, which on
  * a per-GB plan is a 4x increase in how many videos the plan buys.
  */
-export function pickSmallestVariant(video: any): VideoVariant | null {
+export function listPlayableVariants(video: any): VideoVariant[] {
   const ladder: VideoVariant[] = [];
+  const seen = new Set<string>();
+  const push = (v: VideoVariant) => {
+    if (seen.has(v.url)) return;
+    seen.add(v.url);
+    ladder.push(v);
+  };
+
   const bitrateInfo = Array.isArray(video?.bitrateInfo) ? video.bitrateInfo : [];
   for (const rung of bitrateInfo) {
     const url = firstUrl(rung?.PlayAddr?.UrlList ?? rung?.playAddr?.urlList);
     if (!url) continue;
     const size = Number(rung?.PlayAddr?.DataSize ?? rung?.DataSize ?? rung?.dataSize);
-    ladder.push({
+    push({
       url,
       declaredBytes: Number.isFinite(size) && size > 0 ? size : null,
       label: `${rung?.GearName ?? rung?.gearName ?? 'variant'}`,
     });
   }
 
-  const sized = ladder.filter(v => v.declaredBytes != null);
-  if (sized.length > 0) {
-    return sized.reduce((a, b) => (a.declaredBytes! <= b.declaredBytes! ? a : b));
-  }
-  if (ladder.length > 0) return ladder[0]!;
-
-  // No ladder published — fall back to the single playable URL.
   const fallback = firstUrl(video?.playAddr) ?? firstUrl(video?.downloadAddr);
-  return fallback ? { url: fallback, declaredBytes: null, label: 'playAddr' } : null;
+  if (fallback) push({ url: fallback, declaredBytes: null, label: 'playAddr' });
+
+  return ladder.sort((a, b) => {
+    if (a.declaredBytes != null && b.declaredBytes != null) return a.declaredBytes - b.declaredBytes;
+    if (a.declaredBytes != null) return -1;
+    if (b.declaredBytes != null) return 1;
+    return 0;
+  });
+}
+
+export function pickSmallestVariant(video: any): VideoVariant | null {
+  return listPlayableVariants(video)[0] ?? null;
 }
 
 function firstUrl(v: unknown): string | null {
@@ -371,27 +374,61 @@ function firstUrl(v: unknown): string | null {
   return null;
 }
 
-async function downloadBinary(url: string, maxBytes: number): Promise<Buffer> {
-  const result = await proxyFetchBuffer(url, {
-    maxBytes,
-    compress: false,
-    headers: {
-      Referer: 'https://www.tiktok.com/',
-      Accept: '*/*',
-      // Cap the transfer at the source when the CDN honours Range, so we
-      // never pull a 40MB original just to throw it away.
-      Range: `bytes=0-${maxBytes - 1}`,
-    },
-  });
+async function downloadBinary(
+  url: string,
+  referer: string,
+  maxBytes: number,
+  http: TikTokHttp,
+): Promise<Buffer> {
+  const headers = {
+    Referer: referer,
+    Origin: 'https://www.tiktok.com',
+    Accept: 'video/mp4,video/*,*/*',
+  };
+  const getter = http.getBuffer;
+  if (!getter) throw new Error('TikTok HTTP client cannot fetch binary');
+
+  const result = await getter(url, headers, maxBytes);
   if (!result.ok && result.status !== 206) {
     throw new Error(
       `TikTok CDN download failed (${result.status}) via proxy: ${result.buffer.toString('utf8').slice(0, 200)}`,
     );
   }
-  if (result.truncated || result.buffer.length > maxBytes) {
+  if (result.buffer.length > maxBytes) {
     throw new Error(
       `Video exceeded the ${fmtBytes(maxBytes)} SCRAPER_PROXY_MAX_VIDEO_MB ceiling — download stopped`,
     );
   }
   return result.buffer;
+}
+
+async function downloadFirstWorking(
+  variants: VideoVariant[],
+  referer: string,
+  maxBytes: number,
+  http: TikTokHttp,
+): Promise<{ pick: VideoVariant; buffer: Buffer }> {
+  let lastErr: Error | null = null;
+  for (const pick of variants) {
+    if (pick.declaredBytes && pick.declaredBytes > maxBytes) {
+      lastErr = new Error(
+        `Video is ${fmtBytes(pick.declaredBytes)}, above the ${fmtBytes(maxBytes)} `
+        + 'SCRAPER_PROXY_MAX_VIDEO_MB ceiling — refusing to spend the traffic',
+      );
+      continue;
+    }
+    console.log(
+      `[proxy] downloading via ${pick.label}`
+      + `${pick.declaredBytes ? ` (~${fmtBytes(pick.declaredBytes)})` : ''}`,
+    );
+    try {
+      const buffer = await downloadBinary(pick.url, referer, maxBytes, http);
+      return { pick, buffer };
+    } catch (err) {
+      lastErr = err as Error;
+      if (!/CDN download failed \(403\)/.test(lastErr.message)) throw lastErr;
+      console.warn(`[proxy] ${pick.label} 403, trying next variant`);
+    }
+  }
+  throw lastErr ?? new Error('TikTok returned no playable URL for this video');
 }

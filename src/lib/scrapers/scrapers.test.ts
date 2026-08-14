@@ -15,7 +15,7 @@ import {
   selectDownloadAdapter,
   ScraperUnavailableError,
 } from './index.js';
-import { extractHandle, extractVideoId, pickSmallestVariant, resolvePlayableVideo } from './proxy-adapter.js';
+import { extractHandle, extractVideoId, listPlayableVariants, pickSmallestVariant, resolvePlayableVideo } from './proxy-adapter.js';
 import { videoFromWatchHtml } from './tiktok-web.js';
 import { parseProxyUrl, proxyFetch, resetDispatcher, withStickySession } from './proxy-http.js';
 import {
@@ -369,6 +369,17 @@ describe('proxy adapter helpers', () => {
       label: 'playAddr',
     });
     expect(pickSmallestVariant({})).toBeNull();
+  });
+
+  test('listPlayableVariants is cheapest-first and de-dupes playAddr', () => {
+    const urls = listPlayableVariants({
+      bitrateInfo: [
+        { GearName: 'hd', PlayAddr: { UrlList: ['https://cdn.example/hd.mp4'], DataSize: 5_000_000 } },
+        { GearName: 'sd', PlayAddr: { UrlList: ['https://cdn.example/sd.mp4'], DataSize: 1_200_000 } },
+      ],
+      playAddr: 'https://cdn.example/sd.mp4',
+    }).map(v => v.url);
+    expect(urls).toEqual(['https://cdn.example/sd.mp4', 'https://cdn.example/hd.mp4']);
   });
 });
 
