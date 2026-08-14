@@ -21,8 +21,9 @@
 //      rung, and on a per-GB plan the top rung is the entire bill.
 //   3. Incremental refreshes stop at the watermark mid-page, so a creator with
 //      no new posts costs one small JSON response.
-//   4. A single-video download resolves through one ~20KB detail call rather
-//      than re-rendering the watch page.
+//   4. A single-video download reads the watch-page rehydration blob (the
+//      same source hydrateItemStats uses). /api/item/detail answers 200/0B
+//      even with Chrome TLS + X-Bogus — probed live 2026-08-14.
 // ---------------------------------------------------------------------------
 
 import { writeFileSync } from 'node:fs';
@@ -30,12 +31,13 @@ import {
   bytesToCents, fmtBytes, recordTrafficBytes,
 } from './bandwidth.js';
 import { assertProxyBudget } from './budget.js';
-import { proxyConfig, proxyFetchBuffer, proxyFetchJson } from './proxy-http.js';
+import { proxyConfig, proxyFetchBuffer } from './proxy-http.js';
 import { createImpersonatedHttp } from './impersonate-http.js';
 import {
   dedupeItems, estimateScrapeBytes, fetchCreatorPosts, fetchEmbedItems,
   fetchHashtagPosts, fetchSearchPosts, hydrateItemStats, normalizeWebItems,
-  resolveChallengeId, resolveCreator, unsignedHttp, withTikTokHttp,
+  resolveChallengeId, resolveCreator, unsignedHttp, videoFromWatchHtml,
+  withTikTokHttp,
   type TikTokHttp,
 } from './tiktok-web.js';
 import { splitSpend } from '../apify.js';
@@ -235,14 +237,8 @@ export const proxyAdapter: ScraperAdapter = {
     // so it is pre-authorised at the ceiling rather than at a hopeful average.
     await assertProxyBudget(opts.workspaceId, maxVideoBytes());
 
-    const { json } = await proxyFetchJson<any>(
-      `https://www.tiktok.com/api/item/detail/?itemId=${encodeURIComponent(itemId)}&aid=1988`,
-      { maxBytes: 256 * 1024, headers: { Referer: opts.videoUrl } },
-    );
-    const video = json?.itemInfo?.itemStruct?.video;
-    if (!video) {
-      throw new Error('TikTok returned no video detail — the post may be deleted, private, or region-blocked');
-    }
+    const http = (await createImpersonatedHttp()) ?? unsignedHttp;
+    const video = await resolvePlayableVideo(opts.videoUrl, itemId, http);
 
     const pick = pickSmallestVariant(video);
     if (!pick) throw new Error('TikTok returned no playable URL for this video');
@@ -285,6 +281,46 @@ export const proxyAdapter: ScraperAdapter = {
 export function extractVideoId(url: string): string | null {
   const m = url.match(/\/(?:video|v|photo)\/(\d{6,})/) ?? url.match(/(\d{15,})/);
   return m?.[1] ?? null;
+}
+
+/** `@handle` from a watch URL. Null when the caller only has a raw id. */
+export function extractHandle(url: string): string | null {
+  const m = url.match(/tiktok\.com\/@([^/?#]+)\/(?:video|photo|v)\//i);
+  if (!m?.[1]) return null;
+  try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+}
+
+/**
+ * Resolve the playable `video` object. `/api/item/detail` is a dead 200/0B
+ * even under Chrome TLS (2026-08-14), so this uses the watch-page blob —
+ * the same source hydrateItemStats already trusts.
+ */
+export async function resolvePlayableVideo(
+  videoUrl: string,
+  itemId: string,
+  http: TikTokHttp,
+): Promise<any> {
+  const getter = http.getText;
+  if (!getter) throw new Error('TikTok HTTP client cannot fetch HTML');
+
+  const handle = extractHandle(videoUrl);
+  const pageUrl = handle
+    ? `https://www.tiktok.com/@${encodeURIComponent(handle)}/video/${itemId}`
+    : `https://www.tiktok.com/embed/v2/${itemId}`;
+  const referer = handle ? `https://www.tiktok.com/@${handle}` : 'https://www.tiktok.com/';
+
+  const page = await getter(pageUrl, {
+    Accept: 'text/html,application/xhtml+xml',
+    Referer: referer,
+  });
+  const video = page.ok ? videoFromWatchHtml(page.text) : null;
+  if (video) return video;
+
+  const rehydrate = Boolean(page.text?.includes('__UNIVERSAL_DATA_FOR_REHYDRATION__'));
+  throw new Error(
+    `TikTok watch page had no playable video (http=${page.status}, rehydrate=${rehydrate}) `
+    + '— the post may be deleted, private, or region-blocked',
+  );
 }
 
 export interface VideoVariant {

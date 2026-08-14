@@ -333,6 +333,14 @@ export function extractRehydrationJson(html: string): any | null {
   return extractJsonAfterMarker(html, REHYDRATION_MARKER);
 }
 
+/** Playable `video` object from a watch-page rehydration blob. */
+export function videoFromWatchHtml(html: string): any | null {
+  if (!html) return null;
+  const data = extractRehydrationJson(html);
+  const video = data?.__DEFAULT_SCOPE__?.['webapp.video-detail']?.itemInfo?.itemStruct?.video;
+  return video && typeof video === 'object' ? video : null;
+}
+
 export function extractFrontityJson(html: string): any | null {
   return extractJsonAfterMarker(html, FRONTITY_MARKER);
 }

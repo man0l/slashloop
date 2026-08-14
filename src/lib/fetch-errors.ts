@@ -49,7 +49,7 @@ export function classifyFetchError(lastError: string | null): FetchErrorInfo | n
   if (/apify_api_key is not set/i.test(msg)) {
     return { code: 'apify_no_key', message: 'APIFY_API_KEY is missing on the server — configure it to scrape.' };
   }
-  if (/returned no items/i.test(msg)) {
+  if (/returned no items/i.test(msg) || /watch page had no playable video/i.test(msg) || /returned no video detail/i.test(msg)) {
     return { code: 'video_not_found', message: 'TikTok could not find this video by URL (deleted or unavailable).' };
   }
   if (/no video cdn url/i.test(msg)) {

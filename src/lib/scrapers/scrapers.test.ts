@@ -15,7 +15,8 @@ import {
   selectDownloadAdapter,
   ScraperUnavailableError,
 } from './index.js';
-import { extractVideoId, pickSmallestVariant } from './proxy-adapter.js';
+import { extractHandle, extractVideoId, pickSmallestVariant, resolvePlayableVideo } from './proxy-adapter.js';
+import { videoFromWatchHtml } from './tiktok-web.js';
 import { parseProxyUrl, proxyFetch, resetDispatcher, withStickySession } from './proxy-http.js';
 import {
   createTimeFromItemId,
@@ -305,6 +306,50 @@ describe('proxy adapter helpers', () => {
     expect(extractVideoId('https://www.tiktok.com/@x/video/1234567890123456789')).toBe('1234567890123456789');
     expect(extractVideoId('https://www.tiktok.com/@x/photo/1234567890123456789')).toBe('1234567890123456789');
     expect(extractVideoId('not-a-url')).toBeNull();
+  });
+
+  test('extractHandle reads the @user from a watch URL', () => {
+    expect(extractHandle('https://www.tiktok.com/@mr.paidsocial/video/7672558938923076877')).toBe('mr.paidsocial');
+    expect(extractHandle('https://www.tiktok.com/video/7672558938923076877')).toBeNull();
+  });
+
+  test('videoFromWatchHtml lifts playAddr out of the rehydration blob', () => {
+    const payload = {
+      __DEFAULT_SCOPE__: {
+        'webapp.video-detail': {
+          itemInfo: { itemStruct: { video: { playAddr: 'https://cdn.example/v.mp4', bitrateInfo: [] } } },
+        },
+      },
+    };
+    const html = `<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">${JSON.stringify(payload)}</script>`;
+    expect(videoFromWatchHtml(html)?.playAddr).toBe('https://cdn.example/v.mp4');
+    expect(videoFromWatchHtml('<html>no blob</html>')).toBeNull();
+  });
+
+  test('resolvePlayableVideo uses the watch page, not /api/item/detail', async () => {
+    const payload = {
+      __DEFAULT_SCOPE__: {
+        'webapp.video-detail': {
+          itemInfo: { itemStruct: { video: { playAddr: 'https://cdn.example/v.mp4' } } },
+        },
+      },
+    };
+    const html = `<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">${JSON.stringify(payload)}</script>`;
+    const urls: string[] = [];
+    const http: TikTokHttp = {
+      async getJson() { throw new Error('item/detail must not be called'); },
+      async getText(url) {
+        urls.push(url);
+        return { json: null, status: 200, ok: true, text: html, bytes: html.length };
+      },
+    };
+    const video = await resolvePlayableVideo(
+      'https://www.tiktok.com/@mr.paidsocial/video/7672558938923076877',
+      '7672558938923076877',
+      http,
+    );
+    expect(video.playAddr).toBe('https://cdn.example/v.mp4');
+    expect(urls).toEqual(['https://www.tiktok.com/@mr.paidsocial/video/7672558938923076877']);
   });
 
   test('pickSmallestVariant takes the cheapest declared rung', () => {

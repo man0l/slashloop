@@ -21,6 +21,10 @@ describe('classifyFetchError', () => {
     expect(classifyFetchError('Apify returned no items for video URL: https://tiktok.com/@x/v/1')?.code).toBe('video_not_found');
   });
 
+  test('watch-page miss -> video_not_found', () => {
+    expect(classifyFetchError('TikTok watch page had no playable video (http=200, rehydrate=false) — the post may be deleted, private, or region-blocked')?.code).toBe('video_not_found');
+  });
+
   test('no CDN URL -> video_unavailable', () => {
     expect(classifyFetchError('No video CDN URL in Apify response (video may be deleted, restricted, or download failed)')?.code).toBe('video_unavailable');
   });
