@@ -1,9 +1,13 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { BYTES_PER_GB, bytesToCents, fmtBytes, resetProcessMeter, wouldExceedCap } from './bandwidth.js';
+import {
+  BYTES_PER_GB, bytesToCents, fmtBytes, meterBytes, processBytesUsed, resetProcessMeter,
+  scopeBytesUsed, withMeterScope, wouldExceedCap,
+} from './bandwidth.js';
 import { remainingBudgetBytes, vendorRemainingBytes } from './budget.js';
 import { parseProxiesResponse } from './proxy-cheap.js';
-import { runTikTokProxyScrape } from './proxy-adapter.js';
+import { proxyAdapter, runTikTokProxyScrape } from './proxy-adapter.js';
+import { resetImpersonatedClient } from './impersonate-http.js';
 import { clearLookupCaches } from './tiktok-web.js';
 import type { TikTokHttp } from './tiktok-web.js';
 import {
@@ -47,6 +51,11 @@ const ENV_KEYS = [
   'PROXY_TRAFFIC_CAP_GB',
   'PROXY_COST_CENTS_PER_GB',
   'SCRAPER_PROXY_COUNTRY',
+  'SUPABASE_URL',
+  'SUPABASE_SECRET_KEY',
+  'R2_ENDPOINT',
+  'R2_ACCESS_KEY_ID',
+  'R2_SECRET_ACCESS_KEY',
 ] as const;
 
 const saved: Record<string, string | undefined> = {};
@@ -56,6 +65,7 @@ beforeEach(() => {
   for (const key of ENV_KEYS) delete process.env[key];
   resetDispatcher();
   resetProcessMeter();
+  resetImpersonatedClient();
 });
 
 afterEach(() => {
@@ -65,6 +75,7 @@ afterEach(() => {
   }
   resetDispatcher();
   resetProcessMeter();
+  resetImpersonatedClient();
 });
 
 describe('resolveProviderName', () => {
@@ -443,6 +454,24 @@ describe('bandwidth math', () => {
     process.env.PROXY_COST_CENTS_PER_GB = '100';
     expect(bytesToCents(1024 * 1024 * 1024)).toBe(100);
   });
+
+  test('withMeterScope keeps concurrent jobs byte-attribution separate', async () => {
+    const jobA = withMeterScope(async () => {
+      meterBytes(100);
+      await new Promise(r => setTimeout(r, 10));
+      meterBytes(50);
+      return scopeBytesUsed();
+    });
+    const jobB = withMeterScope(async () => {
+      meterBytes(30);
+      await new Promise(r => setTimeout(r, 5));
+      return scopeBytesUsed();
+    });
+    const [a, b] = await Promise.all([jobA, jobB]);
+    expect(a).toBe(150);
+    expect(b).toBe(30);
+    expect(processBytesUsed()).toBe(0);
+  });
 });
 
 describe('proxyFetch caps', () => {
@@ -491,6 +520,31 @@ describe('proxy budget (vendor + internal rail)', () => {
       status: 'ACTIVE',
     });
     expect(vendorRemainingBytes(parsed)).toBeNull();
+  });
+
+  test('proxyCheapBandwidth serves a cached snapshot across calls', async () => {
+    const REAL_FETCH = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify({
+        proxies: [{ id: 1, status: 'ACTIVE', bandwidth: { total: 5, used: 4.75 } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as unknown as typeof fetch;
+    const { proxyCheapBandwidth, resetProxyCheapCache } = await import('./proxy-cheap.js');
+    process.env.PROXY_CHEAP_API_KEY = 'k';
+    process.env.PROXY_CHEAP_API_SECRET = 's';
+    resetProxyCheapCache();
+    try {
+      const first = await proxyCheapBandwidth();
+      const second = await proxyCheapBandwidth();
+      expect(first?.remainingGb).toBeCloseTo(0.25);
+      expect(second).toEqual(first);
+      expect(calls).toBe(1);
+    } finally {
+      globalThis.fetch = REAL_FETCH;
+      resetProxyCheapCache();
+    }
   });
 
   test('remainingBudgetBytes takes the tighter of UsageLog cap and billed GB', () => {
@@ -572,6 +626,7 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
       },
       async getText(url) {
         expect(url).toContain('/@jawhacks');
+        expect(url.includes('/embed/')).toBe(false);
         return { json: null, status: 200, ok: true, text: html, bytes: html.length };
       },
     };
@@ -643,6 +698,68 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
     expect(result.items[0]?.caption).toBe('from embed');
     expect(result.items[0]?.views).toBe(1_000);
     expect(result.items[0]?.postedAt).toBe(new Date(1_671_391_444 * 1000).toISOString());
+  });
+
+  test('proxyAdapter.scrape resumes from a persisted receipt with zero traffic', async () => {
+    const receiptItem = {
+      platform: 'tiktok',
+      externalId: '7178571592316783915',
+      url: 'https://www.tiktok.com/@jawhacks/video/7178571592316783915',
+      thumbnailUrl: 'https://cdn.example/cover.jpg',
+      coverDownloadUrl: null,
+      creatorHandle: 'jawhacks',
+      creatorFollowers: 12345,
+      caption: 'from receipt',
+      postedAt: new Date(1_671_391_444 * 1000).toISOString(),
+      views: 100,
+      likes: 2,
+      comments: 1,
+      shares: null,
+      saves: null,
+      durationSec: 9,
+      transcript: null,
+      transcriptSource: 'none',
+      raw: {},
+    };
+    const REAL_FETCH = globalThis.fetch;
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (init?.method === 'POST' && url.includes('/object/sign/')) {
+        return new Response(JSON.stringify({ signedURL: '/object/sign/media/scrape-receipts/src-1.json?token=x' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({
+        version: 1,
+        at: Date.now(),
+        items: [receiptItem],
+        notices: [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as unknown as typeof fetch;
+
+    process.env.SCRAPER_PROXY_URL = 'user:pass@gateway.example.com:8080';
+    process.env.SUPABASE_URL = 'https://example.supabase.co';
+    process.env.SUPABASE_SECRET_KEY = 'test-key';
+
+    try {
+      const result = await proxyAdapter.scrape({
+        workspaceId: 'ws-test',
+        platform: 'tiktok',
+        sourceType: 'creator',
+        query: 'jawhacks',
+        limit: 3,
+        resumeDatasetId: 'scrape-receipts/src-1.json',
+      });
+      expect(result.resumed).toBe(true);
+      expect(result.costCents).toBe(0);
+      expect(result.bytesUsed).toBe(0);
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]?.externalId).toBe('7178571592316783915');
+      expect(result.items[0]?.caption).toBe('from receipt');
+    } finally {
+      globalThis.fetch = REAL_FETCH;
+    }
   });
 
   test('hashtag scrape prefers signed challenge item_list over evergreen embed', async () => {

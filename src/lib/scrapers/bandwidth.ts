@@ -15,6 +15,7 @@
 // traffic shows up in the same COGS reporting as everything else.
 // ---------------------------------------------------------------------------
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { db } from '../../db.js';
 
 export const PROXY_PROVIDER = 'proxy';
@@ -68,11 +69,34 @@ export function bytesToCents(bytes: number): number {
 // The DB ledger is the source of truth across processes, but a single scrape
 // makes many requests and must not round-trip Postgres per request. Requests
 // accumulate here; the adapter flushes once per scrape.
+//
+// The meter is SCOPED, not a single process-wide counter. With the VPS
+// worker draining several jobs concurrently, a global diff would attribute
+// one scrape's bytes to whichever job happened to be running. Each network
+// job runs inside withMeterScope(); meterBytes() lands in the innermost
+// scope. The global counter remains for callers that still diff a whole run
+// (tests, the browser signer).
 
 let processBytes = 0;
 
+const meterScope = new AsyncLocalStorage<{ bytes: number }>();
+
+/** Run fn with a private byte counter; everything it meters lands in the scope. */
+export function withMeterScope<T>(fn: () => Promise<T>): Promise<T> {
+  return meterScope.run({ bytes: 0 }, fn);
+}
+
+/** Bytes metered inside the current scope (0 outside any scope). */
+export function scopeBytesUsed(): number {
+  return meterScope.getStore()?.bytes ?? 0;
+}
+
 export function meterBytes(n: number): void {
-  if (Number.isFinite(n) && n > 0) processBytes += n;
+  if (Number.isFinite(n) && n > 0) {
+    const scope = meterScope.getStore();
+    if (scope) scope.bytes += n;
+    else processBytes += n;
+  }
 }
 
 export function processBytesUsed(): number {

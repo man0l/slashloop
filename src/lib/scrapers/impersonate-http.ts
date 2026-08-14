@@ -76,39 +76,17 @@ async function fetchThrough(
   throw last;
 }
 
-export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
-  const cfg = proxyConfig();
-  if (!cfg) return null;
+// One Impit client + cookie jar per proxy URL, process-wide. A fresh client
+// per scrape used to re-pay a proxy CONNECT, a TLS handshake AND a ~1-2MB
+// homepage fetch every time. Reusing the session keeps the tunnel warm.
+let sharedSession: { cfgUrl: string; client: ImpitLike; jar: CookieJar } | null = null;
 
-  let Impit: new (opts: Record<string, unknown>) => ImpitLike;
-  try {
-    ({ Impit } = await import('impit') as unknown as { Impit: new (opts: Record<string, unknown>) => ImpitLike });
-  } catch (err) {
-    console.warn(`[proxy:impit] not available: ${(err as Error).message}`);
-    return null;
-  }
+/** Test seam — drops the pooled client so a new proxy URL takes effect. */
+export function resetImpersonatedClient(): void {
+  sharedSession = null;
+}
 
-  // One Impit client for HTML + MP4. Do not add Proxy-Cheap `_session-`:
-  // `password_country-US_session-…` makes the gateway return CONNECT 500
-  // (probed 2026-08-14). The client still reuses its CONNECT tunnel, so
-  // the watch page and the CDN download share an exit without the suffix.
-  const client = new Impit({
-    browser: 'chrome',
-    proxyUrl: cfg.url,
-    ignoreTlsErrors: true,
-  });
-  const jar = new CookieJar();
-  console.log('[proxy:impit] chrome TLS via residential proxy');
-  try {
-    const warm = await client.fetch('https://www.tiktok.com/', {
-      headers: { 'User-Agent': CHROME_UA, Accept: 'text/html' },
-    });
-    jar.absorb(warm.headers);
-    await warm.text().catch(() => '');
-  } catch {
-    // first API call can still sign; cookies just help
-  }
-
+function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
   async function once(url: string, headers: Record<string, string> | undefined, maxBytes: number): Promise<TikTokHttpResult> {
     const hdrs: Record<string, string> = {
       'User-Agent': CHROME_UA,
@@ -181,4 +159,42 @@ export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
       return getBuffer(url, headers, maxBytes ?? 12 * 1024 * 1024);
     },
   };
+}
+
+export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
+  const cfg = proxyConfig();
+  if (!cfg) return null;
+
+  if (sharedSession && sharedSession.cfgUrl === cfg.url) {
+    return makeHttp(sharedSession.client, sharedSession.jar);
+  }
+
+  let Impit: new (opts: Record<string, unknown>) => ImpitLike;
+  try {
+    ({ Impit } = await import('impit') as unknown as { Impit: new (opts: Record<string, unknown>) => ImpitLike });
+  } catch (err) {
+    console.warn(`[proxy:impit] not available: ${(err as Error).message}`);
+    return null;
+  }
+
+  // Do not add Proxy-Cheap `_session-`: that suffix 500s CONNECT (2026-08-14).
+  const client = new Impit({
+    browser: 'chrome',
+    proxyUrl: cfg.url,
+    ignoreTlsErrors: true,
+  });
+  const jar = new CookieJar();
+  console.log('[proxy:impit] chrome TLS via residential proxy');
+  try {
+    const warm = await client.fetch('https://www.tiktok.com/', {
+      headers: { 'User-Agent': CHROME_UA, Accept: 'text/html' },
+    });
+    jar.absorb(warm.headers);
+    // Cookies live in headers; the body is ~1-2MB we never read. Cancel it.
+    await warm.body?.cancel().catch(() => {});
+  } catch {
+    // first API call can still sign; cookies just help
+  }
+  sharedSession = { cfgUrl: cfg.url, client, jar };
+  return makeHttp(client, jar);
 }

@@ -10,21 +10,27 @@
 //
 // Concurrency: claimNextJob's SKIP LOCKED makes this safe to run ALONGSIDE the
 // Vercel worker and the pg_cron drain — jobs are never double-claimed, whoever
-// gets there first wins.
+// gets there first wins. WORKER_CONCURRENCY (default 2) also lets THIS process
+// drain several claimed jobs at once. Each job runs inside withMeterScope()
+// so its proxy bytes are attributed to it alone.
 //
 // Run:  bun run worker        (or the Docker image in worker/)
 // Env:  the same as Vercel — DATABASE_URL, SUPABASE_URL + SUPABASE_SECRET_KEY,
 //       storage buckets, OPENROUTER_API_KEY + OPENROUTER_VIDEO_MODEL/MODE/
 //       TIMEOUT_MS, GEMINI_API_KEY, APIFY_API_KEY, APIFY_SPEND_CAP_CENTS.
 //       WORKER_IDLE_MS (default 3000) controls the poll interval when idle.
+//       WORKER_CONCURRENCY (default 2) is jobs drained in parallel. Raise
+//       DB_CONNECTION_LIMIT with it.
 // ---------------------------------------------------------------------------
 
-import { claimNextJob, reclaimStuckJobs, failAbandonedQueuedJobs } from '../lib/jobs.js';
+import { claimNextJob, reclaimStuckJobs, failAbandonedQueuedJobs, type MediaJobRow } from '../lib/jobs.js';
 import { processClaimedJob } from './process-job.js';
 import { rescoreStaleTooFresh } from '../scoring.js';
+import { withMeterScope } from '../lib/scrapers/bandwidth.js';
 
 const IDLE_MS = Number(process.env.WORKER_IDLE_MS ?? 3000);
 const RESCORE_EVERY = Number(process.env.WORKER_RESCORE_EVERY ?? 60);
+const CONCURRENCY = Math.max(1, Math.floor(Number(process.env.WORKER_CONCURRENCY ?? 2)));
 
 // Which MediaJob kinds this worker claims. WORKER_KINDS is a comma-separated
 // list (e.g. "analyze,fetch" for video-only, or "refresh,rescore" for a
@@ -49,7 +55,7 @@ let shuttingDown = false;
 process.on('SIGINT', () => { shuttingDown = true; });
 process.on('SIGTERM', () => { shuttingDown = true; });
 
-console.log(`[worker] started — kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms, rescore every ${RESCORE_EVERY} iterations`);
+console.log(`[worker] started — kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms, concurrency ${CONCURRENCY}, rescore every ${RESCORE_EVERY} iterations`);
 
 let iteration = 0;
 
@@ -88,30 +94,44 @@ while (!shuttingDown) {
       });
     }
 
-    // Claim in priority order, restricted to WORKER_KINDS. fetch + analyze are
-    // the long legs this process exists for; rescore is free; refresh is
-    // claimed last (it is the longest scrape and runs best on its own).
-    let job = null;
-    for (const kind of ALL_KINDS) {
-      if (!KINDS.includes(kind)) continue;
-      job = await claimNextJob(kind);
-      if (job) break;
+    // Claim in priority order, restricted to WORKER_KINDS, up to CONCURRENCY
+    // jobs per round. Each pass takes one job of each kind before looping,
+    // so a burst of analyze jobs cannot starve the cheap thumb/rescore kinds.
+    const jobs: MediaJobRow[] = [];
+    while (jobs.length < CONCURRENCY) {
+      let claimedAny = false;
+      for (const kind of ALL_KINDS) {
+        if (!KINDS.includes(kind)) continue;
+        const j = await claimNextJob(kind);
+        if (j) {
+          jobs.push(j);
+          claimedAny = true;
+          if (jobs.length >= CONCURRENCY) break;
+        }
+      }
+      if (!claimedAny) break;
     }
 
-    if (!job) {
+    if (jobs.length === 0) {
       await sleep(IDLE_MS);
       continue;
     }
 
-    const t = Date.now();
-    const result = await processClaimedJob(job);
-    const secs = ((Date.now() - t) / 1000).toFixed(1);
-    console.log(
-      `[worker] ${job.kind} job ${job.id.slice(0, 8)} ` +
-      `${result.ok ? 'ok' : result.requeued ? 'requeued' : 'FAILED'} in ${secs}s` +
-      `${result.error ? ` — ${result.error.slice(0, 160)}` : ''}`,
-    );
-    // No sleep after a job: keep draining the backlog, then idle.
+    await Promise.all(jobs.map(async (job) => {
+      const t = Date.now();
+      try {
+        const result = await withMeterScope(() => processClaimedJob(job));
+        const secs = ((Date.now() - t) / 1000).toFixed(1);
+        console.log(
+          `[worker] ${job.kind} job ${job.id.slice(0, 8)} ` +
+          `${result.ok ? 'ok' : result.requeued ? 'requeued' : 'FAILED'} in ${secs}s` +
+          `${result.error ? ` — ${result.error.slice(0, 160)}` : ''}`,
+        );
+      } catch (err) {
+        console.error(`[worker] ${job.kind} job ${job.id.slice(0, 8)} threw: ${(err as Error).message}`);
+      }
+    }));
+    // No sleep after a round: keep draining the backlog, then idle.
   } catch (err) {
     console.error(`[worker] loop error: ${(err as Error).message}`);
     await sleep(5000);

@@ -63,11 +63,39 @@ export function parseProxiesResponse(body: unknown): ProxyCheapBandwidth | null 
   return active ? bandwidthFromProxyRecord(active) : null;
 }
 
-/** Snapshot billed traffic. Returns null when the API is not configured. */
+/**
+ * Snapshot billed traffic. Returns null when the API is not configured.
+ *
+ * Cached for CACHE_TTL_MS: assertProxyBudget calls this before EVERY scrape
+ * and every single-video download. Billed GB moves slowly; a 60s-old
+ * snapshot is fine for the cap, and the UsageLog rail is still checked
+ * per call. On API failure the last good snapshot is reused.
+ */
+function snapshotTtlMs(): number {
+  const raw = process.env.PROXY_CHEAP_SNAPSHOT_TTL_MS;
+  const n = raw == null ? NaN : Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 60_000;
+}
+
+let cached: { at: number; value: ProxyCheapBandwidth | null } | null = null;
+
+/** Test seam — drops the cached snapshot. */
+export function resetProxyCheapCache(): void {
+  cached = null;
+}
+
 export async function proxyCheapBandwidth(): Promise<ProxyCheapBandwidth | null> {
   if (!authHeaders()) return null;
-  const body = await pcGet<{ proxies?: any[] } | any[]>('/proxies');
-  return parseProxiesResponse(body);
+  if (cached && Date.now() - cached.at < snapshotTtlMs()) return cached.value;
+  try {
+    const body = await pcGet<{ proxies?: any[] } | any[]>('/proxies');
+    const value = parseProxiesResponse(body);
+    cached = { at: Date.now(), value };
+    return value;
+  } catch (err) {
+    if (cached) return cached.value;
+    throw err;
+  }
 }
 
 export function formatProxyCheap(b: ProxyCheapBandwidth | null): string {

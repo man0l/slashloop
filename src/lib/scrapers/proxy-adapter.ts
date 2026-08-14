@@ -28,18 +28,20 @@
 
 import { writeFileSync } from 'node:fs';
 import {
-  bytesToCents, fmtBytes, recordTrafficBytes,
+  bytesToCents, fmtBytes, recordTrafficBytes, scopeBytesUsed, withMeterScope,
 } from './bandwidth.js';
 import { assertProxyBudget } from './budget.js';
 import { proxyConfig } from './proxy-http.js';
 import { createImpersonatedHttp } from './impersonate-http.js';
+import { isStorageEnabled, mediaBucket, putObject, signUrl } from '../storage.js';
 import {
   dedupeItems, estimateScrapeBytes, fetchCreatorPosts, fetchEmbedItems,
   fetchHashtagPosts, fetchSearchPosts, hydrateItemStats, normalizeWebItems,
   extractSlideshowImages, resolveChallengeId, resolveCreator, unsignedHttp,
-  itemStructFromWatchHtml, withTikTokHttp,
+  itemStructFromWatchHtml, withTikTokHttp, ESTIMATED_LOOKUP_BYTES,
   type TikTokHttp,
 } from './tiktok-web.js';
+import type { NormalizedVideo } from '../../normalizers.js';
 import { splitSpend } from '../apify.js';
 import {
   SlideshowPostError,
@@ -59,6 +61,67 @@ function costSharers(opts: { workspaceId: string; costShareWorkspaceIds?: string
   return opts.costShareWorkspaceIds?.length ? opts.costShareWorkspaceIds : [opts.workspaceId];
 }
 
+// --- Proxy scrape receipts ---------------------------------------------------
+// Apify keeps datasets server-side so a retry re-reads them for free. The
+// proxy has no provider store — we persist normalized items to R2/Supabase
+// (tens of KB, egress free). A refresh that dies mid-fan-out can requeue
+// and re-read this object instead of re-paying the proxy. Same contract as
+// jobs.ts readScrapeReceipt: {datasetId} in the job payload comes back as
+// resumeDatasetId. One object per refId, overwritten each scrape.
+
+const SCRAPE_RECEIPT_PREFIX = 'scrape-receipts';
+const RECEIPT_TTL_MS = 20 * 60_000;
+
+interface ScrapeReceiptBody {
+  version: 1;
+  at: number;
+  items: NormalizedVideo[];
+  notices: string[];
+}
+
+function receiptKey(refId: string): string {
+  return `${SCRAPE_RECEIPT_PREFIX}/${encodeURIComponent(refId)}.json`;
+}
+
+async function writeScrapeReceipt(refId: string, body: ScrapeReceiptBody): Promise<string | null> {
+  if (!isStorageEnabled()) return null;
+  try {
+    const key = receiptKey(refId);
+    await putObject({
+      bucket: mediaBucket(),
+      path: key,
+      body: new TextEncoder().encode(JSON.stringify(body)),
+      contentType: 'application/json',
+    });
+    return key;
+  } catch (err) {
+    console.warn(`[proxy] could not persist scrape receipt for ${refId}: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+async function readScrapeReceipt(datasetId: string): Promise<ScrapeReceiptBody | null> {
+  if (!isStorageEnabled()) return null;
+  try {
+    const url = await signUrl(mediaBucket(), datasetId, 300);
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const body = (await res.json()) as Partial<ScrapeReceiptBody>;
+    if (!Array.isArray(body.items)) return null;
+    const at = typeof body.at === 'number' ? body.at : 0;
+    if (!at || Date.now() - at > RECEIPT_TTL_MS) return null;
+    return {
+      version: 1,
+      at,
+      items: body.items as NormalizedVideo[],
+      notices: Array.isArray(body.notices) ? body.notices : [],
+    };
+  } catch (err) {
+    console.warn(`[proxy] could not read scrape receipt ${datasetId}: ${(err as Error).message}`);
+    return null;
+  }
+}
+
 /**
  * The scrape body. The adapter injects the warm-signer; tests inject a
  * fake TikTokHttp so the same resolve → extract → normalize path runs
@@ -72,26 +135,36 @@ export async function runTikTokProxyScrape(
     const req = { limit: opts.limit, postedAfter: opts.postedAfter };
     const notices: string[] = [];
 
-    // Embed playlist first (unsigned, works). Impersonated /api/creator/item_list
-    // then fills more pages and likes when TLS looks like Chrome.
-    const fromEmbed = await fetchEmbedItems(opts.sourceType, opts.query, req);
-    let raw = fromEmbed.items;
-    notices.push(...fromEmbed.notices);
+    let raw: any[] = [];
 
     if (opts.sourceType === 'creator') {
+      // Profile HTML is BOTH identity (secUid) and the first item page.
+      // Fetching the embed playlist first spent ~330KB on items the profile
+      // page was about to deliver.
       const identity = await resolveCreator(opts.query);
-      if (identity && identity.secUid && identity.secUid !== 'ssr') {
+      if (identity) {
         const extra = await fetchCreatorPosts(identity, req);
-        raw = dedupeItems([...raw, ...extra.items]);
+        raw = dedupeItems([...extra.items]);
         notices.push(...extra.notices);
-      } else if (!raw.length && !identity) {
-        return {
-          items: [],
-          rawCount: 0,
-          notices: [`Could not resolve TikTok profile "${opts.query}" — it may not exist, be private, or be region-blocked`],
-        };
       }
-    } else if (opts.sourceType === 'hashtag') {
+      if (!raw.length) {
+        const embed = await fetchEmbedItems(opts.sourceType, opts.query, req);
+        raw = dedupeItems([...raw, ...embed.items]);
+        notices.push(...embed.notices);
+        if (!raw.length && !identity) {
+          return {
+            items: [],
+            rawCount: 0,
+            notices: [`Could not resolve TikTok profile "${opts.query}" — it may not exist, be private, or be region-blocked`],
+          };
+        }
+      }
+    } else {
+      const fromEmbed = await fetchEmbedItems(opts.sourceType, opts.query, req);
+      raw = fromEmbed.items;
+      notices.push(...fromEmbed.notices);
+
+      if (opts.sourceType === 'hashtag') {
       // Always hit the latest item_list. Embed is a popular/evergreen
       // playlist — with a dry limit of 2 it used to fill the page and skip
       // this call, so recency dropped both results as >3 months old.
@@ -122,6 +195,7 @@ export async function runTikTokProxyScrape(
           `No public TikTok embed playlist for keyword "${opts.query}". `
           + 'Unsigned search is blocked; track the matching hashtag if one exists.',
         );
+      }
       }
     }
 
@@ -170,9 +244,29 @@ export const proxyAdapter: ScraperAdapter = {
     }
     if (!proxyAdapter.isConfigured()) throw new Error(proxyAdapter.configurationHint());
 
+    if (opts.resumeDatasetId) {
+      const receipt = await readScrapeReceipt(opts.resumeDatasetId);
+      if (receipt) {
+        console.log(
+          `[proxy] ${opts.sourceType}="${opts.query}" resumed from receipt `
+          + `${opts.resumeDatasetId} — 0 traffic`,
+        );
+        return {
+          items: receipt.items,
+          costCents: 0,
+          rawCount: receipt.items.length,
+          actorRunId: null,
+          datasetId: opts.resumeDatasetId,
+          resumed: true,
+          notices: receipt.notices,
+          provider: PROXY_PROVIDER_NAME,
+          bytesUsed: 0,
+        };
+      }
+      console.warn(`[proxy] receipt ${opts.resumeDatasetId} unreadable — scraping fresh`);
+    }
+
     // Pre-authorise the WORST case: a cold lookup plus a full page of results.
-    // A cap only checked after the fact is not a cap — and unlike money,
-    // bandwidth cannot be refunded.
     const needsLookup = opts.sourceType !== 'keyword';
     const estimate = estimateScrapeBytes(opts.limit, needsLookup);
     for (const s of splitSpend(costSharers(opts), estimate)) {
@@ -186,40 +280,21 @@ export const proxyAdapter: ScraperAdapter = {
       + `(est traffic: ${fmtBytes(estimate)})`,
     );
 
-    const before = (await import('./bandwidth.js')).processBytesUsed();
     let bytes = 0;
+    let value: Awaited<ReturnType<typeof runTikTokProxyScrape>> | null = null;
     try {
-      const http = (await createImpersonatedHttp()) ?? unsignedHttp;
-      const value = await runTikTokProxyScrape(opts, http);
-
-      bytes = Math.max(0, (await import('./bandwidth.js')).processBytesUsed() - before);
-      const items = value.items;
-      const costCents = bytesToCents(bytes);
-
-      console.log(
-        `[proxy] ${context} -> ${items.length}/${value.rawCount} usable videos, `
-        + `${fmtBytes(bytes)} traffic (~${costCents}c)`,
-      );
-
-      return {
-        items,
-        costCents,
-        rawCount: value.rawCount,
-        // No provider-side storage: there is nothing to resume, and saying so
-        // honestly is better than handing back a receipt that cannot be redeemed.
-        actorRunId: null,
-        datasetId: null,
-        resumed: false,
-        notices: value.notices,
-        provider: PROXY_PROVIDER_NAME,
-        bytesUsed: bytes,
-      };
-    } catch (err) {
-      bytes = Math.max(0, (await import('./bandwidth.js')).processBytesUsed() - before);
-      throw err;
+      value = await withMeterScope(async () => {
+        const http = (await createImpersonatedHttp()) ?? unsignedHttp;
+        try {
+          const v = await runTikTokProxyScrape(opts, http);
+          bytes = scopeBytesUsed();
+          return v;
+        } catch (err) {
+          bytes = scopeBytesUsed();
+          throw err;
+        }
+      });
     } finally {
-      // Record what actually moved, even if the scrape threw after some
-      // pages landed — those bytes were billed and must not vanish.
       if (bytes > 0) {
         try {
           for (const s of splitSpend(costSharers(opts), bytes)) {
@@ -230,6 +305,31 @@ export const proxyAdapter: ScraperAdapter = {
         }
       }
     }
+
+    const items = value!.items;
+    const costCents = bytesToCents(bytes);
+    console.log(
+      `[proxy] ${context} -> ${items.length}/${value!.rawCount} usable videos, `
+      + `${fmtBytes(bytes)} traffic (~${costCents}c)`,
+    );
+
+    const datasetId = opts.refId
+      ? await writeScrapeReceipt(opts.refId, {
+          version: 1, at: Date.now(), items, notices: value!.notices,
+        })
+      : null;
+
+    return {
+      items,
+      costCents,
+      rawCount: value!.rawCount,
+      actorRunId: null,
+      datasetId,
+      resumed: false,
+      notices: value!.notices,
+      provider: PROXY_PROVIDER_NAME,
+      bytesUsed: bytes,
+    };
   },
 
   async downloadVideo(opts: DownloadOptions): Promise<DownloadResult> {
@@ -239,59 +339,61 @@ export const proxyAdapter: ScraperAdapter = {
     const itemId = extractVideoId(opts.videoUrl);
     if (!itemId) throw new Error(`Could not read a video id out of "${opts.videoUrl}"`);
 
-    // A whole video is the single most expensive thing this adapter can do,
-    // so it is pre-authorised at the ceiling rather than at a hopeful average.
-    await assertProxyBudget(opts.workspaceId, maxVideoBytes());
+    // Watch-page read (~ESTIMATED_LOOKUP_BYTES) also moves over the proxy.
+    await assertProxyBudget(opts.workspaceId, maxVideoBytes() + ESTIMATED_LOOKUP_BYTES);
 
-    const http = (await createImpersonatedHttp()) ?? unsignedHttp;
-    const handle = extractHandle(opts.videoUrl);
-    const watchUrl = handle
-      ? `https://www.tiktok.com/@${handle}/video/${itemId}`
-      : opts.videoUrl;
+    return withMeterScope(async () => {
+      const http = (await createImpersonatedHttp()) ?? unsignedHttp;
+      const handle = extractHandle(opts.videoUrl);
+      const watchUrl = handle
+        ? `https://www.tiktok.com/@${handle}/video/${itemId}`
+        : opts.videoUrl;
 
-    let video: any;
-    try {
-      video = await resolvePlayableVideo(opts.videoUrl, itemId, http);
-    } catch (err) {
-      if (err instanceof SlideshowPostError && err.images.length > 0) {
-        const slides = await downloadSlideshowSlides(err.images, watchUrl, http);
-        const sizeBytes = slides.reduce((n, s) => n + s.buffer.length, 0);
-        const costCents = await recordTrafficBytes(opts.workspaceId, sizeBytes, opts.videoUrl);
-        console.log(`[proxy] downloaded ${slides.length} slideshow slides (${fmtBytes(sizeBytes)})`);
-        return {
-          costCents,
-          sizeBytes,
-          cdnUrl: err.images[0] ?? '',
-          actorRunId: null,
-          provider: PROXY_PROVIDER_NAME,
-          bytesUsed: sizeBytes,
-          slideshow: slides,
-        };
+      let video: any;
+      try {
+        video = await resolvePlayableVideo(opts.videoUrl, itemId, http);
+      } catch (err) {
+        if (err instanceof SlideshowPostError && err.images.length > 0) {
+          const slides = await downloadSlideshowSlides(err.images, watchUrl, http);
+          const sizeBytes = slides.reduce((n, s) => n + s.buffer.length, 0);
+          const bytes = scopeBytesUsed() || sizeBytes;
+          const costCents = await recordTrafficBytes(opts.workspaceId, bytes, opts.videoUrl);
+          console.log(`[proxy] downloaded ${slides.length} slideshow slides (${fmtBytes(bytes)})`);
+          return {
+            costCents,
+            sizeBytes,
+            cdnUrl: err.images[0] ?? '',
+            actorRunId: null,
+            provider: PROXY_PROVIDER_NAME,
+            bytesUsed: bytes,
+            slideshow: slides,
+          };
+        }
+        throw err;
       }
-      throw err;
-    }
 
-    const variants = listPlayableVariants(video);
-    if (!variants.length) throw new Error('TikTok returned no playable URL for this video');
+      const variants = listPlayableVariants(video);
+      if (!variants.length) throw new Error('TikTok returned no playable URL for this video');
 
-    const ceiling = maxVideoBytes();
-    const { pick, buffer } = await downloadFirstWorking(variants, watchUrl, ceiling, http);
+      const { pick, buffer } = await downloadFirstWorking(variants, watchUrl, maxVideoBytes(), http);
 
-    if (buffer.length < 1024) {
-      throw new Error(`Downloaded file too small (${buffer.length} bytes) — likely an error page`);
-    }
-    writeFileSync(opts.outputPath, buffer);
+      if (buffer.length < 1024) {
+        throw new Error(`Downloaded file too small (${buffer.length} bytes) — likely an error page`);
+      }
+      writeFileSync(opts.outputPath, buffer);
 
-    const costCents = await recordTrafficBytes(opts.workspaceId, buffer.length, opts.videoUrl);
+      const bytes = scopeBytesUsed() || buffer.length;
+      const costCents = await recordTrafficBytes(opts.workspaceId, bytes, opts.videoUrl);
 
-    return {
-      costCents,
-      sizeBytes: buffer.length,
-      cdnUrl: pick.url,
-      actorRunId: null,
-      provider: PROXY_PROVIDER_NAME,
-      bytesUsed: buffer.length,
-    };
+      return {
+        costCents,
+        sizeBytes: buffer.length,
+        cdnUrl: pick.url,
+        actorRunId: null,
+        provider: PROXY_PROVIDER_NAME,
+        bytesUsed: bytes,
+      };
+    });
   },
 };
 
