@@ -83,6 +83,9 @@ export async function POST(request: Request): Promise<Response> {
     // above, and only processes jobs directly when no VPS worker is active.
     if (vpsActive) break;
 
+    // Discover mines must NOT run here: this process has no residential
+    // proxy (Vercel defaults to Apify, whose token 401s). The Contabo
+    // scraper worker claims `discover`.
     const job = (await claimNextJob('fetch'))
       ?? (await claimNextJob('analyze'))
       ?? (await claimNextJob('rescore'))

@@ -9,7 +9,8 @@
 //   2. mineDiscoverSeed(seed) — one small probe scrape (MINE_SCRAPE_LIMIT
 //      videos) per seed, per call. From the sampled captions it mines the
 //      hashtags people actually post under and the creators actually posting,
-//      each with view evidence.
+//      each with view evidence. On Vercel this enqueues a `discover` MediaJob
+//      for the Contabo proxy scraper and waits; the worker scrapes inline.
 //
 // The split is deliberate — same reason suggestions.ts is split: a combined
 // call waits on the slowest of several real scrapes and used to time the
@@ -31,6 +32,10 @@ import { normalizeQuery } from './canonical-query.js';
 import { scrapeCapKind, scrapeSource, trafficStatus } from './scrapers/index.js';
 import { getApifyCapStatus } from './spend-cap.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from './credits.js';
+import {
+  DISCOVER_JOB_DEADLINE_MS, enqueueDiscoverJob, parseDiscoverJobPayload, type MediaJobRow,
+} from './jobs.js';
+import type { NormalizedVideo } from '../normalizers.js';
 
 /** Input keywords/hashtags/handles accepted in one discover run. */
 export const MAX_INPUT_KEYWORDS = 8;
@@ -300,34 +305,172 @@ export async function expandDiscoverySeeds(workspace: Workspace, keywords: strin
 
 // ---------------------------------------------------------------------------
 // Step 2 — probe one seed and mine hashtags/creators from the samples.
+//
+// Production API (Vercel) cannot scrape TikTok: no residential proxy, and
+// Apify's token is not the live path. Refresh already queues a MediaJob for
+// the Contabo scraper worker (SCRAPER_PROVIDER=proxy). Discover mines do
+// the same — enqueue, the scraper runs the probe, the waiting call reads
+// the result off the job. Local / the worker itself still scrape inline.
 // ---------------------------------------------------------------------------
 
-export async function mineDiscoverSeed(workspace: Workspace, seed: DiscoverySeed): Promise<SeedMineResult> {
-  if (scrapeCapKind('tiktok') === 'proxy') {
-    const capStatus = await trafficStatus(workspace.id);
-    if (capStatus.breached) {
-      const balance = await creditBalance(workspace.id);
-      return { ok: true, verified: false, seed, sampleCount: 0, topViews: 0, hashtags: [], creators: [], creditsCharged: 0, creditsRemaining: balance.total, error: 'Proxy traffic cap breached.' };
-    }
-  } else {
-    const capStatus = await getApifyCapStatus(workspace.id);
-    if (capStatus.breached) {
-      const balance = await creditBalance(workspace.id);
-      return { ok: true, verified: false, seed, sampleCount: 0, topViews: 0, hashtags: [], creators: [], creditsCharged: 0, creditsRemaining: balance.total, error: 'Apify spend cap breached.' };
-    }
+/** How long the API/MCP call will wait for the scraper worker. Inside the
+ *  60s Vercel maxDuration with a few seconds of spare. */
+export const DISCOVER_WAIT_MS = 50_000;
+const DISCOVER_POLL_MS = 1_000;
+
+/**
+ * Queue the probe onto the Contabo scraper when this process cannot (or
+ * should not) scrape itself.
+ *
+ *  - Vercel production sets WORKER_URL and has no proxy → queue.
+ *  - The scraper worker (WORKER_KINDS includes discover/refresh) IS the
+ *    thing that scrapes → never queue from here, or we'd deadlock waiting
+ *    on a job only this process can claim.
+ *  - Local without WORKER_URL scrapes inline (Apify or proxy, whatever is
+ *    configured).
+ */
+export function shouldQueueDiscoverMine(): boolean {
+  const kinds = (process.env.WORKER_KINDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  if (kinds.includes('discover') || kinds.includes('refresh')) return false;
+  return Boolean(process.env.WORKER_URL?.trim() || process.env.WORKER_ACTIVE?.trim());
+}
+
+/** Pure: turn sampled videos into mined hashtags + creators. */
+export function mineFromItems(seed: DiscoverySeed, items: NormalizedVideo[]): {
+  verified: boolean;
+  sampleCount: number;
+  topViews: number;
+  hashtags: MinedHashtag[];
+  creators: MinedCreator[];
+} {
+  if (items.length === 0) {
+    return { verified: false, sampleCount: 0, topViews: 0, hashtags: [], creators: [] };
   }
 
-  const opId = randomUUID();
-  const preAuth = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * MINE_SCRAPE_LIMIT);
+  const ranked = [...items].sort((a, b) => b.views - a.views);
+  const topViews = ranked[0].views;
+  const seedHashtagKey = seed.sourceType === 'hashtag' ? seed.query : null;
+
+  const tagAcc = new Map<string, { videoCount: number; totalViews: number; sampleCaption: string }>();
+  for (const item of ranked) {
+    for (const tag of extractHashtags(item.caption)) {
+      if (tag === seedHashtagKey) continue;
+      const acc = tagAcc.get(tag) ?? { videoCount: 0, totalViews: 0, sampleCaption: '' };
+      acc.videoCount += 1;
+      acc.totalViews += item.views;
+      if (!acc.sampleCaption) acc.sampleCaption = item.caption;
+      tagAcc.set(tag, acc);
+    }
+  }
+  const hashtags: MinedHashtag[] = [...tagAcc.entries()]
+    .map(([query, acc]) => ({ query, videoCount: acc.videoCount, avgViews: Math.round(acc.totalViews / acc.videoCount), sampleCaption: acc.sampleCaption }))
+    .sort((a, b) => b.videoCount - a.videoCount || b.avgViews - a.avgViews)
+    .slice(0, 10);
+
+  const creatorAcc = new Map<string, { views: number[]; followers: number | null; topCaption: string; topViews: number }>();
+  for (const item of ranked) {
+    const handle = item.creatorHandle.toLowerCase();
+    if (!handle) continue;
+    const acc = creatorAcc.get(handle) ?? { views: [], followers: null, topCaption: '', topViews: 0 };
+    acc.views.push(item.views);
+    acc.followers = Math.max(acc.followers ?? 0, item.creatorFollowers ?? 0) || item.creatorFollowers;
+    if (item.views > acc.topViews) { acc.topViews = item.views; acc.topCaption = item.caption; }
+    creatorAcc.set(handle, acc);
+  }
+  const creators: MinedCreator[] = [...creatorAcc.entries()]
+    .filter(([handle, acc]) => acc.views.length >= 2 && handle !== seed.query)
+    .map(([query, acc]) => ({ query, videoCount: acc.views.length, medianViews: median(acc.views), followers: acc.followers, sampleCaption: acc.topCaption }))
+    .sort((a, b) => b.medianViews - a.medianViews)
+    .slice(0, 5);
+
+  return { verified: true, sampleCount: ranked.length, topViews, hashtags, creators };
+}
+
+function emptyMine(seed: DiscoverySeed, creditsRemaining: number, extra: Partial<SeedMineResult> = {}): SeedMineResult {
+  return {
+    ok: true, verified: false, seed, sampleCount: 0, topViews: 0,
+    hashtags: [], creators: [], creditsCharged: 0, creditsRemaining,
+    ...extra,
+  };
+}
+
+function asSeedMineResult(seed: DiscoverySeed, raw: unknown): SeedMineResult | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Partial<SeedMineResult>;
+  if (typeof r.ok !== 'boolean' || typeof r.verified !== 'boolean') return null;
+  return {
+    ok: r.ok,
+    verified: r.verified,
+    seed,
+    sampleCount: typeof r.sampleCount === 'number' ? r.sampleCount : 0,
+    topViews: typeof r.topViews === 'number' ? r.topViews : 0,
+    hashtags: Array.isArray(r.hashtags) ? r.hashtags : [],
+    creators: Array.isArray(r.creators) ? r.creators : [],
+    creditsCharged: typeof r.creditsCharged === 'number' ? r.creditsCharged : 0,
+    creditsRemaining: typeof r.creditsRemaining === 'number' ? r.creditsRemaining : 0,
+    error: typeof r.error === 'string' ? r.error : undefined,
+  };
+}
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+async function waitForDiscoverJob(
+  jobId: string,
+  workspaceId: string,
+  seed: DiscoverySeed,
+  timeoutMs: number,
+): Promise<SeedMineResult | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const job = await db.mediaJob.findFirst({
+      where: { id: jobId, workspaceId },
+    }) as unknown as MediaJobRow | null;
+    if (!job) return null;
+    if (job.status === 'done') {
+      const payload = parseDiscoverJobPayload(job.payloadJson);
+      const parsed = asSeedMineResult(seed, payload.result);
+      if (parsed) return parsed;
+      const balance = await creditBalance(workspaceId);
+      return emptyMine(seed, balance.total, {
+        ok: false,
+        error: 'Discover probe finished with no result.',
+      });
+    }
+    if (job.status === 'failed') {
+      const balance = await creditBalance(workspaceId);
+      return emptyMine(seed, balance.total, {
+        ok: false,
+        error: job.lastError || 'Discover probe failed on the scraper worker.',
+      });
+    }
+    await sleep(DISCOVER_POLL_MS);
+  }
+  return null;
+}
+
+/**
+ * The scrape + mine body. Called inline locally, and by the scraper worker
+ * for queued jobs. `alreadyDebited` is set when enqueue already took the
+ * pre-auth (same opId), so a retry of this job does not charge twice.
+ */
+export async function runDiscoverMine(
+  workspace: Workspace,
+  seed: DiscoverySeed,
+  opts?: { opId?: string; preAuthCredits?: number; alreadyDebited?: boolean },
+): Promise<SeedMineResult> {
+  const opId = opts?.opId ?? randomUUID();
+  const preAuth = opts?.preAuthCredits ?? Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * MINE_SCRAPE_LIMIT);
   const balanceBefore = await creditBalance(workspace.id);
 
-  try {
-    await debitCredits(workspace.id, preAuth, 'discover_mine', `${opId}:preauth`);
-  } catch (err) {
-    if (err instanceof InsufficientCreditsError) {
-      return { ok: true, verified: false, seed, sampleCount: 0, topViews: 0, hashtags: [], creators: [], creditsCharged: 0, creditsRemaining: err.remaining, error: 'Out of credits.' };
+  if (!opts?.alreadyDebited) {
+    try {
+      await debitCredits(workspace.id, preAuth, 'discover_mine', `${opId}:preauth`);
+    } catch (err) {
+      if (err instanceof InsufficientCreditsError) {
+        return emptyMine(seed, err.remaining, { error: 'Out of credits.' });
+      }
+      throw err;
     }
-    throw err;
   }
 
   try {
@@ -346,70 +489,100 @@ export async function mineDiscoverSeed(workspace: Workspace, seed: DiscoverySeed
       await refundCredits(workspace.id, refundAmount, 'discover_mine', `${opId}:settle`, 'usage_settlement');
     }
     const balanceAfter = await creditBalance(workspace.id);
-    const creditsCharged = balanceBefore.total - balanceAfter.total;
-
-    if (result.items.length === 0) {
-      return { ok: true, verified: false, seed, sampleCount: 0, topViews: 0, hashtags: [], creators: [], creditsCharged, creditsRemaining: balanceAfter.total };
-    }
-
-    const items = [...result.items].sort((a, b) => b.views - a.views);
-    const topViews = items[0].views;
-    const seedHashtagKey = seed.sourceType === 'hashtag' ? seed.query : null;
-
-    // Hashtags: count per video (once per caption), carry the top-view sample.
-    const tagAcc = new Map<string, { videoCount: number; totalViews: number; sampleCaption: string }>();
-    for (const item of items) {
-      for (const tag of extractHashtags(item.caption)) {
-        if (tag === seedHashtagKey) continue;
-        const acc = tagAcc.get(tag) ?? { videoCount: 0, totalViews: 0, sampleCaption: '' };
-        acc.videoCount += 1;
-        acc.totalViews += item.views;
-        if (!acc.sampleCaption) acc.sampleCaption = item.caption;
-        tagAcc.set(tag, acc);
-      }
-    }
-    const hashtags: MinedHashtag[] = [...tagAcc.entries()]
-      .map(([query, acc]) => ({ query, videoCount: acc.videoCount, avgViews: Math.round(acc.totalViews / acc.videoCount), sampleCaption: acc.sampleCaption }))
-      .sort((a, b) => b.videoCount - a.videoCount || b.avgViews - a.avgViews)
-      .slice(0, 10);
-
-    // Creators: keep handles seen more than once in the sample — a single
-    // appearance is noise on a 5-video probe.
-    const creatorAcc = new Map<string, { views: number[]; followers: number | null; topCaption: string; topViews: number }>();
-    for (const item of items) {
-      const handle = item.creatorHandle.toLowerCase();
-      if (!handle) continue;
-      const acc = creatorAcc.get(handle) ?? { views: [], followers: null, topCaption: '', topViews: 0 };
-      acc.views.push(item.views);
-      acc.followers = Math.max(acc.followers ?? 0, item.creatorFollowers ?? 0) || item.creatorFollowers;
-      if (item.views > acc.topViews) { acc.topViews = item.views; acc.topCaption = item.caption; }
-      creatorAcc.set(handle, acc);
-    }
-    const creators: MinedCreator[] = [...creatorAcc.entries()]
-      .filter(([handle, acc]) => acc.views.length >= 2 && handle !== seed.query)
-      .map(([query, acc]) => ({ query, videoCount: acc.views.length, medianViews: median(acc.views), followers: acc.followers, sampleCaption: acc.topCaption }))
-      .sort((a, b) => b.medianViews - a.medianViews)
-      .slice(0, 5);
+    // When enqueue already debited, balanceBefore is post-debit so the
+    // difference would under-count (often 0). The kept amount is what we
+    // did not refund.
+    const creditsCharged = opts?.alreadyDebited
+      ? actualCredits
+      : Math.max(0, balanceBefore.total - balanceAfter.total);
+    const mined = mineFromItems(seed, result.items);
 
     return {
       ok: true,
-      verified: true,
       seed,
-      sampleCount: items.length,
-      topViews,
-      hashtags,
-      creators,
       creditsCharged,
       creditsRemaining: balanceAfter.total,
+      ...mined,
     };
   } catch (err) {
     // The scrape itself threw (not just "0 results") — refund in full; this
     // seed never got a real judgment either way.
     await refundCredits(workspace.id, preAuth, 'discover_mine', `${opId}:fail`, 'call_failed');
     const balance = await creditBalance(workspace.id);
-    return {
-      ok: false, verified: false, seed, sampleCount: 0, topViews: 0, hashtags: [], creators: [],
-      creditsCharged: 0, creditsRemaining: balance.total, error: (err as Error).message,
-    };
+    return emptyMine(seed, balance.total, {
+      ok: false,
+      error: (err as Error).message,
+    });
   }
+}
+
+export async function mineDiscoverSeed(workspace: Workspace, seed: DiscoverySeed): Promise<SeedMineResult> {
+  // Queued mines run on the Contabo proxy scraper, which enforces its own
+  // PROXY_TRAFFIC_CAP_GB. This process (Vercel) often has a different/default
+  // cap, so we do not pre-check traffic here — a false breach would refuse a
+  // probe the worker would have run.
+  if (!shouldQueueDiscoverMine()) {
+    if (scrapeCapKind('tiktok') === 'proxy') {
+      const capStatus = await trafficStatus(workspace.id);
+      if (capStatus.breached) {
+        const balance = await creditBalance(workspace.id);
+        return emptyMine(seed, balance.total, { error: 'Proxy traffic cap breached.' });
+      }
+    } else {
+      const capStatus = await getApifyCapStatus(workspace.id);
+      if (capStatus.breached) {
+        const balance = await creditBalance(workspace.id);
+        return emptyMine(seed, balance.total, { error: 'Apify spend cap breached.' });
+      }
+    }
+  }
+
+  if (!shouldQueueDiscoverMine()) {
+    return runDiscoverMine(workspace, seed);
+  }
+
+  const opId = randomUUID();
+  const preAuth = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * MINE_SCRAPE_LIMIT);
+
+  try {
+    await debitCredits(workspace.id, preAuth, 'discover_mine', `${opId}:preauth`);
+  } catch (err) {
+    if (err instanceof InsufficientCreditsError) {
+      return emptyMine(seed, err.remaining, { error: 'Out of credits.' });
+    }
+    throw err;
+  }
+
+  let job: MediaJobRow;
+  try {
+    job = await enqueueDiscoverJob({
+      workspaceId: workspace.id,
+      payload: {
+        sourceType: seed.sourceType,
+        query: seed.query,
+        rationale: seed.rationale,
+        origin: seed.origin,
+        alreadyTracked: seed.alreadyTracked,
+      },
+      opId,
+      preAuthCredits: preAuth,
+      deadlineAt: new Date(Date.now() + DISCOVER_JOB_DEADLINE_MS),
+    });
+  } catch (err) {
+    await refundCredits(workspace.id, preAuth, 'discover_mine', `${opId}:fail`, 'call_failed');
+    const balance = await creditBalance(workspace.id);
+    return emptyMine(seed, balance.total, {
+      ok: false,
+      error: `Could not queue discover probe: ${(err as Error).message}`,
+    });
+  }
+
+  const waited = await waitForDiscoverJob(job.id, workspace.id, seed, DISCOVER_WAIT_MS);
+  if (waited) return waited;
+
+  const balance = await creditBalance(workspace.id);
+  return emptyMine(seed, balance.total, {
+    ok: false,
+    error: 'Probe is still running on the scraper. Wait a moment and try again.',
+  });
 }

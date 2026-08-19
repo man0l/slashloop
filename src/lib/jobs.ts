@@ -202,6 +202,100 @@ export function isSoloRefreshPayload(payload: RefreshJobPayload): boolean {
   return Boolean(payload.sourceTypeOverride || payload.queryOverride);
 }
 
+/**
+ * Ledger `tool` for a job-kind refund. Reclaim/abandon used to assume
+ * everything that wasn't refresh was analyze — a discover pre-auth would
+ * have been refunded under the wrong tool name (and the wrong price fallback).
+ */
+export function jobCreditTool(kind: string): string {
+  if (kind === 'refresh') return 'refresh_source';
+  if (kind === 'discover') return 'discover_mine';
+  return 'analyze_video';
+}
+
+/**
+ * Discover probes are the same work as a refresh scrape (TikTok list through
+ * the proxy adapter). A worker already draining `refresh` with
+ * SCRAPER_PROVIDER=proxy claims them too, so compose does not need a new
+ * WORKER_KINDS entry.
+ */
+export function expandWorkerKinds(kinds: string[], scraperProvider?: string): string[] {
+  const provider = (scraperProvider ?? process.env.SCRAPER_PROVIDER ?? '').trim().toLowerCase();
+  if (kinds.includes('refresh') && !kinds.includes('discover') && provider === 'proxy') {
+    return [...kinds, 'discover'];
+  }
+  return kinds;
+}
+
+/**
+ * A discover probe: scrape a seed that is not (yet) a tracked Source.
+ *
+ * No videoId/sourceId — MediaJob_one_target allows both null only for this
+ * kind. The mine result is written back onto payloadJson on complete so the
+ * waiting API/MCP call can return the same SeedMineResult shape as an inline
+ * scrape.
+ */
+export interface DiscoverJobPayload {
+  sourceType: 'hashtag' | 'keyword' | 'creator';
+  query: string;
+  rationale: string;
+  origin: 'input' | 'ai';
+  alreadyTracked?: boolean;
+  /** Stashed by the worker on success (or a completed empty/error probe). */
+  result?: unknown;
+}
+
+export function parseDiscoverJobPayload(raw: string | null | undefined): DiscoverJobPayload {
+  try {
+    const parsed = JSON.parse(raw || '{}') as DiscoverJobPayload;
+    if (!parsed || typeof parsed !== 'object') {
+      return { sourceType: 'keyword', query: '', rationale: '', origin: 'input' };
+    }
+    const sourceType = parsed.sourceType === 'hashtag' || parsed.sourceType === 'creator' ? parsed.sourceType : 'keyword';
+    const origin = parsed.origin === 'ai' ? 'ai' : 'input';
+    return {
+      sourceType,
+      query: typeof parsed.query === 'string' ? parsed.query : '',
+      rationale: typeof parsed.rationale === 'string' ? parsed.rationale : '',
+      origin,
+      alreadyTracked: parsed.alreadyTracked === true,
+      result: parsed.result,
+    };
+  } catch {
+    return { sourceType: 'keyword', query: '', rationale: '', origin: 'input' };
+  }
+}
+
+export const DISCOVER_JOB_DEADLINE_MS = 5 * 60_000;
+
+export async function enqueueDiscoverJob(opts: {
+  workspaceId: string;
+  payload: DiscoverJobPayload;
+  opId: string;
+  preAuthCredits: number;
+  deadlineAt: Date;
+}): Promise<MediaJobRow> {
+  return db.mediaJob.create({
+    data: {
+      workspaceId: opts.workspaceId,
+      videoId: null,
+      sourceId: null,
+      kind: 'discover',
+      status: 'queued',
+      payloadJson: JSON.stringify({
+        sourceType: opts.payload.sourceType,
+        query: opts.payload.query,
+        rationale: opts.payload.rationale,
+        origin: opts.payload.origin,
+        alreadyTracked: opts.payload.alreadyTracked ?? false,
+      }),
+      deadlineAt: opts.deadlineAt,
+      opId: opts.opId,
+      preAuthCredits: opts.preAuthCredits,
+    },
+  }) as unknown as Promise<MediaJobRow>;
+}
+
 export async function enqueueRefreshJob(opts: {
   workspaceId: string;
   sourceId: string;
@@ -723,10 +817,21 @@ export async function yieldJob(id: string, reason: string): Promise<void> {
   `;
 }
 
-export async function completeJob(id: string, analysisId: string | null): Promise<void> {
+export async function completeJob(
+  id: string,
+  analysisId: string | null,
+  /** Optional payload rewrite — discover jobs stash the mine result here. */
+  payloadJson?: string,
+): Promise<void> {
   await db.mediaJob.update({
     where: { id },
-    data: { status: 'done', analysisId, finishedAt: new Date(), lastError: null },
+    data: {
+      status: 'done',
+      analysisId,
+      finishedAt: new Date(),
+      lastError: null,
+      ...(payloadJson !== undefined ? { payloadJson } : {}),
+    },
   });
 }
 
@@ -812,7 +917,7 @@ export async function failAbandonedQueuedJobs(
         await refundCredits(
           job.workspaceId,
           job.preAuthCredits ?? CREDIT_COSTS.analyzeVideo,
-          job.kind === 'refresh' ? 'refresh_source' : 'analyze_video',
+          jobCreditTool(job.kind),
           `${job.opId}:fail`,
           'call_failed',
         );
@@ -924,7 +1029,7 @@ export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: nu
         await refundCredits(
           job.workspaceId,
           job.preAuthCredits ?? CREDIT_COSTS.analyzeVideo,
-          job.kind === 'refresh' ? 'refresh_source' : 'analyze_video',
+          jobCreditTool(job.kind),
           `${job.opId}:fail`,
           'call_failed',
         );
@@ -972,7 +1077,7 @@ function baseUrl(): string | null {
  * because the Hobby plan's 12-function cap leaves no room for a second worker
  * route — see the comment there.
  */
-export async function dispatchWorker(_kind: 'analyze' | 'refresh' | 'rescore' = 'analyze'): Promise<{ dispatched: boolean; reason?: string }> {
+export async function dispatchWorker(_kind: 'analyze' | 'refresh' | 'rescore' | 'discover' = 'analyze'): Promise<{ dispatched: boolean; reason?: string }> {
   const base = baseUrl();
   if (!base) return { dispatched: false, reason: 'no PUBLIC_URL or VERCEL_URL' };
 

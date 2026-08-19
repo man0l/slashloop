@@ -23,7 +23,7 @@
 //       DB_CONNECTION_LIMIT with it.
 // ---------------------------------------------------------------------------
 
-import { claimNextJob, reclaimStuckJobs, failAbandonedQueuedJobs, type MediaJobRow } from '../lib/jobs.js';
+import { claimNextJob, reclaimStuckJobs, failAbandonedQueuedJobs, expandWorkerKinds, type MediaJobRow } from '../lib/jobs.js';
 import { processClaimedJob } from './process-job.js';
 import { rescoreStaleTooFresh } from '../scoring.js';
 import { withMeterScope } from '../lib/scrapers/bandwidth.js';
@@ -34,14 +34,19 @@ const CONCURRENCY = Math.max(1, Math.floor(Number(process.env.WORKER_CONCURRENCY
 
 // Which MediaJob kinds this worker claims. WORKER_KINDS is a comma-separated
 // list (e.g. "analyze,fetch" for video-only, or "refresh,rescore" for a
-// maintenance worker). Unset = drain everything (fetch,analyze,thumb,rescore,refresh).
+// maintenance worker). Unset = drain everything
+// (fetch,analyze,thumb,discover,rescore,refresh).
 // Order is priority: `thumb` sits just after analyze because it is cheap, fast,
 // and time-sensitive — the cover must be ingested before the source CDN URL
 // expires, so a backlog clears ahead of the slower rescore/refresh kinds.
-const ALL_KINDS = ['fetch', 'analyze', 'thumb', 'rescore', 'refresh'] as const;
+// discover sits ahead of refresh (user is waiting on the Discover screen) and
+// is claimed by any proxy refresh worker via expandWorkerKinds — no compose
+// WORKER_KINDS change required.
+const ALL_KINDS = ['fetch', 'analyze', 'thumb', 'discover', 'rescore', 'refresh'] as const;
 function workerKinds(): string[] {
   const raw = (process.env.WORKER_KINDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
-  return raw.length ? raw : [...ALL_KINDS];
+  const kinds = raw.length ? raw : [...ALL_KINDS];
+  return expandWorkerKinds(kinds);
 }
 const KINDS = workerKinds();
 // Only the maintenance worker (refresh/rescore kinds) should spend Apify

@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { aggregateDiscovery, extractHashtags, median, parseDiscoveryInput, type SeedMineResult } from './discovery.js';
+import {
+  aggregateDiscovery, extractHashtags, median, mineFromItems, parseDiscoveryInput,
+  shouldQueueDiscoverMine, type SeedMineResult,
+} from './discovery.js';
+import type { NormalizedVideo } from '../normalizers.js';
 
 describe('extractHashtags', () => {
   test('lowercases and dedupes within a caption', () => {
@@ -46,6 +50,73 @@ describe('parseDiscoveryInput', () => {
 
   test('caps and drops empties', () => {
     expect(parseDiscoveryInput(['', '   ', ...Array.from({ length: 12 }, (_, i) => `term${i}`)])).toHaveLength(8);
+  });
+});
+
+function video(over: Partial<NormalizedVideo> = {}): NormalizedVideo {
+  return {
+    platform: 'tiktok', externalId: '1', url: 'https://tiktok.com/x',
+    thumbnailUrl: '', coverDownloadUrl: null, creatorHandle: 'alice',
+    creatorFollowers: 1000, caption: 'study #studytok #notes', postedAt: '',
+    views: 1000, likes: 0, comments: 0, shares: null, saves: null,
+    durationSec: 10, transcript: null, transcriptSource: 'none', raw: {},
+    ...over,
+  };
+}
+
+describe('shouldQueueDiscoverMine', () => {
+  const keys = ['WORKER_KINDS', 'WORKER_URL', 'WORKER_ACTIVE'] as const;
+  const saved: Record<string, string | undefined> = {};
+  function setEnv(over: Partial<Record<(typeof keys)[number], string | undefined>>) {
+    for (const k of keys) saved[k] = process.env[k];
+    for (const k of keys) {
+      if (over[k] === undefined) delete process.env[k];
+      else process.env[k] = over[k];
+    }
+  }
+  function restore() {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+
+  test('queues on Vercel (WORKER_URL set, no scraper kinds)', () => {
+    setEnv({ WORKER_URL: 'https://mcp.slashloop.dev', WORKER_KINDS: undefined, WORKER_ACTIVE: undefined });
+    try { expect(shouldQueueDiscoverMine()).toBe(true); } finally { restore(); }
+  });
+
+  test('does not queue on the scraper worker (would deadlock)', () => {
+    setEnv({ WORKER_URL: 'https://mcp.slashloop.dev', WORKER_KINDS: 'refresh,thumb,discover' });
+    try { expect(shouldQueueDiscoverMine()).toBe(false); } finally { restore(); }
+  });
+
+  test('scrapes inline locally (no WORKER_URL)', () => {
+    setEnv({ WORKER_URL: undefined, WORKER_KINDS: undefined, WORKER_ACTIVE: undefined });
+    try { expect(shouldQueueDiscoverMine()).toBe(false); } finally { restore(); }
+  });
+});
+
+describe('mineFromItems', () => {
+  const seed = { sourceType: 'hashtag' as const, query: 'studytok', rationale: '', origin: 'input' as const };
+
+  test('empty sample is unverified', () => {
+    expect(mineFromItems(seed, [])).toMatchObject({ verified: false, sampleCount: 0, hashtags: [], creators: [] });
+  });
+
+  test('mines other hashtags and drops the seed tag', () => {
+    const mined = mineFromItems(seed, [
+      video({ caption: '#studytok #notes', views: 2000, creatorHandle: 'alice' }),
+      video({ caption: '#studytok #notes', views: 500, creatorHandle: 'alice' }),
+      video({ caption: '#pomodoro', views: 100, creatorHandle: 'bob' }),
+    ]);
+    expect(mined.verified).toBe(true);
+    expect(mined.sampleCount).toBe(3);
+    expect(mined.topViews).toBe(2000);
+    expect(mined.hashtags.map(h => h.query)).toEqual(['notes', 'pomodoro']);
+    expect(mined.creators).toEqual([
+      expect.objectContaining({ query: 'alice', videoCount: 2, medianViews: 1250 }),
+    ]);
   });
 });
 

@@ -430,14 +430,15 @@ model AutoAnalyzeRun {
 model MediaJob {
   id          String    @id @default(uuid())
   workspaceId String
-  /// Null for source-scoped kinds (refresh). Exactly one of videoId/sourceId
-  /// is set — enforced by a CHECK constraint in the migration, since Prisma
-  /// cannot express "one of these two".
+  /// Null for source-scoped kinds (refresh) and for discover probes (no
+  /// source exists yet). For every kind except discover, exactly one of
+  /// videoId/sourceId is set — enforced by MediaJob_one_target in
+  /// supabase/migrations, since Prisma cannot express that CHECK.
   videoId     String?
   /// Set for source-scoped kinds. A refresh targets a Source, not a Video.
   sourceId    String?
-  /// analyze | fetch | refresh | rescore | thumb. Named rather than implied so
-  /// work like this shares the queue instead of growing a second one.
+  /// analyze | fetch | refresh | rescore | thumb | discover. Named rather than
+  /// implied so work like this shares the queue instead of growing a second one.
   kind        String    @default("analyze")
   /// Hard wall clock for callers waiting on this job. await_job refuses to
   /// report shouldKeepPolling once past it, so a waiter terminates even if the

@@ -37,11 +37,13 @@ mock.module('./credits.js', () => ({
     refunds.push({ workspaceId, amount, kind, refId });
     return { total: 100 };
   },
+  debitCredits: async () => ({ planCredits: 100, packCredits: 0, total: 100 }),
+  creditBalance: async () => ({ planCredits: 100, packCredits: 0, total: 100 }),
   CREDIT_COSTS: { analyzeVideo: 15, refreshSourcePerVideo: 3 },
   InsufficientCreditsError: class extends Error {},
 }));
 
-const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES } = await import('./jobs.js');
+const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds } = await import('./jobs.js');
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
 
@@ -69,6 +71,12 @@ describe('failAbandonedQueuedJobs — jobs no worker ever took', () => {
     expect(res.refunded).toBe(1);
     expect(updates[0]!.data.status).toBe('failed');
     expect(refunds[0]).toMatchObject({ workspaceId: 'ws-1', amount: 8, kind: 'refresh_source' });
+  });
+
+  test('a discover job is refunded under discover_mine, not analyze_video', async () => {
+    jobs = [job({ kind: 'discover' })];
+    await failAbandonedQueuedJobs();
+    expect(refunds[0]).toMatchObject({ kind: 'discover_mine', amount: 8 });
   });
 
   test('the refund is the job\'s ACTUAL pre-auth, not a fixed price', async () => {
@@ -136,5 +144,40 @@ describe('failAbandonedQueuedJobs — jobs no worker ever took', () => {
     jobs = [job({ createdAt: minutesAgo(20) })];
     const res = await failAbandonedQueuedJobs(10);
     expect(res.failed).toBe(1);
+  });
+});
+
+describe('expandWorkerKinds', () => {
+  test('a proxy refresh worker also claims discover, without a compose change', () => {
+    expect(expandWorkerKinds(['refresh', 'thumb'], 'proxy')).toEqual(['refresh', 'thumb', 'discover']);
+  });
+
+  test('an Apify refresh worker does not steal discover jobs', () => {
+    expect(expandWorkerKinds(['refresh', 'rescore'], 'apify')).toEqual(['refresh', 'rescore']);
+  });
+
+  test('unset kinds are left alone', () => {
+    expect(expandWorkerKinds(['analyze', 'fetch'], 'proxy')).toEqual(['analyze', 'fetch']);
+  });
+});
+
+describe('jobCreditTool', () => {
+  test('maps priced kinds to their ledger tool names', () => {
+    expect(jobCreditTool('refresh')).toBe('refresh_source');
+    expect(jobCreditTool('discover')).toBe('discover_mine');
+    expect(jobCreditTool('analyze')).toBe('analyze_video');
+    expect(jobCreditTool('fetch')).toBe('analyze_video');
+  });
+});
+
+describe('parseDiscoverJobPayload', () => {
+  test('reads a well-formed payload', () => {
+    expect(parseDiscoverJobPayload(JSON.stringify({
+      sourceType: 'hashtag', query: 'studytok', rationale: 'typed', origin: 'input',
+    }))).toMatchObject({ sourceType: 'hashtag', query: 'studytok', origin: 'input' });
+  });
+
+  test('garbage becomes a keyword seed rather than throwing', () => {
+    expect(parseDiscoverJobPayload('nope')).toMatchObject({ sourceType: 'keyword', query: '' });
   });
 });

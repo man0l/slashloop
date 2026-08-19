@@ -20,7 +20,7 @@
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import {
   claimNextJob, completeJob, failJob, yieldJob, enqueueAnalyzeJob,
-  parseRefreshJobPayload, isSoloRefreshPayload,
+  parseRefreshJobPayload, isSoloRefreshPayload, parseDiscoverJobPayload,
   type MediaJobRow, type AnalyzeJobPayload, type FetchJobPayload, type ThumbJobPayload,
 } from '../lib/jobs.js';
 import { ingestThumbnails, type ThumbIngestTarget } from '../lib/media.js';
@@ -93,6 +93,53 @@ export async function processClaimedJob(
       const message = (err as Error).message;
       const { terminal } = await failJob(job.id, message);
       console.warn(`[worker] rescore job ${job.id} failed (terminal=${terminal}): ${message}`);
+      return { ok: false, error: message };
+    }
+  }
+
+  // discover jobs: a small probe scrape of a seed that is not a tracked
+  // Source. Result is written back onto payloadJson so the waiting API/MCP
+  // call can return it. Credits were pre-authorised at enqueue.
+  if (job.kind === 'discover') {
+    const payload = parseDiscoverJobPayload(job.payloadJson);
+    if (!payload.query) {
+      await failJob(job.id, 'discover job has no query');
+      return { ok: false, error: 'no query' };
+    }
+    try {
+      const workspace = await db.workspace.findUnique({ where: { id: job.workspaceId } });
+      if (!workspace) throw new Error('workspace not found');
+      const { runDiscoverMine } = await import('../lib/discovery.js');
+      const result = await runDiscoverMine(
+        workspace,
+        {
+          sourceType: payload.sourceType,
+          query: payload.query,
+          rationale: payload.rationale,
+          origin: payload.origin,
+          alreadyTracked: payload.alreadyTracked,
+        },
+        {
+          opId: job.opId ?? undefined,
+          preAuthCredits: job.preAuthCredits ?? undefined,
+          alreadyDebited: Boolean(job.opId),
+        },
+      );
+      await completeJob(job.id, null, JSON.stringify({ ...payload, result }));
+      return { ok: true };
+    } catch (err) {
+      const message = (err as Error).message;
+      const { terminal } = await failJob(job.id, message);
+      if (terminal && job.opId) {
+        await refundCredits(
+          job.workspaceId,
+          job.preAuthCredits ?? 0,
+          'discover_mine',
+          `${job.opId}:fail`,
+          'call_failed',
+        ).catch(e => console.warn(`[worker] refund failed for ${job.id}: ${(e as Error).message}`));
+      }
+      console.warn(`[worker] discover job ${job.id} failed (terminal=${terminal}): ${message}`);
       return { ok: false, error: message };
     }
   }
