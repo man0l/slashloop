@@ -7,7 +7,7 @@ import {
 import { remainingBudgetBytes, vendorRemainingBytes } from './budget.js';
 import { parseProxiesResponse } from './proxy-cheap.js';
 import { proxyAdapter, runTikTokProxyScrape } from './proxy-adapter.js';
-import { resetImpersonatedClient } from './impersonate-http.js';
+import { jsonFromBody, resetImpersonatedClient } from './impersonate-http.js';
 import { clearLookupCaches } from './tiktok-web.js';
 import type { TikTokHttp } from './tiktok-web.js';
 import {
@@ -273,6 +273,19 @@ describe('tiktok-web helpers', () => {
     expect(url).toContain('/api/challenge/item_list/');
     expect(url).toContain('challengeID=1362460');
     expect(url).toContain('from_page=hashtag');
+  });
+
+  test('a 20-video item_list over 512KB still parses (do not truncate first)', () => {
+    const body = JSON.stringify({
+      itemList: Array.from({ length: 20 }, (_, i) => ({
+        id: String(7_000_000_000_000_000_000 + i),
+        desc: 'x'.repeat(28_000),
+        createTime: 1_700_000_000,
+      })),
+    });
+    expect(body.length).toBeGreaterThan(512 * 1024);
+    expect(jsonFromBody(body)?.itemList).toHaveLength(20);
+    expect(jsonFromBody(body.slice(0, 512 * 1024))).toBeNull();
   });
 
   test('creatorItemListUrl is the yt-dlp user playlist endpoint', () => {

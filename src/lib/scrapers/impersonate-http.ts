@@ -20,7 +20,12 @@ const CHROME_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 const HTML_MAX = 512 * 1024;
-const JSON_MAX = 512 * 1024;
+/** Cap on the `text` we keep around for WAF detection / logs. JSON.parse
+ *  always runs on the FULL body — truncating first (the old 512KB cap) turned
+ *  a valid 20-video /api/challenge/item_list (~560KB+) into "unparseable",
+ *  so hashtag refreshes fell back to the evergreen embed playlist and the
+ *  3-month recency filter then saved zero videos. */
+const JSON_TEXT_CAP = 512 * 1024;
 
 class CookieJar {
   private readonly map = new Map<string, string>();
@@ -54,6 +59,12 @@ interface ImpitLike {
 
 function isConnectFail(err: unknown): boolean {
   return /CONNECT tunnel/i.test(String((err as Error)?.message ?? err));
+}
+
+/** Parse JSON from the full body. Truncating first is what broke hashtag latest. */
+export function jsonFromBody(raw: string): any | null {
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
 }
 
 /** Same Impit client; retry only a flaky CONNECT, never a different provider. */
@@ -99,15 +110,11 @@ function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
     const signed = signTikTokUrl(url, hdrs['User-Agent'] ?? CHROME_UA);
     const res = await fetchThrough(client, signed, hdrs);
     jar.absorb(res.headers);
-    const text = await res.text();
-    const bytes = Math.min(text.length, maxBytes);
-    meterBytes(bytes);
-    let json: any | null = null;
-    const slice = text.length > maxBytes ? text.slice(0, maxBytes) : text;
-    if (res.ok && slice) {
-      try { json = JSON.parse(slice); } catch { json = null; }
-    }
-    return { json, status: res.status, ok: res.ok, text: slice, bytes };
+    const raw = await res.text();
+    meterBytes(raw.length);
+    const json = res.ok ? jsonFromBody(raw) : null;
+    const text = raw.length > maxBytes ? raw.slice(0, maxBytes) : raw;
+    return { json, status: res.status, ok: res.ok, text, bytes: raw.length };
   }
 
   async function withWaf(url: string, headers: Record<string, string> | undefined, maxBytes: number): Promise<TikTokHttpResult> {
@@ -149,7 +156,7 @@ function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
 
   return {
     async getJson(url, headers) {
-      return withWaf(url, { Accept: 'application/json, text/plain, */*', ...(headers ?? {}) }, JSON_MAX);
+      return withWaf(url, { Accept: 'application/json, text/plain, */*', ...(headers ?? {}) }, JSON_TEXT_CAP);
     },
     async getText(url, headers) {
       const r = await withWaf(url, { Accept: 'text/html,application/xhtml+xml', ...(headers ?? {}) }, HTML_MAX);
