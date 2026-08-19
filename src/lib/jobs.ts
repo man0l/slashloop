@@ -42,6 +42,25 @@ export const MAX_ATTEMPTS = 3;
  */
 export const STUCK_AFTER_MINUTES = 15;
 
+/**
+ * Wall-clock cap for one claimed job in the VPS worker. reclaimStuckJobs is
+ * a 15-minute last resort for a killed process; this is what stops a hung
+ * TikTok fetch from blocking the other slot in WORKER_CONCURRENCY forever.
+ *
+ * Analyze is bounded by OPENROUTER_VIDEO_TIMEOUT_MS (300s in prod) plus slack.
+ * Refresh/discover have been observed at ~20-60s when healthy.
+ */
+export function jobTimeoutMs(kind: string): number {
+  if (kind === 'analyze') {
+    const video = Number(process.env.OPENROUTER_VIDEO_TIMEOUT_MS ?? 300_000);
+    return (Number.isFinite(video) && video > 0 ? video : 300_000) + 30_000;
+  }
+  if (kind === 'fetch') return 90_000;
+  if (kind === 'thumb') return 30_000;
+  if (kind === 'refresh' || kind === 'discover' || kind === 'rescore') return 120_000;
+  return 120_000;
+}
+
 export interface MediaJobRow {
   id: string;
   workspaceId: string;

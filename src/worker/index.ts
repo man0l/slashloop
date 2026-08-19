@@ -3,10 +3,10 @@
 //
 // Same queue, same state machine, same retry policy as the Vercel worker
 // (api/jobs/analyze.ts): claim with FOR UPDATE SKIP LOCKED, process via
-// processClaimedJob, complete/fail. The difference is this process has no
-// wall-clock budget at all, so the long legs — Apify download, and OpenRouter
-// video analysis (Qwen on a full-length clip needs >60s) — actually finish
-// instead of being killed at the Vercel Hobby limit.
+// processClaimedJob, complete/fail. The process has no 60s Vercel ceiling, so
+// OpenRouter video analysis can finish. Each claimed job still has
+// jobTimeoutMs(kind) so a hung TikTok fetch cannot occupy a concurrency slot
+// until reclaimStuckJobs (15 min).
 //
 // Concurrency: claimNextJob's SKIP LOCKED makes this safe to run ALONGSIDE the
 // Vercel worker and the pg_cron drain — jobs are never double-claimed, whoever
@@ -23,10 +23,14 @@
 //       DB_CONNECTION_LIMIT with it.
 // ---------------------------------------------------------------------------
 
-import { claimNextJob, reclaimStuckJobs, failAbandonedQueuedJobs, expandWorkerKinds, type MediaJobRow } from '../lib/jobs.js';
+import {
+  claimNextJob, reclaimStuckJobs, failAbandonedQueuedJobs, expandWorkerKinds,
+  failJob, jobTimeoutMs, jobCreditTool, type MediaJobRow,
+} from '../lib/jobs.js';
 import { processClaimedJob } from './process-job.js';
 import { rescoreStaleTooFresh } from '../scoring.js';
 import { withMeterScope } from '../lib/scrapers/bandwidth.js';
+import { refundCredits } from '../lib/credits.js';
 
 const IDLE_MS = Number(process.env.WORKER_IDLE_MS ?? 3000);
 const RESCORE_EVERY = Number(process.env.WORKER_RESCORE_EVERY ?? 60);
@@ -124,8 +128,15 @@ while (!shuttingDown) {
 
     await Promise.all(jobs.map(async (job) => {
       const t = Date.now();
+      const budgetMs = jobTimeoutMs(job.kind);
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const result = await withMeterScope(() => processClaimedJob(job));
+        const result = await Promise.race([
+          withMeterScope(() => processClaimedJob(job)),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`job timed out after ${budgetMs}ms`)), budgetMs);
+          }),
+        ]);
         const secs = ((Date.now() - t) / 1000).toFixed(1);
         console.log(
           `[worker] ${job.kind} job ${job.id.slice(0, 8)} ` +
@@ -133,7 +144,27 @@ while (!shuttingDown) {
           `${result.error ? ` — ${result.error.slice(0, 160)}` : ''}`,
         );
       } catch (err) {
-        console.error(`[worker] ${job.kind} job ${job.id.slice(0, 8)} threw: ${(err as Error).message}`);
+        const message = (err as Error).message;
+        console.error(`[worker] ${job.kind} job ${job.id.slice(0, 8)} threw: ${message}`);
+        // An uncaught throw or timeout used to leave the row `running` until
+        // reclaimStuckJobs (15 min), which is how one hung scrape stalled the
+        // whole queue. Fail it here so the next loop iteration can claim.
+        try {
+          const { terminal } = await failJob(job.id, message);
+          if (terminal && job.opId) {
+            await refundCredits(
+              job.workspaceId,
+              job.preAuthCredits ?? 0,
+              jobCreditTool(job.kind),
+              `${job.opId}:fail`,
+              'call_failed',
+            );
+          }
+        } catch (failErr) {
+          console.error(`[worker] failJob after throw failed: ${(failErr as Error).message}`);
+        }
+      } finally {
+        if (timer) clearTimeout(timer);
       }
     }));
     // No sleep after a round: keep draining the backlog, then idle.

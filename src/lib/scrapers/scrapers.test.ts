@@ -7,7 +7,7 @@ import {
 import { remainingBudgetBytes, vendorRemainingBytes } from './budget.js';
 import { parseProxiesResponse } from './proxy-cheap.js';
 import { proxyAdapter, runTikTokProxyScrape } from './proxy-adapter.js';
-import { jsonFromBody, resetImpersonatedClient } from './impersonate-http.js';
+import { IMPIT_FETCH_TIMEOUT_MS, jsonFromBody, resetImpersonatedClient } from './impersonate-http.js';
 import { clearLookupCaches } from './tiktok-web.js';
 import type { TikTokHttp } from './tiktok-web.js';
 import {
@@ -273,6 +273,11 @@ describe('tiktok-web helpers', () => {
     expect(url).toContain('/api/challenge/item_list/');
     expect(url).toContain('challengeID=1362460');
     expect(url).toContain('from_page=hashtag');
+  });
+
+  test('impit fetches have a timeout so a hung CONNECT cannot stall the worker', () => {
+    expect(IMPIT_FETCH_TIMEOUT_MS).toBe(20_000);
+    expect(IMPIT_FETCH_TIMEOUT_MS).toBeLessThan(60_000);
   });
 
   test('a 20-video item_list over 512KB still parses (do not truncate first)', () => {

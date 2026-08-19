@@ -67,7 +67,27 @@ export function jsonFromBody(raw: string): any | null {
   try { return JSON.parse(raw); } catch { return null; }
 }
 
-/** Same Impit client; retry only a flaky CONNECT, never a different provider. */
+/** Per-request cap. Matches proxy-http's DEFAULT_TIMEOUT_MS. A hung CONNECT
+ *  with no timeout is what pinned the scraper on @jufmlg and blocked the
+ *  rest of the refresh queue. */
+export const IMPIT_FETCH_TIMEOUT_MS = 20_000;
+
+function isRetryableFetch(err: unknown): boolean {
+  const msg = String((err as Error)?.message ?? err);
+  return isConnectFail(err) || /timed out/i.test(msg) || /aborted/i.test(msg);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
+/** Same Impit client; retry only a flaky CONNECT/timeout, never a different provider. */
 async function fetchThrough(
   client: ImpitLike,
   url: string,
@@ -76,11 +96,18 @@ async function fetchThrough(
   let last: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      return await client.fetch(url, { headers, redirect: 'follow' });
+      const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(IMPIT_FETCH_TIMEOUT_MS)
+        : undefined;
+      return await withTimeout(
+        client.fetch(url, { headers, redirect: 'follow', ...(signal ? { signal } : {}) }),
+        IMPIT_FETCH_TIMEOUT_MS,
+        '[proxy:impit] fetch',
+      );
     } catch (err) {
       last = err;
-      if (!isConnectFail(err) || attempt === 2) throw err;
-      console.warn(`[proxy:impit] CONNECT failed, retry ${attempt + 1}/2: ${(err as Error).message}`);
+      if (!isRetryableFetch(err) || attempt === 2) throw err;
+      console.warn(`[proxy:impit] fetch failed, retry ${attempt + 1}/2: ${(err as Error).message}`);
       await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
     }
   }

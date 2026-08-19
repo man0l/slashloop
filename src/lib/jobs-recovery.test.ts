@@ -43,7 +43,7 @@ mock.module('./credits.js', () => ({
   InsufficientCreditsError: class extends Error {},
 }));
 
-const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds } = await import('./jobs.js');
+const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds, jobTimeoutMs } = await import('./jobs.js');
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
 
@@ -158,6 +158,20 @@ describe('expandWorkerKinds', () => {
 
   test('unset kinds are left alone', () => {
     expect(expandWorkerKinds(['analyze', 'fetch'], 'proxy')).toEqual(['analyze', 'fetch']);
+  });
+});
+
+describe('jobTimeoutMs', () => {
+  test('scrape jobs finish or die in minutes, not the 15-minute reclaim window', () => {
+    expect(jobTimeoutMs('refresh')).toBe(120_000);
+    expect(jobTimeoutMs('discover')).toBe(120_000);
+    expect(jobTimeoutMs('fetch')).toBe(90_000);
+    expect(jobTimeoutMs('thumb')).toBe(30_000);
+    expect(jobTimeoutMs('refresh')).toBeLessThan(15 * 60_000);
+  });
+
+  test('analyze sits just above OPENROUTER_VIDEO_TIMEOUT_MS', () => {
+    expect(jobTimeoutMs('analyze')).toBeGreaterThanOrEqual(300_000);
   });
 });
 
