@@ -2,6 +2,8 @@
 //     as a plain web page.
 // GET /api/gallery-data?workspaceId=&sourceId=&sortBy=... — JSON cards for the
 //     site's Gallery page (rewritten here with mode=data — see vercel.json).
+// GET /api/gallery-data?workspaceId=&creatorHandle=...     — hover preview for
+//     one creator (outliers + last 5 already in the workspace).
 //
 // The HTML route is a second delivery path for the exact HTML that
 // `show_gallery` publishes as a `ui://` MCP App resource (src/tools/gallery.ts,
@@ -31,6 +33,7 @@
 
 import { runWithUser } from '../src/context.js';
 import { buildGalleryHtml, buildCards } from '../src/tools/gallery.js';
+import { buildCreatorPreview } from '../src/lib/creator-preview.js';
 import { verifyGalleryToken, isGalleryLinkEnabled } from '../src/lib/gallery-link.js';
 import { corsPreflight } from '../src/lib/cors.js';
 import { requireOwnedWorkspace, jsonResponse } from '../src/lib/authz.js';
@@ -114,6 +117,15 @@ const SORT_VALUES = new Set<GalleryFilters['sortBy']>(['outlier_score', 'views',
 async function handleData(request: Request, url: URL): Promise<Response> {
   const auth = await requireOwnedWorkspace(request, url.searchParams.get('workspaceId'));
   if (!auth.ok) return auth.response;
+
+  // Hover preview on the site's Gallery — already-scraped outliers + last 5
+  // for one creator, no live scrape. Distinct response shape (outliers/recent,
+  // no `cards`) so an older connector that ignored this param is detectable.
+  const creatorHandle = url.searchParams.get('creatorHandle');
+  if (creatorHandle) {
+    const preview = await buildCreatorPreview(auth.workspace, creatorHandle);
+    return jsonResponse(200, preview);
+  }
 
   const sortByRaw = url.searchParams.get('sortBy') ?? 'outlier_score';
   const sortBy = SORT_VALUES.has(sortByRaw as GalleryFilters['sortBy'])
