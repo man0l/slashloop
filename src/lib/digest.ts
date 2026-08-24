@@ -14,13 +14,16 @@
 
 import { db } from '../db.js';
 import type { Workspace } from '@prisma/client';
-import { publicUrl, thumbBucket, thumbPath } from './storage.js';
+import { isStorageEnabled, publicUrl, thumbBucket, thumbPath } from './storage.js';
+import { backfillThumbsViaOembed } from './media.js';
 
 const DIGEST_MIN_OUTLIER_SCORE = 5;
 const TOP_OUTLIERS_IN_DIGEST = 5;
 
 export interface DigestOutlier {
   videoId: string;
+  /** Owning workspace — deep links switch the site to it before filtering. */
+  workspaceId: string;
   creator: string;
   platform: string;
   source: string;
@@ -59,17 +62,26 @@ function sinceFor(ws: Pick<Workspace, 'createdAt' | 'lastDigestAt'>): Date {
 }
 
 /**
- * Build the digest payload for a workspace. Read-only — persistence and
- * delivery belong to the cron / get_digest callers.
+ * Build the digest payload for a workspace. Read-only except for one opportunistic
+ * capture: top-outlier thumbnails that were never ingested (status 'none') get
+ * backfilled through TikTok oEmbed and stored in our bucket — the digest is the
+ * only place a missing cover is visible to a customer, and the top outliers are
+ * exactly the videos worth seeing. Pass a `backfillBudget` to enable it; the
+ * cron caps the total per run so a large first run can't blow the 60s function.
  */
 export async function buildDigest(
   ws: Pick<Workspace, 'id' | 'createdAt' | 'lastDigestAt'>,
   creditsRemaining: number,
+  backfillBudget?: { remaining: number },
 ): Promise<DigestPayload> {
   const since = sinceFor(ws);
+  // isBaselineSample: false everywhere a video list is shown — baseline rows
+  // are internal scoring history (creator-median deepening), they have no
+  // thumbnails by design and the gallery filters them out, so ranking them
+  // in the email both shows a gray box AND deep-links to an empty gallery.
   const wsFilter = { source: { workspaceId: ws.id } };
 
-  const totalVideos = await db.video.count({ where: wsFilter });
+  const totalVideos = await db.video.count({ where: { ...wsFilter, isBaselineSample: false } });
 
   // New scored outliers since the watermark. Over-fetch so the actual-first
   // ranking can cut down to the display size.
@@ -77,13 +89,13 @@ export async function buildDigest(
     where: {
       scoredAt: { gt: since },
       outlierScore: { gte: DIGEST_MIN_OUTLIER_SCORE },
-      video: wsFilter,
+      video: { ...wsFilter, isBaselineSample: false },
     },
     include: {
       video: {
         select: {
           id: true, creatorHandle: true, platform: true, views: true, url: true, postedAt: true,
-          creatorFollowers: true, thumbKey: true, thumbStatus: true,
+          creatorFollowers: true, thumbKey: true, thumbStatus: true, thumbnailUrl: true,
           analyses: { select: { videoId: true }, take: 1 },
           source: { select: { query: true, workspaceId: true } },
         },
@@ -107,6 +119,34 @@ export async function buildDigest(
     ...newScores.filter(underReaches),
   ];
 
+  // Opportunistic thumbnail capture for exactly the videos the email will
+  // show. Only 'none' rows: 'failed' already had its shot at scrape time and
+  // oEmbed backfill deliberately never writes 'failed', so this never
+  // re-attempts the same dead cover weekly.
+  const needThumb = ranked
+    .slice(0, TOP_OUTLIERS_IN_DIGEST)
+    .filter(s => s.video.thumbStatus === 'none' && s.video.platform === 'tiktok' && s.video.url);
+  if (needThumb.length > 0 && backfillBudget && backfillBudget.remaining > 0 && isStorageEnabled()) {
+    const take = needThumb.slice(0, backfillBudget.remaining);
+    backfillBudget.remaining -= take.length;
+    const outcome = await backfillThumbsViaOembed(ws.id, take.map(s => ({ videoId: s.video.id, url: s.video.url })));
+    if (outcome.stored + outcome.failed > 0) {
+      console.log(`[digest] thumb backfill ws=${ws.id.slice(0, 8)} stored=${outcome.stored} failed=${outcome.failed}`);
+      const refetched = await db.video.findMany({
+        where: { id: { in: take.map(s => s.video.id) } },
+        select: { id: true, thumbKey: true, thumbStatus: true },
+      });
+      const byId = new Map(refetched.map(r => [r.id, r]));
+      for (const s of take) {
+        const r = byId.get(s.video.id);
+        if (r?.thumbStatus === 'stored') {
+          s.video.thumbKey = r.thumbKey;
+          s.video.thumbStatus = r.thumbStatus;
+        }
+      }
+    }
+  }
+
   const thumbUrlFor = (s: (typeof ranked)[number]): string | null => {
     if (s.video.thumbStatus !== 'stored' || !s.video.thumbKey) return null;
     try {
@@ -120,6 +160,7 @@ export async function buildDigest(
 
   const topOutliers: DigestOutlier[] = ranked.slice(0, TOP_OUTLIERS_IN_DIGEST).map(s => ({
     videoId: s.video.id,
+    workspaceId: s.video.source.workspaceId,
     creator: s.video.creatorHandle,
     platform: s.video.platform,
     source: s.video.source.query,
@@ -178,9 +219,15 @@ function siteUrl(): string {
   return (process.env.SITE_URL ?? 'https://slashloop.dev').replace(/\/$/, '');
 }
 
-/** Deep link into the gallery with this video highlighted. */
-export function videoLink(videoId: string): string {
-  return `${siteUrl()}/gallery?video=${videoId}`;
+/**
+ * Deep link into the gallery showing exactly this video. The workspace param
+ * makes the link self-contained: an owner with several workspaces lands on
+ * the right one without touching the switcher, and the video param filters
+ * the grid down to that single card.
+ */
+export function videoLink(videoId: string, workspaceId?: string): string {
+  const ws = workspaceId ? `&workspace=${encodeURIComponent(workspaceId)}` : '';
+  return `${siteUrl()}/gallery?video=${encodeURIComponent(videoId)}${ws}`;
 }
 
 export interface DigestSection {
@@ -217,7 +264,7 @@ export function renderDigestText(sections: DigestSection[]): string {
     }
     for (const o of s.payload.topOutliers) {
       lines.push(`  • @${o.creator} — ${o.outlierScore.toFixed(0)}× · ${fmtViews(o.views)} views`);
-      lines.push(`    Open in Slashloop: ${videoLink(o.videoId)}`);
+      lines.push(`    Open in Slashloop: ${videoLink(o.videoId, o.workspaceId)}`);
     }
     if (s.payload.ideas.overdue > 0) lines.push(`  ${s.payload.ideas.overdue} post(s) overdue in your queue`);
   }
@@ -234,13 +281,18 @@ function esc(s: string): string {
 
 /** One tappable row: vertical thumb on the left, numbers on the right. */
 function outlierCard(o: DigestOutlier): string {
+  // Margins via margin-right on the thumb, not flex `gap` — `gap` in flex is
+  // still dropped by a number of webmail clients, which rendered the rows
+  // edge-to-edge (the "no margins" screenshot). Same reason for the roomy
+  // row padding instead of relying on the wrapper alone.
+  const thumbStyle = 'display:block;width:64px;height:114px;object-fit:cover;border-radius:8px;margin:0 14px 0 4px;flex-shrink:0;';
   const thumb = o.thumbUrl
-    ? `<img src="${esc(o.thumbUrl)}" alt="" width="64" height="114" style="display:block;width:64px;height:114px;object-fit:cover;border-radius:8px;" />`
-    : `<div style="width:64px;height:114px;border-radius:8px;background:#f0f0f0;"></div>`;
+    ? `<img src="${esc(o.thumbUrl)}" alt="" width="64" height="114" style="${thumbStyle}" />`
+    : `<div style="${thumbStyle}background:#f0f0f0;"></div>`;
   return `
-    <a href="${esc(videoLink(o.videoId))}" style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid #ececec;text-decoration:none;">
+    <a href="${esc(videoLink(o.videoId, o.workspaceId))}" style="display:flex;align-items:center;padding:14px 8px;border-bottom:1px solid #ececec;text-decoration:none;">
       ${thumb}
-      <span style="flex:1;min-width:0;padding-top:2px;">
+      <span style="flex:1;min-width:0;">
         <span style="display:block;font-size:15px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;">@${esc(o.creator)}</span>
         <span style="display:block;font-size:22px;font-weight:800;color:#FF4D00;margin-top:4px;">${o.outlierScore.toFixed(0)}×</span>
         <span style="display:block;font-size:13px;color:#777;margin-top:2px;">${fmtViews(o.views)} views &middot; ${esc(o.source)}</span>

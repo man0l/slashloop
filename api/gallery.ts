@@ -144,6 +144,7 @@ async function handleData(request: Request, url: URL): Promise<Response> {
     buildCards({
       workspaceId: auth.workspace.id,
       sourceId: url.searchParams.get('sourceId') ?? undefined,
+      videoId: url.searchParams.get('videoId') ?? undefined,
       sortBy,
       limit: Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined,
       minOutlier: Number.isFinite(minOutlierRaw) && minOutlierRaw > 0 ? minOutlierRaw : undefined,

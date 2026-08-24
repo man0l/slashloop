@@ -193,6 +193,77 @@ export async function ingestThumbnails(
 }
 
 // ---------------------------------------------------------------------------
+// Thumbnail backfill via TikTok oEmbed
+// ---------------------------------------------------------------------------
+
+const OEMBED_TIMEOUT_MS = 8_000;
+
+/**
+ * Resolve a fresh cover URL for a video via TikTok's public oEmbed endpoint.
+ *
+ * Why this exists: the `thumbnailUrl` stored at scrape time is a signed CDN
+ * link that expires within days, so backfilling an older video from it just
+ * 403s. oEmbed takes the canonical video URL — which never expires — and
+ * returns a currently-valid share thumbnail, no auth, no referer gate.
+ * Tested: plain GET, no headers, image/jpeg straight back.
+ */
+async function oembedThumbUrl(videoUrl: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OEMBED_TIMEOUT_MS);
+  try {
+    const res = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(videoUrl)}`, {
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`oembed ${res.status}`);
+    const json = (await res.json()) as { thumbnail_url?: string };
+    return json.thumbnail_url ?? null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Backfill missing thumbnails by capturing them through oEmbed and storing
+ * them in OUR bucket — from that point the object is ours and never expires.
+ *
+ * Called by the digest builder for top outliers whose cover was never
+ * ingested. Deliberately NEVER writes thumbStatus 'failed': an oEmbed hiccup
+ * (rate limit, datacenter IP block, deleted video) stays 'none' and gets
+ * retried on a later digest — one GET per video per week is nothing next to
+ * a permanently missing cover in the customer-facing email. Never throws.
+ */
+export async function backfillThumbsViaOembed(
+  workspaceId: string,
+  videos: { videoId: string; url: string }[],
+): Promise<{ stored: number; failed: number }> {
+  const result = { stored: 0, failed: 0 };
+  if (!isStorageEnabled() || videos.length === 0) return result;
+
+  await Promise.all(videos.map(async v => {
+    try {
+      const coverUrl = await oembedThumbUrl(v.url);
+      if (!coverUrl) throw new Error('oembed returned no thumbnail_url');
+      const key = await ingestOneThumb(workspaceId, {
+        videoId: v.videoId,
+        platform: 'tiktok',
+        thumbnailUrl: coverUrl,
+      });
+      if (!key) throw new Error('cover fetch/store failed');
+      await db.video.update({
+        where: { id: v.videoId },
+        data: { thumbKey: key, thumbStatus: 'stored', thumbStoredAt: new Date() },
+      });
+      result.stored++;
+    } catch (err) {
+      console.warn(`[media] oembed thumb backfill failed for ${v.videoId}: ${(err as Error).message}`);
+      result.failed++;
+    }
+  }));
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Video binaries
 // ---------------------------------------------------------------------------
 

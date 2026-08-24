@@ -9,13 +9,13 @@ const payload: DigestPayload = {
   actualNewCount: 2,
   topOutliers: [
     {
-      videoId: 'v1', creator: 'app_dev_anna', platform: 'tiktok', source: '#buildinpublic',
+      videoId: 'v1', workspaceId: 'ws1', creator: 'app_dev_anna', platform: 'tiktok', source: '#buildinpublic',
       url: 'https://tiktok.com/@app_dev_anna/video/1', views: 482_000,
       outlierScore: 686, scoreType: 'actual', hasAnalysis: false, postedAt: '2026-08-19T10:00:00.000Z',
       thumbUrl: 'https://cdn.example.com/thumb/v1.jpg',
     },
     {
-      videoId: 'v2', creator: '<script>alert("xss")</script>', platform: 'tiktok', source: 'sauna',
+      videoId: 'v2', workspaceId: 'ws1', creator: '<script>alert("xss")</script>', platform: 'tiktok', source: 'sauna',
       url: 'https://tiktok.com/@x/video/2', views: 12_000,
       outlierScore: 27, scoreType: 'estimated', hasAnalysis: true, postedAt: '2026-08-20T10:00:00.000Z',
       thumbUrl: null,
@@ -33,6 +33,10 @@ describe('videoLink', () => {
   test('deep-links into the app gallery, never TikTok', () => {
     expect(videoLink('v1')).toMatch(/\/gallery\?video=v1$/);
     expect(videoLink('v1')).not.toContain('tiktok.com');
+  });
+
+  test('carries the workspace so the link is self-contained', () => {
+    expect(videoLink('v1', 'ws 9')).toBe('https://slashloop.dev/gallery?video=v1&workspace=ws%209');
   });
 });
 
@@ -94,7 +98,16 @@ describe('renderDigestHtml', () => {
     const links = [...html.matchAll(/href="([^"]+)"/g)].map(m => m[1]);
     expect(links.length).toBeGreaterThan(0);
     for (const href of links) expect(href).not.toContain('tiktok.com');
-    expect(html).toContain('/gallery?video=v1');
+    // esc() encodes the separator — the escaped form is the correct HTML.
+    expect(html).toContain('/gallery?video=v1&amp;workspace=ws1');
+  });
+
+  test('thumbnail rows have real margins (margin, not flex gap)', () => {
+    // margin-right on the thumb — flex `gap` is dropped by several webmail
+    // clients, which is what made the rows render edge-to-edge.
+    expect(html).toContain('margin:0 14px 0 4px');
+    expect(html).not.toMatch(/gap:\s*\d+px/);
+    expect(html).toContain('padding:14px 8px');
   });
 
   test('mobile-first: viewport meta, single column, plain settings text link', () => {

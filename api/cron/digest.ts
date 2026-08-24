@@ -72,9 +72,13 @@ export async function GET(request: Request): Promise<Response> {
   type Built = { name: string; payload: DigestPayload };
   const byRecipient = new Map<string, Built[]>();
 
+  // Thumb captures are bounded per run (oEmbed fetch + image fetch + upload
+  // per video) so a large first run can't crowd the 60s function budget.
+  const backfillBudget = { remaining: 15 };
+
   for (const ws of due) {
     try {
-      const payload = await buildDigest(ws, ws.planCredits + ws.packCredits);
+      const payload = await buildDigest(ws, ws.planCredits + ws.packCredits, backfillBudget);
       await db.workspace.update({
         where: { id: ws.id },
         data: { lastDigestAt: new Date(payload.generatedAt), digestJson: JSON.stringify(payload) },

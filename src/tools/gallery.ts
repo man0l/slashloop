@@ -38,6 +38,12 @@ const GALLERY_POOL = 48;
 export interface BuildCardsOptions {
   /** When set, only videos from this source (e.g. just after a refresh). */
   sourceId?: string;
+  /**
+   * When set, only this one video — the digest email deep-links to exactly
+   * the outlier it's talking about, so the landing view should show that
+   * card alone, not page one of the general ranking.
+   */
+  videoId?: string;
   /** Cap on cards in the filter pool (default 48, max 60). */
   limit?: number;
   /** Initial min outlier score for the toolbar dropdown (0 = any). */
@@ -107,11 +113,13 @@ export async function buildCards(
   const where: {
     source: { workspaceId: string };
     sourceId?: string;
+    id?: string;
     views?: { gte: number };
     analyses?: { some: { backend: { contains: string } } };
     isBaselineSample: false;
   } = { source: { workspaceId: workspace.id }, isBaselineSample: false };
   if (opts.sourceId) where.sourceId = opts.sourceId;
+  if (opts.videoId) where.id = opts.videoId;
   if (opts.minViews && opts.minViews > 0) where.views = { gte: opts.minViews };
   // `contains` rather than equality: stored Analysis.backend carries a suffix
   // for fallback runs (e.g. 'openrouter-video (fallback)'), see analysis/index.ts.
