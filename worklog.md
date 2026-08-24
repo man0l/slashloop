@@ -276,3 +276,25 @@ Stage Summary:
 - Worst-case cost per discover run: 3 (AI) + 6 seeds x 5 videos x 1.5 = 48 credits; empty/failed probes refunded; nothing persisted until tracked.
 - MCP `discover` and the site Discover screen hit the same service module — behavior cannot drift between surfaces.
 - Verified: bun test (discovery/canonical-query/refresh-policy/llm — 42 pass), tsc typecheck + typecheck:vercel clean, site vitest 34 pass, site vite build clean (Discover chunk 11.1 kB). Full `bun test` suite hangs on unrelated pre-existing tests (live DB/network wait) — not from this change.
+
+---
+Task ID: 8
+Agent: main
+Task: Studio without manual input — retro reads the self feed, competitor flag removed
+
+Work Log:
+- Motivation: "log what you posted" and "mark a rival" both asked the user for data the tracker already has (or shouldn't need). The whole Studio surface is now read-only over scraped data; empty states resolve to one next step each, never data entry.
+- src/lib/posts.ts rewritten: logPostForWorkspace / listPostsForWorkspace / tiktokVideoIdFromUrl / LogPostInput / serializers deleted. buildWeeklyRetro (from the previous uncommitted rework) now reads the isSelf creator source's videos directly (baseline samples excluded), rows carry caption/views/vsMedian, and the payload exposes needsAccount / needsResync / selfSourceId / videoCount / lastPostedAt / selfLastRefreshedAt so callers can tell a quiet week from a stale scrape.
+- src/tools/studio.ts: log_post + list_posts deleted (tool count 51 -> 49). get_weekly_retro attaches nextSteps: needsAccount -> create_source (platform tiktok, sourceType creator, isSelf true); needsResync -> refresh_source on selfSourceId with worst-case cost label. get_benchmark description updated — comparison set is every tracked creator, no flags or extra setup.
+- src/lib/benchmark.ts: header comment de-jargoned; CreatorBenchmark.role narrowed to 'you' | 'creator'; isCompetitor dropped from the source query; response key renamed competitors -> creators.
+- isCompetitor removed end to end: src/tools/sources.ts (create_source/update_source params), src/lib/sources-service.ts (Create/UpdateSourceInput, mutual-exclusion logic, list mapping), api/sources.ts (body types + pass-throughs). isSelf keeps its exclusive-per-workspace transaction; it no longer has to clear a rival bit.
+- api/workspaces.ts: GET resource=posts and POST resource=posts removed; retro/benchmark resources stay. Imports trimmed to buildWeeklyRetro/buildBenchmark.
+- prisma/schema.prisma: LoggedPost model, its Video relations ("LoggedPostMatched"/"LoggedPostOutlier"), Workspace.loggedPosts, and Source.isCompetitor dropped. NOTE: schema uses `prisma db push` (no migrations dir) — run `bun run db:push` to apply; this drops the logged_posts table and the sources.is_competitor column in the real DB.
+- Tests: posts.test.ts replaced by normalizers.test.ts (kept pickSound cases; the URL-id parser they shared a file with no longer exists).
+- README tool inventory refreshed (49 tools, new Studio row, register-tools.ts comment was stale at 32).
+- Site (slashloop-site): matching pass done there — lib/studio.js dropped listPosts/logPost; Studio.jsx rebuilt around the new payloads (needsAccount -> link to Sources, needsResync -> inline "Resync your account" button calling refreshSource; rows render caption/views/vsMedian; benchmark table reads bench.creators, no Rival badge); Sources.jsx lost the Competitor checkbox in the create form and the per-row Rival toggle/badge (You toggle stays). Site vitest 56 pass, vite build clean.
+
+Stage Summary:
+- One concept per surface now: Sources tracks (isSelf marks yours), Studio reads. Nothing in the product asks the user to re-enter what TikTok already knows.
+- The weekly retro can no longer disagree with the library — same videos, same medians the gallery/scoring use.
+- Verified: tsc typecheck + typecheck:vercel clean, targeted bun tests pass (see task notes).

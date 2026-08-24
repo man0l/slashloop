@@ -1,58 +1,48 @@
-// MCP tools for the "my app" loop: log what you posted, read this week's
-// retro, compare your account to flagged competitors.
+// MCP tools for Studio — the "my app" loop, read-only over data the scraper
+// already pulled. Your week comes back from the isSelf creator source's feed;
+// the benchmark compares that account to every other tracked creator. Nothing
+// here logs or marks anything by hand: empty states resolve to track-your-
+// account or resync, never to manual entry.
 
 import { z } from 'zod/v4';
 import { requireWorkspace } from '../context.js';
-import { withNextSteps } from '../lib/next-steps.js';
-import { logPostForWorkspace, listPostsForWorkspace, buildWeeklyRetro } from '../lib/posts.js';
+import { withNextSteps, scraperCostLabel, refreshCreditLabel } from '../lib/next-steps.js';
+import { buildWeeklyRetro } from '../lib/posts.js';
 import { buildBenchmark } from '../lib/benchmark.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerStudioTools(server: McpServer) {
-  server.tool('log_post',
-    'Record a TikTok you actually published so the weekly retro can score it against your median. Free. Pass the watch URL; optionally which outlier you remade and the hook variation you used.',
-    {
-      url: z.string().url().describe('TikTok watch URL of the post you published'),
-      postedAt: z.string().optional().describe('ISO timestamp. Default: now.'),
-      hookVariation: z.string().optional().describe('Which hook you used, in a few words'),
-      notes: z.string().optional(),
-      ideaId: z.string().optional().describe('Idea this post came from — marks it tested'),
-      outlierVideoId: z.string().optional().describe('Library video you remade'),
-    },
-    async (input) => {
-      const workspace = await requireWorkspace();
-      const result = await logPostForWorkspace(workspace, input);
-      if (!result.ok) {
-        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: result.error, message: result.message }) }], isError: true };
-      }
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps(
-          { message: 'Post logged', post: result.post },
-          [{ label: 'See this week\'s retro', tool: 'get_weekly_retro' }],
-        ), null, 2) }],
-      };
-    });
-
-  server.tool('list_posts',
-    'List TikToks you logged via log_post, newest first. Free.',
-    { limit: z.number().min(1).max(100).optional() },
-    async ({ limit }) => {
-      const workspace = await requireWorkspace();
-      const posts = await listPostsForWorkspace(workspace, limit ?? 50);
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ posts, count: posts.length }, null, 2) }] };
-    });
-
   server.tool('get_weekly_retro',
-    'This week\'s retro: logged posts matched to your scraped videos, scored against your creator median. Free. Mark a source as isSelf first.',
+    'This week\'s posts from the workspace isSelf creator source, scored against that creator\'s median. Free. No manual log — refresh the self source if it is empty.',
     {},
     async () => {
       const workspace = await requireWorkspace();
       const retro = await buildWeeklyRetro(workspace);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(retro, null, 2) }] };
+      // The only two empty states, and the single move each one needs:
+      // no account yet → track it; account but no videos → one bootstrap
+      // pull. Neither ever asks the user to type in what they posted.
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps(retro, [
+          retro.needsAccount ? {
+            label: 'Track your own account',
+            tool: 'create_source',
+            args: { platform: 'tiktok', sourceType: 'creator', isSelf: true },
+            why: 'Studio reads your TikTok feed once it is a tracked source — add your @handle and the first refresh fills the retro.',
+          } : null,
+          retro.needsResync && retro.selfSourceId ? {
+            label: `Resync @${retro.selfHandle}`,
+            tool: 'refresh_source',
+            args: { sourceId: retro.selfSourceId },
+            cost: `${scraperCostLabel(20)} + ${refreshCreditLabel(20)} (worst case)`,
+            spendsMoney: true,
+            why: 'Your account is tracked but holds no videos yet — one bootstrap pull scores everything against your median.',
+          } : null,
+        ]), null, 2) }],
+      };
     });
 
   server.tool('get_benchmark',
-    'Compare your account (isSelf) to competitor creators: median views, posts this week / 30 days, outlier mix. Free. Uses already-scraped videos.',
+    'Compare the isSelf account to every other creator the workspace tracks: median views, posts this week / 30 days, outlier mix. Free. Uses already-scraped videos — no flags or extra setup.',
     {},
     async () => {
       const workspace = await requireWorkspace();

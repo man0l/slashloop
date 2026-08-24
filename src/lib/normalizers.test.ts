@@ -1,17 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { tiktokVideoIdFromUrl } from './posts.js';
 import { pickSound } from '../normalizers.js';
-
-describe('tiktokVideoIdFromUrl', () => {
-  test('reads watch and photo URLs', () => {
-    expect(tiktokVideoIdFromUrl('https://www.tiktok.com/@me/video/7656450385845996830')).toBe('7656450385845996830');
-    expect(tiktokVideoIdFromUrl('https://www.tiktok.com/@me/photo/1234567890123456789')).toBe('1234567890123456789');
-  });
-
-  test('returns null when there is no id', () => {
-    expect(tiktokVideoIdFromUrl('https://www.tiktok.com/@me')).toBeNull();
-  });
-});
 
 describe('pickSound', () => {
   test('reads clockworks musicMeta', () => {

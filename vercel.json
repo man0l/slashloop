@@ -77,10 +77,6 @@
       "dest": "/api/workspaces?resource=benchmark"
     },
     {
-      "src": "^/api/studio/posts$",
-      "dest": "/api/workspaces?resource=posts"
-    },
-    {
       "src": "^/api/workspaces$",
       "dest": "/api/workspaces"
     },

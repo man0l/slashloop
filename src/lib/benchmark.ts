@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
-// Competitor watchlist — compare the self source against rival creators.
+// Creator comparison — your account vs everyone else you track.
 //
-// Creators already in the workspace (isCompetitor, or every other creator
-// source if none are flagged) vs the owner's isSelf source: median views,
-// posting cadence, outlier mix. No live scrape — library data only.
+// Every creator source in the workspace other than isSelf is automatically
+// in the comparison set — there is no rival flag to discover or set. Medians,
+// cadence, outlier mix; no live scrape, library data only.
 // ---------------------------------------------------------------------------
 
 import type { Workspace } from '@prisma/client';
@@ -15,7 +15,7 @@ const DAY = 24 * 60 * 60 * 1000;
 export interface CreatorBenchmark {
   sourceId: string;
   handle: string;
-  role: 'you' | 'competitor' | 'creator';
+  role: 'you' | 'creator';
   videoCount: number;
   medianViews: number;
   postsLast7d: number;
@@ -35,12 +35,12 @@ function median(values: number[]): number {
 export async function buildBenchmark(workspace: Workspace, now = new Date()) {
   const sources = await db.source.findMany({
     where: { workspaceId: workspace.id, sourceType: 'creator' },
-    select: { id: true, query: true, isSelf: true, isCompetitor: true },
+    select: { id: true, query: true, isSelf: true },
     orderBy: { createdAt: 'asc' },
   });
   const you = sources.find((s) => s.isSelf) ?? null;
-  const flagged = sources.filter((s) => s.isCompetitor && !s.isSelf);
-  const rivals = flagged.length > 0 ? flagged : sources.filter((s) => !s.isSelf);
+  // Every other tracked creator is the comparison set — no extra "rival" flag.
+  const rivals = sources.filter((s) => !s.isSelf);
 
   const since7 = new Date(now.getTime() - 7 * DAY);
   const since30 = new Date(now.getTime() - 30 * DAY);
@@ -56,7 +56,7 @@ export async function buildBenchmark(workspace: Workspace, now = new Date()) {
     const views = videos.map((v) => v.views);
     const outliers = videos.map((v) => v.score?.outlierScore).filter((n): n is number => n != null);
     const top = videos.slice().sort((a, b) => b.views - a.views)[0];
-    const role: CreatorBenchmark['role'] = source.isSelf ? 'you' : source.isCompetitor ? 'competitor' : 'creator';
+    const role: CreatorBenchmark['role'] = source.isSelf ? 'you' : 'creator';
     return {
       sourceId: source.id,
       handle: normalizeQuery('creator', source.query),
@@ -74,7 +74,7 @@ export async function buildBenchmark(workspace: Workspace, now = new Date()) {
   const youStats = you ? await statsFor(you) : null;
   const rivalStats = await Promise.all(rivals.map(statsFor));
 
-  let headline = 'Track your account and a rival creator to compare cadence and medians.';
+  let headline = 'Track your own account, then any other creators, to compare cadence and medians.';
   if (youStats && rivalStats.length > 0) {
     const vs = rivalStats[0]!;
     const cadence = youStats.postsLast7d === vs.postsLast7d
@@ -85,10 +85,10 @@ export async function buildBenchmark(workspace: Workspace, now = new Date()) {
       : '';
     headline = cadence + viewsLine;
   } else if (youStats) {
-    headline = `Your median is ${youStats.medianViews.toLocaleString()} views · ${youStats.postsLast7d} post${youStats.postsLast7d === 1 ? '' : 's'} this week. Mark a creator as a competitor to compare.`;
+    headline = `Your median is ${youStats.medianViews.toLocaleString()} views · ${youStats.postsLast7d} post${youStats.postsLast7d === 1 ? '' : 's'} this week. Track another creator to compare.`;
   } else if (rivalStats.length > 0) {
-    headline = 'Mark your TikTok as “my account” to compare against these creators.';
+    headline = 'Mark a tracked creator as your account on Sources to compare against the others.';
   }
 
-  return { headline, you: youStats, competitors: rivalStats };
+  return { headline, you: youStats, creators: rivalStats };
 }
