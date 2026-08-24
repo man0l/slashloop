@@ -77,11 +77,13 @@ export function registerSourceTools(server: McpServer) {
           + 'Costs 1.5 credits per video the scraper returns.'),
       refreshSchedule: z.enum(['manual', 'daily', 'weekly']).default('manual'),
       nicheTag: z.string().optional().describe('Niche/workspace tag'),
+      isSelf: z.boolean().optional()
+        .describe('True when this creator is the user\'s own TikTok. Creator sources only. At most one per workspace.'),
     },
-    async ({ platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag }) => {
+    async ({ platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf }) => {
       const workspace = await requireWorkspace();
       const result = await createSourceForWorkspace(workspace, {
-        platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag,
+        platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf,
       });
 
       if (!result.ok) {
@@ -126,6 +128,8 @@ export function registerSourceTools(server: McpServer) {
       isActive: z.boolean().optional(),
       nicheTag: z.string().nullable().optional(),
       language: z.string().optional(),
+      isSelf: z.boolean().optional()
+        .describe('Mark (or unmark) this creator as the user\'s own TikTok. Ignored on hashtag/keyword sources.'),
     },
     async ({ sourceId, ...updates }) => {
       const workspace = await requireWorkspace();

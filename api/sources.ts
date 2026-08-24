@@ -38,6 +38,7 @@ interface CreateSourceBody {
   videoLimit?: number;
   refreshSchedule?: string;
   nicheTag?: string;
+  isSelf?: boolean;
 }
 
 interface UpdateSourceBody {
@@ -48,6 +49,7 @@ interface UpdateSourceBody {
   isActive?: boolean;
   nicheTag?: string | null;
   language?: string;
+  isSelf?: boolean;
 }
 
 interface RefreshBody {
@@ -284,6 +286,7 @@ export async function POST(request: Request): Promise<Response> {
     videoLimit,
     refreshSchedule: refreshSchedule as 'manual' | 'daily' | 'weekly',
     nicheTag: body.nicheTag,
+    isSelf: body.isSelf,
   });
 
   if (!result.ok) {
@@ -321,6 +324,7 @@ export async function PATCH(request: Request): Promise<Response> {
     isActive: body.isActive,
     nicheTag: body.nicheTag,
     language: body.language,
+    isSelf: body.isSelf,
   });
   if (!source) return jsonResponse(404, { error: 'source_not_found' });
   return jsonResponse(200, source);

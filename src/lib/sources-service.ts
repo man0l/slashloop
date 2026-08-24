@@ -81,6 +81,7 @@ export async function listSourcesForWorkspace(workspace: Workspace, filters: Lis
     videoLimit: s.videoLimit,
     refreshSchedule: s.refreshSchedule,
     isActive: s.isActive,
+    isSelf: s.isSelf,
     nicheTag: s.nicheTag,
     videoCount: s._count.videos,
     refreshCount: s._count.refreshRuns,
@@ -128,6 +129,8 @@ export interface CreateSourceInput {
   videoLimit: number;
   refreshSchedule: 'manual' | 'daily' | 'weekly';
   nicheTag?: string;
+  /** Own TikTok handle. Ignored unless sourceType is creator. At most one per workspace. */
+  isSelf?: boolean;
 }
 
 export type CreateSourceResult =
@@ -139,6 +142,7 @@ export async function createSourceForWorkspace(
   input: CreateSourceInput,
 ): Promise<CreateSourceResult> {
   const { platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag } = input;
+  const isSelf = Boolean(input.isSelf) && sourceType === 'creator';
 
   // Refuse platforms that cannot be scraped, at the moment the user asks —
   // not two steps later at refresh.
@@ -161,11 +165,19 @@ export async function createSourceForWorkspace(
     };
   }
 
-  const source = await db.source.create({
-    data: {
-      workspaceId: workspace.id,
-      platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag,
-    },
+  const source = await db.$transaction(async (tx) => {
+    if (isSelf) {
+      await tx.source.updateMany({
+        where: { workspaceId: workspace.id, isSelf: true },
+        data: { isSelf: false },
+      });
+    }
+    return tx.source.create({
+      data: {
+        workspaceId: workspace.id,
+        platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf,
+      },
+    });
   });
   return { ok: true, source };
 }
@@ -177,6 +189,7 @@ export interface UpdateSourceInput {
   isActive?: boolean;
   nicheTag?: string | null;
   language?: string;
+  isSelf?: boolean;
 }
 
 export async function updateSourceForWorkspace(
@@ -187,7 +200,24 @@ export async function updateSourceForWorkspace(
   const owned = await db.source.findFirst({ where: { id: sourceId, workspaceId: workspace.id } });
   if (!owned) return null;
 
-  return db.source.update({ where: { id: sourceId }, data: updates }).catch(() => null);
+  const { isSelf: wantSelf, ...rest } = updates;
+  // Only a creator source can be "mine". Hashtag/keyword flags are ignored.
+  const isSelf = wantSelf === undefined
+    ? undefined
+    : Boolean(wantSelf) && owned.sourceType === 'creator';
+
+  return db.$transaction(async (tx) => {
+    if (isSelf === true) {
+      await tx.source.updateMany({
+        where: { workspaceId: workspace.id, isSelf: true, NOT: { id: sourceId } },
+        data: { isSelf: false },
+      });
+    }
+    return tx.source.update({
+      where: { id: sourceId },
+      data: { ...rest, ...(isSelf === undefined ? {} : { isSelf }) },
+    });
+  }).catch(() => null);
 }
 
 export async function deleteSourceForWorkspace(workspace: Workspace, sourceId: string): Promise<boolean> {

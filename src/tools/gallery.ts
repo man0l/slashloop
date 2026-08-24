@@ -21,6 +21,7 @@ import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls } from '../lib/me
 import { latestFetchErrors } from '../lib/jobs.js';
 import { signGalleryUrl, ttlHumanized } from '../lib/gallery-link.js';
 import { withNextSteps, analyzeCostLabel } from '../lib/next-steps.js';
+import { normalizeQuery } from '../lib/canonical-query.js';
 import { renderGallery, type GalleryCard, type GalleryFilters } from '../ui/gallery.js';
 import { ResourceTemplate, type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -131,8 +132,18 @@ export async function buildCards(
   // silently did nothing there. Applied as a real DB filter below instead.
   const minOutlier = opts.minOutlier && opts.minOutlier > 0 ? opts.minOutlier : 0;
 
-  const include = { score: true, analyses: { orderBy: { createdAt: 'desc' as const }, take: 1 } };
-  type VideoCardRow = Prisma.VideoGetPayload<{ include: { score: true; analyses: true } }>;
+  const include = {
+    score: true,
+    analyses: { orderBy: { createdAt: 'desc' as const }, take: 1 },
+    source: { select: { isSelf: true } },
+  };
+  type VideoCardRow = Prisma.VideoGetPayload<{ include: typeof include }>;
+
+  const selfSources = await db.source.findMany({
+    where: { workspaceId: workspace.id, isSelf: true, sourceType: 'creator' },
+    select: { query: true },
+  });
+  const selfHandles = new Set(selfSources.map(s => normalizeQuery('creator', s.query)));
 
   let ranked: VideoCardRow[];
 
@@ -272,6 +283,7 @@ export async function buildCards(
       fetchError: (media[i]!.url || slideshowImages.length)
         ? null
         : (fetchErrors[v.id] ?? null),
+      isSelf: Boolean(v.source.isSelf) || selfHandles.has(normalizeQuery('creator', v.creatorHandle)),
     };
   });
 

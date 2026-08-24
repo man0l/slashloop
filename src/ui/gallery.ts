@@ -49,6 +49,9 @@ export interface GalleryCard {
   /** Why this video couldn't be scraped by the fetch worker (Apify etc.), when
    *  it has no stored video — lets the card show an error icon + tooltip. */
   fetchError: { code: string; message: string } | null;
+  /** True when this post is from the workspace's own TikTok (Source.isSelf
+   *  or the same handle). Gallery shows a You badge. */
+  isSelf: boolean;
   keyMoments: Array<{
     timestampSec: number;
     role: string;
@@ -129,6 +132,7 @@ function cardHtml(c: GalleryCard): string {
     <div class="body">
       <div class="meta">
         <strong>@${esc(c.creatorHandle)}</strong>
+        ${c.isSelf ? '<span class="self-badge">You</span>' : ''}
         <span>${compact(c.views)} views</span>
         <span>${esc(c.engagementRate)} eng</span>
         ${c.outlierScore != null ? `<span class="score-badge">${c.outlierScore.toFixed(1)}x</span>` : ''}
@@ -268,6 +272,7 @@ export function renderGallery(
   .body { padding: 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
   .meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; opacity: .8; }
   .score-badge { font-weight: 600; opacity: 1; }
+  .self-badge { font-weight: 700; opacity: 1; color: #0F7B6C; }
   .fetch-error { cursor: help; font-size: 13px; line-height: 1; color: #ff5c5c; }
   .nomedia-fetch { color: #ff5c5c; opacity: .85; }
   .caption { margin: 0; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

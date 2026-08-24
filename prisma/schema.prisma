@@ -153,6 +153,12 @@ model Source {
   videoLimit       Int       @default(50)
   refreshSchedule  String    @default("manual") // manual | daily | weekly
   isActive         Boolean   @default(true)
+  /// True when this creator source is the workspace owner's own TikTok.
+  /// Scoring already uses the creator's median, so the gallery reads
+  /// "your video vs your baseline" instead of niche outliers. At most one
+  /// self source per workspace (enforced in sources-service, not a unique
+  /// index — toggling off must stay a plain update).
+  isSelf           Boolean   @default(false)
   nicheTag         String?
   createdAt        DateTime  @default(now())
   lastRefreshedAt  DateTime?

@@ -13,6 +13,9 @@ Parse $ARGUMENTS into:
 - **platform**: tiktok | reels | shorts (default tiktok)
 - **sourceType**: creator | keyword | hashtag
 - **query**: the handle, keyword phrase, or hashtag (include the leading `#` for hashtags)
+- **isSelf** (optional): `true` when the user is tracking **their own** TikTok
+  handle (`sourceType` must be `creator`). Gallery cards then show a You badge
+  and the source can be filtered as "my account".
 
 If anything is ambiguous, ask one short question. Otherwise:
 
