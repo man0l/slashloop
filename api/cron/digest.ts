@@ -1,18 +1,24 @@
-// GET /api/cron/digest — weekly outlier digest, per workspace.
+// GET /api/cron/digest — weekly outlier digest.
 //
 // For every workspace that is digest-enabled, has an owner with a resolvable
 // email, and is due (never digested or ≥7 days since the last one):
 //   1. buildDigest() computes the payload (watermark = lastDigestAt).
 //   2. The payload persists on the workspace BEFORE sending — get_digest can
-//      serve it even if the email send fails.
-//   3. sendEmail() delivers via Resend; failures are recorded, never thrown —
-//      one bad workspace must not skip the rest of the sweep.
+//      serve it even if the email fails.
+//   3. Payloads are grouped by RECIPIENT (Workspace.digestEmail override,
+//      else the owner's auth email): an owner with several workspaces gets
+//      ONE combined email, not one per workspace.
+//   4. sendEmail() delivers via Resend; failures are recorded, never thrown —
+//      one bad recipient must not skip the rest of the sweep.
 //
 // Guarded by CRON_SECRET. Vercel Cron sends `Authorization: Bearer $CRON_SECRET`
 // automatically when that env var is set on the project.
 
 import { db } from '../../src/db.js';
-import { buildDigest, digestSubject, renderDigestText, renderDigestHtml, ownerEmail } from '../../src/lib/digest.js';
+import {
+  buildDigest, digestSubject, renderDigestText, renderDigestHtml, ownerEmail,
+  type DigestPayload, type DigestSection,
+} from '../../src/lib/digest.js';
 import { sendEmail } from '../../src/lib/email.js';
 
 const DIGEST_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -46,63 +52,86 @@ export async function GET(request: Request): Promise<Response> {
       // Never email an empty workspace — nothing to say yet.
       sources: { some: {} },
     },
-    select: { id: true, ownerId: true, createdAt: true, lastDigestAt: true, planCredits: true, packCredits: true },
+    select: {
+      id: true, ownerId: true, name: true, digestEmail: true,
+      createdAt: true, lastDigestAt: true, planCredits: true, packCredits: true,
+    },
     orderBy: { createdAt: 'asc' },
     take: MAX_WORKSPACES_PER_RUN,
   });
 
-  const results: Array<{ workspaceId: string; emailed: boolean; detail?: string }> = [];
-  // One log line per workspace so runs are debuggable from `vercel logs`
-  // alone — the HTTP response only reaches whoever fired the request.
-  const record = (r: { workspaceId: string; emailed: boolean; detail?: string }) => {
+  const results: Array<{ email: string; emailed: boolean; workspaces: string[]; detail?: string }> = [];
+  const record = (r: (typeof results)[number]) => {
     console.log(`[digest] ${JSON.stringify(r)}`);
     results.push(r);
   };
 
+  // Build + persist every due workspace's payload first (get_digest serves
+  // the stored copy even when delivery fails), then group by RECIPIENT — an
+  // owner with several workspaces gets one combined email, not N.
+  type Built = { name: string; payload: DigestPayload };
+  const byRecipient = new Map<string, Built[]>();
+
   for (const ws of due) {
     try {
-      const creditsRemaining = ws.planCredits + ws.packCredits;
-      const payload = await buildDigest(ws, creditsRemaining);
-
-      // Persist before sending so get_digest always has the latest payload
-      // even when delivery fails.
+      const payload = await buildDigest(ws, ws.planCredits + ws.packCredits);
       await db.workspace.update({
         where: { id: ws.id },
         data: { lastDigestAt: new Date(payload.generatedAt), digestJson: JSON.stringify(payload) },
       });
 
-      if (payload.newOutliersCount === 0 && payload.ideas.overdue === 0) {
-        record({ workspaceId: ws.id, emailed: false, detail: 'nothing to report — payload stored' });
+      // Explicit per-workspace override wins; else the owner's auth email.
+      const email = ws.digestEmail ?? await ownerEmail(ws.ownerId!);
+      if (!email) {
+        record({ email: '(unresolvable)', emailed: false, workspaces: [ws.name], detail: 'no owner email resolved — payload stored' });
         continue;
       }
+      const bucket = byRecipient.get(email) ?? [];
+      bucket.push({ name: ws.name, payload });
+      byRecipient.set(email, bucket);
+    } catch (err) {
+      record({ email: '(error)', emailed: false, workspaces: [ws.name], detail: (err as Error).message.slice(0, 200) });
+    }
+  }
 
-      const email = await ownerEmail(ws.ownerId!);
-      if (!email) {
-        record({ workspaceId: ws.id, emailed: false, detail: 'no owner email resolved — payload stored' });
+  for (const [email, built] of byRecipient) {
+    try {
+      // Quiet workspaces stay out of the email entirely — but their payload
+      // was persisted above, so get_digest still serves them.
+      const sections: DigestSection[] = built.filter(
+        b => b.payload.newOutliersCount > 0 || b.payload.ideas.overdue > 0,
+      );
+      if (sections.length === 0) {
+        record({ email, emailed: false, workspaces: built.map(b => b.name), detail: 'nothing to report — payloads stored' });
         continue;
       }
 
       const sent = await sendEmail({
         to: email,
-        subject: digestSubject(payload),
-        html: renderDigestHtml(payload),
-        text: renderDigestText(payload),
+        subject: digestSubject(sections),
+        html: renderDigestHtml(sections),
+        text: renderDigestText(sections),
       });
-      record({ workspaceId: ws.id, emailed: sent.sent, ...(sent.sent ? { emailId: sent.id } : { detail: sent.reason }) });
+      record({
+        email,
+        emailed: sent.sent,
+        workspaces: sections.map(s => s.name),
+        ...(sent.sent ? { detail: `resend:${sent.id ?? 'ok'}` } : { detail: sent.reason }),
+      });
     } catch (err) {
-      record({ workspaceId: ws.id, emailed: false, detail: (err as Error).message.slice(0, 200) });
+      record({ email, emailed: false, workspaces: built.map(b => b.name), detail: (err as Error).message.slice(0, 200) });
     }
   }
 
   console.log(`[digest] run: ${JSON.stringify({
-    due: due.length,
-    processed: results.length,
+    dueWorkspaces: due.length,
+    recipients: byRecipient.size,
     emailed: results.filter(r => r.emailed).length,
   })}`);
 
   return json(200, {
     dueWorkspaces: due.length,
-    processed: results.length,
+    recipients: byRecipient.size,
     emailed: results.filter(r => r.emailed).length,
     results,
   });

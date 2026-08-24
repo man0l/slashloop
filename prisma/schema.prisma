@@ -69,6 +69,10 @@ model Workspace {
   /// Opt-out for the weekly outlier digest (api/cron/digest.ts). On by
   /// default — the digest is the retention engine, not marketing.
   digestEnabled        Boolean   @default(true)
+  /// Where the digest goes. Null = the owner's auth.users email. Set from
+  /// the site's email-settings page; one owner may own several workspaces,
+  /// but all of an owner's due digests combine into ONE email to this box.
+  digestEmail          String?
   /// When the last digest was built+sent. Doubles as the "new outliers"
   /// watermark and the cron's idempotency gate (≥7 days since = due).
   lastDigestAt         DateTime?

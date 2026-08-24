@@ -201,6 +201,8 @@ export function registerSettingsTools(server: McpServer) {
         .describe('Days to keep stored video files. Capped by your plan. Longer windows make re-analysis free but cost storage.'),
       digestEnabled: z.boolean().optional()
         .describe('Weekly email digest of new outliers (Mondays). On by default — set false to opt out.'),
+      digestEmail: z.string().regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/).nullable().optional()
+        .describe('Where the weekly digest is sent. Null = your account email. Also editable on the site\'s Email settings page.'),
     },
     async (params) => {
       const workspace = await requireWorkspace();
@@ -241,10 +243,13 @@ export function registerSettingsTools(server: McpServer) {
 
       // Digest opt-out lives on the billing workspace like credits — one
       // unsubscribe per account, not per workspace.
-      if (params.digestEnabled !== undefined) {
+      if (params.digestEnabled !== undefined || params.digestEmail !== undefined) {
         await db.workspace.update({
           where: { id: billingWorkspace.id },
-          data: { digestEnabled: params.digestEnabled },
+          data: {
+            ...(params.digestEnabled !== undefined ? { digestEnabled: params.digestEnabled } : {}),
+            ...(params.digestEmail !== undefined ? { digestEmail: params.digestEmail } : {}),
+          },
         });
       }
 

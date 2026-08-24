@@ -93,6 +93,10 @@
       "dest": "/api/cron/digest"
     },
     {
+      "src": "^/api/digest-settings$",
+      "dest": "/api/digest-settings"
+    },
+    {
       "src": "^/api/jobs/analyze$",
       "dest": "/api/jobs/analyze"
     },
