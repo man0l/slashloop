@@ -52,6 +52,12 @@ export async function GET(request: Request): Promise<Response> {
   });
 
   const results: Array<{ workspaceId: string; emailed: boolean; detail?: string }> = [];
+  // One log line per workspace so runs are debuggable from `vercel logs`
+  // alone — the HTTP response only reaches whoever fired the request.
+  const record = (r: { workspaceId: string; emailed: boolean; detail?: string }) => {
+    console.log(`[digest] ${JSON.stringify(r)}`);
+    results.push(r);
+  };
 
   for (const ws of due) {
     try {
@@ -66,13 +72,13 @@ export async function GET(request: Request): Promise<Response> {
       });
 
       if (payload.newOutliersCount === 0 && payload.ideas.overdue === 0) {
-        results.push({ workspaceId: ws.id, emailed: false, detail: 'nothing to report — payload stored' });
+        record({ workspaceId: ws.id, emailed: false, detail: 'nothing to report — payload stored' });
         continue;
       }
 
       const email = await ownerEmail(ws.ownerId!);
       if (!email) {
-        results.push({ workspaceId: ws.id, emailed: false, detail: 'no owner email resolved — payload stored' });
+        record({ workspaceId: ws.id, emailed: false, detail: 'no owner email resolved — payload stored' });
         continue;
       }
 
@@ -82,11 +88,17 @@ export async function GET(request: Request): Promise<Response> {
         html: renderDigestHtml(payload),
         text: renderDigestText(payload),
       });
-      results.push({ workspaceId: ws.id, emailed: sent.sent, ...(sent.sent ? {} : { detail: sent.reason }) });
+      record({ workspaceId: ws.id, emailed: sent.sent, ...(sent.sent ? { emailId: sent.id } : { detail: sent.reason }) });
     } catch (err) {
-      results.push({ workspaceId: ws.id, emailed: false, detail: (err as Error).message.slice(0, 200) });
+      record({ workspaceId: ws.id, emailed: false, detail: (err as Error).message.slice(0, 200) });
     }
   }
+
+  console.log(`[digest] run: ${JSON.stringify({
+    due: due.length,
+    processed: results.length,
+    emailed: results.filter(r => r.emailed).length,
+  })}`);
 
   return json(200, {
     dueWorkspaces: due.length,
