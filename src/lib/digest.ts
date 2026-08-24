@@ -14,6 +14,7 @@
 
 import { db } from '../db.js';
 import type { Workspace } from '@prisma/client';
+import { publicUrl, thumbBucket, thumbPath } from './storage.js';
 
 const DIGEST_MIN_OUTLIER_SCORE = 5;
 const TOP_OUTLIERS_IN_DIGEST = 5;
@@ -29,6 +30,8 @@ export interface DigestOutlier {
   scoreType: 'actual' | 'estimated';
   hasAnalysis: boolean;
   postedAt: string;
+  /** Public CDN URL of the vertical thumbnail; null when not stored. */
+  thumbUrl: string | null;
 }
 
 export interface DigestIdeaStats {
@@ -80,9 +83,9 @@ export async function buildDigest(
       video: {
         select: {
           id: true, creatorHandle: true, platform: true, views: true, url: true, postedAt: true,
-          creatorFollowers: true,
+          creatorFollowers: true, thumbKey: true, thumbStatus: true,
           analyses: { select: { videoId: true }, take: 1 },
-          source: { select: { query: true } },
+          source: { select: { query: true, workspaceId: true } },
         },
       },
     },
@@ -104,6 +107,17 @@ export async function buildDigest(
     ...newScores.filter(underReaches),
   ];
 
+  const thumbUrlFor = (s: (typeof ranked)[number]): string | null => {
+    if (s.video.thumbStatus !== 'stored' || !s.video.thumbKey) return null;
+    try {
+      // Throws when the R2 public base isn't configured — a digest without
+      // thumbnails beats a crashed cron.
+      return publicUrl(thumbBucket(), thumbPath(s.video.source.workspaceId, s.video.id));
+    } catch {
+      return null;
+    }
+  };
+
   const topOutliers: DigestOutlier[] = ranked.slice(0, TOP_OUTLIERS_IN_DIGEST).map(s => ({
     videoId: s.video.id,
     creator: s.video.creatorHandle,
@@ -115,6 +129,7 @@ export async function buildDigest(
     scoreType: s.scoreType as 'actual' | 'estimated',
     hasAnalysis: s.video.analyses.length > 0,
     postedAt: s.video.postedAt.toISOString(),
+    thumbUrl: thumbUrlFor(s),
   }));
 
   // Idea queue stats — cadence is the #1 indie pain point, so the digest
@@ -146,10 +161,11 @@ export async function buildDigest(
 // ---------------------------------------------------------------------------
 // Email rendering — plain text first, HTML as a styled mirror of it.
 //
-// An owner may hold several workspaces but gets ONE email: callers pass a
-// section per due workspace (quiet ones filtered out upstream) and the
-// renderers aggregate counts across them. Layout is single-column,
-// 16px-base, thumb-sized tap targets — these are read on phones.
+// Every link goes into the APP (slashloop.dev/gallery?video=<id>), never to
+// TikTok — the email is a doorway, not a detour. Copy is deliberately terse:
+// thumbnails and one multiplier number carry the meaning; no explanatory
+// phrases. An owner may hold several workspaces but gets ONE email: callers
+// pass a section per due workspace (quiet ones filtered out upstream).
 // ---------------------------------------------------------------------------
 
 const fmtViews = (n: number): string =>
@@ -160,6 +176,11 @@ const fmtViews = (n: number): string =>
 /** Where "Email settings" points. SITE_URL is the slashloop-site frontend. */
 function siteUrl(): string {
   return (process.env.SITE_URL ?? 'https://slashloop.dev').replace(/\/$/, '');
+}
+
+/** Deep link into the gallery with this video highlighted. */
+export function videoLink(videoId: string): string {
+  return `${siteUrl()}/gallery?video=${videoId}`;
 }
 
 export interface DigestSection {
@@ -173,7 +194,7 @@ const sumNew = (sections: DigestSection[]): number => sections.reduce((n, s) => 
 export function digestSubject(sections: DigestSection[]): string {
   const total = sumNew(sections);
   if (total === 0) return 'Slashloop weekly — nothing new this week';
-  return `Slashloop weekly — ${total} breakout video${total === 1 ? '' : 's'}`;
+  return `Slashloop weekly — ${total} taking off`;
 }
 
 export function renderDigestText(sections: DigestSection[]): string {
@@ -182,33 +203,27 @@ export function renderDigestText(sections: DigestSection[]): string {
   lines.push('');
 
   if (sections.length === 0 || sumNew(sections) === 0) {
-    lines.push('No new breakouts since your last digest. If your sources went quiet, ask Claude: "refresh my sources".');
+    lines.push('Nothing new this week.');
+    lines.push('');
+    lines.push(`Email settings: ${siteUrl()}/settings/email`);
+    return lines.join('\n');
   }
 
   for (const s of sections) {
-    const p = s.payload;
-    if (p.newOutliersCount === 0) continue;
+    if (s.payload.newOutliersCount === 0) continue;
     if (sections.length > 1) {
       lines.push('');
       lines.push(`== ${s.name} ==`);
     }
-    lines.push(`Videos that blew up past their creator's usual numbers (${p.newOutliersCount}):`);
-    for (const o of p.topOutliers) {
-      lines.push(`  • @${o.creator} — ${o.outlierScore.toFixed(0)}× their usual views, ${fmtViews(o.views)} total [${o.source}]`);
-      lines.push(`    ${o.url}`);
+    for (const o of s.payload.topOutliers) {
+      lines.push(`  • @${o.creator} — ${o.outlierScore.toFixed(0)}× · ${fmtViews(o.views)} views`);
+      lines.push(`    Open in Slashloop: ${videoLink(o.videoId)}`);
     }
-    const unanalyzed = p.topOutliers.filter(o => !o.hasAnalysis);
-    if (unanalyzed.length > 0) {
-      lines.push('');
-      lines.push(`${unanalyzed.length} not broken down yet. Ask Claude: "analyze the top outliers" to learn why they worked.`);
-    }
-    lines.push(`Posting queue: ${p.ideas.overdue} overdue, ${p.ideas.dueThisWeek} due this week, ${p.ideas.unscheduled} unscheduled.`);
-    lines.push(`Credits left: ${p.creditsRemaining}`);
+    if (s.payload.ideas.overdue > 0) lines.push(`  ${s.payload.ideas.overdue} post(s) overdue in your queue`);
   }
 
   lines.push('');
-  lines.push(`Manage these emails: ${siteUrl()}/settings/email`);
-  lines.push('You get this because you track sources on Slashloop.');
+  lines.push(`Email settings: ${siteUrl()}/settings/email`);
   return lines.join('\n');
 }
 
@@ -217,19 +232,20 @@ function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/** One tappable row: vertical thumb on the left, numbers on the right. */
 function outlierCard(o: DigestOutlier): string {
+  const thumb = o.thumbUrl
+    ? `<img src="${esc(o.thumbUrl)}" alt="" width="64" height="114" style="display:block;width:64px;height:114px;object-fit:cover;border-radius:8px;" />`
+    : `<div style="width:64px;height:114px;border-radius:8px;background:#f0f0f0;"></div>`;
   return `
-    <div style="padding:14px 0;border-bottom:1px solid #ececec;">
-      <a href="${esc(o.url)}" style="display:block;text-decoration:none;color:#111;">
-        <span style="font-size:16px;font-weight:600;">@${esc(o.creator)}</span>
-        <span style="display:block;font-size:15px;color:#c2410c;font-weight:600;margin-top:2px;">${o.outlierScore.toFixed(0)}&times; their usual views</span>
-        <span style="display:block;font-size:14px;color:#666;margin-top:2px;">${fmtViews(o.views)} views &middot; ${esc(o.source)}</span>
-      </a>${
-        o.hasAnalysis
-          ? ''
-          : `<span style="display:inline-block;margin-top:8px;font-size:13px;color:#888;">Not analyzed yet — ask Claude to break it down</span>`
-      }
-    </div>`;
+    <a href="${esc(videoLink(o.videoId))}" style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid #ececec;text-decoration:none;">
+      ${thumb}
+      <span style="flex:1;min-width:0;padding-top:2px;">
+        <span style="display:block;font-size:15px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;">@${esc(o.creator)}</span>
+        <span style="display:block;font-size:22px;font-weight:800;color:#FF4D00;margin-top:4px;">${o.outlierScore.toFixed(0)}×</span>
+        <span style="display:block;font-size:13px;color:#777;margin-top:2px;">${fmtViews(o.views)} views &middot; ${esc(o.source)}</span>
+      </span>
+    </a>`;
 }
 
 function sectionHtml(s: DigestSection, showHeader: boolean): string {
@@ -237,41 +253,32 @@ function sectionHtml(s: DigestSection, showHeader: boolean): string {
   if (p.newOutliersCount === 0) return '';
 
   const header = showHeader
-    ? `<h3 style="font-size:15px;margin:20px 0 4px;color:#111;">${esc(s.name)}</h3>`
+    ? `<h3 style="font-size:14px;margin:18px 0 2px;color:#111;">${esc(s.name)}</h3>`
     : '';
-  const unanalyzed = p.topOutliers.filter(o => !o.hasAnalysis);
-  const note = unanalyzed.length > 0
-    ? `<p style="font-size:13px;color:#777;margin:10px 0 0;">${unanalyzed.length} of these aren&rsquo;t broken down yet. Ask Claude: <em>&ldquo;analyze the top outliers&rdquo;</em>.</p>`
-    : '';
-  const queue = p.ideas.overdue > 0 || p.ideas.dueThisWeek > 0
-    ? `<p style="font-size:14px;color:#555;margin:14px 0 0;">Posting queue: ${p.ideas.overdue} overdue, ${p.ideas.dueThisWeek} due this week.</p>`
+  const queue = p.ideas.overdue > 0
+    ? `<p style="font-size:13px;color:#777;margin:10px 0 0;">${p.ideas.overdue} post${p.ideas.overdue === 1 ? '' : 's'} overdue in your queue</p>`
     : '';
 
-  return `${header}
-    <p style="font-size:14px;color:#555;margin:6px 0 2px;">Videos that blew up past their creator&rsquo;s usual numbers:</p>
-    ${p.topOutliers.map(outlierCard).join('')}
-    ${note}${queue}`;
+  return `${header}${p.topOutliers.map(outlierCard).join('')}${queue}`;
 }
 
 export function renderDigestHtml(sections: DigestSection[]): string {
   const showHeaders = sections.length > 1;
   const body = sections.map(s => sectionHtml(s, showHeaders)).join('');
 
-  const content = body ||
-    `<p style="font-size:15px;color:#555;">No new breakouts since your last digest. If your sources went quiet, ask Claude to refresh them.</p>`;
+  const content = body || `<p style="font-size:15px;color:#555;">Nothing new this week.</p>`;
 
-  // Mobile-first: one column, 16px+ body text, whole-card tap targets.
+  // Mobile-first: one column, big numbers, whole-row tap targets.
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"/>
     <style>@media(max-width:480px){.wrap{padding:16px !important}}</style></head>
     <body style="margin:0;background:#fafafa;">
     <div class="wrap" style="max-width:600px;margin:0 auto;padding:24px 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;background:#fff;">
       <h2 style="font-size:21px;margin:0 0 2px;color:#111;">Slashloop weekly</h2>
-      <p style="font-size:14px;color:#999;margin:0 0 8px;">Videos that beat their creator&rsquo;s usual numbers, from the sources you track.</p>
+      <p style="font-size:14px;color:#999;margin:0 0 6px;">Taking off in your niches right now — the number is views vs the creator&rsquo;s norm.</p>
       ${content}
-      <div style="margin-top:22px;">
-        <a href="${siteUrl()}/settings/email" style="display:inline-block;padding:11px 18px;border:1px solid #ddd;border-radius:8px;font-size:14px;color:#333;text-decoration:none;">Email settings</a>
-      </div>
-      <p style="font-size:12px;color:#aaa;margin:18px 0 0;">You get this because you track sources on Slashloop. Turn it off any time in Email settings.</p>
+      <p style="text-align:center;margin-top:24px;">
+        <a href="${siteUrl()}/settings/email" style="font-size:13px;color:#aaa;">Email settings</a>
+      </p>
     </div></body></html>`;
 }
 
