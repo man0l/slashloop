@@ -89,6 +89,10 @@
       "dest": "/api/cron/media-retention"
     },
     {
+      "src": "^/api/cron/digest$",
+      "dest": "/api/cron/digest"
+    },
+    {
       "src": "^/api/jobs/analyze$",
       "dest": "/api/jobs/analyze"
     },
@@ -113,6 +117,9 @@
       "maxDuration": 30
     },
     "api/cron/media-retention.ts": {
+      "maxDuration": 60
+    },
+    "api/cron/digest.ts": {
       "maxDuration": 60
     },
     "api/jobs/analyze.ts": {
