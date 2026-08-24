@@ -52,6 +52,9 @@ export interface GalleryCard {
   /** True when this post is from the workspace's own TikTok (Source.isSelf
    *  or the same handle). Gallery shows a You badge. */
   isSelf: boolean;
+  /** Open AI hook test on this video (feature #7), null when none. Drives the
+   *  🧪 badge and the "Has hook test" filter. */
+  hookTest: { id: string; status: string; pickedCount: number } | null;
   keyMoments: Array<{
     timestampSec: number;
     role: string;
@@ -75,6 +78,8 @@ export interface GalleryFilters {
    * most-recently-analyzed first.
    */
   analyzedBy?: 'openrouter';
+  /** Initial state of the "Has hook test" checkbox. */
+  hasHookTest?: boolean;
   /**
    * Thumbnail density in the Claude iframe:
    * large / medium / small grids, or list (smallest thumbs, one row each).
@@ -124,6 +129,7 @@ function cardHtml(c: GalleryCard): string {
            data-analyzed-by="${esc(c.analyzedBy ?? '')}"
            data-analyzed-at="${c.analyzedAt ?? ''}"
            data-has-media="${c.mediaUrl ? '1' : '0'}"
+           data-has-test="${c.hookTest ? '1' : '0'}"
            data-fetch-error="${c.fetchError ? esc(c.fetchError.code) : ''}"
            data-handle="${esc(c.creatorHandle.toLowerCase())}">
     <span class="index-badge" title="Reference this as &quot;video ${c.index}&quot;">${c.index}</span>
@@ -133,6 +139,7 @@ function cardHtml(c: GalleryCard): string {
       <div class="meta">
         <strong>@${esc(c.creatorHandle)}</strong>
         ${c.isSelf ? '<span class="self-badge">You</span>' : ''}
+        ${c.hookTest ? `<span class="test-badge" title="Hook test ${esc(c.hookTest.status)}${c.hookTest.pickedCount > 0 ? ` — ${c.hookTest.pickedCount} picked` : ''}">🧪${c.hookTest.pickedCount > 0 ? ` ${c.hookTest.pickedCount} picked` : ''}</span>` : ''}
         <span>${compact(c.views)} views</span>
         <span>${esc(c.engagementRate)} eng</span>
         ${c.outlierScore != null ? `<span class="score-badge">${c.outlierScore.toFixed(1)}x</span>` : ''}
@@ -214,6 +221,10 @@ function toolbarHtml(filters: GalleryFilters): string {
       <input type="checkbox" id="f-media" />
       <span class="field-label">Has stored video</span>
     </label>
+    <label class="field check">
+      <input type="checkbox" id="f-test"${filters.hasHookTest ? ' checked' : ''} />
+      <span class="field-label">Has hook test</span>
+    </label>
   </div>
   <div class="pager" role="navigation" aria-label="Gallery pages">
     <button type="button" class="page-btn" id="f-prev" aria-label="Previous page">← Prev</button>
@@ -273,6 +284,7 @@ export function renderGallery(
   .meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; opacity: .8; }
   .score-badge { font-weight: 600; opacity: 1; }
   .self-badge { font-weight: 700; opacity: 1; color: #0F7B6C; }
+  .test-badge { font-weight: 600; opacity: 1; color: #7c5cff; }
   .fetch-error { cursor: help; font-size: 13px; line-height: 1; color: #ff5c5c; }
   .nomedia-fetch { color: #ff5c5c; opacity: .85; }
   .caption { margin: 0; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -347,6 +359,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
   var sortEl = document.getElementById('f-sort');
   var densityEl = document.getElementById('f-density');
   var mediaEl = document.getElementById('f-media');
+  var testEl = document.getElementById('f-test');
   var analyzedEl = document.getElementById('f-analyzed');
   var countEl = document.getElementById('f-count');
   var emptyEl = document.getElementById('empty-filter');
@@ -376,7 +389,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
     return Array.prototype.slice.call(grid.querySelectorAll('.card'));
   }
 
-  function matches(card, minScore, minViews, needMedia, analyzedBy) {
+  function matches(card, minScore, minViews, needMedia, analyzedBy, needTest) {
     var score = parseFloat(card.getAttribute('data-score')) || 0;
     var views = parseInt(card.getAttribute('data-views'), 10) || 0;
     var hasMedia = card.getAttribute('data-has-media') === '1';
@@ -385,6 +398,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
       var ab = card.getAttribute('data-analyzed-by') || '';
       if (ab.indexOf(analyzedBy) !== 0) return false;
     }
+    if (needTest && card.getAttribute('data-has-test') !== '1') return false;
     return score >= minScore && views >= minViews && (!needMedia || hasMedia);
   }
 
@@ -422,6 +436,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
     var sortBy = analyzedBy ? 'analyzed' : (sortEl && sortEl.value) || 'outlier_score';
     var density = (densityEl && densityEl.value) || 'medium';
     var needMedia = mediaEl && mediaEl.checked;
+    var needTest = testEl && testEl.checked;
     var ps = pageSize();
     var list = allCards();
 
@@ -431,7 +446,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
     var matched = [];
     var rest = [];
     list.forEach(function (card) {
-      if (matches(card, minScore, minViews, needMedia, analyzedBy)) matched.push(card);
+      if (matches(card, minScore, minViews, needMedia, analyzedBy, needTest)) matched.push(card);
       else rest.push(card);
     });
     matched = sortCards(matched, sortBy);
@@ -501,6 +516,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
   if (sortEl) sortEl.addEventListener('change', onFilterChange);
   if (densityEl) densityEl.addEventListener('change', onFilterChange);
   if (mediaEl) mediaEl.addEventListener('change', onFilterChange);
+  if (testEl) testEl.addEventListener('change', onFilterChange);
   if (analyzedEl) analyzedEl.addEventListener('change', onFilterChange);
   if (prevEl) prevEl.addEventListener('click', function () { page -= 1; apply(false); });
   if (nextEl) nextEl.addEventListener('click', function () { page += 1; apply(false); });

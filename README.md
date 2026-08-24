@@ -17,7 +17,7 @@ Live endpoint: **https://mcp.slashloop.dev/mcp**
 
 ```
 src/
-  register-tools.ts  # 49 tools, shared with the remote host
+  register-tools.ts  # 55 tools, shared with the remote host
   tools/             # sources, feed, video, hooks, creative, studio, settings
   analysis/          # Gemini native + text analyzers
   lib/               # apify, gemini, spend-cap, storage, media, retention
@@ -237,7 +237,7 @@ populating the env vars above from a real Stripe account.
 
 ---
 
-## Tool inventory (49 tools)
+## Tool inventory (55 tools)
 
 | Module | Tools |
 |---|---|
@@ -248,6 +248,7 @@ populating the env vars above from a real Stripe account.
 | Hooks (3) | list_hooks, extract_hook, generate_hook_variations |
 | Creative (14) | list_boards, get_board, create_board, save_to_board, export_board, list_ideas, get_idea_queue, create_idea, update_idea_status, create_brief, get_brief, export_brief, generate_script, get_script |
 | Studio (2) | get_weekly_retro, get_benchmark |
+| Hook tests (6) | start_hook_test, get_hook_test, reroll_hooks, pick_hook_versions, export_shotlist, close_hook_test |
 | Settings (7) | get_usage, get_settings, update_settings, get_refresh_logs, run_auto_analyze, get_apify_spend_status, get_digest |
 | Gallery (1) | show_gallery |
 | Fetch (1) | fetch_videos |

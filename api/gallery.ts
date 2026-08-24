@@ -150,6 +150,7 @@ async function handleData(request: Request, url: URL): Promise<Response> {
       minOutlier: Number.isFinite(minOutlierRaw) && minOutlierRaw > 0 ? minOutlierRaw : undefined,
       minViews: Number.isFinite(minViewsRaw) && minViewsRaw > 0 ? minViewsRaw : undefined,
       analyzedBy: analyzedByOf(url.searchParams.get('analyzedBy')),
+      hasHookTest: url.searchParams.get('hasHookTest') === '1' || url.searchParams.get('hasHookTest') === 'true',
     }),
   );
 
@@ -186,6 +187,7 @@ export async function GET(request: Request): Promise<Response> {
         minOutlier: num(url.searchParams.get('minOutlier')),
         minViews: num(url.searchParams.get('minViews')),
         analyzedBy: analyzedByOf(url.searchParams.get('analyzedBy')),
+        hasHookTest: url.searchParams.get('hasHookTest') === '1' || url.searchParams.get('hasHookTest') === 'true',
         density: densityOf(url.searchParams.get('density')),
       }),
     );

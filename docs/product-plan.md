@@ -168,7 +168,7 @@ Shipped through 2026-08-24: improvements #1–3 and features #1–#6 (retro + be
 
 Next — feature #7 in phases:
 
-1. **Hook tests v1 (text-only)** — Test/Version objects, 4-hook generation (2 cr, re-roll 2 cr), shot list export, gallery card badges + filters, `/brief` MCP parity
+1. ~~Hook tests v1 (text-only)~~ **SHIPPED (2026-08-24)** — HookTest/HookVersion objects, `start_hook_test` + `reroll_hooks` (2 cr each, one Gemini call apiece; insight/same-in/beats are the editable lock re-rolls obey), `pick_hook_versions` by label or ID, `export_shotlist` markdown, gallery 🧪 badges + "Has hook test" filter (MCP tool arg, signed-URL param, HTML toolbar). Render (`/render`) and own-post matching stay Phase 3.
 2. **Asset capture (Phase 2)** — app-slot screen recordings attach to beats; enables the render path
 3. **Render (Phase 3)** — per-render pack pricing lands with it; render becomes the default path, QR-to-file for versions
 4. **Verdicts (Phase 4)** — versions auto-scored vs owner baseline off the isSelf feed; next-test unlock + make-the-winner-the-opening

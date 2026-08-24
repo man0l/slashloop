@@ -1,0 +1,320 @@
+// ---------------------------------------------------------------------------
+// Hook tests — object lifecycle (feature #7 v1).
+//
+// A test pins ONE proven video to one editable insight and generates four
+// openings that inherit everything else about it; picking + re-rolling move
+// the versions through their statuses. Metering happens in
+// src/tools/hook-tests.ts; ownership checks live here so every caller gets
+// them for free.
+//
+// V1 is text-only: nothing here renders or posts. 'rendered'/'posted'/
+// 'scored' version statuses and 'won'/'posted' test statuses exist in the
+// schema for Phase 3 but are never written by this module.
+// ---------------------------------------------------------------------------
+
+import { db } from '../db.js';
+import { generateHookTestDraft, type HookTestDraft } from '../analysis/hook-tests.js';
+
+export const HOOK_VERSION_LABELS = ['A', 'B', 'C', 'D'] as const;
+
+/** Test statuses an open test can be mutated from. */
+export const OPEN_TEST_STATUSES = ['setup', 'picking', 'posted'];
+
+export class HookTestError extends Error {
+  constructor(message: string, readonly httpStatus: number = 400) {
+    super(message);
+  }
+}
+
+export interface SerializedHookVersion {
+  id: string;
+  label: string;
+  round: number;
+  hookText: string;
+  firstFrame: string | null;
+  hookType: string;
+  mechanism: string | null;
+  status: string;
+  assetUrl: string | null;
+  createdAt: string;
+}
+
+export interface SerializedHookTest {
+  id: string;
+  videoId: string;
+  lever: string;
+  insight: string;
+  sameIn: string[];
+  beats: string[];
+  stopRule: string | null;
+  status: string;
+  createdAt: string;
+  versions: SerializedHookVersion[];
+}
+
+type TestRow = {
+  id: string; videoId: string; lever: string; insight: string;
+  sameInJson: string; beatsJson: string; stopRule: string | null;
+  status: string; createdAt: Date;
+};
+
+/** JSON columns → plain arrays; dates → ISO strings. The shape every tool returns. */
+export function serializeTest(test: TestRow, versions: Array<{
+  id: string; label: string; round: number; hookText: string; firstFrame: string | null;
+  hookType: string; mechanism: string | null; status: string; assetUrl: string | null; createdAt: Date;
+}>): SerializedHookTest {
+  return {
+    id: test.id,
+    videoId: test.videoId,
+    lever: test.lever,
+    insight: test.insight,
+    sameIn: safeArray(test.sameInJson),
+    beats: safeArray(test.beatsJson),
+    stopRule: test.stopRule,
+    status: test.status,
+    createdAt: test.createdAt.toISOString(),
+    versions: versions.map((v) => ({ ...v, createdAt: v.createdAt.toISOString() })),
+  };
+}
+
+function safeArray(json: string): string[] {
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Advisory stop rule derived from the proven video's own numbers. */
+export function buildStopRule(originalViews: number): string {
+  if (originalViews > 0) {
+    return `Post each picked opening, then judge: kill any version that can't reach ${Math.round(originalViews / 2).toLocaleString('en-US')} views in its first two days — half what the original did.`;
+  }
+  return 'Post each picked opening, then judge against your own median — kill what underperforms after two days.';
+}
+
+async function requireVideo(workspaceId: string, videoId: string) {
+  const video = await db.video.findFirst({
+    where: { id: videoId, source: { workspaceId } },
+    select: { id: true, views: true },
+  });
+  if (!video) throw new HookTestError(`Video not found in this workspace: ${videoId}`, 404);
+  return video;
+}
+
+/** Load a test the workspace owns, or throw 404. Ownership flows video→source→workspace. */
+export async function requireHookTest(testId: string, workspaceId: string) {
+  const test = await db.hookTest.findFirst({
+    where: { id: testId, workspaceId },
+  });
+  if (!test) throw new HookTestError(`Hook test not found: ${testId}`, 404);
+  return test;
+}
+
+async function loadVersions(testId: string) {
+  return db.hookVersion.findMany({ where: { testId }, orderBy: [{ round: 'desc' }, { label: 'asc' }] });
+}
+
+/** The open (not won/closed) test for a video, if any. One per video by service rule. */
+export async function findOpenTest(workspaceId: string, videoId: string) {
+  return db.hookTest.findFirst({
+    where: { workspaceId, videoId, status: { in: OPEN_TEST_STATUSES } },
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
+export async function getHookTest(testId: string, workspaceId: string): Promise<SerializedHookTest> {
+  const test = await requireHookTest(testId, workspaceId);
+  const versions = await loadVersions(test.id);
+  return serializeTest(test, versions);
+}
+
+/** Open test for a video, serialized — null when none (the caller offers start_hook_test). */
+export async function getOpenTestForVideo(workspaceId: string, videoId: string): Promise<SerializedHookTest | null> {
+  await requireVideo(workspaceId, videoId);
+  const test = await findOpenTest(workspaceId, videoId);
+  if (!test) return null;
+  const versions = await loadVersions(test.id);
+  return serializeTest(test, versions);
+}
+
+function labelRound(versions: HookTestDraft['versions'], round: number, labels: readonly string[] = HOOK_VERSION_LABELS) {
+  return versions.map((v, i) => ({
+    label: labels[i] ?? `V${i + 1}`,
+    round,
+    hookText: v.hookText,
+    firstFrame: v.firstFrame || null,
+    hookType: v.type,
+    mechanism: v.mechanism || null,
+  }));
+}
+
+/**
+ * Generate the draft and open the test. Assumes metering already happened —
+ * throws before any generation when the video doesn't belong to the
+ * workspace or already has an open test.
+ */
+export async function startHookTest(
+  workspaceId: string,
+  videoId: string,
+  opts: { brandContext?: string; insight?: string } = {},
+): Promise<SerializedHookTest> {
+  const video = await requireVideo(workspaceId, videoId);
+  const existing = await findOpenTest(workspaceId, videoId);
+  if (existing) {
+    throw new HookTestError(
+      `This video already has an open hook test (${existing.id}) — pick or re-roll it, or close it to start over.`,
+      409,
+    );
+  }
+
+  const draft = await generateHookTestDraft(videoId, { brandContext: opts.brandContext });
+
+  const created = await db.hookTest.create({
+    data: {
+      workspaceId,
+      videoId,
+      // An explicit insight wins — that's why the field is editable.
+      insight: opts.insight?.trim() || draft.insight,
+      sameInJson: JSON.stringify(draft.sameIn),
+      beatsJson: JSON.stringify(draft.beats),
+      stopRule: buildStopRule(video.views),
+      // Born with proposals on the table, so setup is skipped.
+      status: 'picking',
+    },
+  });
+  await db.hookVersion.createMany({
+    data: labelRound(draft.versions, 1).map((v) => ({ ...v, testId: created.id })),
+  });
+
+  return getHookTest(created.id, workspaceId);
+}
+
+/**
+ * Discard every live proposal (picked ones too — re-roll means fresh slate)
+ * and generate a new round of four. The stored insight/same-in/beats are the
+ * lock: deliberately NOT regenerated, so re-rolls stay on-strategy even when
+ * the user edited them.
+ */
+export async function rerollHooks(testId: string, workspaceId: string): Promise<SerializedHookTest> {
+  const test = await requireHookTest(testId, workspaceId);
+  if (!OPEN_TEST_STATUSES.includes(test.status)) {
+    throw new HookTestError(`This test is ${test.status} — closed tests can't be re-rolled.`, 409);
+  }
+
+  const previous = await loadVersions(test.id);
+  const nextRound = previous.reduce((max, v) => Math.max(max, v.round), 0) + 1;
+
+  await db.hookVersion.updateMany({
+    where: { testId: test.id, status: { in: ['proposed', 'picked'] } },
+    data: { status: 'discarded' },
+  });
+
+  const draft = await generateHookTestDraft(test.videoId);
+
+  await db.hookVersion.createMany({
+    data: labelRound(draft.versions, nextRound).map((v) => ({ ...v, testId: test.id })),
+  });
+  if (test.status === 'setup') {
+    await db.hookTest.update({ where: { id: test.id }, data: { status: 'picking' } });
+  }
+
+  return getHookTest(test.id, workspaceId);
+}
+
+/**
+ * Mark chosen proposals as picked and move the test to 'picking'. Passed-over
+ * proposals stay proposed — picking narrows intent, it doesn't destroy options.
+ */
+export async function pickHookVersions(
+  testId: string,
+  workspaceId: string,
+  versionIds: string[],
+): Promise<SerializedHookTest> {
+  const test = await requireHookTest(testId, workspaceId);
+  if (!OPEN_TEST_STATUSES.includes(test.status)) {
+    throw new HookTestError(`This test is ${test.status} — nothing left to pick.`, 409);
+  }
+  if (versionIds.length === 0) {
+    throw new HookTestError('Pick at least one version.');
+  }
+
+  const owned = await db.hookVersion.count({ where: { id: { in: versionIds }, testId: test.id } });
+  if (owned !== new Set(versionIds).size) {
+    throw new HookTestError('Some version IDs do not belong to this test.', 400);
+  }
+
+  await db.hookVersion.updateMany({
+    where: { id: { in: versionIds }, testId: test.id, status: 'proposed' },
+    data: { status: 'picked' },
+  });
+  await db.hookTest.update({ where: { id: test.id }, data: { status: 'picking' } });
+
+  return getHookTest(test.id, workspaceId);
+}
+
+/** End the lifecycle. 'won' records that an opening beat the original; anything else closes it. */
+export async function closeHookTest(
+  testId: string,
+  workspaceId: string,
+  outcome?: 'won' | 'closed',
+): Promise<SerializedHookTest> {
+  const test = await requireHookTest(testId, workspaceId);
+  await db.hookTest.update({ where: { id: test.id }, data: { status: outcome ?? 'closed' } });
+  return getHookTest(test.id, workspaceId);
+}
+
+/**
+ * Markdown shot list. Picked versions only when any exist, else all live
+ * proposals — exporting before picking shouldn't dead-end.
+ */
+export function buildShotlistMarkdown(
+  test: SerializedHookTest,
+  ctx: { creatorHandle: string; caption: string; url: string },
+): string {
+  const picked = test.versions.filter((v) => v.status === 'picked');
+  const latestRound = test.versions.reduce((m, v) => Math.max(m, v.round), 0);
+  const live = picked.length > 0
+    ? picked
+    : test.versions.filter((v) => v.status === 'proposed' && v.round === latestRound);
+
+  const lines: string[] = [];
+  lines.push(`# Shot list — hook test`);
+  lines.push('');
+  lines.push(`Source: [@${ctx.creatorHandle}](${ctx.url}) — "${ctx.caption}"`);
+  lines.push('');
+  lines.push(`**Insight:** ${test.insight}`);
+  if (test.sameIn.length > 0) lines.push(`**Same in every version:** ${test.sameIn.join('; ')}`);
+  if (test.beats.length > 0) lines.push(`**Story shape:** ${test.beats.join(' → ')}`);
+  if (test.stopRule) lines.push(`**Stop rule:** ${test.stopRule}`);
+  if (picked.length === 0 && live.length > 0) {
+    lines.push('');
+    lines.push(`_(nothing picked yet — listing all round-${latestRound} proposals)_`);
+  }
+  for (const v of live) {
+    lines.push('');
+    lines.push(`## Version ${v.label} — ${v.hookType.replace('_', ' ')}${v.round > 1 ? ` (round ${v.round})` : ''}`);
+    lines.push('');
+    lines.push(`**Opening line:** "${v.hookText}"`);
+    if (v.firstFrame) lines.push(`**First frame:** ${v.firstFrame}`);
+    if (v.mechanism) lines.push(`**Why it works:** ${v.mechanism}`);
+    if (test.beats.length > 0) {
+      lines.push('');
+      lines.push('**Beats:**');
+      for (const beat of test.beats) lines.push(`- ${beat}`);
+    }
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+export async function exportShotlist(testId: string, workspaceId: string) {
+  const test = await getHookTest(testId, workspaceId);
+  const video = await db.video.findUnique({
+    where: { id: test.videoId },
+    select: { creatorHandle: true, caption: true, url: true },
+  });
+  if (!video) throw new HookTestError(`Source video no longer exists: ${test.videoId}`, 404);
+  return buildShotlistMarkdown(test, video);
+}

@@ -63,6 +63,13 @@ export const CREDIT_COSTS = {
    *  hashtags/keywords. Probing each seed against TikTok is billed separately,
    *  at refreshSourcePerVideo, per seed (src/lib/discovery.ts). */
   discoverSeeds: 3,
+  /** start_hook_test — one Gemini text call producing the insight + 4 openings
+   *  for a proven video (src/analysis/hook-tests.ts). */
+  startHookTest: 2,
+  /** reroll_hooks — discards the live proposals and pays for one fresh call.
+   *  Same cost class as starting: it IS a new generation, just inside an
+   *  existing test's frame. */
+  rerollHooks: 2,
 } as const;
 
 export const FREE_TIER_PLAN_CREDITS = 300;

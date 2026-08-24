@@ -298,3 +298,20 @@ Stage Summary:
 - One concept per surface now: Sources tracks (isSelf marks yours), Studio reads. Nothing in the product asks the user to re-enter what TikTok already knows.
 - The weekly retro can no longer disagree with the library — same videos, same medians the gallery/scoring use.
 - Verified: tsc typecheck + typecheck:vercel clean, targeted bun tests pass (see task notes).
+
+---
+Task ID: 9
+Agent: main
+Task: Build feature #7 Phase 1 — AI hook tests v1 (text-only)
+
+Work Log:
+- Prisma: added HookTest (insight + sameInJson + beatsJson + stopRule + lever, status setup→picking→posted→won/closed) and HookVersion (label A–D per round, hookText+firstFrame+hookType+mechanism, proposed→picked→discarded; rendered/posted/scored reserved for Phase 3). Unique [testId, round, label]. db push — new tables only.
+- src/analysis/hook-tests.ts: Gemini text pass (briefs.ts pattern, 2-attempt zod retry) → insight + sameIn chips + beat lines + exactly one opening per type (recognition / specific_number / contrarian / demo_first), each pairing hook text with a first frame. Persists nothing — service owns objects so re-rolls regenerate cleanly.
+- src/lib/hook-tests.ts: startHookTest (one open test per video, enforced in service; explicit insight override wins), rerollHooks (bumps round, discards live proposals incl. picked ones, deliberately does NOT regenerate the stored insight/chips/beats — that's the lock), pickHookVersions (labels or IDs; passed-over proposals stay proposed), closeHookTest(won|closed), exportShotlist markdown (picked only, else all live proposals with a note).
+- Tools (src/tools/hook-tests.ts, registered in register-tools.ts): start_hook_test 2cr (free pre-check for an existing open test BEFORE debit — second attempts never double-charge), get_hook_test free by testId or videoId, reroll_hooks 2cr, pick_hook_versions free, export_shotlist free, close_hook_test free. create_brief credit flow: preauth debit → refund on failure → costBlock on every metered response. nextSteps chain generation → pick → shotlist/close.
+- Gallery: GalleryCard.hookTest {id,status,pickedCount} populated via one batched query in buildCards; 🧪 badge (+ "N picked") and client-side "Has hook test" checkbox in the HTML app; hasHookTest plumbed through show_gallery arg, signed gallery URL params, and both api/gallery routes (JSON + HTML).
+- README inventory 49→55 tools; product plan phase 1 marked shipped.
+
+Stage Summary:
+- The pipeline Analyze → Start hook test → pick A–D → shot list is now fully MCP-native at 2 credits per generation; nothing renders or posts yet (Phase 3 owns that, and the tool surface makes auto-render structurally impossible in v1).
+- Verified: prisma db push clean (new tables only); tsc + typecheck:vercel clean; bun test 313 pass incl. 9 new pure-helper tests (stop rule, JSON degradation, picked-only export, round labeling).

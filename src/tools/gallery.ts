@@ -23,6 +23,7 @@ import { signGalleryUrl, ttlHumanized } from '../lib/gallery-link.js';
 import { withNextSteps, analyzeCostLabel } from '../lib/next-steps.js';
 import { normalizeQuery } from '../lib/canonical-query.js';
 import { renderGallery, type GalleryCard, type GalleryFilters } from '../ui/gallery.js';
+import { OPEN_TEST_STATUSES } from '../lib/hook-tests.js';
 import { ResourceTemplate, type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 const GALLERY_URI = 'ui://slashloop/gallery.html';
@@ -61,6 +62,11 @@ export interface BuildCardsOptions {
    * the site's Gallery page filter; also plumbed through show_gallery.
    */
   analyzedBy?: 'openrouter';
+  /**
+   * Restrict the pool to videos with an open AI hook test. Also echoed back in
+   * filters so the HTML toolbar's "Has hook test" checkbox starts checked.
+   */
+  hasHookTest?: boolean;
   /** Resolve a specific workspace (REST API) instead of the caller's primary one (MCP tools). */
   workspaceId?: string;
 }
@@ -117,6 +123,7 @@ export async function buildCards(
     id?: string;
     views?: { gte: number };
     analyses?: { some: { backend: { contains: string } } };
+    hookTests?: { some: { status: { in: typeof OPEN_TEST_STATUSES } } };
     isBaselineSample: false;
   } = { source: { workspaceId: workspace.id }, isBaselineSample: false };
   if (opts.sourceId) where.sourceId = opts.sourceId;
@@ -125,6 +132,9 @@ export async function buildCards(
   // `contains` rather than equality: stored Analysis.backend carries a suffix
   // for fallback runs (e.g. 'openrouter-video (fallback)'), see analysis/index.ts.
   if (analyzedBackend) where.analyses = { some: { backend: { contains: analyzedBackend } } };
+  // Closed/won tests don't count — a finished test shouldn't keep a video in
+  // the "has hook test" bucket forever.
+  if (opts.hasHookTest) where.hookTests = { some: { status: { in: OPEN_TEST_STATUSES } } };
 
   // minOutlier was previously only echoed back in `filters` for the standalone
   // HTML gallery's own client-side JS to apply — the JSON route (site's
@@ -224,6 +234,7 @@ export async function buildCards(
     sortBy,
     density: opts.density,
     analyzedBy: analyzedBy ?? undefined,
+    hasHookTest: opts.hasHookTest || undefined,
   };
 
   // signedMediaUrl() makes a real HTTP call to Supabase Storage for every
@@ -237,6 +248,17 @@ export async function buildCards(
   // couldn't be scraped show the specific Apify issue instead of a silent
   // blank thumbnail.
   const fetchErrors = await latestFetchErrors(ranked.map(v => v.id));
+  // Open hook tests for the pool, one query — drives the 🧪 badge and the
+  // has-test filter state on each card.
+  const openTests = ranked.length ? await db.hookTest.findMany({
+    where: { workspaceId: workspace.id, videoId: { in: ranked.map(v => v.id) }, status: { in: OPEN_TEST_STATUSES } },
+    select: { id: true, videoId: true, status: true, versions: { where: { status: 'picked' }, select: { id: true } } },
+  }) : [];
+  const testsByVideo = new Map(openTests.map(t => [t.videoId, {
+    id: t.id,
+    status: t.status,
+    pickedCount: t.versions.length,
+  }]));
 
   const cards: GalleryCard[] = ranked.map((v, i) => {
     let keyMoments: GalleryCard['keyMoments'] = [];
@@ -284,6 +306,7 @@ export async function buildCards(
         ? null
         : (fetchErrors[v.id] ?? null),
       isSelf: Boolean(v.source.isSelf) || selfHandles.has(normalizeQuery('creator', v.creatorHandle)),
+      hookTest: testsByVideo.get(v.id) ?? null,
     };
   });
 
@@ -348,6 +371,7 @@ export function registerGalleryApp(server: McpServer) {
         + 'Pass sourceId after refreshing a specific source to scope the gallery to that scrape. '
         + 'Pass analyzedBy (e.g. "openrouter") to show only videos whose most recent analysis ran on '
         + 'that backend, newest analysis first. '
+        + 'Pass hasHookTest=true to show only videos with an open AI hook test (the 🧪 cards). '
         + 'Returns a galleryUrl as well: if the gallery does not render inline in this host, '
         + 'surface that URL to the user as a clickable link — it opens the same interactive '
         + 'gallery in their browser. '
@@ -372,6 +396,10 @@ export function registerGalleryApp(server: McpServer) {
           .enum(['openrouter'])
           .optional()
           .describe('Show only videos whose most recent analysis ran on this backend, newest first'),
+        hasHookTest: z
+          .boolean()
+          .optional()
+          .describe('Show only videos with an open AI hook test (the 🧪 badge cards)'),
         limit: z
           .number()
           .min(1)
@@ -387,13 +415,14 @@ export function registerGalleryApp(server: McpServer) {
       // also set below so hosts that honour call-time overrides can apply sourceId.
       _meta: { ui: { resourceUri: GALLERY_URI } },
     },
-    async ({ sourceId, minOutlierScore, minViews, analyzedBy, limit, density }) => {
+    async ({ sourceId, minOutlierScore, minViews, analyzedBy, hasHookTest, limit, density }) => {
       const { cards, filters } = await buildCards({
         sourceId,
         limit,
         minOutlier: minOutlierScore,
         minViews,
         analyzedBy,
+        hasHookTest,
         density,
       });
       // Prefer a query-scoped URI when filtering so resources/read can match.
@@ -423,6 +452,7 @@ export function registerGalleryApp(server: McpServer) {
         minOutlier: minOutlierScore,
         minViews,
         analyzedBy,
+        hasHookTest,
         density,
       });
 

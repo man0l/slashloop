@@ -8,6 +8,7 @@ import { registerFeedTools } from './tools/feed.js';
 import { registerVideoTools } from './tools/video.js';
 import { registerHookTools } from './tools/hooks.js';
 import { registerCreativeTools } from './tools/creative.js';
+import { registerHookTestTools } from './tools/hook-tests.js';
 import { registerSettingsTools } from './tools/settings.js';
 import { registerGalleryApp } from './tools/gallery.js';
 import { registerFetchTool } from './tools/fetch.js';
@@ -24,6 +25,7 @@ export function registerAllTools(server: McpServer) {
   registerVideoTools(server);
   registerHookTools(server);
   registerCreativeTools(server);
+  registerHookTestTools(server);
   registerSettingsTools(server);
   registerGalleryApp(server);
   registerFetchTool(server);
