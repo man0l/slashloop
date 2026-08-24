@@ -57,7 +57,98 @@ Hooks (2cr) and briefs (2cr) exist; add end-to-end faceless **scripts** template
 Cadence burnout is the #1 indie pain point. Ideas already exist as a model — add `dueAt` + a "what should I post today" tool. Not auto-posting; just the nudge.
 
 ### 6. Competitor-app watchlist benchmarking (M)
-Rival apps' accounts are already trackable via `create_source`; add a compare view: their median views, posting cadence, and format mix vs the user's own-account stats (#2).
+Rival apps' accounts are already trackable via `create_source`; add a compare view: their median views, posting cadence, and format mix vs the user's own-account stats (#2). *(Shipped 08-24, then simplified: every tracked creator is in the comparison set — no flag.)*
+
+### 7. Film-this families — one tested concept per outlier (M for v1, L phased)
+Extends analyze → hook chip → brief into a closed test loop. Lock a hypothesis (the invariant), spawn 3–4 Gen-1 hook variants, approve 2–3, film or render them, then score the children against **your** baseline via the isSelf feed before unlocking Gen 2 on the winning axis. One family per outlier; children never become families unless explicitly promoted. Pricing already names the step (brief + 4 hooks = 2 cr); charge per generation of proposals and per finished asset — never per axis. Full v1 spec below.
+
+---
+
+## Film-this families — v1 spec (feature #7)
+
+Build it as a family that hangs off an analyzed Gallery card, not a new app. The card answers "what do I film today," not "design an experiment." v1 UI is three things: **hypothesis, beat sheet, hook row** — if a founder can't finish *Film this today* in one scroll on a laptop, it's too much.
+
+### Pipeline
+
+```
+Gallery card (outlier)
+  │ Analyze (Gemini)              5 cr  (exists)
+  ▼
+Analysis (hook, beats, format)
+  │ Film this / Brief             2 cr
+  ▼
+FAMILY (Gen 0)   invariant + hypothesis + beat sheet + stopping rule
+  │ Generate hooks                included in those 2 cr
+  ▼
+GEN 1            3–4 hook variants (text + first-frame spec)
+  │ user picks 2–3 · film OR render slideshow
+  ▼
+CHILDREN         one asset per approved hook
+  │ user posts
+  ▼
+RESULTS          which child beat the owner's baseline (isSelf feed)
+  │ only then unlock Gen 2 (new axis, same family)
+  ▼
+GEN 2…
+```
+
+One family per outlier. Children never become new families unless explicitly "promote to concept."
+
+### Objects
+
+**Family** (the brief)
+
+| Field | Notes |
+|---|---|
+| sourceVideoId | gallery card outlier |
+| hypothesis | one editable sentence; cleared ⇒ Generate disabled — this is the invariant lock |
+| invariant | audience · problem · argument · proof screen · CTA · destination (frozen chips in v1) |
+| axis | `hook` only in v1 |
+| beats[] | `{ t, role, spoken, onScreen, appSlot }` |
+| stop | e.g. "4 hooks. If none beats hold after 3 posts, close." |
+| status | draft → gen1 → posted → closed |
+
+**Variant** (a child)
+
+| Field | Notes |
+|---|---|
+| parentFamilyId / changedVariable / value | e.g. hook / contrarian |
+| hookText + firstFrame | overlay spec or screenshot slot |
+| status | proposed → approved → filmed\|rendered → posted → scored |
+| assetUrl | mp4 or slide zip |
+| ownPostId | auto-matched when the post lands on the owner's self-source feed (fallback: paste URL) |
+
+MCP/CLI write the same objects. Dashboard is just the viewer.
+
+### Screens
+
+1. **Gallery card (entry):** unanalyzed cards unchanged; analyzed-without-family cards get one primary CTA `[Film this today →]` under the orange hook box; cards with a family show a chip instead (`3 hooks · 2 posted` → opens family). Card badges double as the index: none / hook line / brief / `3 variants` / `2 posted` / `C winning`. Gallery filters next to *Analyzed*: **Has brief / Has variants / Posted remakes.**
+2. **Family panel:** right drawer (or panel under header) on `/gallery?video=<id>`, same max-width as Gallery. Left: sticky 9:16 source player with key-moment chips. Right: **Block A** hypothesis (editable, prefilled from analysis; frozen invariant chips: audience · problem · proof · CTA · format); **Block B** beat sheet (vertical rows from key moments; beat 0 dashed = "filled by each variant"; pins = invariant; empty app slot ⇒ "film this beat on your phone" not "render"); **Block C** Gen-1 row of 3–4 variant cards (~160px, text-on-color first frame) typed recognition / specific number / contrarian / demo-first; select 2–3 (top 2 pre-checked); footer shows cost before click: `2 selected · shot list free | render slideshow ~6 credits`; render disabled until an app slot is filled or they choose shot-list-only; **Block D** collapsed stopping rule, defaulted: "Stop this family if no selected hook beats your median hold rate after 3 posts."
+3. **Children after approve:** winners collapse to child cards with status (`B filmed`, `C rendered · mp4`). Actions per child: copy caption + on-screen text · download mp4/slides · open on phone (QR to the file) · auto-marked posted via self-feed match (paste-URL fallback). No "generate 12 more"; one quiet link — *New test: proof beat* — appears only once ≥1 child is posted (Gen-2 unlock).
+4. **Results (Phase 4 — stub now):** child row gains `6.1× your baseline · hold 41% vs family median`; family header reads "Hook C winning"; *Promote C* makes its hook text the new beat-0 invariant and opens Gen 2 with that lock. Until own-account data exists: "Posted · waiting on your stats" + manual winner pick.
+
+### Credits
+
+| Step | Credits | When |
+|---|---|---|
+| Analyze | 5 | exists |
+| Brief + 4 hook variants | 2 | one charge — matches pricing table |
+| Re-roll hooks (same family) | 2 | new gen-1; old proposals discarded, never mixed |
+| Shot list (md/PDF + 9:16 overlay texts) | 0 | we want them filming |
+| Slideshow render | per-render pack | Phase 3 |
+| Re-render one child | render meter | only that child |
+
+Do not charge per axis. Charge per generation of proposals and per finished asset.
+
+### MCP / CLI parity
+
+`/brief <27.4x>` → creates family, prints hypothesis + 4 hooks; `/brief <id> --approve B,C`; `/shotlist` → markdown + overlay texts for tonight; `/render --format slideshow --only B,C` (credits, files land at `/content/families/<id>/B.mp4`). Nightly agent job: scan niche → brief top 2 outliers → stop at Gen-1 proposals. Morning UI: two drafts waiting; founders pick hooks. Agents never auto-render the product space.
+
+### Deliberately NOT in v1
+
+No hooks × proofs × formats spreadsheet · no avatar/creator picker · no "make 50 variants" · no empty Gen 2/3 tabs · no auto-post to TikTok.
+
+Happy path: hover card → Analyze → orange box → **Film this today** → edit one word of the hypothesis (hook cards already there) → uncheck A/D → download shot list or attach 2 screenshots → Render B, C → two files in the family → post → later the card reads **C winning**. That's the whole product; Gen 2 is a second pass on the same drawer once a winner exists.
 
 ---
 
@@ -73,7 +164,11 @@ Rival apps' accounts are already trackable via `create_source`; add a compare vi
 
 ## Suggested sequencing
 
-1. **Quick wins:** #1–2 improvements (auto-deepen inline, cost quotes) + #4 scripts + #5 idea queue — all small, all visible
-2. **Digest** (new #1) — retention engine
-3. **Own-account mode** (new #2) → **post log + retro** (new #3) — the "my app" loop
-4. **Sounds mining** + **competitor benchmarking** — differentiation polish
+Shipped through 2026-08-24: improvements #1–3 and features #1–#6 (retro + benchmark reworked read-only over tracked data — see status updates above).
+
+Next — feature #7 in phases:
+
+1. **Families v1 (text-only)** — Family/Variant objects, Gen-1 hook row (2 cr, re-roll 2 cr), shot list export, gallery card badges + filters, `/brief` + `/shotlist` MCP parity
+2. **Asset capture (Phase 2)** — app-slot screenshots attach to beats; enables the render path
+3. **Slideshow render (Phase 3)** — per-render pack pricing lands with it; QR-to-file for children
+4. **Results (Phase 4)** — children auto-scored vs owner baseline off the isSelf feed; Gen-2 unlock + promote-the-winner
