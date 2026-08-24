@@ -243,6 +243,49 @@ export const BriefDataSchema = z.object({
 });
 
 export type BriefData = z.infer<typeof BriefDataSchema>;
+
+// ---- Scripts (generate_script) ----
+
+/**
+ * Proven short-form formats for app promotion. The audience is app builders
+ * marketing their own apps, so every format is one that demonstrably works
+ * for app demos on TikTok — not generic creator formats.
+ */
+export const SCRIPT_FORMATS = [
+  'pov_demo',
+  'problem_solution',
+  'apps_that_feel_illegal',
+  'build_in_public',
+  'listicle',
+] as const;
+
+export type ScriptFormat = (typeof SCRIPT_FORMATS)[number];
+
+export const ScriptBeatSchema = z.object({
+  timestampSec: z.number().min(0),
+  /** What is said (voiceover or on-camera line) at this beat. */
+  voiceover: z.string(),
+  /** Text overlay to render, if any. */
+  onScreenText: z.string().optional(),
+  /** What is on screen — screen recording, selfie, b-roll. */
+  visual: z.string(),
+});
+
+export const ScriptDataSchema = z.object({
+  format: z.string(),
+  /** The first 2 seconds, word for word. */
+  hook: z.string(),
+  beats: z.array(ScriptBeatSchema).min(3),
+  /** The closing line + what happens on screen for it. */
+  cta: z.string(),
+  /** Ready-to-paste post caption. */
+  caption: z.string(),
+  hashtags: z.array(z.string()),
+  /** One sentence on why this structure converts for an app. */
+  whyThisWorks: z.string(),
+});
+
+export type ScriptData = z.infer<typeof ScriptDataSchema>;
 // ---- Timestamp sanity ----
 
 /**

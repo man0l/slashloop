@@ -445,6 +445,20 @@ export function registerFeedTools(server: McpServer) {
                 ? 'Nothing in this workspace has been analyzed yet, so hooks, ideas and briefs are all still empty.'
                 : ''}`,
           } : null,
+          // When estimated scores dominate, the top of the list is mostly
+          // account size — the deepen_baselines flow exists precisely for
+          // this and used to require already knowing about it. Offer the free
+          // triage first; its dry run then quotes the exact refresh cost.
+          // (Verified case: a 438× estimated score that was really 1.3×.)
+          estimatedCount >= 3 && estimatedCount > actualCount ? {
+            label: 'Verify the estimated scores before trusting them',
+            tool: 'deepen_baselines',
+            args: { screenOnly: true },
+            why: `${estimatedCount} of ${actualCount + estimatedCount} outliers are scored against a source median, `
+              + 'which mostly tracks account size. screenOnly:true is a free triage that ranks which scores are '
+              + 'most likely to be inflated; the dry run after it quotes the exact credit cost to re-measure '
+              + 'each against the creator\'s own median.',
+          } : null,
           totalVideos > 0 ? {
             label: 'Browse the outliers visually',
             tool: 'show_gallery',
