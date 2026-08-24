@@ -404,12 +404,19 @@ export function slideshowKeysFromRaw(rawJson: string | null | undefined): string
   }
 }
 
+export function slideshowImagesFromNormalizedRaw(raw: unknown): string[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const o = raw as Record<string, unknown>;
+  if (Array.isArray(o.slideshowImages)) {
+    return o.slideshowImages.filter((u): u is string => typeof u === 'string' && u.startsWith('http'));
+  }
+  return extractSlideshowImages(o);
+}
+
 export function slideshowImagesFromRaw(rawJson: string | null | undefined): string[] {
   if (!rawJson) return [];
   try {
-    const raw = JSON.parse(rawJson) as { slideshowImages?: unknown };
-    if (!Array.isArray(raw.slideshowImages)) return [];
-    return raw.slideshowImages.filter((u): u is string => typeof u === 'string' && u.startsWith('http'));
+    return slideshowImagesFromNormalizedRaw(JSON.parse(rawJson));
   } catch {
     return [];
   }
@@ -958,6 +965,11 @@ export function webItemToApifyShape(item: any): any {
   const video = item?.video ?? {};
   const handle = author.uniqueId || author.nickname || 'unknown';
   const id = String(item?.id ?? '');
+  // Photo carousels have no MP4. Keep the slide CDN URLs (not the rest of
+  // imagePost) so media ingest can copy them to R2 off-proxy — same deal as
+  // covers. The gallery never hotlinks these; resolveSlideshowUrls only
+  // emits the stored keys.
+  const slides = extractSlideshowImages(item);
 
   return {
     id,
@@ -973,7 +985,7 @@ export function webItemToApifyShape(item: any): any {
       // Platform CDN cover only. Nothing is downloaded through the proxy, so
       // there is no key-value-store copy — coverDownloadUrl stays null and
       // ingest fetches this URL direct, off-proxy, on demand.
-      originalCoverUrl: video.cover || video.originCover || video.dynamicCover || '',
+      originalCoverUrl: video.cover || video.originCover || video.dynamicCover || slides[0] || '',
       duration: video.duration,
     },
     playCount: toNum(stats.playCount),
@@ -981,6 +993,7 @@ export function webItemToApifyShape(item: any): any {
     commentCount: toNum(stats.commentCount),
     shareCount: toNum(stats.shareCount),
     collectCount: toNum(stats.collectCount),
+    ...(slides.length ? { postKind: 'slideshow', slideshowImages: slides } : {}),
   };
 }
 

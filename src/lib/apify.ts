@@ -29,6 +29,9 @@
 
 import { assertApifyCap, recordApifySpend } from './spend-cap.js';
 import { normalizeTikTok, type NormalizedVideo } from '../normalizers.js';
+import { isTikTokCdnUrl } from './tiktok-cdn.js';
+
+export { isTikTokCdnUrl };
 
 const APIFY_API_BASE = 'https://api.apify.com/v2';
 const DEFAULT_TIKTOK_ACTOR_ID = 'clockworks~tiktok-scraper';
@@ -58,14 +61,6 @@ export interface ResolvedVideoBinary {
   /** 'kv_store' = Apify key-value store (what we should use);
    *  'tiktok_cdn' = TikTok's own CDN (403s from servers — refuse). */
   source: 'kv_store' | 'tiktok_cdn';
-}
-
-/** TikTok's CDN hosts that 403 datacenter IPs. Apify KV-store records live on
- *  apify/r2/cloudfront hosts instead — so if a URL came back on one of these
- *  even from mediaUrls/downloadAddr (some actor runs drop the CDN URL there),
- *  refuse it rather than fetch a guaranteed 403. */
-export function isTikTokCdnUrl(url: string): boolean {
-  return /(?:^|\.)tiktokcdn\.com|(?:^|\.)tiktok\.com\/|v\d+(?:-webapp)?\.us\.tiktok|(?:^|\.)tik-tok\.com\//i.test(url);
 }
 
 /** True when the URL came from a "trusted" field but still points at TikTok's

@@ -177,18 +177,23 @@ export async function putObject(opts: PutObjectOptions): Promise<{ path: string;
  * without N network calls, and a CDN can cache them.
  */
 export function publicUrl(bucket: string, path: string): string {
+  // Prefer the R2 public base even when this process can't WRITE to R2.
+  // Vercel gallery-data often has the public domain without the S3 keys;
+  // the worker already stored the object. The base IS the thumbs bucket,
+  // so `bucket` is unused on this path.
+  const r2Base = (process.env.R2_THUMB_PUBLIC_BASE || process.env.R2_PUBLIC_BASE || '')
+    .replace(/\/$/, '');
+  if (r2Base) {
+    return `${r2Base}/${path}`;
+  }
+
   const backend = storageBackend();
 
   if (backend === 'r2') {
-    const base = (process.env.R2_THUMB_PUBLIC_BASE || process.env.R2_PUBLIC_BASE || '')
-      .replace(/\/$/, '');
-    if (!base) {
-      throw new Error(
-        'R2 public URL requested but R2_THUMB_PUBLIC_BASE is unset '
-        + '(enable r2.dev public access on the thumbs bucket)',
-      );
-    }
-    return `${base}/${path}`;
+    throw new Error(
+      'R2 public URL requested but R2_THUMB_PUBLIC_BASE is unset '
+      + '(enable r2.dev public access on the thumbs bucket)',
+    );
   }
 
   if (backend === 'supabase') {

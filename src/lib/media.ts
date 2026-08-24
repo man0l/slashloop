@@ -15,7 +15,8 @@ import {
   isStorageEnabled, putObject, publicUrl, signUrl, signedUrlTtlSeconds,
   thumbBucket, mediaBucket, thumbPath, mediaPath, slideshowPath,
 } from './storage.js';
-import { slideshowImagesFromRaw, slideshowKeysFromRaw } from './scrapers/tiktok-web.js';
+import { slideshowImagesFromNormalizedRaw, slideshowKeysFromRaw } from './scrapers/tiktok-web.js';
+import { isTikTokCdnUrl } from './tiktok-cdn.js';
 
 /**
  * Only needed for the SOURCE-CDN fallback. TikTok's CDN 403s bare requests, so
@@ -316,34 +317,101 @@ export async function ingestVideoFile(
 }
 
 /**
- * Download a video's MP4 via Apify and store it — WITHOUT running Gemini.
+ * What the UI should render for a photo carousel.
  *
- * This is the "fetch video" path: it makes a TikTok playable in the gallery
- * (mediaKey / mediaStatus='stored') so the inline <video> and key-moment
- * seeking work, independent of an analysis run. Reuses the exact download +
- * ingest legs as the analyze path (analyzeVideoWithDownload), minus Gemini.
- *
- * TikTok only — downloadVideo uses the residential proxy when
- * SCRAPER_PROXY_URL is set, otherwise Apify. Exclusive, no fallback. Spend is
- * asserted + recorded inside the adapter, so the fetch flow is governed by
- * that provider's cap, not AI credits. On ANY failure
- * the video is marked mediaStatus='failed' and the REAL error is rethrown —
- * the worker's failJob persists it as the job's lastError, which is what the
- * gallery's ⛔ fetch-error surface (src/lib/fetch-errors.ts) reads. Swallowing
- * the reason here used to turn every failure into a generic "download/store
- * returned no result" and hid whether it was a spend cap, an Apify actor
- * failure, a TikTok CDN refusal, or a deleted video.
+ * Stored R2 keys only. Scrape-time TikTok CDN URLs stay in rawJson as
+ * provenance for ingest and are never returned here — they 403 in the browser.
  */
 export function resolveSlideshowUrls(rawJson: string | null | undefined): string[] {
   const keys = slideshowKeysFromRaw(rawJson);
-  if (keys.length && isStorageEnabled()) {
-    try {
-      return keys.map(k => publicUrl(thumbBucket(), k));
-    } catch {
-      // R2 public base missing — fall through to any leftover CDN URLs.
+  if (!keys.length) return [];
+  try {
+    return keys.map(k => publicUrl(thumbBucket(), k));
+  } catch {
+    return [];
+  }
+}
+
+export interface SlideshowIngestTarget {
+  videoId: string;
+  urls: string[];
+}
+
+/** Slide CDN URLs captured at scrape, if this NormalizedVideo is a photo post. */
+export function slideshowTargetFromNormalized(
+  videoId: string,
+  raw: unknown,
+): SlideshowIngestTarget | null {
+  const urls = slideshowImagesFromNormalizedRaw(raw);
+  if (!urls.length) return null;
+  return { videoId, urls };
+}
+
+const MAX_SLIDES = 20;
+const SLIDE_VIDEO_CONCURRENCY = 3;
+
+async function fetchImageBuffer(url: string): Promise<{ body: Uint8Array; contentType: string } | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), THUMB_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      headers: isApifyHosted(url) ? {} : TIKTOK_FETCH_HEADERS,
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`image fetch ${res.status}`);
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.byteLength < 512) throw new Error(`image too small (${buf.byteLength}b)`);
+    if (buf.byteLength > MAX_THUMB_BYTES) throw new Error(`image too large (${buf.byteLength}b)`);
+    return { body: buf, contentType: imageContentType(res.headers.get('content-type'), url) };
+  } catch (err) {
+    console.warn(`[media] slideshow slide fetch failed: ${(err as Error).message}`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Copy a photo-carousel into the public thumbs bucket at scrape time.
+ * Same off-proxy fetch as covers — never worth failing a refresh over.
+ * The fetch/analyze path (Impit session) is the retry if this 403s.
+ */
+export async function ingestSlideshows(
+  workspaceId: string,
+  targets: SlideshowIngestTarget[],
+): Promise<{ stored: number; failed: number; skipped: number }> {
+  const result = { stored: 0, failed: 0, skipped: 0 };
+  if (!isStorageEnabled()) {
+    result.skipped = targets.length;
+    return result;
+  }
+
+  for (let i = 0; i < targets.length; i += SLIDE_VIDEO_CONCURRENCY) {
+    const batch = targets.slice(i, i + SLIDE_VIDEO_CONCURRENCY);
+    const outcomes = await Promise.all(batch.map(async (t) => {
+      const urls = t.urls.filter(u => typeof u === 'string' && u.startsWith('http')).slice(0, MAX_SLIDES);
+      if (!urls.length) return false;
+      const slides: Array<{ buffer: Buffer; contentType: string }> = [];
+      for (const url of urls) {
+        const got = await fetchImageBuffer(url);
+        if (!got) return false;
+        slides.push({ buffer: Buffer.from(got.body), contentType: got.contentType });
+      }
+      try {
+        await persistSlideshow(workspaceId, t.videoId, slides);
+        return true;
+      } catch (err) {
+        console.warn(`[media] slideshow persist failed for ${t.videoId}: ${(err as Error).message}`);
+        return false;
+      }
+    }));
+    for (const ok of outcomes) {
+      if (ok) result.stored++;
+      else result.failed++;
     }
   }
-  return slideshowImagesFromRaw(rawJson);
+
+  return result;
 }
 
 export async function persistSlideshow(
@@ -366,20 +434,49 @@ export async function persistSlideshow(
     });
     keys.push(path);
   }
-  const row = await db.video.findUnique({ where: { id: videoId }, select: { rawJson: true } });
+  const row = await db.video.findUnique({
+    where: { id: videoId },
+    select: { rawJson: true, thumbKey: true, thumbStatus: true },
+  });
   let raw: Record<string, unknown> = {};
   try { raw = JSON.parse(row?.rawJson || '{}') as Record<string, unknown>; } catch { raw = {}; }
   raw.postKind = 'slideshow';
   raw.slideshowKeys = keys;
   delete raw.slideshowImages;
+  // First slide is the cover the Sources row and unscored cards should show
+  // — don't leave them on the TikTok CDN URL when we already own the bytes.
+  const cover = row?.thumbStatus === 'stored' && row.thumbKey ? {} : {
+    thumbKey: keys[0] ?? null,
+    thumbStatus: keys[0] ? 'stored' as const : 'failed' as const,
+    thumbStoredAt: keys[0] ? new Date() : null,
+  };
   await db.video.update({
     where: { id: videoId },
-    data: { rawJson: JSON.stringify(raw), mediaStatus: 'slideshow' },
+    data: { rawJson: JSON.stringify(raw), mediaStatus: 'slideshow', ...cover },
   });
   console.log(`[media] stored slideshow (${keys.length} slides) in R2 for ${videoId}`);
   return keys;
 }
 
+/**
+ * Download a video's MP4 via Apify and store it — WITHOUT running Gemini.
+ *
+ * This is the "fetch video" path: it makes a TikTok playable in the gallery
+ * (mediaKey / mediaStatus='stored') so the inline <video> and key-moment
+ * seeking work, independent of an analysis run. Reuses the exact download +
+ * ingest legs as the analyze path (analyzeVideoWithDownload), minus Gemini.
+ *
+ * TikTok only — downloadVideo uses the residential proxy when
+ * SCRAPER_PROXY_URL is set, otherwise Apify. Exclusive, no fallback. Spend is
+ * asserted + recorded inside the adapter, so the fetch flow is governed by
+ * that provider's cap, not AI credits. On ANY failure
+ * the video is marked mediaStatus='failed' and the REAL error is rethrown —
+ * the worker's failJob persists it as the job's lastError, which is what the
+ * gallery's ⛔ fetch-error surface (src/lib/fetch-errors.ts) reads. Swallowing
+ * the reason here used to turn every failure into a generic "download/store
+ * returned no result" and hid whether it was a spend cap, an Apify actor
+ * failure, a TikTok CDN refusal, or a deleted video.
+ */
 export async function downloadAndStoreVideo(
   workspaceId: string,
   videoId: string,
@@ -501,16 +598,24 @@ export function frameUrlAt(signedUrl: string, timestampSec: number): string {
 /**
  * What the UI should render for a video's thumbnail.
  *
- * Prefers the stored copy, falls back to the original source URL — which is
- * still correct for YouTube (i.ytimg.com never expires) and is the best
- * available guess for a TikTok row scraped in the last few hours.
+ * Prefers the stored copy (R2 public URL). Does NOT require write credentials
+ * — constructing the public URL only needs R2_THUMB_PUBLIC_BASE, which the
+ * gallery API may have even when the S3 keys live only on the worker.
+ *
+ * Never returns a TikTok CDN URL: those 403 in the browser (and from
+ * datacenter IPs). YouTube (i.ytimg.com) still falls through as a stable host.
  */
 export function resolveThumbUrl(
   video: { thumbKey: string | null; thumbnailUrl: string },
 ): string | null {
-  // isStorageEnabled() guards publicUrl() (R2 public base or Supabase URL).
-  if (video.thumbKey && isStorageEnabled()) {
-    return publicUrl(thumbBucket(), video.thumbKey);
+  if (video.thumbKey) {
+    try {
+      return publicUrl(thumbBucket(), video.thumbKey);
+    } catch (err) {
+      console.warn(`[media] could not resolve stored thumb ${video.thumbKey}: ${(err as Error).message}`);
+    }
   }
-  return video.thumbnailUrl || null;
+  const fallback = video.thumbnailUrl || null;
+  if (!fallback || isTikTokCdnUrl(fallback)) return null;
+  return fallback;
 }

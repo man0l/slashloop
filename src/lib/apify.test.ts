@@ -91,6 +91,12 @@ describe('resolveVideoBinaryUrl', () => {
     expect(isTikTokCdnUrl(url)).toBe(true);
   });
 
+  test('matches regional image CDNs (tiktokcdn-us.com) that 403 in the browser', () => {
+    const url = 'https://p19-common-sign.tiktokcdn-us.com/tos-useast8-p-0068-tx2/x~tplv-tiktokx-origin.image';
+    expect(isTikTokCdnUrl(url)).toBe(true);
+    expect(resolveVideoBinaryUrl({ mediaUrls: [url], videoMeta: {} })?.source).toBe('tiktok_cdn');
+  });
+
   test('refuses a TikTok CDN URL even when the actor puts it in downloadAddr', () => {
     const url = 'https://v19.tiktokcdn.com/video/abc';
     const r = resolveVideoBinaryUrl({ videoMeta: { downloadAddr: url } });

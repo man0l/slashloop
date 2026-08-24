@@ -26,7 +26,7 @@ import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
 import { TrafficCapExceededError } from './scrapers/bandwidth.js';
 import { batchScoreVideos } from '../scoring.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } from './credits.js';
-import { ingestThumbnails, type ThumbIngestTarget } from './media.js';
+import { ingestThumbnails, ingestSlideshows, slideshowTargetFromNormalized, type ThumbIngestTarget, type SlideshowIngestTarget } from './media.js';
 import { enqueueRescoreJob, enqueueThumbJob } from './jobs.js';
 import { enqueueMissingCreatorBaselines } from './creator-baselines.js';
 import { resolveRefreshPlan, type RefreshPlan } from './refresh-policy.js';
@@ -172,6 +172,7 @@ export async function applyScrapeItems(opts: {
   let updatedVideos = 0;
   let itemsConsidered = 0;
   const thumbTargets: ThumbIngestTarget[] = [];
+  const slideshowTargets: SlideshowIngestTarget[] = [];
 
   // Which items survive the per-source filters, in one pass, before any DB
   // work. Fan-out multiplies every query by the number of subscribers, so the
@@ -286,6 +287,8 @@ export async function applyScrapeItems(opts: {
         thumbnailUrl: nv.thumbnailUrl,
         coverDownloadUrl: nv.coverDownloadUrl,
       });
+      const slides = slideshowTargetFromNormalized(created.id, nv.raw);
+      if (slides) slideshowTargets.push(slides);
     }
   }
 
@@ -371,6 +374,13 @@ export async function applyScrapeItems(opts: {
         `Thumbnail ingest: ${overflow.length} beyond the per-run cap of ${THUMB_INGEST_MAX_PER_RUN} `
         + `queued as thumb jobs (${enqueued} enqueued)`,
       ));
+    }
+  }
+
+  if (slideshowTargets.length > 0) {
+    const ingest = await ingestSlideshows(workspaceId, slideshowTargets);
+    if (ingest.failed > 0) {
+      errors.push(`Slideshow ingest: ${ingest.failed}/${ingest.stored + ingest.failed} failed`);
     }
   }
 

@@ -200,6 +200,27 @@ describe('tiktok-web helpers', () => {
     });
     expect(shaped.videoMeta.playAddr).toBeUndefined();
     expect(shaped.coverDownloadUrl).toBeUndefined();
+    expect(shaped.slideshowImages).toBeUndefined();
+  });
+
+  test('webItemToApifyShape keeps slideshow slide URLs for R2 ingest', () => {
+    const shaped = webItemToApifyShape({
+      id: '99',
+      desc: 'photos',
+      createTime: 1_700_000_000,
+      author: { uniqueId: 'creator' },
+      stats: { playCount: 10 },
+      video: {},
+      imagePost: {
+        images: [
+          { imageURL: { urlList: ['https://cdn.example/a.jpg'] } },
+          { imageURL: { urlList: ['https://cdn.example/b.jpg'] } },
+        ],
+      },
+    });
+    expect(shaped.postKind).toBe('slideshow');
+    expect(shaped.slideshowImages).toEqual(['https://cdn.example/a.jpg', 'https://cdn.example/b.jpg']);
+    expect(shaped.videoMeta.originalCoverUrl).toBe('https://cdn.example/a.jpg');
   });
 
   test('estimateScrapeBytes charges a lookup only when one is needed', () => {

@@ -20,7 +20,7 @@ import { TrafficCapExceededError } from './scrapers/bandwidth.js';
 import { batchScoreVideos } from '../scoring.js';
 import { infoNote } from './refresh-notes.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } from './credits.js';
-import { ingestThumbnails, type ThumbIngestTarget } from './media.js';
+import { ingestThumbnails, ingestSlideshows, slideshowTargetFromNormalized, type ThumbIngestTarget, type SlideshowIngestTarget } from './media.js';
 import { enqueueRefreshJob, enqueueRescoreJob, outstandingJobForSource, dispatchWorker } from './jobs.js';
 import { dismissSuggestion } from './suggestions.js';
 import { resolveRefreshPlan } from './refresh-policy.js';
@@ -390,6 +390,7 @@ export async function refreshSourceForWorkspace(
 
     // Persist videos (dedup by platform + externalId)
     const thumbTargets: ThumbIngestTarget[] = [];
+    const slideshowTargets: SlideshowIngestTarget[] = [];
     for (const nv of result.items) {
       const existing = await db.video.findFirst({
         where: { platform: nv.platform, externalId: nv.externalId },
@@ -427,6 +428,8 @@ export async function refreshSourceForWorkspace(
         thumbnailUrl: nv.thumbnailUrl,
         coverDownloadUrl: nv.coverDownloadUrl,
       });
+      const slides = slideshowTargetFromNormalized(created.id, nv.raw);
+      if (slides) slideshowTargets.push(slides);
     }
 
     // Persist cover images to Supabase Storage. Deliberately after the
@@ -437,6 +440,12 @@ export async function refreshSourceForWorkspace(
       const ingest = await ingestThumbnails(source.workspaceId, thumbTargets);
       if (ingest.failed > 0) {
         errors.push(`Thumbnail ingest: ${ingest.failed}/${ingest.stored + ingest.failed} failed`);
+      }
+    }
+    if (slideshowTargets.length > 0) {
+      const ingest = await ingestSlideshows(source.workspaceId, slideshowTargets);
+      if (ingest.failed > 0) {
+        errors.push(`Slideshow ingest: ${ingest.failed}/${ingest.stored + ingest.failed} failed`);
       }
     }
 
