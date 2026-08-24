@@ -10,7 +10,7 @@
 import { z } from 'zod/v4';
 import { requireWorkspace } from '../context.js';
 import { insufficientCreditsPayload, CREDIT_COSTS } from '../lib/credits.js';
-import { withNextSteps, apifyCostLabel, analyzeCostLabel, refreshCreditLabel } from '../lib/next-steps.js';
+import { withNextSteps, analyzeCostLabel, refreshCreditLabel, costBlock, listScrapeCostCents, scraperCostLabel } from '../lib/next-steps.js';
 import {
   listSourcesForWorkspace,
   getSourceForWorkspace,
@@ -74,7 +74,7 @@ export function registerSourceTools(server: McpServer) {
       videoLimit: z.number().min(1).max(200).default(20)
         .describe('Max videos on the FIRST (bootstrap) refresh (default 20 ≈ 30 credits). '
           + 'Later refreshes only pull ~5 newest / posts after the watermark to catch new outliers. '
-          + 'Costs 1.5 credits per video Apify returns.'),
+          + 'Costs 1.5 credits per video the scraper returns.'),
       refreshSchedule: z.enum(['manual', 'daily', 'weekly']).default('manual'),
       nicheTag: z.string().optional().describe('Niche/workspace tag'),
     },
@@ -106,7 +106,7 @@ export function registerSourceTools(server: McpServer) {
             label: `Pull videos for ${query} now`,
             tool: 'refresh_source',
             args: { sourceId: result.source.id },
-            cost: `${apifyCostLabel(videoLimit)} + ${refreshCreditLabel(videoLimit)}`,
+            cost: `${scraperCostLabel(videoLimit)} + ${refreshCreditLabel(videoLimit)}`,
             spendsMoney: true,
             why: 'This source has no videos yet — it stays empty until refreshed. '
               + `Estimate assumes the full ${videoLimit}-video limit; a smaller scrape costs proportionally less.`,
@@ -152,8 +152,9 @@ export function registerSourceTools(server: McpServer) {
     'Trigger a manual refresh for a source to catch NEW outliers (not re-scrape the full catalogue). '
       + 'First fill (empty source) pulls up to the source videoLimit (capped at 20). '
       + 'Later refreshes pull ~5 latest videos; creators also date-filter after the newest post already held. '
-      + 'TikTok uses clockworks/tiktok-scraper. Costs 1.5 credits per video Apify returns. '
-      + 'Subject to APIFY_SPEND_CAP_CENTS (default $5).',
+      + 'List scrapes follow SCRAPER_PROVIDER (Apify actor, or the direct proxy worker when configured). '
+      + 'Costs 1.5 credits per video the scraper returns. '
+      + 'Subject to the active spend cap (APIFY_SPEND_CAP_CENTS default $5, or PROXY_TRAFFIC_CAP_GB).',
     {
       sourceId: z.string(),
       videoLimit: z.number().min(1).max(200).optional()
@@ -183,7 +184,12 @@ export function registerSourceTools(server: McpServer) {
             sourceId: result.sourceId,
             query: result.query,
             videoLimit: result.videoLimit,
-            estimatedCost: `${apifyCostLabel(result.videoLimit)} + ${refreshCreditLabel(result.videoLimit)} (worst case — settled down to actual videos returned)`,
+            estimatedCost: `${scraperCostLabel(result.videoLimit)} + ${refreshCreditLabel(result.videoLimit)} (worst case — settled down to actual videos returned)`,
+            cost: costBlock(Math.ceil(result.videoLimit * CREDIT_COSTS.refreshSourcePerVideo), {
+              scraperCents: listScrapeCostCents(result.videoLimit),
+              quoted: true,
+              note: 'Worst case for the queued scrape — settled down to actual videos returned when the worker runs.',
+            }),
             deadlineAt: result.deadlineAt,
             workerDispatched: result.workerDispatched,
             note: 'Queued rather than run inline because a scrape this size can outlive the request budget, '
@@ -241,6 +247,10 @@ export function registerSourceTools(server: McpServer) {
               apifyCapStatus: result.apifyCapStatus,
               creditsCharged: result.creditsCharged,
               creditsRemaining: result.creditsRemaining,
+              cost: costBlock(result.creditsCharged, {
+                scraperCents: result.costCents,
+                remaining: result.creditsRemaining,
+              }),
               fetchSuggestion: result.fetchSuggestion,
               // Present only when this refresh gave a creator enough history to be
               // scored against themselves, which restates their videos elsewhere.
@@ -326,6 +336,7 @@ export function registerSourceTools(server: McpServer) {
           discardedCount,
           creditsCharged,
           creditsRemaining,
+          cost: costBlock(creditsCharged, { remaining: creditsRemaining }),
           notices: notices.length ? notices : undefined,
         }, suggestions.map(s => ({
           label: `Track ${s.sourceType === 'hashtag' ? '#' : s.sourceType === 'creator' ? '@' : ''}${s.query}`,

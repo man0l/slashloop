@@ -8,6 +8,7 @@ import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
 import { generateHookVariations } from '../analysis/hooks.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../lib/credits.js';
+import { costBlock } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerHookTools(server: McpServer) {
@@ -152,6 +153,7 @@ export function registerHookTools(server: McpServer) {
             note: 'Variations are automatically saved to the Hook Vault with origin="generated".',
             creditsCharged: CREDIT_COSTS.generateHookVariations,
             creditsRemaining: balance.total,
+            cost: costBlock(CREDIT_COSTS.generateHookVariations, { remaining: balance.total }),
           }, null, 2) }],
         };
       } catch (err) {
@@ -162,6 +164,7 @@ export function registerHookTools(server: McpServer) {
             message: (err as Error).message,
             creditsCharged: 0,
             creditsRemaining: balance.total,
+            cost: costBlock(0, { remaining: balance.total, note: 'Call failed — pre-auth refunded, nothing charged.' }),
           }) }],
           isError: true,
         };

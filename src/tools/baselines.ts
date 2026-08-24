@@ -27,7 +27,7 @@ import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
 import { CREATOR_BASELINE_MIN_SAMPLE, batchScoreVideos } from '../scoring.js';
-import { withNextSteps, apifyCostLabel, refreshCreditLabel } from '../lib/next-steps.js';
+import { withNextSteps, refreshCreditLabel, scraperCostLabel } from '../lib/next-steps.js';
 import { enqueueRescoreJob, dispatchWorker } from '../lib/jobs.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -189,7 +189,7 @@ export function registerBaselineTools(server: McpServer) {
 
       const candidates = scored.slice(0, limit);
 
-      const perCreatorCost = `${apifyCostLabel(videosPerCreator)} + ${refreshCreditLabel(videosPerCreator)}`;
+      const perCreatorCost = `${scraperCostLabel(videosPerCreator)} + ${refreshCreditLabel(videosPerCreator)}`;
       const totalCredits = Math.ceil(videosPerCreator * 1.5) * candidates.length;
 
       // Free triage. With 43 estimated outliers and a 15-credit check each,
@@ -261,7 +261,7 @@ export function registerBaselineTools(server: McpServer) {
             threshold: `A creator needs ${CREATOR_BASELINE_MIN_SAMPLE} videos before their score becomes 'actual'.`,
             videosPerCreator,
             costPerCreator: perCreatorCost,
-            estimatedTotal: `${totalCredits} credits + ${apifyCostLabel(videosPerCreator * candidates.length)}`,
+            estimatedTotal: `${totalCredits} credits + ${scraperCostLabel(videosPerCreator * candidates.length)}`,
             candidates,
             whatHappensNext:
               'Creating a creator source and refreshing it gives each creator enough history for an `actual` '
@@ -272,7 +272,7 @@ export function registerBaselineTools(server: McpServer) {
             label: `Set up baselines for ${candidates.length} creator(s)`,
             tool: 'deepen_baselines',
             args: { minOutlierScore, limit, videosPerCreator, dryRun: false },
-            cost: `${totalCredits} credits + ${apifyCostLabel(videosPerCreator * candidates.length)} across ${candidates.length} refresh(es)`,
+            cost: `${totalCredits} credits + ${scraperCostLabel(videosPerCreator * candidates.length)} across ${candidates.length} refresh(es)`,
             spendsMoney: true,
             why: 'Creating the sources is free; each refresh is what costs. Quote the per-creator price and '
               + 'confirm before running them, and let the user drop any creator they do not care about.',
