@@ -83,6 +83,8 @@ jobs:
           PROXY_CHEAP_API_KEY: ${{ secrets.PROXY_CHEAP_API_KEY }}
           PROXY_CHEAP_API_SECRET: ${{ secrets.PROXY_CHEAP_API_SECRET }}
           PROXY_TRAFFIC_CAP_GB: ${{ vars.PROXY_TRAFFIC_CAP_GB }}
+          # Weekly digest email delivery (src/lib/email.ts — Resend HTTP API)
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
         run: |
           set -e
           out="$GITHUB_WORKSPACE/.worker-env"
@@ -119,10 +121,12 @@ jobs:
           printf 'PROXY_CHEAP_API_SECRET=%s\n' "$PROXY_CHEAP_API_SECRET" >> "$out"
           printf 'PROXY_TRAFFIC_CAP_GB=%s\n' "$PROXY_TRAFFIC_CAP_GB" >> "$out"
           printf 'SCRAPER_PROXY_COUNTRY=US\n'                        >> "$out"
+          printf 'RESEND_API_KEY=%s\n' "$RESEND_API_KEY"             >> "$out"
           ls -la "$out"
           echo "lines: $(wc -l < "$out")"
           echo "video-model-marker: $(grep -c '^OPENROUTER_VIDEO_MODEL=' "$out")"
           echo "r2-endpoint-marker: $(grep -c '^R2_ENDPOINT=' "$out")"
+          echo "resend-key-marker: $(grep -c '^RESEND_API_KEY=.\+' "$out")"
 
       - uses: docker/setup-buildx-action@v3
 
