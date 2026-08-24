@@ -26,7 +26,9 @@ function json(status: number, body: unknown): Response {
   });
 }
 
-export default async function handler(request: Request): Promise<Response> {
+// Named GET (not export default) — Vercel only hands Web-Request objects to
+// method-named exports; a default export receives Node-style (req, res).
+export async function GET(request: Request): Promise<Response> {
   const secret = process.env.CRON_SECRET;
   if (!secret) return json(500, { error: 'CRON_SECRET is not configured' });
 
