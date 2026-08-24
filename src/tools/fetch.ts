@@ -8,16 +8,20 @@
 //      200-video scrape instead of all 200.
 //   2. Manual: pass explicit videoIds for hand-picked videos.
 //
-// Fetch is an Apify download + Storage write, so it is governed by the Apify
-// spend cap (asserted per-video inside downloadTikTokVideo), NOT AI credits.
-// It runs off the request path via the MediaJob queue (kind 'fetch'), drained
-// by the same worker + pg_cron schedule as analyze jobs.
+// Fetch is a video download + Storage write, so it is governed by the
+// download path's cap — the proxy traffic cap when the own worker handles
+// downloads (the usual case; TikTok's CDN 403s datacenter IPs), else the
+// Apify spend cap. NOT AI credits. It runs off the request path via the
+// MediaJob queue (kind 'fetch'), drained by the same worker + pg_cron
+// schedule as analyze jobs.
 // ---------------------------------------------------------------------------
 
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { requireWorkspace } from '../context.js';
 import { enqueueFetchJob, outstandingJobForVideo, dispatchWorker } from '../lib/jobs.js';
+import { costBlock } from '../lib/next-steps.js';
+import { selectDownloadAdapter } from '../lib/scrapers/index.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 /** Mirrors ESTIMATED_DOWNLOAD_COST_CENTS in lib/apify.ts (free-tier ceiling). */
@@ -32,9 +36,9 @@ export function registerFetchTool(server: McpServer) {
     'Download and store the MP4 for selected videos so they play inline in the gallery (with key-moment seeking), '
       + 'WITHOUT running Gemini analysis. Two modes: (1) minOutlierScore — fetch every video at or above an outlier '
       + 'score that has no stored video yet (e.g. 50 for the standout winners); (2) videoIds — hand-picked videos. '
-      + 'Fetch is Apify spend (≈1¢/video, subject to the spend cap), not AI credits. Runs in the background; poll '
-      + 'get_video until mediaStatus = stored. Use after refresh_source, when the user wants to SEE/scrub specific '
-      + 'outliers rather than only thumbnails.',
+      + 'Fetch is scraper spend (the residential-proxy worker when configured, else Apify ≈1¢/video), subject to the '
+      + 'matching spend cap — not AI credits. Runs in the background; poll get_video until mediaStatus = stored. '
+      + 'Use after refresh_source, when the user wants to SEE/scrub specific outliers rather than only thumbnails.',
     {
       minOutlierScore: z
         .number()
@@ -100,6 +104,12 @@ export function registerFetchTool(server: McpServer) {
       }
       if (eligible.length) await dispatchWorker();
 
+      // Which ledger this spend actually lands in. Downloads prefer the own
+      // proxy worker (TikTok's CDN 403s datacenter IPs); Apify is the
+      // fallback when no SCRAPER_PROXY_URL is configured.
+      let viaProxy = false;
+      try { viaProxy = selectDownloadAdapter('tiktok').name !== 'apify'; } catch { /* unconfigured — quote the Apify ceiling */ }
+
       return {
         content: [{
           type: 'text' as const,
@@ -109,7 +119,14 @@ export function registerFetchTool(server: McpServer) {
               : 'Nothing to fetch — all target videos are already stored, already queued, or not downloadable.',
             queued: eligible.length,
             threshold: minOutlierScore ?? null,
-            estimatedApifyCostCents: eligible.length * FETCH_COST_PER_VIDEO_CENTS,
+            estimatedScraperCostCents: eligible.length * FETCH_COST_PER_VIDEO_CENTS,
+            cost: costBlock(0, {
+              scraperCents: eligible.length * FETCH_COST_PER_VIDEO_CENTS,
+              quoted: true,
+              note: viaProxy
+                ? 'Proxy traffic on the own worker (PROXY_TRAFFIC_CAP_GB), not AI credits. Per-video figure is the pre-auth ceiling.'
+                : 'Apify spend (APIFY_SPEND_CAP_CENTS), not AI credits.',
+            }),
             skippedAlreadyStored: skippedStored,
             skippedHasOutstandingJob: skippedQueued,
             videos: eligible,

@@ -8,7 +8,7 @@ import { requireWorkspace } from '../context.js';
 import { analyzeVideoForWorkspace } from '../lib/video-service.js';
 import { resolveThumbUrl, signedMediaUrl, frameUrlAt } from '../lib/media.js';
 import { outstandingJobForVideo } from '../lib/jobs.js';
-import { withNextSteps } from '../lib/next-steps.js';
+import { withNextSteps, costBlock } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerVideoTools(server: McpServer) {
@@ -157,6 +157,7 @@ export function registerVideoTools(server: McpServer) {
             message: outcome.error,
             creditsCharged: outcome.creditsCharged,
             creditsRemaining: outcome.creditsRemaining,
+            cost: costBlock(outcome.creditsCharged, { remaining: outcome.creditsRemaining }),
           }, null, 2) }],
           isError: true,
         };
@@ -188,6 +189,10 @@ export function registerVideoTools(server: McpServer) {
               : `Worker not reached (${outcome.dispatchReason}); the job stays queued and the sweeper will run it.`,
             creditsCharged: outcome.creditsCharged,
             creditsRemaining: outcome.creditsRemaining,
+            cost: costBlock(outcome.creditsCharged, {
+              remaining: outcome.creditsRemaining,
+              note: 'Charged up front; refunded if the job fails before analysis starts.',
+            }),
           }, [{
             label: 'Wait for the analysis',
             tool: 'await_job',
@@ -212,6 +217,7 @@ export function registerVideoTools(server: McpServer) {
           analysis: result.analysis,
           creditsCharged: outcome.creditsCharged,
           creditsRemaining: outcome.creditsRemaining,
+          cost: costBlock(outcome.creditsCharged, { remaining: outcome.creditsRemaining }),
         }, null, 2) }],
       };
     });

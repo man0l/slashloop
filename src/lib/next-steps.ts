@@ -16,6 +16,8 @@
 // ---------------------------------------------------------------------------
 
 import { CREDIT_COSTS } from './credits.js';
+import { estimateScrapeBytes, scrapeCapKind } from './scrapers/index.js';
+import { bytesToCents, fmtBytes } from './scrapers/bandwidth.js';
 
 /** Apify cost constants mirrored from src/lib/apify.ts for estimation only. */
 const APIFY_CENTS_PER_RESULT = 0.37;
@@ -47,8 +49,39 @@ export interface NextStep {
 
 /** Estimated Apify spend for scraping `n` results, as user-facing text. */
 export function apifyCostLabel(results: number): string {
-  const cents = Math.ceil(results * APIFY_CENTS_PER_RESULT + APIFY_ACTOR_START_CENTS);
-  return `~$${(cents / 100).toFixed(2)} Apify`;
+  return `~$${(apifyCostCents(results) / 100).toFixed(2)} Apify`;
+}
+
+/** Estimated Apify spend for scraping `n` results, in cents (for cost blocks). */
+export function apifyCostCents(results: number): number {
+  return Math.ceil(results * APIFY_CENTS_PER_RESULT + APIFY_ACTOR_START_CENTS);
+}
+
+// ---------------------------------------------------------------------------
+// Provider-aware scraper cost quotes.
+//
+// List scrapes follow SCRAPER_PROVIDER: Apify bills per result, the own proxy
+// worker bills per gigabyte (bytesToCents, $3/GB default). Quoting everything
+// in "~$X Apify" was true when Apify was the only provider and is now just
+// wrong whenever the worker is — so every scraper quote goes through these.
+// needsLookup=true for the byte estimate is deliberate: it is the honest
+// worst case (creator sources need a secUid lookup, hashtags don't).
+// ---------------------------------------------------------------------------
+
+/** Estimated scraper spend for a list scrape of `n` results, in cents. */
+export function listScrapeCostCents(results: number): number {
+  if (scrapeCapKind('tiktok') === 'proxy') {
+    return bytesToCents(estimateScrapeBytes(results, true));
+  }
+  return apifyCostCents(results);
+}
+
+/** Estimated scraper spend for `n` results, as user-facing text. */
+export function scraperCostLabel(results: number): string {
+  if (scrapeCapKind('tiktok') === 'proxy') {
+    return `~${fmtBytes(estimateScrapeBytes(results, true))} proxy traffic`;
+  }
+  return apifyCostLabel(results);
 }
 
 /** Estimated credit spend for analysing `n` videos, as user-facing text. */
@@ -61,6 +94,46 @@ export function analyzeCostLabel(videos: number): string {
 export function refreshCreditLabel(videos: number): string {
   const credits = Math.ceil(videos * CREDIT_COSTS.refreshSourcePerVideo);
   return `${credits} credit${credits === 1 ? '' : 's'}`;
+}
+
+// ---------------------------------------------------------------------------
+// The `cost` block — one shape for spend on every tool response.
+//
+// Before this, each spending tool invented its own bookkeeping fields
+// (creditsCharged here, estimatedCost there, costCents somewhere else), so a
+// client had to know per-tool conventions to answer "what did this just cost
+// me / what will it cost". Every metered tool now attaches this object next
+// to its legacy fields (kept for back-compat with the site and existing
+// skills): post-execution it reports what was actually charged; on quotes
+// (dry runs, queued work) it carries the worst-case estimate and says so.
+// ---------------------------------------------------------------------------
+
+export interface CostBlock {
+  /** Credits this call charged. 0 when the spend is pure scraper time or the block is a quote. */
+  credits: number;
+  /** Actual or estimated scraper spend in cents — Apify per-result when
+   *  SCRAPER_PROVIDER=apify, modelled proxy bandwidth when the own worker is active. */
+  scraperCents?: number;
+  /** Credit balance after settlement. Omitted on pure quotes that touch no balance. */
+  remaining?: number;
+  /** Present only on quotes: the language is an estimate, not a settled amount. */
+  quoted?: boolean;
+  /** Worst-case framing for queued work that settles down later. */
+  note?: string;
+}
+
+/** Build the standard cost block. All numbers are final/actual unless `quoted`. */
+export function costBlock(
+  credits: number,
+  opts: { scraperCents?: number; remaining?: number; quoted?: boolean; note?: string } = {},
+): CostBlock {
+  return {
+    credits,
+    ...(opts.scraperCents != null ? { scraperCents: Math.round(opts.scraperCents * 100) / 100 } : {}),
+    ...(opts.remaining != null ? { remaining: opts.remaining } : {}),
+    ...(opts.quoted ? { quoted: true } : {}),
+    ...(opts.note ? { note: opts.note } : {}),
+  };
 }
 
 /**

@@ -16,7 +16,7 @@
 import { z } from 'zod/v4';
 import { requireWorkspace } from '../context.js';
 import { CREDIT_COSTS } from '../lib/credits.js';
-import { withNextSteps } from '../lib/next-steps.js';
+import { withNextSteps, costBlock } from '../lib/next-steps.js';
 import {
   MAX_INPUT_KEYWORDS,
   MAX_SEEDS,
@@ -91,6 +91,7 @@ export function registerDiscoverTools(server: McpServer) {
             message: expanded.errors[0] ?? 'Could not expand keywords into seeds.',
             creditsCharged: expanded.creditsCharged,
             creditsRemaining: expanded.creditsRemaining,
+            cost: costBlock(expanded.creditsCharged, { remaining: expanded.creditsRemaining }),
           }, null, 2) }],
           isError: true,
         };
@@ -153,6 +154,7 @@ export function registerDiscoverTools(server: McpServer) {
           suggestions,
           creditsCharged,
           creditsRemaining,
+          cost: costBlock(creditsCharged, { remaining: creditsRemaining }),
           notices: notices.length ? notices : undefined,
         }, steps), null, 2) }],
       };
