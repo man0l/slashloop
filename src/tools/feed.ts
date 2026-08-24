@@ -39,8 +39,11 @@ export function registerFeedTools(server: McpServer) {
 
       const workspace = await requireWorkspace();
 
-      // Build where clause — always scoped to this user's workspace
-      const where: any = { source: { workspaceId: workspace.id } };
+      // Build where clause — always scoped to this user's workspace.
+      // isBaselineSample rows are internal scoring history (creator-median
+      // deepening): the gallery and digest exclude them, and an agent browsing
+      // the feed must not see them as content either.
+      const where: any = { source: { workspaceId: workspace.id }, isBaselineSample: false };
       if (platform) where.platform = platform;
       if (sourceId) where.sourceId = sourceId;
       if (search) where.OR = [
@@ -331,7 +334,10 @@ export function registerFeedTools(server: McpServer) {
     {},
     async () => {
       const workspace = await requireWorkspace();
-      const wsFilter = { source: { workspaceId: workspace.id } };
+      // Baseline samples are internal scoring history, not content — same
+      // exclusion as get_feed / buildCards / buildDigest, so the summary's
+      // counts and top list describe the videos an agent can actually act on.
+      const wsFilter = { source: { workspaceId: workspace.id }, isBaselineSample: false };
 
       const totalVideos = await db.video.count({ where: wsFilter });
       const outliers = await db.score.findMany({

@@ -70,7 +70,11 @@ export function registerFetchTool(server: McpServer) {
         pool = vids.map((v) => ({ id: v.id, creatorHandle: v.creatorHandle, outlierScore: v.score?.outlierScore ?? null }));
       } else if (minOutlierScore != null) {
         const vids = await db.video.findMany({
-          where: { source: { workspaceId: workspace.id }, score: { outlierScore: { gte: minOutlierScore } } },
+          // Score-driven pool only: never let an agent spend download credits
+          // on isBaselineSample rows (internal scoring history, excluded from
+          // get_feed / get_outlier_summary for the same reason). Explicit
+          // videoIds stay fetchable — a direct request is not a ranking.
+          where: { source: { workspaceId: workspace.id }, isBaselineSample: false, score: { outlierScore: { gte: minOutlierScore } } },
           include: { score: true },
           orderBy: { score: { outlierScore: 'desc' } },
           take: 200,
