@@ -171,6 +171,7 @@ export function registerFeedTools(server: McpServer) {
           analysisBackend: v.analyses[0]?.backend ?? null,
           hookCount: v._count.hooks,
           source: { query: v.source.query, nicheTag: v.source.nicheTag },
+          sound: v.soundId ? { id: v.soundId, title: v.soundTitle, author: v.soundAuthor } : null,
         };
       });
 

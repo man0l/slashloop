@@ -69,6 +69,18 @@
       "dest": "/api/sources?id=$1"
     },
     {
+      "src": "^/api/studio/retro$",
+      "dest": "/api/workspaces?resource=retro"
+    },
+    {
+      "src": "^/api/studio/benchmark$",
+      "dest": "/api/workspaces?resource=benchmark"
+    },
+    {
+      "src": "^/api/studio/posts$",
+      "dest": "/api/workspaces?resource=posts"
+    },
+    {
       "src": "^/api/workspaces$",
       "dest": "/api/workspaces"
     },

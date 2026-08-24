@@ -970,6 +970,7 @@ export function webItemToApifyShape(item: any): any {
   // covers. The gallery never hotlinks these; resolveSlideshowUrls only
   // emits the stored keys.
   const slides = extractSlideshowImages(item);
+  const music = (item?.music ?? {}) as Record<string, unknown>;
 
   return {
     id,
@@ -993,6 +994,11 @@ export function webItemToApifyShape(item: any): any {
     commentCount: toNum(stats.commentCount),
     shareCount: toNum(stats.shareCount),
     collectCount: toNum(stats.collectCount),
+    musicMeta: {
+      musicId: music.id != null ? String(music.id) : '',
+      musicName: typeof music.title === 'string' ? music.title : '',
+      musicAuthor: typeof music.authorName === 'string' ? music.authorName : '',
+    },
     ...(slides.length ? { postKind: 'slideshow', slideshowImages: slides } : {}),
   };
 }

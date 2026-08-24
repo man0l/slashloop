@@ -7,14 +7,35 @@
 // One file, not two — see api/sources.ts for why (Hobby plan's 12-function
 // cap). vercel.json rewrites /api/workspaces/:id here with an `id` query param.
 import { corsPreflight } from '../src/lib/cors.js';
-import { requireAuth, jsonResponse } from '../src/lib/authz.js';
+import { requireAuth, requireOwnedWorkspace, jsonResponse } from '../src/lib/authz.js';
 import { listWorkspacesForUser, createWorkspaceForUser, renameWorkspaceForUser, resolveAccountPlanKey, WorkspaceLimitError } from '../src/lib/workspaces.js';
+import { logPostForWorkspace, listPostsForWorkspace, buildWeeklyRetro } from '../src/lib/posts.js';
+import { buildBenchmark } from '../src/lib/benchmark.js';
 
 export async function OPTIONS(): Promise<Response> {
   return corsPreflight();
 }
 
 export async function GET(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const resource = url.searchParams.get('resource');
+
+  if (resource === 'posts' || resource === 'retro' || resource === 'benchmark') {
+    const owned = await requireOwnedWorkspace(request, url.searchParams.get('workspaceId'));
+    if (!owned.ok) return owned.response;
+    if (resource === 'posts') {
+      const limit = Number(url.searchParams.get('limit') || 50);
+      const posts = await listPostsForWorkspace(owned.workspace, Number.isFinite(limit) ? limit : 50);
+      return jsonResponse(200, { posts });
+    }
+    if (resource === 'retro') {
+      const retro = await buildWeeklyRetro(owned.workspace);
+      return jsonResponse(200, retro);
+    }
+    const bench = await buildBenchmark(owned.workspace);
+    return jsonResponse(200, bench);
+  }
+
   const auth = await requireAuth(request);
   if (!auth.ok) return auth.response;
 
@@ -28,6 +49,28 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.searchParams.get('resource') === 'posts') {
+    let body: { workspaceId?: string; url?: string; postedAt?: string; hookVariation?: string; notes?: string; ideaId?: string; outlierVideoId?: string };
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return jsonResponse(400, { error: 'invalid_json' });
+    }
+    const owned = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+    if (!owned.ok) return owned.response;
+    const result = await logPostForWorkspace(owned.workspace, {
+      url: body.url ?? '',
+      postedAt: body.postedAt,
+      hookVariation: body.hookVariation,
+      notes: body.notes,
+      ideaId: body.ideaId,
+      outlierVideoId: body.outlierVideoId,
+    });
+    if (!result.ok) return jsonResponse(400, { error: result.error, message: result.message });
+    return jsonResponse(200, result.post);
+  }
+
   const auth = await requireAuth(request);
   if (!auth.ok) return auth.response;
 

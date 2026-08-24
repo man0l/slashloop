@@ -82,6 +82,7 @@ export async function listSourcesForWorkspace(workspace: Workspace, filters: Lis
     refreshSchedule: s.refreshSchedule,
     isActive: s.isActive,
     isSelf: s.isSelf,
+    isCompetitor: s.isCompetitor,
     nicheTag: s.nicheTag,
     videoCount: s._count.videos,
     refreshCount: s._count.refreshRuns,
@@ -131,6 +132,8 @@ export interface CreateSourceInput {
   nicheTag?: string;
   /** Own TikTok handle. Ignored unless sourceType is creator. At most one per workspace. */
   isSelf?: boolean;
+  /** Rival creator to benchmark against the self source. */
+  isCompetitor?: boolean;
 }
 
 export type CreateSourceResult =
@@ -143,6 +146,7 @@ export async function createSourceForWorkspace(
 ): Promise<CreateSourceResult> {
   const { platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag } = input;
   const isSelf = Boolean(input.isSelf) && sourceType === 'creator';
+  const isCompetitor = Boolean(input.isCompetitor) && sourceType === 'creator' && !isSelf;
 
   // Refuse platforms that cannot be scraped, at the moment the user asks —
   // not two steps later at refresh.
@@ -175,7 +179,7 @@ export async function createSourceForWorkspace(
     return tx.source.create({
       data: {
         workspaceId: workspace.id,
-        platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf,
+        platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf, isCompetitor,
       },
     });
   });
@@ -190,6 +194,7 @@ export interface UpdateSourceInput {
   nicheTag?: string | null;
   language?: string;
   isSelf?: boolean;
+  isCompetitor?: boolean;
 }
 
 export async function updateSourceForWorkspace(
@@ -200,11 +205,12 @@ export async function updateSourceForWorkspace(
   const owned = await db.source.findFirst({ where: { id: sourceId, workspaceId: workspace.id } });
   if (!owned) return null;
 
-  const { isSelf: wantSelf, ...rest } = updates;
-  // Only a creator source can be "mine". Hashtag/keyword flags are ignored.
-  const isSelf = wantSelf === undefined
-    ? undefined
-    : Boolean(wantSelf) && owned.sourceType === 'creator';
+  const { isSelf: wantSelf, isCompetitor: wantRival, ...rest } = updates;
+  const isCreator = owned.sourceType === 'creator';
+  let isSelf = wantSelf === undefined ? undefined : Boolean(wantSelf) && isCreator;
+  let isCompetitor = wantRival === undefined ? undefined : Boolean(wantRival) && isCreator;
+  if (isSelf === true) isCompetitor = false;
+  if (isCompetitor === true) isSelf = false;
 
   return db.$transaction(async (tx) => {
     if (isSelf === true) {
@@ -215,7 +221,11 @@ export async function updateSourceForWorkspace(
     }
     return tx.source.update({
       where: { id: sourceId },
-      data: { ...rest, ...(isSelf === undefined ? {} : { isSelf }) },
+      data: {
+        ...rest,
+        ...(isSelf === undefined ? {} : { isSelf }),
+        ...(isCompetitor === undefined ? {} : { isCompetitor }),
+      },
     });
   }).catch(() => null);
 }
@@ -447,6 +457,9 @@ export async function refreshSourceForWorkspace(
           durationSec: nv.durationSec,
           transcript: nv.transcript,
           transcriptSource: nv.transcriptSource,
+          soundId: nv.sound?.id ?? null,
+          soundTitle: nv.sound?.title ?? null,
+          soundAuthor: nv.sound?.author ?? null,
           rawJson: JSON.stringify(nv.raw),
         },
         select: { id: true },

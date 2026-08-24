@@ -82,6 +82,14 @@ export interface MinedCreator {
   sampleCaption: string;
 }
 
+export interface MinedSound {
+  query: string;
+  title: string;
+  author: string;
+  videoCount: number;
+  avgViews: number;
+}
+
 export interface SeedMineResult {
   /** false only for an unexpected error — cap breaches, insufficient credits
    * and "no real content found" are ok:true with verified:false, all normal
@@ -93,6 +101,7 @@ export interface SeedMineResult {
   topViews: number;
   hashtags: MinedHashtag[];
   creators: MinedCreator[];
+  sounds: MinedSound[];
   creditsCharged: number;
   creditsRemaining: number;
   error?: string;
@@ -155,7 +164,7 @@ export function parseDiscoveryInput(keywords: string[]): DiscoverySeed[] {
 export function aggregateDiscovery(
   mines: SeedMineResult[],
   excludedKeys: Set<string>,
-): { hashtags: MinedHashtag[]; creators: MinedCreator[]; totalSampled: number } {
+): { hashtags: MinedHashtag[]; creators: MinedCreator[]; sounds: MinedSound[]; totalSampled: number } {
   const verified = mines.filter(m => m.verified);
   const totalSampled = verified.reduce((sum, m) => sum + m.sampleCount, 0);
   const seedKeys = new Set(mines.map(m => `${m.seed.sourceType}:${m.seed.query}`));
@@ -199,7 +208,24 @@ export function aggregateDiscovery(
     .map(([query, acc]) => ({ query, videoCount: acc.videoCount, medianViews: median(acc.views), followers: acc.followers, sampleCaption: acc.sampleCaption }))
     .sort((a, b) => b.medianViews - a.medianViews || b.videoCount - a.videoCount);
 
-  return { hashtags, creators, totalSampled };
+  const soundMap = new Map<string, { title: string; author: string; videoCount: number; totalViews: number }>();
+  for (const mine of verified) {
+    for (const sound of mine.sounds ?? []) {
+      const acc = soundMap.get(sound.query) ?? { title: sound.title, author: sound.author, videoCount: 0, totalViews: 0 };
+      acc.videoCount += sound.videoCount;
+      acc.totalViews += sound.videoCount * sound.avgViews;
+      if (sound.title && !acc.title) acc.title = sound.title;
+      soundMap.set(sound.query, acc);
+    }
+  }
+  const sounds: MinedSound[] = [...soundMap.entries()]
+    .map(([query, acc]) => ({
+      query, title: acc.title, author: acc.author,
+      videoCount: acc.videoCount, avgViews: Math.round(acc.totalViews / acc.videoCount),
+    }))
+    .sort((a, b) => b.videoCount - a.videoCount || b.avgViews - a.avgViews);
+
+  return { hashtags, creators, sounds, totalSampled };
 }
 
 // ---------------------------------------------------------------------------
@@ -342,9 +368,10 @@ export function mineFromItems(seed: DiscoverySeed, items: NormalizedVideo[]): {
   topViews: number;
   hashtags: MinedHashtag[];
   creators: MinedCreator[];
+  sounds: MinedSound[];
 } {
   if (items.length === 0) {
-    return { verified: false, sampleCount: 0, topViews: 0, hashtags: [], creators: [] };
+    return { verified: false, sampleCount: 0, topViews: 0, hashtags: [], creators: [], sounds: [] };
   }
 
   const ranked = [...items].sort((a, b) => b.views - a.views);
@@ -383,13 +410,31 @@ export function mineFromItems(seed: DiscoverySeed, items: NormalizedVideo[]): {
     .sort((a, b) => b.medianViews - a.medianViews)
     .slice(0, 5);
 
-  return { verified: true, sampleCount: ranked.length, topViews, hashtags, creators };
+  const soundAcc = new Map<string, { title: string; author: string; videoCount: number; totalViews: number }>();
+  for (const item of ranked) {
+    const sound = item.sound;
+    if (!sound?.id && !sound?.title) continue;
+    const key = (sound.id || sound.title).toLowerCase();
+    const acc = soundAcc.get(key) ?? { title: sound.title, author: sound.author, videoCount: 0, totalViews: 0 };
+    acc.videoCount += 1;
+    acc.totalViews += item.views;
+    soundAcc.set(key, acc);
+  }
+  const sounds: MinedSound[] = [...soundAcc.entries()]
+    .map(([query, acc]) => ({
+      query, title: acc.title, author: acc.author,
+      videoCount: acc.videoCount, avgViews: Math.round(acc.totalViews / acc.videoCount),
+    }))
+    .sort((a, b) => b.videoCount - a.videoCount || b.avgViews - a.avgViews)
+    .slice(0, 8);
+
+  return { verified: true, sampleCount: ranked.length, topViews, hashtags, creators, sounds };
 }
 
 function emptyMine(seed: DiscoverySeed, creditsRemaining: number, extra: Partial<SeedMineResult> = {}): SeedMineResult {
   return {
     ok: true, verified: false, seed, sampleCount: 0, topViews: 0,
-    hashtags: [], creators: [], creditsCharged: 0, creditsRemaining,
+    hashtags: [], creators: [], sounds: [], creditsCharged: 0, creditsRemaining,
     ...extra,
   };
 }
@@ -406,6 +451,7 @@ function asSeedMineResult(seed: DiscoverySeed, raw: unknown): SeedMineResult | n
     topViews: typeof r.topViews === 'number' ? r.topViews : 0,
     hashtags: Array.isArray(r.hashtags) ? r.hashtags : [],
     creators: Array.isArray(r.creators) ? r.creators : [],
+    sounds: Array.isArray(r.sounds) ? r.sounds : [],
     creditsCharged: typeof r.creditsCharged === 'number' ? r.creditsCharged : 0,
     creditsRemaining: typeof r.creditsRemaining === 'number' ? r.creditsRemaining : 0,
     error: typeof r.error === 'string' ? r.error : undefined,

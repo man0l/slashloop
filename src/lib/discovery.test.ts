@@ -59,7 +59,7 @@ function video(over: Partial<NormalizedVideo> = {}): NormalizedVideo {
     thumbnailUrl: '', coverDownloadUrl: null, creatorHandle: 'alice',
     creatorFollowers: 1000, caption: 'study #studytok #notes', postedAt: '',
     views: 1000, likes: 0, comments: 0, shares: null, saves: null,
-    durationSec: 10, transcript: null, transcriptSource: 'none', raw: {},
+    durationSec: 10, transcript: null, transcriptSource: 'none', sound: null, raw: {},
     ...over,
   };
 }
@@ -118,12 +118,22 @@ describe('mineFromItems', () => {
       expect.objectContaining({ query: 'alice', videoCount: 2, medianViews: 1250 }),
     ]);
   });
+
+  test('aggregates TikTok sounds from the sample', () => {
+    const mined = mineFromItems(seed, [
+      video({ views: 2000, sound: { id: 's1', title: 'original sound', author: 'alice' } }),
+      video({ views: 500, sound: { id: 's1', title: 'original sound', author: 'alice' } }),
+      video({ views: 100, sound: { id: 's2', title: 'trend', author: 'bob' } }),
+    ]);
+    expect(mined.sounds[0]).toMatchObject({ query: 's1', title: 'original sound', videoCount: 2, avgViews: 1250 });
+    expect(mined.sounds.map(s => s.query)).toEqual(['s1', 's2']);
+  });
 });
 
 function mine(partial: Partial<SeedMineResult> & { seed: SeedMineResult['seed'] }): SeedMineResult {
   return {
     ok: true, verified: true, sampleCount: 5, topViews: 0,
-    hashtags: [], creators: [], creditsCharged: 8, creditsRemaining: 100,
+    hashtags: [], creators: [], sounds: [], creditsCharged: 8, creditsRemaining: 100,
     ...partial,
   };
 }

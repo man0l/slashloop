@@ -30,12 +30,31 @@ export interface NormalizedVideo {
   durationSec: number | null;
   transcript: string | null;
   transcriptSource: 'captions' | 'asr' | 'none';
+  /** TikTok sound when the scrape included musicMeta / music. */
+  sound: { id: string; title: string; author: string } | null;
   raw: any;
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Pull a durable sound identity out of a TikTok scrape item.
+ * clockworks uses musicMeta.{musicId,musicName,musicAuthor}; the web item
+ * uses music.{id,title,authorName}. Original audio still counts — the
+ * discover "sounds" list is "what audio is this niche posting to."
+ */
+export function pickSound(raw: unknown): { id: string; title: string; author: string } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const meta = (o.musicMeta ?? o.music ?? {}) as Record<string, unknown>;
+  const id = String(meta.musicId ?? meta.id ?? '').trim();
+  const title = String(meta.musicName ?? meta.title ?? meta.musicTitle ?? '').trim();
+  const author = String(meta.musicAuthor ?? meta.authorName ?? meta.author ?? '').trim();
+  if (!id && !title) return null;
+  return { id: id || title.toLowerCase(), title: title || 'original audio', author };
+}
 
 function toInt(val: any): number {
   if (val == null) return 0;
@@ -134,6 +153,7 @@ export function normalizeTikTok(raw: any): NormalizedVideo {
     durationSec: video.duration ? toInt(video.duration) : null,
     transcript: null,
     transcriptSource: 'none',
+    sound: pickSound(raw),
     raw,
   };
 }
@@ -171,6 +191,7 @@ export function normalizeReels(raw: any): NormalizedVideo {
     durationSec: raw.videoDuration != null ? toFloat(raw.videoDuration) : null,
     transcript: null,
     transcriptSource: 'none',
+    sound: null,
     raw,
   };
 }
@@ -208,6 +229,7 @@ export function normalizeShorts(raw: any): NormalizedVideo {
     durationSec: parseDuration(raw.duration || snippet.duration || raw.contentDetails?.duration),
     transcript: null,
     transcriptSource: 'none',
+    sound: null,
     raw,
   };
 }

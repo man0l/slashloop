@@ -39,6 +39,7 @@ interface CreateSourceBody {
   refreshSchedule?: string;
   nicheTag?: string;
   isSelf?: boolean;
+  isCompetitor?: boolean;
 }
 
 interface UpdateSourceBody {
@@ -50,6 +51,7 @@ interface UpdateSourceBody {
   nicheTag?: string | null;
   language?: string;
   isSelf?: boolean;
+  isCompetitor?: boolean;
 }
 
 interface RefreshBody {
@@ -287,6 +289,7 @@ export async function POST(request: Request): Promise<Response> {
     refreshSchedule: refreshSchedule as 'manual' | 'daily' | 'weekly',
     nicheTag: body.nicheTag,
     isSelf: body.isSelf,
+    isCompetitor: body.isCompetitor,
   });
 
   if (!result.ok) {
@@ -325,6 +328,7 @@ export async function PATCH(request: Request): Promise<Response> {
     nicheTag: body.nicheTag,
     language: body.language,
     isSelf: body.isSelf,
+    isCompetitor: body.isCompetitor,
   });
   if (!source) return jsonResponse(404, { error: 'source_not_found' });
   return jsonResponse(200, source);

@@ -80,6 +80,7 @@ model Workspace {
   digestJson           String?
 
   sources              Source[]
+  loggedPosts          LoggedPost[]
   boards               Board[]
   usageLogs            UsageLog[]
   autoAnalyzeRuns      AutoAnalyzeRun[]
@@ -159,6 +160,9 @@ model Source {
   /// self source per workspace (enforced in sources-service, not a unique
   /// index — toggling off must stay a plain update).
   isSelf           Boolean   @default(false)
+  /// Rival creator the workspace wants to benchmark against the self source.
+  /// Ignored on hashtag/keyword. Setting isSelf on a row clears this.
+  isCompetitor     Boolean   @default(false)
   nicheTag         String?
   createdAt        DateTime  @default(now())
   lastRefreshedAt  DateTime?
@@ -228,12 +232,19 @@ model Video {
   geminiFileName      String?
   geminiFileExpiresAt DateTime?
 
+  /// TikTok sound / original audio, when the scrape included musicMeta.
+  soundId          String?
+  soundTitle       String?
+  soundAuthor      String?
+
   source       Source       @relation(fields: [sourceId], references: [id])
   score        Score?
   analyses     Analysis[]
   hooks        Hook[]
   swipeEntries SwipeEntry[]
   ideas        Idea[]
+  loggedPosts  LoggedPost[] @relation("LoggedPostMatched")
+  remakeOf     LoggedPost[] @relation("LoggedPostOutlier")
 
   /// Fan-out from a shared multi-tenant scrape can be applied twice — by two
   /// worker containers racing, or (Phase B) by replaying a cached result.
@@ -248,6 +259,32 @@ model Video {
   // Retention sweeper scans by stored-at within status; both are covered.
   @@index([thumbStatus, thumbStoredAt])
   @@index([mediaStatus, mediaStoredAt])
+  @@index([soundId])
+}
+
+/// A post the workspace owner actually published — the "which remake drove
+/// installs?" half of own-account tracking. Matched to a scraped Video on
+/// the self source when the TikTok id is already in the library.
+model LoggedPost {
+  id             String   @id @default(uuid())
+  workspaceId    String
+  url            String
+  /// TikTok snowflake parsed from url, when we could read one.
+  externalId     String?
+  postedAt       DateTime
+  hookVariation  String   @default("")
+  notes          String   @default("")
+  ideaId         String?
+  videoId        String?
+  outlierVideoId String?
+  createdAt      DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  video     Video?    @relation("LoggedPostMatched", fields: [videoId], references: [id])
+  outlier   Video?    @relation("LoggedPostOutlier", fields: [outlierVideoId], references: [id])
+
+  @@unique([workspaceId, url])
+  @@index([workspaceId, postedAt])
 }
 
 /// One Apify run per canonical query across worker containers. A TTL row

@@ -79,11 +79,13 @@ export function registerSourceTools(server: McpServer) {
       nicheTag: z.string().optional().describe('Niche/workspace tag'),
       isSelf: z.boolean().optional()
         .describe('True when this creator is the user\'s own TikTok. Creator sources only. At most one per workspace.'),
+      isCompetitor: z.boolean().optional()
+        .describe('True when this creator is a rival to benchmark against your account.'),
     },
-    async ({ platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf }) => {
+    async ({ platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf, isCompetitor }) => {
       const workspace = await requireWorkspace();
       const result = await createSourceForWorkspace(workspace, {
-        platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf,
+        platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf, isCompetitor,
       });
 
       if (!result.ok) {
@@ -130,6 +132,8 @@ export function registerSourceTools(server: McpServer) {
       language: z.string().optional(),
       isSelf: z.boolean().optional()
         .describe('Mark (or unmark) this creator as the user\'s own TikTok. Ignored on hashtag/keyword sources.'),
+      isCompetitor: z.boolean().optional()
+        .describe('Mark (or unmark) this creator as a competitor on the watchlist.'),
     },
     async ({ sourceId, ...updates }) => {
       const workspace = await requireWorkspace();

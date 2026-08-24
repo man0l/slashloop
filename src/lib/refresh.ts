@@ -215,6 +215,7 @@ export async function applyScrapeItems(opts: {
           shares: nv.shares,
           saves: nv.saves,
           creatorFollowers: nv.creatorFollowers,
+          ...(nv.sound?.id ? { soundId: nv.sound.id, soundTitle: nv.sound.title, soundAuthor: nv.sound.author } : {}),
           ...(isBaselineOnly ? {} : { isBaselineSample: false }),
         } as any,
       });
@@ -244,6 +245,9 @@ export async function applyScrapeItems(opts: {
           durationSec: nv.durationSec,
           transcript: nv.transcript,
           transcriptSource: nv.transcriptSource,
+          soundId: nv.sound?.id ?? null,
+          soundTitle: nv.sound?.title ?? null,
+          soundAuthor: nv.sound?.author ?? null,
           rawJson: JSON.stringify(nv.raw),
           isBaselineSample: isBaselineOnly,
         } as any,
@@ -271,6 +275,7 @@ export async function applyScrapeItems(opts: {
           shares: nv.shares,
           saves: nv.saves,
           creatorFollowers: nv.creatorFollowers,
+          ...(nv.sound?.id ? { soundId: nv.sound.id, soundTitle: nv.sound.title, soundAuthor: nv.sound.author } : {}),
           ...(isBaselineOnly ? {} : { isBaselineSample: false }),
         } as any,
       });

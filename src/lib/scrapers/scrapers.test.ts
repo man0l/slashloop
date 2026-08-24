@@ -201,6 +201,7 @@ describe('tiktok-web helpers', () => {
     expect(shaped.videoMeta.playAddr).toBeUndefined();
     expect(shaped.coverDownloadUrl).toBeUndefined();
     expect(shaped.slideshowImages).toBeUndefined();
+    expect(shaped.musicMeta).toEqual({ musicId: '', musicName: '', musicAuthor: '' });
   });
 
   test('webItemToApifyShape keeps slideshow slide URLs for R2 ingest', () => {
@@ -758,6 +759,7 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
       durationSec: 9,
       transcript: null,
       transcriptSource: 'none',
+      sound: null,
       raw: {},
     };
     const REAL_FETCH = globalThis.fetch;
