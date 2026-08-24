@@ -65,6 +65,16 @@ model Workspace {
   thumbRetentionDays   Int       @default(3)
   mediaRetentionDays   Int       @default(3)
 
+  // --- weekly digest ---
+  /// Opt-out for the weekly outlier digest (api/cron/digest.ts). On by
+  /// default — the digest is the retention engine, not marketing.
+  digestEnabled        Boolean   @default(true)
+  /// When the last digest was built+sent. Doubles as the "new outliers"
+  /// watermark and the cron's idempotency gate (≥7 days since = due).
+  lastDigestAt         DateTime?
+  /// Last built digest payload; get_digest serves this between runs.
+  digestJson           String?
+
   sources              Source[]
   boards               Board[]
   usageLogs            UsageLog[]
@@ -282,10 +292,11 @@ model Analysis {
   costCents     Int      @default(0)
   createdAt     DateTime @default(now())
 
-  video  Video   @relation(fields: [videoId], references: [id])
-  hooks  Hook[]
-  ideas  Idea[]
-  briefs Brief[]
+  video   Video    @relation(fields: [videoId], references: [id])
+  hooks   Hook[]
+  ideas   Idea[]
+  briefs  Brief[]
+  scripts Script[]
 
   @@index([videoId])
 }
@@ -344,6 +355,7 @@ model Idea {
   whyItWorked         String
   adaptation          String
   status              String   @default("new") // new | briefed | tested | archived
+  dueAt               DateTime? // planned post date — the posting queue (get_idea_queue)
   createdAt           DateTime @default(now())
 
   video    Video     @relation(fields: [videoId], references: [id])
@@ -351,6 +363,19 @@ model Idea {
   briefs   Brief[]
 
   @@index([status])
+}
+
+model Script {
+  id         String   @id @default(uuid())
+  analysisId String
+  format     String // pov_demo | problem_solution | apps_that_feel_illegal | build_in_public | listicle
+  scriptJson String // JSON string of the script
+  createdAt  DateTime @default(now())
+
+  analysis Analysis @relation(fields: [analysisId], references: [id])
+
+  @@index([analysisId])
+  @@index([format])
 }
 
 model Brief {
