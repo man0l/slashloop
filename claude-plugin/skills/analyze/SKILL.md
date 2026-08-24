@@ -2,7 +2,7 @@
 name: analyze
 description: Analyze hand-picked outlier videos with Gemini, then turn what worked into hooks, ideas, and briefs. Use after viewing the gallery or feed, when the user wants to know WHY a video performed — or says "analyze", "break this down", "what's the hook", "why did this pop".
 argument-hint: "<videoId | creator handle | 'the top outliers'>"
-allowed-tools: mcp__plugin_slashloop_slashloop__get_outlier_summary, mcp__plugin_slashloop_slashloop__get_feed, mcp__plugin_slashloop_slashloop__get_video, mcp__plugin_slashloop_slashloop__analyze_video, mcp__plugin_slashloop_slashloop__extract_hook, mcp__plugin_slashloop_slashloop__generate_hook_variations, mcp__plugin_slashloop_slashloop__create_idea, mcp__plugin_slashloop_slashloop__create_brief, mcp__plugin_slashloop_slashloop__save_to_board, mcp__plugin_slashloop_slashloop__get_usage, mcp__plugin_slashloop_slashloop__deepen_baselines, mcp__plugin_slashloop_slashloop__rescore_sources, mcp__plugin_slashloop_slashloop__await_job, mcp__plugin_slashloop_slashloop__get_job_status
+allowed-tools: mcp__plugin_slashloop_slashloop__get_outlier_summary, mcp__plugin_slashloop_slashloop__get_feed, mcp__plugin_slashloop_slashloop__get_video, mcp__plugin_slashloop_slashloop__analyze_video, mcp__plugin_slashloop_slashloop__extract_hook, mcp__plugin_slashloop_slashloop__generate_hook_variations, mcp__plugin_slashloop_slashloop__create_idea, mcp__plugin_slashloop_slashloop__create_brief, mcp__plugin_slashloop_slashloop__generate_script, mcp__plugin_slashloop_slashloop__get_idea_queue, mcp__plugin_slashloop_slashloop__update_idea_status, mcp__plugin_slashloop_slashloop__save_to_board, mcp__plugin_slashloop_slashloop__get_usage, mcp__plugin_slashloop_slashloop__deepen_baselines, mcp__plugin_slashloop_slashloop__rescore_sources, mcp__plugin_slashloop_slashloop__await_job, mcp__plugin_slashloop_slashloop__get_job_status
 ---
 
 Turn a scored outlier into something the user can act on. This is the half of
@@ -83,12 +83,19 @@ Offer the next move, with cost attached:
 |---|---|---|
 | Pull the hook out verbatim | `extract_hook` | free |
 | Rewrite it for the user's niche | `generate_hook_variations` | 2 credits |
-| Save a content idea | `create_idea` | free |
+| Save a content idea | `create_idea` | free (pass `dueAt` to put it in the posting queue) |
 | Full creative brief | `create_brief` | 2 credits |
+| Shootable script for the user's app | `generate_script` | 2 credits |
 | Keep it for later | `save_to_board` | free |
 
-Recommend one rather than listing all five. After analyzing a strong hook,
-`generate_hook_variations` is usually the right call — say so.
+Recommend one rather than listing all. After analyzing a strong hook,
+`generate_hook_variations` is usually the right call — say so. When the user
+has an app of their own to promote, `generate_script` is the payoff: it borrows
+the analyzed video's structure and writes a word-for-word script for THEIR app
+(pov_demo, problem_solution, apps_that_feel_illegal, build_in_public,
+listicle). It needs `appDescription` — ask what the app does if they haven't
+said. An idea with a `dueAt` shows up in `get_idea_queue`, the "what should I
+post today" answer.
 
 If the analysis was thin (no stored video, text-only backend), say that plainly
 and suggest `fetch_videos` for the outliers worth seeing play, rather than
