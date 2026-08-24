@@ -13,8 +13,21 @@ import { activeProviderFor, formatProxyCheap, listScrapers, proxyCheapBandwidth,
 import { proxyConfig } from '../lib/scrapers/proxy-http.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance, resolveBillingWorkspace } from '../lib/credits.js';
 import { retentionCeiling, validateRetentionDays } from '../lib/retention.js';
+import { costBlock } from '../lib/next-steps.js';
 import { failureLines, infoLines } from '../lib/refresh-notes.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+
+/** Parse a stored digest payload defensively — the column is written by the
+ *  cron and by get_digest recompute, so a malformed value must degrade to
+ *  "no stored digest" rather than break the tool. */
+function safeParseDigest(json: string): import('../lib/digest.js').DigestPayload | null {
+  try {
+    const p = JSON.parse(json);
+    return p && typeof p.generatedAt === 'string' && Array.isArray(p.topOutliers) ? p : null;
+  } catch {
+    return null;
+  }
+}
 
 export function registerSettingsTools(server: McpServer) {
 
@@ -186,6 +199,8 @@ export function registerSettingsTools(server: McpServer) {
         .describe('Days to keep stored cover images. Capped by your plan — see mediaRetention.maxRetentionDays in get_settings.'),
       mediaRetentionDays: z.number().int().optional()
         .describe('Days to keep stored video files. Capped by your plan. Longer windows make re-analysis free but cost storage.'),
+      digestEnabled: z.boolean().optional()
+        .describe('Weekly email digest of new outliers (Mondays). On by default — set false to opt out.'),
     },
     async (params) => {
       const workspace = await requireWorkspace();
@@ -222,6 +237,15 @@ export function registerSettingsTools(server: McpServer) {
           };
         }
         workspaceUpdate[key] = check.value;
+      }
+
+      // Digest opt-out lives on the billing workspace like credits — one
+      // unsubscribe per account, not per workspace.
+      if (params.digestEnabled !== undefined) {
+        await db.workspace.update({
+          where: { id: billingWorkspace.id },
+          data: { digestEnabled: params.digestEnabled },
+        });
       }
 
       if (Object.keys(workspaceUpdate).length > 0) {
@@ -367,6 +391,10 @@ export function registerSettingsTools(server: McpServer) {
             candidateCount: capped.length,
             estimatedCostCents,
             estimatedCostDisplay: `$${(estimatedCostCents / 100).toFixed(2)}`,
+            cost: costBlock(Math.ceil(capped.length * CREDIT_COSTS.analyzeVideo), {
+              quoted: true,
+              note: 'Quote only — re-run without dryRun:true to analyze. Batch discount applies on the settled amount.',
+            }),
             candidates: capped.map(v => ({
               videoId: v.id,
               creator: v.creatorHandle,
@@ -457,7 +485,62 @@ export function registerSettingsTools(server: McpServer) {
           savingsFromBatchDiscountCents: Math.max(0, Math.round((estimatedCostCents - totalCostCents) * 100) / 100),
           creditsCharged: totalCreditsCharged,
           creditsRemaining: balance.total,
+          cost: costBlock(totalCreditsCharged, { remaining: balance.total }),
           results,
+        }, null, 2) }],
+      };
+    });
+
+  // ---- get_digest ----
+  // The weekly digest is built and emailed by api/cron/digest.ts. This tool
+  // serves the same payload on demand: what the last email said, freshly
+  // recomputed if it has gone stale (>8 days old or never built). Free.
+  server.tool('get_digest',
+    'The weekly digest: new outliers since the last digest (actual scores first), posting-queue stats, credits. '
+      + 'Serves the stored digest when fresh; recomputes on demand (free) when stale. The cron emails this '
+      + 'weekly unless workspace digestEnabled=false.',
+    {},
+    async () => {
+      const workspace = await requireWorkspace();
+      const billingWorkspace = await resolveBillingWorkspace(workspace);
+
+      // Serve the stored copy when fresh (<8 days); otherwise recompute on
+      // demand. Digests live on the billing workspace (same account-level
+      // rule as credits), so both read and recompute happen there.
+      const STALE_MS = 8 * 24 * 60 * 60 * 1000;
+      const { digest, recomputed } = await (async () => {
+        const stored = billingWorkspace.digestJson ? safeParseDigest(billingWorkspace.digestJson) : null;
+        if (stored && Date.now() - new Date(stored.generatedAt).getTime() <= STALE_MS) {
+          return { digest: stored, recomputed: false };
+        }
+        const built = await import('../lib/digest.js').then(m =>
+          m.buildDigest(billingWorkspace, billingWorkspace.planCredits + billingWorkspace.packCredits));
+        await db.workspace.update({
+          where: { id: billingWorkspace.id },
+          data: { digestJson: JSON.stringify(built) },
+        });
+        return { digest: built, recomputed: true };
+      })();
+
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          digest,
+          digestEnabled: billingWorkspace.digestEnabled,
+          lastEmailedAt: billingWorkspace.lastDigestAt?.toISOString() ?? null,
+          recomputed,
+          note: recomputed
+            ? 'Recomputed on demand (the stored copy was missing or >8 days old). Nothing was emailed.'
+            : 'Stored digest from the last cron run.',
+          ...(digest.topOutliers.some(o => !o.hasAnalysis) ? {
+            nextSteps: [{
+              label: 'Analyze the unanalyzed outliers',
+              tool: 'analyze_video',
+              args: { videoId: digest.topOutliers.find(o => !o.hasAnalysis)!.videoId },
+              cost: '5 credits each',
+              spendsMoney: true,
+              why: 'Turns a score into hooks and scripts — that is the point of tracking.',
+            }],
+          } : {}),
         }, null, 2) }],
       };
     });

@@ -27,7 +27,7 @@ api/                 # Vercel entrypoints — kept to <=12 files (Hobby plan cap
                      # via vercel.json rewrites (see api/sources.ts)
 api/billing.ts       # Checkout, Billing Portal, status — called by slashloop-site
 api/stripe/          # Webhook — the only thing that grants/revokes credits
-api/cron/            # Scheduled jobs (media retention sweep)
+api/cron/            # Scheduled jobs (media retention sweep, weekly digest)
 claude-plugin/       # Claude Code plugin (skills + bundled remote MCP)
 vercel.json
 ```
@@ -237,7 +237,7 @@ populating the env vars above from a real Stripe account.
 
 ---
 
-## Tool inventory (44 tools)
+## Tool inventory (47 tools)
 
 | Module | Tools |
 |---|---|
@@ -246,8 +246,8 @@ populating the env vars above from a real Stripe account.
 | Feed (3) | get_feed, search_library, get_outlier_summary |
 | Video (3) | get_video, analyze_video, get_video_transcript |
 | Hooks (3) | list_hooks, extract_hook, generate_hook_variations |
-| Creative (11) | list_boards, get_board, create_board, save_to_board, export_board, list_ideas, create_idea, update_idea_status, create_brief, get_brief, export_brief |
-| Settings (6) | get_usage, get_settings, update_settings, get_refresh_logs, run_auto_analyze, get_apify_spend_status |
+| Creative (14) | list_boards, get_board, create_board, save_to_board, export_board, list_ideas, get_idea_queue, create_idea, update_idea_status, create_brief, get_brief, export_brief, generate_script, get_script |
+| Settings (7) | get_usage, get_settings, update_settings, get_refresh_logs, run_auto_analyze, get_apify_spend_status, get_digest |
 | Gallery (1) | show_gallery |
 | Fetch (1) | fetch_videos |
 | Baselines (2) | deepen_baselines, rescore_sources |
