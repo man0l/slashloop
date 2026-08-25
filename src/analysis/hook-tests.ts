@@ -116,6 +116,41 @@ export function applyLockedValues(draft: HookTestDraft, lock?: HookTestLock): Ho
   };
 }
 
+/**
+ * Models keep honoring the CONTENT of the contract while inventing shapes
+ * around it: nesting the draft under a wrapper key ("hookTest": {...}),
+ * renaming insight ("why_it_worked"), or returning a bare versions array.
+ * Each variant parses as valid JSON, so the adapters pass it through and the
+ * strict schema rejects it. Fold the known variants into the canonical shape
+ * before parsing instead of burning attempts on them.
+ */
+export function normalizeDraftShape(parsed: unknown): unknown {
+  if (!parsed || typeof parsed !== 'object') return parsed;
+
+  // A bare versions array is still a complete draft.
+  if (Array.isArray(parsed)) return { versions: parsed };
+
+  let obj = parsed as Record<string, unknown>;
+
+  // One level of unwrapping: { "<anything>": { ...real draft... }, ... }
+  if (!('versions' in obj)) {
+    const nested = Object.values(obj).find(
+      (v): v is Record<string, unknown> =>
+        typeof v === 'object' && v !== null && !Array.isArray(v) && 'versions' in v,
+    );
+    if (nested) obj = nested;
+  }
+
+  // Insight aliases seen from instruction-tuned models.
+  const INSIGHT_ALIASES = ['why_it_worked', 'whyItWorked', 'core_insight', 'why'] as const;
+  const fixed = { ...obj };
+  if (fixed.insight === undefined) {
+    const alias = INSIGHT_ALIASES.find((k) => typeof fixed[k] === 'string');
+    if (alias) fixed.insight = fixed[alias];
+  }
+  return fixed;
+}
+
 export async function generateHookTestDraft(
   videoId: string,
   opts: { brandContext?: string; model?: string; lock?: HookTestLock } = {},
@@ -151,17 +186,22 @@ export async function generateHookTestDraft(
     // failure (the original bug: the model kept copying the one-version
     // example, min(2) failed twice).
     const corrective = lastIssues
-      ? `\n## Correction required\nYour previous response failed schema validation:\n${lastIssues}\nReturn ONLY corrected raw JSON — exactly four versions, every "hookText" non-empty.`
+      ? `\n## Correction required\nYour previous response failed schema validation:\n${lastIssues}\nReturn ONLY corrected raw JSON — a single object with "insight", "sameIn", "beats" and exactly four "versions".`
       : '';
     const parsed = await callModelText(HOOK_TEST_SYSTEM, userMessage + corrective, model);
-    const result = HookTestDraftSchema.safeParse(parsed);
+    const result = HookTestDraftSchema.safeParse(normalizeDraftShape(parsed));
     if (result.success) { draft = result.data; break; }
     lastIssues = result.error.issues
       .slice(0, 5)
       .map((i) => `- ${i.path.join('.') || '(root)'}: ${i.message}`)
       .join('\n');
-    if (attempt === 0) continue;
-    console.error(`[hook-tests] validation failed twice for video ${videoId}:\n${lastIssues}`);
+    if (attempt === 0) {
+      // First failure may still self-correct via the retry — but log the
+      // payload now so a double failure is diagnosable without guessing.
+      console.warn(`[hook-tests] draft rejected (attempt 1, video ${videoId}): ${lastIssues} — payload: ${JSON.stringify(parsed)?.slice(0, 500)}`);
+      continue;
+    }
+    console.error(`[hook-tests] validation failed twice for video ${videoId}:\n${lastIssues}\npayload: ${JSON.stringify(parsed)?.slice(0, 500)}`);
     throw new Error(`Hook test validation failed after 2 attempts (${lastIssues.split('\n')[0]})`);
   }
 

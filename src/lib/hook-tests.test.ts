@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import { buildStopRule, serializeTest, buildShotlistMarkdown } from './hook-tests.js';
-import { applyLockedValues, lockSection, HOOK_TEST_TYPES, HookTestDraftSchema } from '../analysis/hook-tests.js';
+import { applyLockedValues, lockSection, HOOK_TEST_TYPES, HookTestDraftSchema, normalizeDraftShape } from '../analysis/hook-tests.js';
 import type { HookTestDraft } from '../analysis/hook-tests.js';
 import type { SerializedHookTest } from './hook-tests.js';
 
@@ -34,6 +34,46 @@ describe('HookTestDraftSchema', () => {
   test('still demands an insight and at least two usable openings', () => {
     expect(HookTestDraftSchema.safeParse(draft([opening()])).success).toBe(false);
     expect(HookTestDraftSchema.safeParse({ insight: '', sameIn: [], beats: [], versions: [opening(), opening()] }).success).toBe(false);
+  });
+});
+
+describe('normalizeDraftShape', () => {
+  const good = {
+    insight: 'i',
+    sameIn: [],
+    beats: [],
+    versions: [{ type: 'recognition', hookText: 'h' }, { type: 'contrarian', hookText: 'g' }],
+  };
+
+  test('passes a canonical draft through untouched', () => {
+    expect(normalizeDraftShape(good)).toEqual(good);
+    expect(normalizeDraftShape('nope')).toBe('nope');
+  });
+
+  test('unwraps a draft nested under a wrapper key', () => {
+    const wrapped = { hookTest: good, notes: 'the model was asked to output raw JSON' };
+    const result = HookTestDraftSchema.safeParse(normalizeDraftShape(wrapped));
+    expect(result.success).toBe(true);
+  });
+
+  test('maps a bare versions array onto the draft shape — only the missing insight may complain', () => {
+    // An insight-less array must still FAIL (insight is mandatory), but the
+    // failure should name insight alone — proof the versions were understood.
+    const result = HookTestDraftSchema.safeParse(
+      normalizeDraftShape([{ type: 'contrarian', hookText: 'a' }, { type: 'recognition', hookText: 'b' }]),
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.length).toBeGreaterThan(0);
+      expect(result.error.issues.every((i) => i.path.join('.') === 'insight')).toBe(true);
+    }
+  });
+
+  test('rescues renamed insight keys', () => {
+    const aliased = { why_it_worked: 'numbers convince', sameIn: [], beats: [], versions: [good.versions[0], good.versions[1]] };
+    const result = HookTestDraftSchema.safeParse(normalizeDraftShape(aliased));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.insight).toBe('numbers convince');
   });
 });
 
