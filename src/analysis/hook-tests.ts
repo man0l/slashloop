@@ -25,6 +25,15 @@ const OpeningSchema = z.object({
   mechanism: z.string().catch(''),
 });
 
+/** An opening entry is only usable if it carries its line. One lazy element
+ *  (empty/missing hookText) used to fail the ENTIRE versions array — dropping
+ *  junk entries before the strict parse lets an otherwise-good draft ship. */
+function hasHookLine(raw: unknown): boolean {
+  if (typeof raw !== 'object' || raw === null) return false;
+  const hookText = (raw as { hookText?: unknown }).hookText;
+  return typeof hookText === 'string' && hookText.trim().length > 0;
+}
+
 export const HookTestDraftSchema = z.object({
   /** One sentence — why the original's first seconds grabbed attention. */
   insight: z.string().min(1),
@@ -32,7 +41,10 @@ export const HookTestDraftSchema = z.object({
   sameIn: z.array(z.string()).catch([]),
   /** The story shape copied into every version, one line per beat. */
   beats: z.array(z.string()).catch([]),
-  versions: z.array(OpeningSchema).min(2),
+  versions: z.preprocess(
+    (raw) => (Array.isArray(raw) ? raw.filter(hasHookLine) : raw),
+    z.array(OpeningSchema).min(2),
+  ),
 });
 
 export type HookTestDraft = z.infer<typeof HookTestDraftSchema>;
@@ -46,18 +58,22 @@ export interface HookTestLock {
 const HOOK_TEST_SYSTEM = `You are Gemini, a short-form video strategist running hook tests. Given a viral video analysis, extract ONE transferable insight (why the first seconds grabbed attention) and write 4 alternative OPENINGS for a new video built on that same insight.
 
 Rules:
+- Return EXACTLY 4 versions — one per opening type, all four present:
+    "recognition" (viewer sees themselves), "specific_number" (a concrete figure does the convincing), "contrarian" (opens against what the viewer believes), "demo_first" (the result/action before any explanation).
 - Every version keeps the SAME subject, setting and story shape — ONLY the opening changes. Name what stays constant in "sameIn".
-- Exactly one version per opening type: "recognition" (viewer sees themselves), "specific_number" (a concrete figure does the convincing), "contrarian" (opens against what the viewer believes), "demo_first" (the result/action before any explanation).
-- Each version pairs the spoken/overlay hook TEXT with what the FIRST FRAME literally shows.
+- Each version pairs the spoken/overlay hook TEXT with what the FIRST FRAME literally shows. Every version's "hookText" MUST be non-empty — a version without its line is worse than none.
 - Openings must be reproducible without the original creator, brand or assets — no "as you can see", no references to the original video.
 
-Output raw JSON only:
+Output raw JSON only, in exactly this shape (note: ALL FOUR versions):
 {
   "insight": "1 sentence",
-  "sameIn": ["face to camera in a kitchen", "phone-screen demos", "..."],
+  "sameIn": ["face to camera in a kitchen", "phone-screen demos"],
   "beats": ["opening states the tension", "quick proof montage", "payoff + rewatch bait"],
   "versions": [
-    {"type": "recognition", "hookText": "...", "firstFrame": "...", "mechanism": "why it works"}
+    {"type": "recognition", "hookText": "...", "firstFrame": "...", "mechanism": "why it works"},
+    {"type": "specific_number", "hookText": "...", "firstFrame": "...", "mechanism": "why it works"},
+    {"type": "contrarian", "hookText": "...", "firstFrame": "...", "mechanism": "why it works"},
+    {"type": "demo_first", "hookText": "...", "firstFrame": "...", "mechanism": "why it works"}
   ]
 }`;
 
@@ -128,12 +144,25 @@ export async function generateHookTestDraft(
 
   const model = opts.model ?? 'gemini-3.5-flash';
   let draft!: HookTestDraft;
+  let lastIssues = '';
   for (let attempt = 0; attempt < 2; attempt++) {
-    const parsed = await callModelText(HOOK_TEST_SYSTEM, userMessage, model);
+    // Attempt 2 carries the validator's complaints — a blind retry resends
+    // the byte-identical prompt and deterministically reproduces the same
+    // failure (the original bug: the model kept copying the one-version
+    // example, min(2) failed twice).
+    const corrective = lastIssues
+      ? `\n## Correction required\nYour previous response failed schema validation:\n${lastIssues}\nReturn ONLY corrected raw JSON — exactly four versions, every "hookText" non-empty.`
+      : '';
+    const parsed = await callModelText(HOOK_TEST_SYSTEM, userMessage + corrective, model);
     const result = HookTestDraftSchema.safeParse(parsed);
     if (result.success) { draft = result.data; break; }
+    lastIssues = result.error.issues
+      .slice(0, 5)
+      .map((i) => `- ${i.path.join('.') || '(root)'}: ${i.message}`)
+      .join('\n');
     if (attempt === 0) continue;
-    throw new Error('Hook test validation failed after 2 attempts');
+    console.error(`[hook-tests] validation failed twice for video ${videoId}:\n${lastIssues}`);
+    throw new Error(`Hook test validation failed after 2 attempts (${lastIssues.split('\n')[0]})`);
   }
 
   return applyLockedValues(draft, opts.lock);

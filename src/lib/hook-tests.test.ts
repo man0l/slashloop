@@ -4,9 +4,38 @@
 
 import { describe, expect, test } from 'bun:test';
 import { buildStopRule, serializeTest, buildShotlistMarkdown } from './hook-tests.js';
-import { applyLockedValues, lockSection, HOOK_TEST_TYPES } from '../analysis/hook-tests.js';
+import { applyLockedValues, lockSection, HOOK_TEST_TYPES, HookTestDraftSchema } from '../analysis/hook-tests.js';
 import type { HookTestDraft } from '../analysis/hook-tests.js';
 import type { SerializedHookTest } from './hook-tests.js';
+
+describe('HookTestDraftSchema', () => {
+  const opening = (over: Record<string, string> = {}) => ({
+    type: 'recognition',
+    hookText: 'I rebuilt my pricing page live on day one.',
+    firstFrame: 'desk, laptop open',
+    mechanism: 'stakes + specificity',
+    ...over,
+  });
+  const draft = (versions: unknown[]) => ({ insight: 'Proof beats promises.', sameIn: [], beats: [], versions });
+
+  test('accepts the full one-per-type shape', () => {
+    const four = ['recognition', 'specific_number', 'contrarian', 'demo_first'].map((type) => opening({ type }));
+    expect(HookTestDraftSchema.safeParse(draft(four)).success).toBe(true);
+  });
+
+  test('drops an entry with no usable hook line instead of failing the whole draft', () => {
+    // The original outage: one lazy element failed the ENTIRE versions array.
+    const four = [opening(), opening(), opening(), { type: 'demo_first', firstFrame: 'app screen' }];
+    const result = HookTestDraftSchema.safeParse(draft(four));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.versions).toHaveLength(3);
+  });
+
+  test('still demands an insight and at least two usable openings', () => {
+    expect(HookTestDraftSchema.safeParse(draft([opening()])).success).toBe(false);
+    expect(HookTestDraftSchema.safeParse({ insight: '', sameIn: [], beats: [], versions: [opening(), opening()] }).success).toBe(false);
+  });
+});
 
 describe('lockSection', () => {
   test('renders every locked element as a hard constraint', () => {
