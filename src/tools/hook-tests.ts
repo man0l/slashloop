@@ -15,7 +15,7 @@ import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, in
 import { costBlock, withNextSteps } from '../lib/next-steps.js';
 import {
   HookTestError,
-  startHookTest, getHookTest, getOpenTestForVideo,
+  startHookTest, getHookTest, getOpenTestForVideo, updateHookTestMeta,
   rerollHooks, pickHookVersions, closeHookTest, exportShotlist,
 } from '../lib/hook-tests.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -176,6 +176,31 @@ export function registerHookTestTools(server: McpServer) {
         }, [
           { label: 'Export the shot list', tool: 'export_shotlist', args: { testId: result.id }, why: 'One markdown brief per picked opening — ready to shoot or feed to a generator.' },
           { label: 'Close the test', tool: 'close_hook_test', args: { testId: result.id }, why: 'Done comparing openings? Closing frees the video for another test later.' },
+        ]), null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify(errorPayload(err)) }], isError: true };
+      }
+    });
+
+  server.tool('update_hook_test',
+    'Edit a hook test\'s lock: sharpen the insight and/or the same-in-every-version chips. Every future re-roll obeys the edit. Free.',
+    {
+      testId: z.string(),
+      insight: z.string().optional().describe('Replacement one-liner — why this video\'s opening grabbed attention'),
+      sameIn: z.array(z.string()).max(8).optional().describe('Replacement constant chips ("face to camera", ...); pass [] to clear'),
+    },
+    async ({ testId, insight, sameIn }) => {
+      const workspace = await requireWorkspace();
+      if (insight === undefined && sameIn === undefined) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Pass insight and/or sameIn' }) }], isError: true };
+      }
+      try {
+        const result = await updateHookTestMeta(testId, workspace.id, { ...(insight !== undefined ? { insight } : {}), ...(sameIn !== undefined ? { sameIn } : {}) });
+        return { content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({
+          message: 'Lock updated — re-rolls will obey it',
+          ...result,
+        }, [
+          { label: 'Re-roll under the new lock', tool: 'reroll_hooks', args: { testId: result.id }, cost: `${CREDIT_COSTS.rerollHooks} credits`, spendsMoney: true, why: 'Fresh openings generated against the edited strategy.' },
         ]), null, 2) }] };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: JSON.stringify(errorPayload(err)) }], isError: true };

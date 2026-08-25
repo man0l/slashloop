@@ -37,6 +37,12 @@ export const HookTestDraftSchema = z.object({
 
 export type HookTestDraft = z.infer<typeof HookTestDraftSchema>;
 
+export interface HookTestLock {
+  insight?: string;
+  sameIn?: string[];
+  beats?: string[];
+}
+
 const HOOK_TEST_SYSTEM = `You are Gemini, a short-form video strategist running hook tests. Given a viral video analysis, extract ONE transferable insight (why the first seconds grabbed attention) and write 4 alternative OPENINGS for a new video built on that same insight.
 
 Rules:
@@ -56,13 +62,47 @@ Output raw JSON only:
 }`;
 
 /**
+ * The lock as prompt text. When a test is re-rolled (or started with an
+ * explicit insight), the stored insight/chips/beats are the strategy — the
+ * model must serve them, not rediscover one. Without this the lock was merely
+ * preserved in the DB while every fresh generation drifted off it.
+ */
+export function lockSection(lock: HookTestLock | undefined): string {
+  if (!lock) return '';
+  const parts: string[] = [];
+  if (lock.insight) parts.push(`- INSIGHT (locked): ${lock.insight}`);
+  if (lock.sameIn?.length) parts.push(`- CONSTANTS (locked): ${lock.sameIn.join('; ')}`);
+  if (lock.beats?.length) parts.push(`- STORY SHAPE (locked): ${lock.beats.join(' → ')}`);
+  if (parts.length === 0) return '';
+  return `\n## Locked frame — HARD CONSTRAINTS\nThis test is locked to the strategy below. Every opening MUST serve this exact insight, keep these constants, and follow this story shape. Echo them back unchanged in your JSON ("insight" and "sameIn"/"beats" fields MUST be these values verbatim).\n${parts.join('\n')}`;
+}
+
+/**
  * Generate a hook-test draft (insight + 4 openings) from a video's latest
  * analysis. Throws when the video has no analysis yet — the caller turns that
  * into an analyze_video next-step rather than a dead end.
  */
+/**
+ * Post-generation cleanup: de-dup opening types (one per type keeps label
+ * assignment A–D distinct) and, under a lock, replace the model's echo with
+ * the canonical stored values.
+ */
+export function applyLockedValues(draft: HookTestDraft, lock?: HookTestLock): HookTestDraft {
+  const seen = new Set<string>();
+  const unique = draft.versions.filter((v) => !seen.has(v.type) && seen.add(v.type)).slice(0, 4);
+  const locked = Boolean(lock && (lock.insight || lock.sameIn?.length || lock.beats?.length));
+  if (!locked) return { ...draft, versions: unique };
+  return {
+    insight: lock?.insight || draft.insight,
+    sameIn: lock?.sameIn?.length ? lock.sameIn : draft.sameIn,
+    beats: lock?.beats?.length ? lock.beats : draft.beats,
+    versions: unique,
+  };
+}
+
 export async function generateHookTestDraft(
   videoId: string,
-  opts: { brandContext?: string; model?: string } = {},
+  opts: { brandContext?: string; model?: string; lock?: HookTestLock } = {},
 ): Promise<HookTestDraft> {
   const analysis = await db.analysis.findFirst({
     where: { videoId },
@@ -82,6 +122,7 @@ export async function generateHookTestDraft(
     analysis.analysisJson,
     video ? `\n## Original Video\nCreator: @${video.creatorHandle}\nCaption: ${video.caption}` : '',
     brandSection,
+    lockSection(opts.lock),
     `\nGenerate the hook test.`,
   ].join('\n');
 
@@ -95,9 +136,5 @@ export async function generateHookTestDraft(
     throw new Error('Hook test validation failed after 2 attempts');
   }
 
-  // One per type was asked for; de-dup defensively so label assignment in the
-  // service always lands A-D on distinct openings.
-  const seen = new Set<string>();
-  const unique = draft.versions.filter((v) => !seen.has(v.type) && seen.add(v.type));
-  return { ...draft, versions: unique.slice(0, 4) };
+  return applyLockedValues(draft, opts.lock);
 }

@@ -89,6 +89,26 @@
       "dest": "/api/videos?id=$1&action=analyze"
     },
     {
+      "src": "^/api/videos(?:/([^/]+?))/hook-test/pick$",
+      "dest": "/api/videos?id=$1&action=hook-test-pick"
+    },
+    {
+      "src": "^/api/videos(?:/([^/]+?))/hook-test/reroll$",
+      "dest": "/api/videos?id=$1&action=hook-test-reroll"
+    },
+    {
+      "src": "^/api/videos(?:/([^/]+?))/hook-test/close$",
+      "dest": "/api/videos?id=$1&action=hook-test-close"
+    },
+    {
+      "src": "^/api/videos(?:/([^/]+?))/hook-test/shotlist$",
+      "dest": "/api/videos?id=$1&action=hook-test-shotlist"
+    },
+    {
+      "src": "^/api/videos(?:/([^/]+?))/hook-test$",
+      "dest": "/api/videos?id=$1&action=hook-test"
+    },
+    {
       "src": "^/api/videos(?:/([^/]+?))$",
       "dest": "/api/videos?id=$1"
     },

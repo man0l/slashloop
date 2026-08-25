@@ -13,7 +13,9 @@
 // ---------------------------------------------------------------------------
 
 import { db } from '../db.js';
-import { generateHookTestDraft, type HookTestDraft } from '../analysis/hook-tests.js';
+import { Prisma } from '@prisma/client';
+import { resolveThumbUrl } from './media.js';
+import { generateHookTestDraft, type HookTestDraft, type HookTestLock } from '../analysis/hook-tests.js';
 
 export const HOOK_VERSION_LABELS = ['A', 'B', 'C', 'D'] as const;
 
@@ -169,7 +171,11 @@ export async function startHookTest(
     );
   }
 
-  const draft = await generateHookTestDraft(videoId, { brandContext: opts.brandContext });
+  const draft = await generateHookTestDraft(videoId, {
+    brandContext: opts.brandContext,
+    // An explicit insight is a lock from the very first generation.
+    ...(opts.insight?.trim() ? { lock: { insight: opts.insight.trim() } as HookTestLock } : {}),
+  });
 
   const created = await db.hookTest.create({
     data: {
@@ -183,6 +189,15 @@ export async function startHookTest(
       // Born with proposals on the table, so setup is skipped.
       status: 'picking',
     },
+    // The partial unique index (supabase/migrations …hook_test_one_open_per_video)
+    // is the real guard — the findOpenTest pre-check above only catches the calm
+    // case. Two racing starts (double-click, two tabs, agent + human): one wins
+    // the insert, the loser refunds upstream.
+  }).catch((err: unknown) => {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      throw new HookTestError('Another request just opened a test for this video.', 409);
+    }
+    throw err;
   });
   await db.hookVersion.createMany({
     data: labelRound(draft.versions, 1).map((v) => ({ ...v, testId: created.id })),
@@ -211,7 +226,12 @@ export async function rerollHooks(testId: string, workspaceId: string): Promise<
     data: { status: 'discarded' },
   });
 
-  const draft = await generateHookTestDraft(test.videoId);
+  const draft = await generateHookTestDraft(test.videoId, {
+    // The stored insight/chips/beats ARE the strategy: they go into the prompt
+    // as hard constraints, not just survive the write. Without this the lock
+    // was preserved on the row while every fresh generation drifted off it.
+    lock: { insight: test.insight, sameIn: safeArray(test.sameInJson), beats: safeArray(test.beatsJson) },
+  });
 
   await db.hookVersion.createMany({
     data: labelRound(draft.versions, nextRound).map((v) => ({ ...v, testId: test.id })),
@@ -263,6 +283,93 @@ export async function closeHookTest(
   const test = await requireHookTest(testId, workspaceId);
   await db.hookTest.update({ where: { id: test.id }, data: { status: outcome ?? 'closed' } });
   return getHookTest(test.id, workspaceId);
+}
+
+/**
+ * Edit the lock on an open test. This is the point of the whole design: the
+ * user sharpens the one-sentence insight (or the constants) and every future
+ * re-roll obeys the edit. Closed tests are frozen — their history is read-only.
+ */
+export async function updateHookTestMeta(
+  testId: string,
+  workspaceId: string,
+  patch: { insight?: string; sameIn?: string[] },
+): Promise<SerializedHookTest> {
+  const test = await requireHookTest(testId, workspaceId);
+  if (!OPEN_TEST_STATUSES.includes(test.status)) {
+    throw new HookTestError(`This test is ${test.status} — its frame is locked now.`, 409);
+  }
+
+  const data: { insight?: string; sameInJson?: string } = {};
+  if (patch.insight !== undefined) {
+    const trimmed = patch.insight.trim();
+    if (!trimmed) throw new HookTestError('The insight can\'t be empty — it is what keeps re-rolls on-strategy.');
+    data.insight = trimmed;
+  }
+  if (patch.sameIn !== undefined) {
+    const chips = [...new Set(patch.sameIn.map((c) => c.trim()).filter(Boolean))];
+    data.sameInJson = JSON.stringify(chips.slice(0, 8));
+  }
+
+  if (Object.keys(data).length > 0) {
+    await db.hookTest.update({ where: { id: test.id }, data });
+  }
+  return getHookTest(test.id, workspaceId);
+}
+
+export interface HookTestListRow {
+  id: string;
+  videoId: string;
+  status: string;
+  insight: string;
+  creatorHandle: string;
+  caption: string;
+  videoUrl: string;
+  thumbUrl: string | null;
+  pickedCount: number;
+  proposalCount: number;
+  createdAt: string;
+}
+
+/**
+ * Workspace-wide test list — the site's /tests index. Open tests first
+ * (newest first), then the graveyard when includeClosed is set.
+ */
+export async function listHookTests(
+  workspaceId: string,
+  opts: { includeClosed?: boolean } = {},
+): Promise<HookTestListRow[]> {
+  const tests = await db.hookTest.findMany({
+    where: {
+      workspaceId,
+      ...(opts.includeClosed ? {} : { status: { in: OPEN_TEST_STATUSES } }),
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 100,
+    include: {
+      video: {
+        select: { creatorHandle: true, caption: true, url: true, thumbKey: true, thumbStatus: true, thumbnailUrl: true },
+      },
+      versions: { select: { status: true } },
+    },
+  });
+
+  const rank = (status: string) => (OPEN_TEST_STATUSES.includes(status) ? 0 : 1);
+  return tests
+    .sort((a, b) => rank(a.status) - rank(b.status))
+    .map((t) => ({
+      id: t.id,
+      videoId: t.videoId,
+      status: t.status,
+      insight: t.insight,
+      creatorHandle: t.video.creatorHandle,
+      caption: t.video.caption,
+      videoUrl: t.video.url,
+      thumbUrl: resolveThumbUrl(t.video),
+      pickedCount: t.versions.filter((v) => v.status === 'picked').length,
+      proposalCount: t.versions.filter((v) => v.status === 'proposed').length,
+      createdAt: t.createdAt.toISOString(),
+    }));
 }
 
 /**

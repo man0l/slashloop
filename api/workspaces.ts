@@ -11,6 +11,7 @@ import { requireAuth, requireOwnedWorkspace, jsonResponse } from '../src/lib/aut
 import { listWorkspacesForUser, createWorkspaceForUser, renameWorkspaceForUser, resolveAccountPlanKey, WorkspaceLimitError } from '../src/lib/workspaces.js';
 import { buildWeeklyRetro } from '../src/lib/posts.js';
 import { buildBenchmark } from '../src/lib/benchmark.js';
+import { listHookTests } from '../src/lib/hook-tests.js';
 
 export async function OPTIONS(): Promise<Response> {
   return corsPreflight();
@@ -21,12 +22,20 @@ export async function GET(request: Request): Promise<Response> {
   const resource = url.searchParams.get('resource');
 
   // Studio reads back over already-scraped data; there is no POST posts log.
-  if (resource === 'retro' || resource === 'benchmark') {
+  if (resource === 'retro' || resource === 'benchmark' || resource === 'hook-tests') {
     const owned = await requireOwnedWorkspace(request, url.searchParams.get('workspaceId'));
     if (!owned.ok) return owned.response;
     if (resource === 'retro') {
       const retro = await buildWeeklyRetro(owned.workspace);
       return jsonResponse(200, retro);
+    }
+    if (resource === 'hook-tests') {
+      // The /tests page index. Open tests by default; ?includeClosed=1 adds
+      // the graveyard (won/closed) below the live ones.
+      const tests = await listHookTests(owned.workspace.id, {
+        includeClosed: url.searchParams.get('includeClosed') === '1',
+      });
+      return jsonResponse(200, { tests });
     }
     const bench = await buildBenchmark(owned.workspace);
     return jsonResponse(200, bench);

@@ -4,7 +4,64 @@
 
 import { describe, expect, test } from 'bun:test';
 import { buildStopRule, serializeTest, buildShotlistMarkdown } from './hook-tests.js';
+import { applyLockedValues, lockSection, HOOK_TEST_TYPES } from '../analysis/hook-tests.js';
+import type { HookTestDraft } from '../analysis/hook-tests.js';
 import type { SerializedHookTest } from './hook-tests.js';
+
+describe('lockSection', () => {
+  test('renders every locked element as a hard constraint', () => {
+    const s = lockSection({ insight: 'Numbers convince.', sameIn: ['face to camera'], beats: ['tension', 'payoff'] });
+    expect(s).toContain('HARD CONSTRAINTS');
+    expect(s).toContain('INSIGHT (locked): Numbers convince.');
+    expect(s).toContain('CONSTANTS (locked): face to camera');
+    expect(s).toContain('STORY SHAPE (locked): tension → payoff');
+  });
+
+  test('empty lock renders nothing — first-run generation stays unconstrained', () => {
+    expect(lockSection(undefined)).toBe('');
+    expect(lockSection({})).toBe('');
+  });
+});
+
+describe('applyLockedValues', () => {
+  const draft: HookTestDraft = {
+    insight: 'model echo',
+    sameIn: ['model chip'],
+    beats: ['model beat'],
+    versions: [
+      { type: 'recognition', hookText: 'a', firstFrame: '', mechanism: '' },
+      { type: 'contrarian', hookText: 'b', firstFrame: '', mechanism: '' },
+      { type: 'recognition', hookText: 'dup', firstFrame: '', mechanism: '' },
+    ],
+  };
+
+  test('unlocked drafts pass through with type de-dup and cap at four', () => {
+    const out = applyLockedValues(draft);
+    expect(out.insight).toBe('model echo');
+    expect(out.versions.map((v) => v.type)).toEqual(['recognition', 'contrarian']);
+  });
+
+  test('locked drafts keep the stored strategy verbatim, not the model echo', () => {
+    const out = applyLockedValues(draft, {
+      insight: 'user-edited insight',
+      sameIn: ['stored chip'],
+      beats: ['stored beat'],
+    });
+    expect(out.insight).toBe('user-edited insight');
+    expect(out.sameIn).toEqual(['stored chip']);
+    expect(out.beats).toEqual(['stored beat']);
+  });
+
+  test('partial locks only override what is set', () => {
+    const out = applyLockedValues(draft, { insight: 'only insight' });
+    expect(out.insight).toBe('only insight');
+    expect(out.sameIn).toBe(draft.sameIn);
+  });
+
+  test('the four opening types are the v1 vocabulary', () => {
+    expect([...HOOK_TEST_TYPES]).toEqual(['recognition', 'specific_number', 'contrarian', 'demo_first']);
+  });
+});
 
 describe('buildStopRule', () => {
   test('derives a half-the-original bar from the source video views', () => {
