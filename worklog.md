@@ -315,3 +315,23 @@ Work Log:
 Stage Summary:
 - The pipeline Analyze → Start hook test → pick A–D → shot list is now fully MCP-native at 2 credits per generation; nothing renders or posts yet (Phase 3 owns that, and the tool surface makes auto-render structurally impossible in v1).
 - Verified: prisma db push clean (new tables only); tsc + typecheck:vercel clean; bun test 313 pass incl. 9 new pure-helper tests (stop rule, JSON degradation, picked-only export, round labeling).
+
+---
+Task ID: 9.1
+Agent: main
+Task: Feature #7 — UI parity: run hook tests standalone in the site, MCP keeps full functionality
+
+Work Log:
+- Self-critique of the original UI proposal produced gaps G1–G7; respec approved ("two equal frontends over one service layer").
+- G1 — the lock was decorative: rerolls stored insight/sameIn/beats but never sent them to the model. Fixed: `HookTestLock` + `lockSection()` prompt injection (HARD CONSTRAINTS block) + `applyLockedValues()` canonicalization in src/analysis/hook-tests.ts; rerollHooks now passes the stored lock.
+- G2 — service-level uniqueness lost races: partial unique index `hook_test_one_open_per_video` (status setup/picking/posted) applied to prod via supabase/migrations/20260825090000 (Prisma camelCase quoted identifiers; psql absent, applied via pg Client); Prisma P2002 → HookTestError 409.
+- G5/G6 hardening: api/videos.ts maxDuration 30→60 for generation latency.
+- Services: updateHookTestMeta (edit the lock, open tests only, 409 otherwise) + listHookTests (open-first workspace index with video join + thumb resolution).
+- REST surface folded into existing functions under the 12-function Vercel cap: api/videos.ts actions GET/POST/PATCH hook-test + /pick /reroll /close /shotlist (runMetered preauth→refund→costBlock; free pre-check returns alreadyOpen WITHOUT charging), api/workspaces.ts resource=hook-tests; 5 vercel.json rewrites.
+- MCP parity: new update_hook_test tool (agents can edit the lock too) — tool surface now 55 registered (README previously drifted; corrected 56→55 against an actual server.tool() count).
+- Site (slashloop-site, commit 39007d0→rebased as 9b4e3e1 on top of their GA4 commit): lib/hookTests.js client (spending calls take NO abort signal so unmount can't orphan a paid generation), lib/useHookTests.js react-query layer (invalidate test+index+gallery caches on settle so conflicts resync), HookTestPanel.jsx (lock editing — insight save-on-blur + same-in chips, pick checkboxes, re-roll behind ConfirmDialog, shot-list copy/download, won/closed close; closed tests read-only), StartHookTestDialog (2cr upfront, optional brand context, 409 opens the existing test instead of charging), GalleryCard start button keyed off server truth (analyzedBy && !hookTest) with clickable 🧪 badge, /tests page (open-first list, Show closed toggle, empty state deep-links gallery) + nav link.
+- Tests: connector bun 319 pass (15 hook-test helper tests incl. lockSection/applyLockedValues); site vitest 84 pass (17 new: endpoint serialization incl. no-signal assertions, friendlyHookTestError mapping, panel interactions — caught a real `[...picks].size` bug, visibility rule). Both typechecks clean.
+
+Stage Summary:
+- One service layer, two equal frontends: every loop action is reachable from both Claude (tools) and the browser (REST+panel); the model-facing lock guarantees re-rolls stay inside the user's edited frame.
+- Verified live: mcp.slashloop.dev hook-test route auth-gates (401), slashloop.dev/tests serves, Vercel production Ready on both projects.

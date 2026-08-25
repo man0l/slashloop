@@ -17,7 +17,7 @@ Live endpoint: **https://mcp.slashloop.dev/mcp**
 
 ```
 src/
-  register-tools.ts  # 56 tools, shared with the remote host
+  register-tools.ts  # 55 tools, shared with the remote host
   tools/             # sources, feed, video, hooks, creative, studio, settings
   analysis/          # Gemini native + text analyzers
   lib/               # apify, gemini, spend-cap, storage, media, retention
@@ -237,7 +237,7 @@ populating the env vars above from a real Stripe account.
 
 ---
 
-## Tool inventory (56 tools)
+## Tool inventory (55 tools)
 
 | Module | Tools |
 |---|---|
