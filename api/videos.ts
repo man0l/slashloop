@@ -25,7 +25,7 @@ import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, in
 import { costBlock } from '../src/lib/next-steps.js';
 import {
   HookTestError,
-  startHookTest, getOpenTestForVideo, updateHookTestMeta,
+  startHookTest, getOpenTestForVideo, getLatestTestForVideo, updateHookTestMeta,
   pickHookVersions, rerollHooks, closeHookTest, exportShotlist,
 } from '../src/lib/hook-tests.js';
 
@@ -106,7 +106,10 @@ export async function GET(request: Request): Promise<Response> {
 
   if (action === 'hook-test') {
     try {
-      const test = await getOpenTestForVideo(auth.workspace.id, videoId);
+      // Latest test of any status, so a won/closed test stays viewable
+      // read-only behind its badge; mutations resolve through the open-only
+      // lookup and keep refusing archived tests.
+      const test = await getLatestTestForVideo(auth.workspace.id, videoId);
       return jsonResponse(200, { test });
     } catch (err) {
       if (err instanceof HookTestError && err.httpStatus === 404) {
@@ -199,9 +202,10 @@ export async function POST(request: Request): Promise<Response> {
 
   if (action === 'hook-test-close') {
     const outcome = body.outcome === 'won' ? 'won' : undefined;
+    const winner = typeof body.winner === 'string' ? body.winner : undefined;
     try {
       const current = await requireTestIdForVideo(wsId, videoId);
-      const test = await closeHookTest(current, wsId, outcome);
+      const test = await closeHookTest(current, wsId, outcome, winner);
       return jsonResponse(200, { test });
     } catch (err) {
       return hookTestErrorResponse(err);

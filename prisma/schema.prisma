@@ -458,6 +458,10 @@ model HookTest {
   /// arrive with the render/post integrations (Phase 3); v1 moves
   /// setup→picking via pick_hook_versions, and anything can be closed.
   status      String   @default("setup")
+  /// Which opening won when the test closed as 'won' ("C"). Manual in v1 —
+  /// Phase 4 replaces it with auto-scoring against the owner baseline; the
+  /// column exists so surfaces can say "C won" from day one.
+  winnerLabel String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

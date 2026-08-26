@@ -225,11 +225,12 @@ export function registerHookTestTools(server: McpServer) {
     {
       testId: z.string(),
       outcome: z.enum(['won', 'closed']).optional().describe("'won' records that an opening beat the original"),
+      winner: z.string().optional().describe("Which opening won, by label ('A'–'D') — stored so surfaces can say \"C won\""),
     },
-    async ({ testId, outcome }) => {
+    async ({ testId, outcome, winner }) => {
       const workspace = await requireWorkspace();
       try {
-        const result = await closeHookTest(testId, workspace.id, outcome);
+        const result = await closeHookTest(testId, workspace.id, outcome, winner);
         return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: JSON.stringify(errorPayload(err)) }], isError: true };

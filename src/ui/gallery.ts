@@ -52,9 +52,10 @@ export interface GalleryCard {
   /** True when this post is from the workspace's own TikTok (Source.isSelf
    *  or the same handle). Gallery shows a You badge. */
   isSelf: boolean;
-  /** Open AI hook test on this video (feature #7), null when none. Drives the
-   *  🧪 badge and the "Has hook test" filter. */
-  hookTest: { id: string; status: string; pickedCount: number } | null;
+  /** AI hook test on this video (feature #7), null when none. Drives the
+   *  🧪 badge; a won test keeps badging with its winner ("C won") until a
+   *  fresh test starts. */
+  hookTest: { id: string; status: string; pickedCount: number; winnerLabel?: string | null } | null;
   keyMoments: Array<{
     timestampSec: number;
     role: string;
@@ -139,7 +140,14 @@ function cardHtml(c: GalleryCard): string {
       <div class="meta">
         <strong>@${esc(c.creatorHandle)}</strong>
         ${c.isSelf ? '<span class="self-badge">You</span>' : ''}
-        ${c.hookTest ? `<span class="test-badge" title="Hook test ${esc(c.hookTest.status)}${c.hookTest.pickedCount > 0 ? ` — ${c.hookTest.pickedCount} picked` : ''}">🧪${c.hookTest.pickedCount > 0 ? ` ${c.hookTest.pickedCount} picked` : ''}</span>` : ''}
+        ${c.hookTest ? (() => {
+          const won = c.hookTest.status === 'won';
+          const label = won ? ` ${c.hookTest.winnerLabel ?? ''} won`.replace('  ', ' ') : c.hookTest.pickedCount > 0 ? ` ${c.hookTest.pickedCount} picked` : '';
+          const title = won
+            ? `Hook test won${c.hookTest.winnerLabel ? ` — opening ${c.hookTest.winnerLabel} beat the original` : ''}`
+            : `Hook test ${esc(c.hookTest.status)}${c.hookTest.pickedCount > 0 ? ` — ${c.hookTest.pickedCount} picked` : ''}`;
+          return `<span class="test-badge" title="${title}">🧪${label}</span>`;
+        })() : ''}
         <span>${compact(c.views)} views</span>
         <span>${esc(c.engagementRate)} eng</span>
         ${c.outlierScore != null ? `<span class="score-badge">${c.outlierScore.toFixed(1)}x</span>` : ''}

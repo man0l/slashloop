@@ -248,16 +248,20 @@ export async function buildCards(
   // couldn't be scraped show the specific Apify issue instead of a silent
   // blank thumbnail.
   const fetchErrors = await latestFetchErrors(ranked.map(v => v.id));
-  // Open hook tests for the pool, one query — drives the 🧪 badge and the
-  // has-test filter state on each card.
+  // Hook tests for the pool, one query — drives the 🧪 badge and the has-test
+  // filter state on each card. Won tests ride along (open ones only would make
+  // a verdict vanish from its card the moment it's marked): a won test badges
+  // "C won" until a fresh test replaces it. Closed tests stay invisible.
+  const BADGE_TEST_STATUSES = [...OPEN_TEST_STATUSES, 'won'];
   const openTests = ranked.length ? await db.hookTest.findMany({
-    where: { workspaceId: workspace.id, videoId: { in: ranked.map(v => v.id) }, status: { in: OPEN_TEST_STATUSES } },
-    select: { id: true, videoId: true, status: true, versions: { where: { status: 'picked' }, select: { id: true } } },
+    where: { workspaceId: workspace.id, videoId: { in: ranked.map(v => v.id) }, status: { in: BADGE_TEST_STATUSES } },
+    select: { id: true, videoId: true, status: true, winnerLabel: true, versions: { where: { status: 'picked' }, select: { id: true } } },
   }) : [];
   const testsByVideo = new Map(openTests.map(t => [t.videoId, {
     id: t.id,
     status: t.status,
     pickedCount: t.versions.length,
+    ...(t.winnerLabel ? { winnerLabel: t.winnerLabel } : {}),
   }]));
 
   const cards: GalleryCard[] = ranked.map((v, i) => {

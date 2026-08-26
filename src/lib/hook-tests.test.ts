@@ -149,7 +149,7 @@ describe('serializeTest', () => {
     id: 't1', videoId: 'v1', lever: 'hook', insight: 'why it worked',
     sameInJson: '["face to camera","same kitchen"]',
     beatsJson: '["tension","proof","payoff"]',
-    stopRule: 'stop', status: 'picking', createdAt: new Date('2026-08-24T00:00:00Z'),
+    stopRule: 'stop', status: 'picking', winnerLabel: null, createdAt: new Date('2026-08-24T00:00:00Z'),
   };
 
   test('parses the JSON columns back into arrays and ISO dates', () => {
@@ -157,6 +157,13 @@ describe('serializeTest', () => {
     expect(s.sameIn).toEqual(['face to camera', 'same kitchen']);
     expect(s.beats).toEqual(['tension', 'proof', 'payoff']);
     expect(s.createdAt).toBe('2026-08-24T00:00:00.000Z');
+    expect(s.winnerLabel).toBeNull();
+  });
+
+  test('carries the winner label through so surfaces can say "C won"', () => {
+    const s = serializeTest({ ...base, status: 'won', winnerLabel: 'C' }, []);
+    expect(s.status).toBe('won');
+    expect(s.winnerLabel).toBe('C');
   });
 
   test('a corrupt JSON column degrades to [] instead of throwing', () => {
@@ -180,7 +187,7 @@ describe('buildShotlistMarkdown', () => {
   const makeTest = (over: Partial<SerializedHookTest> = {}): SerializedHookTest => ({
     id: 't1', videoId: 'v1', lever: 'hook', insight: 'Numbers do the convincing.',
     sameIn: ['face to camera'], beats: ['tension', 'payoff'],
-    stopRule: 'kill what stalls', status: 'picking', createdAt: '2026-08-24T00:00:00.000Z',
+    stopRule: 'kill what stalls', status: 'picking', winnerLabel: null, createdAt: '2026-08-24T00:00:00.000Z',
     versions: [
       { id: 'hv1', label: 'A', round: 1, hookText: '"I tested 7 of them"', firstFrame: 'phone in hand',
         hookType: 'specific_number', mechanism: 'concrete figure', status: 'picked',

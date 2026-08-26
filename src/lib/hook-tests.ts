@@ -50,6 +50,8 @@ export interface SerializedHookTest {
   beats: string[];
   stopRule: string | null;
   status: string;
+  /** Set when status is 'won': the label of the opening that beat the original. */
+  winnerLabel: string | null;
   createdAt: string;
   versions: SerializedHookVersion[];
 }
@@ -57,7 +59,7 @@ export interface SerializedHookTest {
 type TestRow = {
   id: string; videoId: string; lever: string; insight: string;
   sameInJson: string; beatsJson: string; stopRule: string | null;
-  status: string; createdAt: Date;
+  status: string; winnerLabel: string | null; createdAt: Date;
 };
 
 /** JSON columns → plain arrays; dates → ISO strings. The shape every tool returns. */
@@ -74,6 +76,7 @@ export function serializeTest(test: TestRow, versions: Array<{
     beats: safeArray(test.beatsJson),
     stopRule: test.stopRule,
     status: test.status,
+    winnerLabel: test.winnerLabel,
     createdAt: test.createdAt.toISOString(),
     versions: versions.map((v) => ({ ...v, createdAt: v.createdAt.toISOString() })),
   };
@@ -136,6 +139,24 @@ export async function getHookTest(testId: string, workspaceId: string): Promise<
 export async function getOpenTestForVideo(workspaceId: string, videoId: string): Promise<SerializedHookTest | null> {
   await requireVideo(workspaceId, videoId);
   const test = await findOpenTest(workspaceId, videoId);
+  if (!test) return null;
+  const versions = await loadVersions(test.id);
+  return serializeTest(test, versions);
+}
+
+/**
+ * The test a video's badge should open: the open one, else the most recent of
+ * any status — a won/closed test stays viewable read-only ("C won"). Mutations
+ * keep resolving through getOpenTestForVideo, so this never makes an archived
+ * test mutable.
+ */
+export async function getLatestTestForVideo(workspaceId: string, videoId: string): Promise<SerializedHookTest | null> {
+  await requireVideo(workspaceId, videoId);
+  const open = await findOpenTest(workspaceId, videoId);
+  const test = open ?? await db.hookTest.findFirst({
+    where: { workspaceId, videoId },
+    orderBy: { createdAt: 'desc' },
+  });
   if (!test) return null;
   const versions = await loadVersions(test.id);
   return serializeTest(test, versions);
@@ -274,14 +295,38 @@ export async function pickHookVersions(
   return getHookTest(test.id, workspaceId);
 }
 
-/** End the lifecycle. 'won' records that an opening beat the original; anything else closes it. */
+/**
+ * End the lifecycle. 'won' records that an opening beat the original; anything
+ * else closes it. A winner label is stored on the win so every surface can say
+ * "C won" — validated against the test's own versions, but not required to be
+ * picked: the manual verdict may crown a proposal the user never formally
+ * picked, and Phase 4 auto-scoring replaces this path anyway.
+ */
 export async function closeHookTest(
   testId: string,
   workspaceId: string,
   outcome?: 'won' | 'closed',
+  winner?: string,
 ): Promise<SerializedHookTest> {
   const test = await requireHookTest(testId, workspaceId);
-  await db.hookTest.update({ where: { id: test.id }, data: { status: outcome ?? 'closed' } });
+
+  let winnerLabel: string | null = null;
+  if (outcome === 'won' && winner) {
+    const label = winner.trim().toUpperCase();
+    const owned = await db.hookVersion.findFirst({
+      where: { testId: test.id, label },
+      select: { id: true },
+    });
+    if (!owned) {
+      throw new HookTestError(`No version "${label}" in this test — name one of its openings as the winner.`, 400);
+    }
+    winnerLabel = label;
+  }
+
+  await db.hookTest.update({
+    where: { id: test.id },
+    data: { status: outcome ?? 'closed', ...(outcome === 'won' ? { winnerLabel } : {}) },
+  });
   return getHookTest(test.id, workspaceId);
 }
 
@@ -322,6 +367,8 @@ export interface HookTestListRow {
   videoId: string;
   status: string;
   insight: string;
+  /** Set when status is 'won': the label of the winning opening. */
+  winnerLabel: string | null;
   creatorHandle: string;
   caption: string;
   videoUrl: string;
@@ -362,6 +409,7 @@ export async function listHookTests(
       videoId: t.videoId,
       status: t.status,
       insight: t.insight,
+      winnerLabel: t.winnerLabel,
       creatorHandle: t.video.creatorHandle,
       caption: t.video.caption,
       videoUrl: t.video.url,
