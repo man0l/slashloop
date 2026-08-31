@@ -19,9 +19,10 @@
 // State lives in the ScrapeAlertState table (one row, id='scrape'), not in
 // memory — watchtower recreates containers on every deploy and an in-memory
 // flag would re-email after each one. Written only via raw SQL: the model in
-// schema.prisma is documentation, the client never touches it. If the table is
-// missing (migration not applied yet) every query throws, we swallow, and NO
-// email goes out — alerting must fail off, never fail spammy.
+// schema.prisma is documentation, the client never touches it. Claims expire
+// after 10 minutes so a container killed mid-send cannot wedge the alert. If
+// the table is missing (migration not applied yet) every query throws, we
+// swallow, and NO email goes out — alerting must fail off, never fail spammy.
 // ---------------------------------------------------------------------------
 
 import { db } from '../db.js';
@@ -112,9 +113,13 @@ export async function notifyScrapeFailure(kind: string, message: string): Promis
     if (!isScrapeOutageError(message)) return;
 
     // Atomic claim: both workers can hit this concurrently, but only one
-    // UPDATE matches the NULL row — the loser gets 0 and stays silent.
+    // UPDATE matches an armed row — the loser gets 0 and stays silent. The
+    // claim also expires after 10 minutes: a worker killed between claim and
+    // send (deploy, crash) would otherwise hold the row forever and swallow
+    // every later failure of the episode. Sends finish in seconds, so a live
+    // claim is never mistaken for a stale one.
     const claimed = await db.$executeRaw`UPDATE "ScrapeAlertState" SET "notifiedAt" = now(), "lastError" = ${message.slice(0, 500)}, "updatedAt" = now()
-      WHERE id = 'scrape' AND "notifiedAt" IS NULL`;
+      WHERE id = 'scrape' AND ("notifiedAt" IS NULL OR "notifiedAt" < now() - interval '10 minutes')`;
     if (claimed === 0) return; // already mid-incident, or another worker just claimed it
 
     const { subject, html, text } = renderScrapeAlert(kind, message);
