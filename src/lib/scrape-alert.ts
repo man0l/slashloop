@@ -13,8 +13,9 @@
 //       the two worker containers racing the same outage cannot both email
 //     - claim then send: a failed send releases the claim so the next failure
 //       retries the email instead of silently swallowing the outage
-//   completeJob(scrape kind) -> markScrapeSuccess: clears notifiedAt, re-arming
-//     the alert for the NEXT outage.
+//   completeJob(scrape kind) -> markScrapeSuccess: clears notifiedAt (after a
+//     6h rearm cooldown), re-arming the alert for the NEXT outage — the
+//     cooldown is what stops a flapping proxy from emailing on every dip
 //
 // State lives in the ScrapeAlertState table (one row, id='scrape'), not in
 // memory — watchtower recreates containers on every deploy and an in-memory
@@ -139,13 +140,32 @@ export async function notifyScrapeFailure(kind: string, message: string): Promis
 }
 
 /**
+ * Re-arm cooldown (hours). A flapping proxy defeats one-email-per-episode:
+ * each brief success re-arms, the next failure emails again — the Aug-31
+ * outage sent three emails this way (169 failures vs 18 successes over 2h).
+ * A success only re-arms if the last email is this old, so flap storms stay
+ * silent while a genuinely new outage (next day, say) still alerts.
+ */
+export function rearmCooldownSeconds(): number {
+  const raw = process.env.SCRAPE_ALERT_REARM_COOLDOWN_HOURS;
+  const n = raw == null ? NaN : Number(raw);
+  const hours = Number.isFinite(n) && n > 0 ? n : 6;
+  return Math.floor(hours * 3600);
+}
+
+/**
  * Called from completeJob for every scraping-kind success. Re-arms the alert
- * so the next outage emails again. Never throws.
+ * so the next outage emails again — but no faster than the rearm cooldown,
+ * or a flapping proxy emails on every dip. A provably failed send (the rearm
+ * caller in notifyScrapeFailure) bypasses this: retrying a send that never
+ * happened cannot duplicate anything. Never throws.
  */
 export async function markScrapeSuccess(kind: string): Promise<void> {
   try {
     if (!SCRAPE_ALERT_KINDS.has(kind)) return;
-    await rearm();
+    await db.$executeRaw`UPDATE "ScrapeAlertState" SET "notifiedAt" = NULL, "lastError" = NULL, "updatedAt" = now()
+      WHERE id = 'scrape' AND "notifiedAt" IS NOT NULL
+        AND "notifiedAt" < now() - (${rearmCooldownSeconds()} * interval '1 second')`;
   } catch (err) {
     console.warn(`[scrape-alert] rearm skipped: ${(err as Error).message.slice(0, 160)}`);
   }

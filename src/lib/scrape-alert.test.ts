@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test';
-import { isScrapeOutageError, renderScrapeAlert, SCRAPE_ALERT_KINDS } from './scrape-alert.js';
+import { describe, expect, test, afterEach } from 'bun:test';
+import { isScrapeOutageError, renderScrapeAlert, rearmCooldownSeconds, SCRAPE_ALERT_KINDS } from './scrape-alert.js';
 
 // The Aug-2026 Proxy-Cheap outage, verbatim from the worker logs — the vendor
 // kept status ACTIVE while the connect IP/port went null, so every fetch and
@@ -23,6 +23,29 @@ Reason: hyper_util::client::legacy::Error(
 describe('SCRAPE_ALERT_KINDS', () => {
   test('covers the kinds that scrape TikTok, not AI or thumb work', () => {
     expect([...SCRAPE_ALERT_KINDS].sort()).toEqual(['fetch', 'refresh']);
+  });
+});
+
+describe('rearmCooldownSeconds', () => {
+  afterEach(() => {
+    delete process.env.SCRAPE_ALERT_REARM_COOLDOWN_HOURS;
+  });
+
+  test('defaults to 6h', () => {
+    delete process.env.SCRAPE_ALERT_REARM_COOLDOWN_HOURS;
+    expect(rearmCooldownSeconds()).toBe(6 * 3600);
+  });
+
+  test('honours a positive env override', () => {
+    process.env.SCRAPE_ALERT_REARM_COOLDOWN_HOURS = '12';
+    expect(rearmCooldownSeconds()).toBe(12 * 3600);
+  });
+
+  test('falls back to the default on junk or non-positive values', () => {
+    for (const junk of ['abc', '0', '-3', 'NaN']) {
+      process.env.SCRAPE_ALERT_REARM_COOLDOWN_HOURS = junk;
+      expect(rearmCooldownSeconds()).toBe(6 * 3600);
+    }
   });
 });
 
