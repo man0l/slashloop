@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { CREDIT_COSTS, refundCredits } from './credits.js';
 import { classifyFetchError } from './fetch-errors.js';
+import { notifyScrapeFailure, markScrapeSuccess } from './scrape-alert.js';
 
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 
@@ -842,7 +843,7 @@ export async function completeJob(
   /** Optional payload rewrite — discover jobs stash the mine result here. */
   payloadJson?: string,
 ): Promise<void> {
-  await db.mediaJob.update({
+  const job = await db.mediaJob.update({
     where: { id },
     data: {
       status: 'done',
@@ -852,6 +853,10 @@ export async function completeJob(
       ...(payloadJson !== undefined ? { payloadJson } : {}),
     },
   });
+  // A finished scrape ends the outage episode — re-arm the failure email.
+  // Fire-and-forget: the job is already done; alerting must not be able to
+  // turn a success into an error.
+  void markScrapeSuccess(job.kind);
 }
 
 /**
@@ -875,6 +880,10 @@ export async function failJob(id: string, message: string): Promise<{ terminal: 
       startedAt: terminal ? job.startedAt : null,
     },
   });
+  // Fire-and-forget: scrape-outage email (one per outage episode, deduped in
+  // the DB so both worker containers cannot double-send). Alerting must never
+  // be able to fail or slow the job path.
+  void notifyScrapeFailure(job.kind, message);
   return { terminal };
 }
 

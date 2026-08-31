@@ -594,3 +594,18 @@ model MediaJob {
   @@index([videoId, status])
   @@index([workspaceId])
 }
+
+/// One-row incident marker for the scraping-failure email alert
+/// (src/lib/scrape-alert.ts). Written only via raw SQL so the
+/// notifiedAt NULL -> set flip is atomic across the two worker containers:
+/// notifiedAt NULL = armed (next scrape outage sends exactly one email), set =
+/// incident open (repeat failures stay silent). The first successful scrape
+/// re-arms it. Never touched through the Prisma client — no relation, no
+/// queries; the model exists so schema.prisma stays the schema's source of
+/// truth (see README "Schema changes").
+model ScrapeAlertState {
+  id         String    @id @default("scrape")
+  notifiedAt DateTime?
+  lastError  String?
+  updatedAt  DateTime  @default(now())
+}
