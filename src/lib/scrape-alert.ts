@@ -19,10 +19,10 @@
 // State lives in the ScrapeAlertState table (one row, id='scrape'), not in
 // memory — watchtower recreates containers on every deploy and an in-memory
 // flag would re-email after each one. Written only via raw SQL: the model in
-// schema.prisma is documentation, the client never touches it. Claims expire
-// after 10 minutes so a container killed mid-send cannot wedge the alert. If
-// the table is missing (migration not applied yet) every query throws, we
-// swallow, and NO email goes out — alerting must fail off, never fail spammy.
+// schema.prisma is documentation, the client never touches it. A claim holds
+// for the whole episode — strictly one email, never two. If the table is
+// missing (migration not applied yet) every query throws, we swallow, and NO
+// email goes out — alerting must fail off, never fail spammy.
 // ---------------------------------------------------------------------------
 
 import { db } from '../db.js';
@@ -114,12 +114,14 @@ export async function notifyScrapeFailure(kind: string, message: string): Promis
 
     // Atomic claim: both workers can hit this concurrently, but only one
     // UPDATE matches an armed row — the loser gets 0 and stays silent. The
-    // claim also expires after 10 minutes: a worker killed between claim and
-    // send (deploy, crash) would otherwise hold the row forever and swallow
-    // every later failure of the episode. Sends finish in seconds, so a live
-    // claim is never mistaken for a stale one.
+    // claim is PERMANENT for the episode: a crash in the ~1s between claim
+    // and send loses that episode's email rather than ever risking a second
+    // one. An earlier 10-minute expiry here re-sent an episode after a
+    // container died mid-send — the owner got the same outage email twice,
+    // which is exactly what this module must never do. Silence is the
+    // accepted failure mode; recovery re-arms.
     const claimed = await db.$executeRaw`UPDATE "ScrapeAlertState" SET "notifiedAt" = now(), "lastError" = ${message.slice(0, 500)}, "updatedAt" = now()
-      WHERE id = 'scrape' AND ("notifiedAt" IS NULL OR "notifiedAt" < now() - interval '10 minutes')`;
+      WHERE id = 'scrape' AND "notifiedAt" IS NULL`;
     if (claimed === 0) return; // already mid-incident, or another worker just claimed it
 
     const { subject, html, text } = renderScrapeAlert(kind, message);
