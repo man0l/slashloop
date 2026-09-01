@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  aggregateDiscovery, extractHashtags, median, mineFromItems, parseDiscoveryInput,
-  shouldQueueDiscoverMine, type SeedMineResult,
+  aggregateDiscovery, extractHashtags, median, mineFromItems, mineResultFromDiscoverJob,
+  parseDiscoveryInput, shouldQueueDiscoverMine, type SeedMineResult,
 } from './discovery.js';
 import type { NormalizedVideo } from '../normalizers.js';
 
@@ -94,6 +94,41 @@ describe('shouldQueueDiscoverMine', () => {
   test('scrapes inline locally (no WORKER_URL)', () => {
     setEnv({ WORKER_URL: undefined, WORKER_KINDS: undefined, WORKER_ACTIVE: undefined });
     try { expect(shouldQueueDiscoverMine()).toBe(false); } finally { restore(); }
+  });
+});
+
+describe('mineResultFromDiscoverJob', () => {
+  const seed = { sourceType: 'hashtag' as const, query: 'sauna', rationale: '', origin: 'input' as const };
+
+  test('queued and running stay pending', () => {
+    for (const status of ['queued', 'running'] as const) {
+      const result = mineResultFromDiscoverJob(seed, {
+        id: 'job-1', status, payloadJson: '{}', lastError: null,
+      }, 90);
+      expect(result).toMatchObject({ ok: true, pending: true, jobId: 'job-1', verified: false });
+    }
+  });
+
+  test('done with a stored mine result returns it', () => {
+    const stored = {
+      ok: true, verified: true, sampleCount: 5, topViews: 1000,
+      hashtags: [{ query: 'notes', videoCount: 2, avgViews: 100, sampleCaption: '' }],
+      creators: [], sounds: [], creditsCharged: 8, creditsRemaining: 82,
+    };
+    const result = mineResultFromDiscoverJob(seed, {
+      id: 'job-2', status: 'done',
+      payloadJson: JSON.stringify({ sourceType: 'hashtag', query: 'sauna', result: stored }),
+      lastError: null,
+    }, 82);
+    expect(result).toMatchObject({ ok: true, verified: true, sampleCount: 5, jobId: 'job-2', creditsCharged: 8 });
+    expect(result.hashtags[0].query).toBe('notes');
+  });
+
+  test('failed surfaces the scraper error', () => {
+    const result = mineResultFromDiscoverJob(seed, {
+      id: 'job-3', status: 'failed', payloadJson: '{}', lastError: 'TLS reset',
+    }, 90);
+    expect(result).toMatchObject({ ok: false, jobId: 'job-3', error: 'TLS reset' });
   });
 });
 

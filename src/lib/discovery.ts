@@ -9,8 +9,9 @@
 //   2. mineDiscoverSeed(seed) — one small probe scrape (MINE_SCRAPE_LIMIT
 //      videos) per seed, per call. From the sampled captions it mines the
 //      hashtags people actually post under and the creators actually posting,
-//      each with view evidence. On Vercel this enqueues a `discover` MediaJob
-//      for the Contabo proxy scraper and waits; the worker scrapes inline.
+//      each with view evidence. The Cloudflare Worker enqueues a `discover`
+//      MediaJob for the Contabo proxy scraper and returns immediately; the
+//      site polls. MCP still waits inline. The worker scrapes the probe.
 //
 // The split is deliberate — same reason suggestions.ts is split: a combined
 // call waits on the slowest of several real scrapes and used to time the
@@ -105,6 +106,10 @@ export interface SeedMineResult {
   creditsCharged: number;
   creditsRemaining: number;
   error?: string;
+  /** Queued on the scraper worker; the REST caller should poll rather than
+   *  hold the HTTP request. MCP still waits inline via `wait: true`. */
+  pending?: boolean;
+  jobId?: string;
 }
 
 /** AI may only propose things TikTok can be probed against without a handle —
@@ -337,8 +342,10 @@ export async function expandDiscoverySeeds(workspace: Workspace, keywords: strin
 // the result off the job. Local / the worker itself still scrape inline.
 // ---------------------------------------------------------------------------
 
-/** How long the API/MCP call will wait for the scraper worker. Inside the
- *  60s Vercel maxDuration with a few seconds of spare. */
+/** How long an in-process waiter (MCP `discover`, local inline) will poll
+ *  the scraper worker. The Cloudflare REST path does not wait — it returns
+ *  `pending` + `jobId` and the site polls. Holding the Worker for this long
+ *  524s the request and concurrent Prisma polls wedge D1. */
 export const DISCOVER_WAIT_MS = 50_000;
 const DISCOVER_POLL_MS = 1_000;
 
@@ -346,7 +353,7 @@ const DISCOVER_POLL_MS = 1_000;
  * Queue the probe onto the Contabo scraper when this process cannot (or
  * should not) scrape itself.
  *
- *  - Vercel production sets WORKER_URL and has no proxy → queue.
+ *  - The Cloudflare Worker sets WORKER_URL and has no proxy → queue.
  *  - The scraper worker (WORKER_KINDS includes discover/refresh) IS the
  *    thing that scrapes → never queue from here, or we'd deadlock waiting
  *    on a job only this process can claim.
@@ -437,6 +444,50 @@ function emptyMine(seed: DiscoverySeed, creditsRemaining: number, extra: Partial
   };
 }
 
+function seedFromDiscoverJob(job: Pick<MediaJobRow, 'payloadJson'>): DiscoverySeed {
+  const payload = parseDiscoverJobPayload(job.payloadJson);
+  return {
+    sourceType: payload.sourceType,
+    query: payload.query,
+    rationale: payload.rationale,
+    origin: payload.origin,
+    alreadyTracked: payload.alreadyTracked,
+  };
+}
+
+/** Pure: turn a discover MediaJob row into the REST/MCP mine shape. */
+export function mineResultFromDiscoverJob(
+  seed: DiscoverySeed,
+  job: Pick<MediaJobRow, 'id' | 'status' | 'payloadJson' | 'lastError'>,
+  creditsRemaining: number,
+): SeedMineResult {
+  if (job.status === 'queued' || job.status === 'running') {
+    return emptyMine(seed, creditsRemaining, { pending: true, jobId: job.id });
+  }
+  if (job.status === 'done') {
+    const payload = parseDiscoverJobPayload(job.payloadJson);
+    const parsed = asSeedMineResult(seed, payload.result);
+    if (parsed) return { ...parsed, jobId: job.id };
+    return emptyMine(seed, creditsRemaining, {
+      ok: false,
+      jobId: job.id,
+      error: 'Discover probe finished with no result.',
+    });
+  }
+  if (job.status === 'failed') {
+    return emptyMine(seed, creditsRemaining, {
+      ok: false,
+      jobId: job.id,
+      error: job.lastError || 'Discover probe failed on the scraper worker.',
+    });
+  }
+  return emptyMine(seed, creditsRemaining, {
+    ok: false,
+    jobId: job.id,
+    error: `Unexpected discover job status: ${job.status}`,
+  });
+}
+
 function asSeedMineResult(seed: DiscoverySeed, raw: unknown): SeedMineResult | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Partial<SeedMineResult>;
@@ -470,26 +521,24 @@ async function waitForDiscoverJob(
       where: { id: jobId, workspaceId },
     }) as unknown as MediaJobRow | null;
     if (!job) return null;
-    if (job.status === 'done') {
-      const payload = parseDiscoverJobPayload(job.payloadJson);
-      const parsed = asSeedMineResult(seed, payload.result);
-      if (parsed) return parsed;
-      const balance = await creditBalance(workspaceId);
-      return emptyMine(seed, balance.total, {
-        ok: false,
-        error: 'Discover probe finished with no result.',
-      });
+    if (job.status === 'queued' || job.status === 'running') {
+      await sleep(DISCOVER_POLL_MS);
+      continue;
     }
-    if (job.status === 'failed') {
-      const balance = await creditBalance(workspaceId);
-      return emptyMine(seed, balance.total, {
-        ok: false,
-        error: job.lastError || 'Discover probe failed on the scraper worker.',
-      });
-    }
-    await sleep(DISCOVER_POLL_MS);
+    const balance = await creditBalance(workspaceId);
+    return mineResultFromDiscoverJob(seed, job, balance.total);
   }
   return null;
+}
+
+/** Read one queued discover probe. Used by the site poll. */
+export async function getDiscoverMineJob(workspace: Workspace, jobId: string): Promise<SeedMineResult | null> {
+  const job = await db.mediaJob.findFirst({
+    where: { id: jobId, workspaceId: workspace.id, kind: 'discover' },
+  }) as unknown as MediaJobRow | null;
+  if (!job) return null;
+  const balance = await creditBalance(workspace.id);
+  return mineResultFromDiscoverJob(seedFromDiscoverJob(job), job, balance.total);
 }
 
 /**
@@ -560,7 +609,11 @@ export async function runDiscoverMine(
   }
 }
 
-export async function mineDiscoverSeed(workspace: Workspace, seed: DiscoverySeed): Promise<SeedMineResult> {
+export async function mineDiscoverSeed(
+  workspace: Workspace,
+  seed: DiscoverySeed,
+  opts?: { wait?: boolean },
+): Promise<SeedMineResult> {
   // Queued mines run on the Contabo proxy scraper, which enforces its own
   // PROXY_TRAFFIC_CAP_GB. This process (Vercel) often has a different/default
   // cap, so we do not pre-check traffic here — a false breach would refuse a
@@ -621,12 +674,17 @@ export async function mineDiscoverSeed(workspace: Workspace, seed: DiscoverySeed
     });
   }
 
+  const balance = await creditBalance(workspace.id);
+  if (opts?.wait === false) {
+    return emptyMine(seed, balance.total, { pending: true, jobId: job.id });
+  }
+
   const waited = await waitForDiscoverJob(job.id, workspace.id, seed, DISCOVER_WAIT_MS);
   if (waited) return waited;
 
-  const balance = await creditBalance(workspace.id);
   return emptyMine(seed, balance.total, {
     ok: false,
+    jobId: job.id,
     error: 'Probe is still running on the scraper. Wait a moment and try again.',
   });
 }

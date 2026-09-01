@@ -23,7 +23,7 @@ import {
   refreshSourceForWorkspace,
 } from '../src/lib/sources-service.js';
 import { seedSourceCandidates, verifySourceCandidate, dismissSuggestion, type SeedCandidate } from '../src/lib/suggestions.js';
-import { expandDiscoverySeeds, mineDiscoverSeed, type DiscoverySeed } from '../src/lib/discovery.js';
+import { expandDiscoverySeeds, getDiscoverMineJob, mineDiscoverSeed, type DiscoverySeed } from '../src/lib/discovery.js';
 
 export async function OPTIONS(request: Request): Promise<Response> {
   return corsPreflight(request);
@@ -63,9 +63,18 @@ const REFRESH_SCHEDULES = new Set(['manual', 'daily', 'weekly']);
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const sourceId = url.searchParams.get('id');
+  const action = url.searchParams.get('action');
 
   const auth = await requireOwnedWorkspace(request, url.searchParams.get('workspaceId'));
   if (!auth.ok) return auth.response;
+
+  if (action === 'discover-mine') {
+    const jobId = url.searchParams.get('jobId');
+    if (!jobId) return jsonResponse(400, { error: 'jobId is required' }, request);
+    const result = await getDiscoverMineJob(auth.workspace, jobId);
+    if (!result) return jsonResponse(404, { error: 'job_not_found' }, request);
+    return jsonResponse(200, result, request);
+  }
 
   if (sourceId) {
     const source = await getSourceForWorkspace(auth.workspace, sourceId);
@@ -174,12 +183,15 @@ export async function POST(request: Request): Promise<Response> {
     }
     if (!body.query) return jsonResponse(400, { error: 'query is required' }, request);
 
+    // Do not wait on the scraper here. Cloudflare 524s a ~50s poll, and
+    // six concurrent waits wedge D1 via Prisma's adapter. Queue, return
+    // pending+jobId, let the caller poll GET ?jobId=.
     const result = await mineDiscoverSeed(auth.workspace, {
       sourceType: body.sourceType as DiscoverySeed['sourceType'],
       query: body.query,
       rationale: body.rationale ?? '',
       origin: body.origin === 'input' ? 'input' : 'ai',
-    });
+    }, { wait: false });
     return jsonResponse(200, result, request);
   }
 

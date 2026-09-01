@@ -97,7 +97,13 @@ export function registerDiscoverTools(server: McpServer) {
         };
       }
 
-      const mines: SeedMineResult[] = await Promise.all(expanded.seeds.map(seed => mineDiscoverSeed(workspace, seed)));
+      // Sequential: concurrent mineDiscoverSeed on the Worker is six Prisma
+      // clients on one isolate, which hangs D1. Each seed still waits on its
+      // own scrape; the site UI splits these across requests instead.
+      const mines: SeedMineResult[] = [];
+      for (const seed of expanded.seeds) {
+        mines.push(await mineDiscoverSeed(workspace, seed));
+      }
       const { trackedKeys, dismissedKeys } = await loadExclusionSets(workspace.id);
       const { hashtags, creators, totalSampled } = aggregateDiscovery(mines, new Set([...trackedKeys, ...dismissedKeys]));
 
