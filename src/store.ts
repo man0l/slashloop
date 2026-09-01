@@ -149,11 +149,16 @@ export interface D1HttpParams {
  * the REST API (mirrors @prisma/adapter-d1 mapArg for the scalar types
  * rawBatch call sites use).
  */
-function d1HttpParam(value: unknown): unknown {
+/** D1 bind / REST params: Dates and booleans are not legal bind types. */
+export function d1BindParam(value: unknown): unknown {
   if (value instanceof Date) return value.toISOString().replace('Z', '+00:00');
   if (value === true) return 1;
   if (value === false) return 0;
   return value;
+}
+
+function d1HttpParam(value: unknown): unknown {
+  return d1BindParam(value);
 }
 
 /**

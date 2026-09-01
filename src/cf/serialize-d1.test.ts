@@ -1,5 +1,24 @@
 import { describe, expect, test } from 'bun:test';
+import { d1BindParam } from '../store.js';
 import { serializeD1 } from './serialize-d1.js';
+
+describe('d1BindParam', () => {
+  test('Dates become ISO strings D1 will accept', () => {
+    const d = new Date('2026-09-01T13:50:04.000Z');
+    expect(d1BindParam(d)).toBe('2026-09-01T13:50:04.000+00:00');
+  });
+
+  test('booleans become 0/1', () => {
+    expect(d1BindParam(true)).toBe(1);
+    expect(d1BindParam(false)).toBe(0);
+  });
+
+  test('strings and numbers pass through', () => {
+    expect(d1BindParam('abc')).toBe('abc');
+    expect(d1BindParam(3)).toBe(3);
+    expect(d1BindParam(null)).toBe(null);
+  });
+});
 
 function mockD1(opts?: { hang?: boolean }) {
   let inflight = 0;

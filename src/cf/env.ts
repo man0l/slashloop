@@ -6,7 +6,7 @@
 // the only variant that runs on workerd) with the D1 binding via
 // @prisma/adapter-d1, plus the raw executor src/store.ts rawBatch() uses.
 
-import { setActiveClient, type AppPrismaClient, type RawExecutor } from '../store.js';
+import { d1BindParam, setActiveClient, type AppPrismaClient, type RawExecutor } from '../store.js';
 import { setR2Bindings } from '../lib/storage-bindings.js';
 
 export interface Env {
@@ -42,7 +42,9 @@ export function copyEnvToProcessEnv(env: Env): void {
 export function d1BindingRawExecutor(d1: D1Database): RawExecutor {
   return async (statements) => {
     const prepared = statements.map((s) =>
-      s.params && s.params.length > 0 ? d1.prepare(s.sql).bind(...s.params) : d1.prepare(s.sql),
+      s.params && s.params.length > 0
+        ? d1.prepare(s.sql).bind(...s.params.map(d1BindParam))
+        : d1.prepare(s.sql),
     );
     const results = await d1.batch(prepared);
     return results.map((r) => (r.results ?? []) as unknown[]);
