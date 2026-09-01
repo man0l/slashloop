@@ -106,19 +106,25 @@ export async function listSourcesForWorkspace(workspace: Workspace, filters: Lis
 }
 
 export async function getSourceForWorkspace(workspace: Workspace, sourceId: string) {
+  // Sequential finds instead of a multi-relation `include`: Prisma's D1
+  // adapter fans those into concurrent prepared statements, which hang the
+  // binding. Shape of the returned object is unchanged.
   const source = await db.source.findFirst({
     where: { id: sourceId, workspaceId: workspace.id },
-    include: {
-      videos: {
-        where: { isBaselineSample: false },
-        take: 5,
-        orderBy: { postedAt: 'desc' },
-        select: { id: true, views: true, postedAt: true },
-      },
-      refreshRuns: { take: 3, orderBy: { ranAt: 'desc' } },
-    },
   });
   if (!source) return null;
+
+  const videos = await db.video.findMany({
+    where: { sourceId, isBaselineSample: false },
+    take: 5,
+    orderBy: { postedAt: 'desc' },
+    select: { id: true, views: true, postedAt: true },
+  });
+  const refreshRuns = await db.refreshRun.findMany({
+    where: { sourceId },
+    take: 3,
+    orderBy: { ranAt: 'desc' },
+  });
 
   // MediaJob has no Prisma relation to Source (sourceId is a plain nullable
   // column, shared with video-scoped kinds) — queried separately rather than
@@ -132,7 +138,7 @@ export async function getSourceForWorkspace(workspace: Workspace, sourceId: stri
     select: { status: true, lastError: true, createdAt: true, finishedAt: true },
   });
 
-  return { ...source, lastRefreshJob };
+  return { ...source, videos, refreshRuns, lastRefreshJob };
 }
 
 export interface CreateSourceInput {

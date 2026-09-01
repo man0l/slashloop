@@ -5,6 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
+import { chunked } from '../store.js';
 import { requireWorkspace } from '../context.js';
 import { generateBrief } from '../analysis/briefs.js';
 import { generateScript } from '../analysis/scripts.js';
@@ -21,12 +22,26 @@ export function registerCreativeTools(server: McpServer) {
     {},
     async () => {
       const workspace = await requireWorkspace();
+      // No `_count` include: Prisma's D1 adapter fans those into concurrent
+      // prepared statements, which hang the binding. Same JSON shape as before.
       const boards = await db.board.findMany({
         where: { workspaceId: workspace.id },
-        include: { _count: { select: { swipeEntries: true } } },
         orderBy: { createdAt: 'desc' },
       });
-      return { content: [{ type: 'text' as const, text: JSON.stringify(boards, null, 2) }] };
+      const swipeCountByBoard = new Map<string, number>();
+      await chunked(boards.map((b) => b.id), async (ids) => {
+        const rows = await db.swipeEntry.groupBy({
+          by: ['boardId'],
+          where: { boardId: { in: ids } },
+          _count: { _all: true },
+        });
+        for (const row of rows) swipeCountByBoard.set(row.boardId, row._count._all);
+      });
+      const payload = boards.map((b) => ({
+        ...b,
+        _count: { swipeEntries: swipeCountByBoard.get(b.id) ?? 0 },
+      }));
+      return { content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }] };
     });
 
   server.tool('get_board',

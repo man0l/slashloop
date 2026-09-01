@@ -4,6 +4,7 @@
 
 import { z } from 'zod/v4';
 import { db } from '../db.js';
+import { chunked } from '../store.js';
 import { requireWorkspace } from '../context.js';
 import { formatNumber } from '../scoring.js';
 import { resolveThumbUrl } from '../lib/media.js';
@@ -84,7 +85,9 @@ export function registerFeedTools(server: McpServer) {
           select: { id: true, analysisBasis: true, backend: true },
           orderBy: { createdAt: 'desc' as const },
         },
-        _count: { select: { hooks: true } },
+        // No `_count` include: Prisma's D1 adapter fans those into concurrent
+        // prepared statements, which hang the binding. Hook counts are loaded
+        // with a sequential groupBy after the page is sliced.
       };
 
       // Over-fetch only for the one filter that cannot be pushed down.
@@ -133,6 +136,16 @@ export function registerFeedTools(server: McpServer) {
 
       const paginated = filtered.slice(0, limit);
 
+      const hookCountByVideo = new Map<string, number>();
+      await chunked(paginated.map((v) => v.id), async (ids) => {
+        const rows = await db.hook.groupBy({
+          by: ['videoId'],
+          where: { videoId: { in: ids } },
+          _count: { _all: true },
+        });
+        for (const row of rows) hookCountByVideo.set(row.videoId, row._count._all);
+      });
+
       const feed = paginated.map((v, i) => {
         const engRate = v.views > 0 ? ((v.likes + v.comments + (v.shares ?? 0)) / v.views * 100).toFixed(1) : '0';
         return {
@@ -169,7 +182,7 @@ export function registerFeedTools(server: McpServer) {
           hasAnalysis: v.analyses.length > 0,
           analysisBasis: v.analyses[0]?.analysisBasis ?? null,
           analysisBackend: v.analyses[0]?.backend ?? null,
-          hookCount: v._count.hooks,
+          hookCount: hookCountByVideo.get(v.id) ?? 0,
           source: { query: v.source.query, nicheTag: v.source.nicheTag },
           sound: v.soundId ? { id: v.soundId, title: v.soundTitle, author: v.soundAuthor } : null,
         };
