@@ -13,6 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { db } from '../db.js';
+import { dbDialect } from '../store.js';
 import type { Workspace } from '@prisma/client';
 import { isStorageEnabled, publicUrl, thumbBucket, thumbPath } from './storage.js';
 import { backfillThumbsViaOembed } from './media.js';
@@ -335,12 +336,18 @@ export function renderDigestHtml(sections: DigestSection[]): string {
 }
 
 /**
- * Resolve the workspace owner's email straight from Supabase auth over the
- * direct Postgres connection (the postgres role can read auth.users; no
- * service-role key needed). Returns null when there is no owner (local dev)
- * or the row is gone.
+ * Resolve the workspace owner's email. Two sources, by dialect:
+ *   • Postgres (pre-cutover): straight from Supabase auth over the direct
+ *     connection (the postgres role can read auth.users; no service-role key).
+ *   • SQLite/D1: the User mirror table, populated by the Supabase→D1 data
+ *     migration — D1 has no auth schema to read.
+ * Returns null when there is no owner (local dev) or the row is gone.
  */
 export async function ownerEmail(ownerId: string): Promise<string | null> {
+  if (dbDialect() === 'sqlite') {
+    const user = await db.user.findUnique({ where: { id: ownerId }, select: { email: true } });
+    return user?.email ?? null;
+  }
   const rows = await db.$queryRawUnsafe<Array<{ email: string | null }>>(
     `SELECT email FROM auth.users WHERE id = $1::uuid LIMIT 1`,
     ownerId,

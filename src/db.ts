@@ -1,32 +1,27 @@
-import { PrismaClient } from '@prisma/client';
+// Re-export of the shard-aware data layer (src/store.ts).
+//
+// This file used to construct the Postgres PrismaClient directly. It now only
+// preserves the historical contract: importing src/db.js gives you a working
+// client on Node/Bun runtimes (DATABASE_URL), while Workers register the D1
+// client before the first request and never touch the code below.
+export { db, dbDialect, effectiveDatabaseUrl, initStorePostgres, initStoreD1Http } from './store.js';
 
-/**
- * The worker (VPS, two containers) must multi-task on the shared pool
- * (prisma.pgbouncer uses one shared connection per Deployment/MaybeTimeout),
- * but Vercel's per-request MCP is fine with 1. DB_CONNECTION_LIMIT lets a
- * deploy raise the pool size without editing the DATABASE_URL secret; both
- * slashloop-worker services set it to 4 in docker-compose.prod.yml.
- */
-export function effectiveDatabaseUrl(): string {
-  const limit = process.env.DB_CONNECTION_LIMIT;
-  const url = process.env.DATABASE_URL;
-  if (!url || !limit) return url ?? '';
-  const n = Number(limit);
-  if (!Number.isFinite(n) || n <= 0) return url;
-  const [base, query = ''] = url.split('?');
-  const params = new URLSearchParams(query);
-  params.set('connection_limit', String(n));
-  return `${base}?${params.toString()}`;
+import { dbDialect, initStorePostgres, initStoreD1Http } from './store.js';
+
+// Runtime bootstrap, by dialect:
+//   • postgres — the historical behavior: importing src/db.js yields a working
+//     Postgres client (DATABASE_URL). Pre-cutover Node/Bun runtimes only.
+//   • sqlite — Node/Bun talks to D1 over the HTTP API when D1_* credentials
+//     are set (post-cutover VPS worker). On Workers this whole file's guard
+//     is false: src/cf/worker.ts registers the binding-backed client itself.
+if (dbDialect() === 'sqlite') {
+  if (process.env.D1_ACCOUNT_ID && process.env.D1_DATABASE_ID && process.env.D1_API_TOKEN) {
+    initStoreD1Http({
+      accountId: process.env.D1_ACCOUNT_ID,
+      databaseId: process.env.D1_DATABASE_ID,
+      token: process.env.D1_API_TOKEN,
+    });
+  }
+} else if (process.env.DATABASE_URL) {
+  initStorePostgres();
 }
-const globalForPrisma = globalThis as unknown as {
-  prisma: PrismaClient | undefined;
-};
-
-export const db =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    datasources: { db: { url: effectiveDatabaseUrl() } },
-    log: process.env.PRISMA_LOG === '1' ? ['error', 'warn'] : ['error'],
-  });
-
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = db;

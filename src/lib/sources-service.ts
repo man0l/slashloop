@@ -12,8 +12,9 @@
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from 'node:crypto';
-import type { Source, Workspace } from '@prisma/client';
+import type { Prisma, Source, Workspace } from '@prisma/client';
 import { db } from '../db.js';
+import { dbDialect } from '../store.js';
 import { scrapeCapKind, scrapeSource, trafficStatus } from './scrapers/index.js';
 import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
 import { TrafficCapExceededError } from './scrapers/bandwidth.js';
@@ -165,19 +166,47 @@ export async function createSourceForWorkspace(
     };
   }
 
-  const source = await db.$transaction(async (tx) => {
-    if (isSelf) {
-      await tx.source.updateMany({
-        where: { workspaceId: workspace.id, isSelf: true },
-        data: { isSelf: false },
-      });
-    }
-    return tx.source.create({
-      data: {
-        workspaceId: workspace.id,
-        platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf,
-      },
+  // D1 has no interactive transactions; the statements run sequentially
+  // there. The only invariant at stake — at most one isSelf source per
+  // workspace under two concurrent toggles — is enforced in service code and
+  // self-heals on the next update, so a momentary race is accepted.
+  const unsetOtherSelf = async (tx: Prisma.TransactionClient, excludeId?: string) => {
+    await tx.source.updateMany({
+      where: excludeId
+        ? { workspaceId: workspace.id, isSelf: true, NOT: { id: excludeId } }
+        : { workspaceId: workspace.id, isSelf: true },
+      data: { isSelf: false },
     });
+  };
+
+  if (isSelf) {
+    if (dbDialect() === 'sqlite') {
+      await unsetOtherSelf(db);
+      const source = await db.source.create({
+        data: {
+          workspaceId: workspace.id,
+          platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf,
+        },
+      });
+      return { ok: true, source };
+    }
+    const source = await db.$transaction(async (tx) => {
+      await unsetOtherSelf(tx);
+      return tx.source.create({
+        data: {
+          workspaceId: workspace.id,
+          platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf,
+        },
+      });
+    });
+    return { ok: true, source };
+  }
+
+  const source = await db.source.create({
+    data: {
+      workspaceId: workspace.id,
+      platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf,
+    },
   });
   return { ok: true, source };
 }
@@ -203,6 +232,21 @@ export async function updateSourceForWorkspace(
   const { isSelf: wantSelf, ...rest } = updates;
   const isCreator = owned.sourceType === 'creator';
   const isSelf = wantSelf === undefined ? undefined : Boolean(wantSelf) && isCreator;
+
+  // See createSourceForWorkspace — sequential on D1 (race is cosmetic).
+  if (isSelf === true && dbDialect() === 'sqlite') {
+    await db.source.updateMany({
+      where: { workspaceId: workspace.id, isSelf: true, NOT: { id: sourceId } },
+      data: { isSelf: false },
+    });
+    return db.source.update({
+      where: { id: sourceId },
+      data: {
+        ...rest,
+        ...(isSelf === undefined ? {} : { isSelf }),
+      },
+    }).catch(() => null);
+  }
 
   return db.$transaction(async (tx) => {
     if (isSelf === true) {

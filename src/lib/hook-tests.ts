@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { db } from '../db.js';
-import { Prisma } from '@prisma/client';
+import { isUniqueViolation } from '../store.js';
 import { resolveThumbUrl } from './media.js';
 import { generateHookTestDraft, type HookTestDraft, type HookTestLock } from '../analysis/hook-tests.js';
 
@@ -215,7 +215,11 @@ export async function startHookTest(
     // case. Two racing starts (double-click, two tabs, agent + human): one wins
     // the insert, the loser refunds upstream.
   }).catch((err: unknown) => {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+    // isUniqueViolation, not instanceof PrismaClientKnownRequestError: the
+    // Postgres and SQLite generated clients ship two distinct error classes,
+    // so a hardcoded instanceof misses on whichever client it wasn't built
+    // against (see src/store.ts).
+    if (isUniqueViolation(err)) {
       throw new HookTestError('Another request just opened a test for this video.', 409);
     }
     throw err;

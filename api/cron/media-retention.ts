@@ -12,6 +12,7 @@
 // automatically when that env var is set on the project.
 
 import { db } from '../../src/db.js';
+import { dbDialect, rawBatch, type RawStatement } from '../../src/store.js';
 import { deleteObjects, isStorageEnabled, thumbBucket, mediaBucket } from '../../src/lib/storage.js';
 
 /** Max rows handled per bucket per run. A backlog drains over several days. */
@@ -42,6 +43,11 @@ async function findExpired(kind: 'thumb' | 'media'): Promise<ExpiredRow[]> {
   const retentionCol = kind === 'thumb' ? 'thumbRetentionDays' : 'mediaRetentionDays';
 
   // Column names are from the literal map above, never from user input.
+  // SQLite: julianday() parses Prisma's stored ISO strings; per-row retention
+  // days forces the date math into SQL (a bound cutoff can't vary by row).
+  const cutoff = dbDialect() === 'sqlite'
+    ? `julianday(v."${storedAtCol}") < julianday('now') - w."${retentionCol}"`
+    : `v."${storedAtCol}" < now() - (w."${retentionCol}" * INTERVAL '1 day')`;
   return db.$queryRawUnsafe<ExpiredRow[]>(`
     SELECT v."id" AS id, v."${keyCol}" AS key
     FROM "Video" v
@@ -50,7 +56,7 @@ async function findExpired(kind: 'thumb' | 'media'): Promise<ExpiredRow[]> {
     WHERE v."${statusCol}" = 'stored'
       AND v."${keyCol}" IS NOT NULL
       AND v."${storedAtCol}" IS NOT NULL
-      AND v."${storedAtCol}" < now() - (w."${retentionCol}" * INTERVAL '1 day')
+      AND ${cutoff}
     ORDER BY v."${storedAtCol}" ASC
     LIMIT ${BATCH_LIMIT}
   `);
@@ -88,12 +94,16 @@ type ExpiredListingRow = { id: string; thumbKey: string | null; mediaKey: string
  * hand via update_settings).
  */
 async function findExpiredListings(): Promise<ExpiredListingRow[]> {
+  // See findExpired for the SQLite cutoff (julianday; MAX() as GREATEST).
+  const cutoff = dbDialect() === 'sqlite'
+    ? `julianday(v."scrapedAt") < julianday('now') - MAX(w."thumbRetentionDays", w."mediaRetentionDays")`
+    : `v."scrapedAt" < now() - (GREATEST(w."thumbRetentionDays", w."mediaRetentionDays") * INTERVAL '1 day')`;
   return db.$queryRawUnsafe<ExpiredListingRow[]>(`
     SELECT v."id" AS id, v."thumbKey" AS "thumbKey", v."mediaKey" AS "mediaKey"
     FROM "Video" v
     JOIN "Source" s ON s."id" = v."sourceId"
     JOIN "Workspace" w ON w."id" = s."workspaceId"
-    WHERE v."scrapedAt" < now() - (GREATEST(w."thumbRetentionDays", w."mediaRetentionDays") * INTERVAL '1 day')
+    WHERE ${cutoff}
     ORDER BY v."scrapedAt" ASC
     LIMIT ${BATCH_LIMIT}
   `);
@@ -128,22 +138,68 @@ async function sweepExpiredListings(): Promise<{ scanned: number; deleted: numbe
   if (thumbKeys.length > 0) await deleteObjects(thumbBucket(), thumbKeys);
   if (mediaKeys.length > 0) await deleteObjects(mediaBucket(), mediaKeys);
 
-  await db.$transaction([
-    // A Brief can reach an expiring video through either its analysis or its
-    // (optional) idea — either path needs to be gone before Analysis/Idea can go.
-    db.brief.deleteMany({
-      where: { OR: [{ analysis: { videoId: { in: ids } } }, { idea: { videoId: { in: ids } } }] },
-    }),
-    db.hook.deleteMany({ where: { videoId: { in: ids } } }),
-    db.idea.deleteMany({ where: { videoId: { in: ids } } }),
-    db.swipeEntry.deleteMany({ where: { videoId: { in: ids } } }),
-    db.score.deleteMany({ where: { videoId: { in: ids } } }),
-    db.mediaJob.deleteMany({ where: { videoId: { in: ids } } }),
-    db.analysis.deleteMany({ where: { videoId: { in: ids } } }),
-    db.video.deleteMany({ where: { id: { in: ids } } }),
-  ]);
+  if (dbDialect() === 'sqlite') {
+    await sweepExpiredListingsSqlite(ids);
+  } else {
+    await db.$transaction([
+      // A Brief can reach an expiring video through either its analysis or its
+      // (optional) idea — either path needs to be gone before Analysis/Idea can go.
+      db.brief.deleteMany({
+        where: { OR: [{ analysis: { videoId: { in: ids } } }, { idea: { videoId: { in: ids } } }] },
+      }),
+      db.hook.deleteMany({ where: { videoId: { in: ids } } }),
+      db.idea.deleteMany({ where: { videoId: { in: ids } } }),
+      db.swipeEntry.deleteMany({ where: { videoId: { in: ids } } }),
+      db.score.deleteMany({ where: { videoId: { in: ids } } }),
+      db.mediaJob.deleteMany({ where: { videoId: { in: ids } } }),
+      db.analysis.deleteMany({ where: { videoId: { in: ids } } }),
+      db.video.deleteMany({ where: { id: { in: ids } } }),
+    ]);
+  }
 
   return { scanned: rows.length, deleted: rows.length };
+}
+
+/**
+ * SQLite/D1 form of the cascade above. `$transaction([...])` has no D1
+ * equivalent (no client transactions), so the same deletes run as ONE atomic
+ * batch. Every statement re-runs the SAME LIMIT-ed selection
+ * (sweepExpiredListings uses) instead of binding 1000 ids — D1 caps bound
+ * parameters at 100 per query, and inside one batch the selection sees a
+ * consistent snapshot, so the deletes hit exactly the swept rows.
+ */
+async function sweepExpiredListingsSqlite(ids: string[]): Promise<void> {
+  // The selection is the same query findExpiredListings ran; ids.length ≤
+  // BATCH_LIMIT is what defines the sweep's boundary.
+  void ids;
+  const selection = `
+    SELECT v."id" FROM "Video" v
+    JOIN "Source" s ON s."id" = v."sourceId"
+    JOIN "Workspace" w ON w."id" = s."workspaceId"
+    WHERE julianday(v."scrapedAt") < julianday('now') - MAX(w."thumbRetentionDays", w."mediaRetentionDays")
+    ORDER BY v."scrapedAt" ASC
+    LIMIT ${BATCH_LIMIT}`;
+
+  const statements: RawStatement[] = [
+    // A Brief can reach an expiring video through either its analysis or its
+    // (optional) idea — either path must go before Analysis/Idea can.
+    {
+      sql: `DELETE FROM "Brief" WHERE "id" IN (
+        SELECT b."id" FROM "Brief" b
+        LEFT JOIN "Analysis" ba ON ba."id" = b."analysisId"
+        LEFT JOIN "Idea" bi ON bi."id" = b."ideaId"
+        WHERE ba."videoId" IN (${selection}) OR bi."videoId" IN (${selection})
+      )`,
+    },
+    { sql: `DELETE FROM "Hook" WHERE "videoId" IN (${selection})` },
+    { sql: `DELETE FROM "Idea" WHERE "videoId" IN (${selection})` },
+    { sql: `DELETE FROM "SwipeEntry" WHERE "videoId" IN (${selection})` },
+    { sql: `DELETE FROM "Score" WHERE "videoId" IN (${selection})` },
+    { sql: `DELETE FROM "MediaJob" WHERE "videoId" IN (${selection})` },
+    { sql: `DELETE FROM "Analysis" WHERE "videoId" IN (${selection})` },
+    { sql: `DELETE FROM "Video" WHERE "id" IN (${selection})` },
+  ];
+  await rawBatch(statements);
 }
 
 export async function GET(request: Request): Promise<Response> {

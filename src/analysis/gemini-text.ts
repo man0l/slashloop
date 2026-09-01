@@ -13,20 +13,28 @@
 // cheaper than native video understanding).
 // ---------------------------------------------------------------------------
 
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { VideoAnalysisDataSchema } from './schema.js';
 import type { VideoAnalyzer, AnalysisContext, AnalysisOutput } from './types.js';
 import { getCostCents } from './types.js';
 import type { AnalysisConfig } from './types.js';
 import { callModelText, activeProvider } from '../lib/llm.js';
+import { createRequire } from 'node:module';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROMPT_PATH = resolve(__dirname, '../../prompts/gemini-text.v1.md');
+// Lazy like gemini-native's loader: node:fs / import.meta.url must not run at
+// module scope (Workers crash on startup otherwise; analysis is VPS work).
+let cachedPrompt: string | undefined;
 
 function loadPromptTemplate(): string {
-  return readFileSync(PROMPT_PATH, 'utf-8');
+  if (cachedPrompt === undefined) {
+    const req = createRequire(import.meta.url);
+    const { fileURLToPath } = req('node:url');
+    const { dirname, resolve } = req('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const loaded = req('node:fs').readFileSync(resolve(here, '../../prompts/gemini-text.v1.md'), 'utf-8');
+    cachedPrompt = loaded;
+    return loaded;
+  }
+  return cachedPrompt;
 }
 
 /**

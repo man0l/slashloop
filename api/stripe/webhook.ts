@@ -3,15 +3,16 @@
 // /billing/success) — the user can close the tab before it fires, and a
 // success_url is trivially replayable. This is the source of truth.
 //
-// Idempotency: the StripeEvent insert and the event's Workspace/CreditLedger
-// mutation happen in one db.$transaction. A duplicate event id fails the
-// insert and rolls back the whole transaction (nothing double-applied); a
-// mutation failure rolls back the insert too, so a Stripe retry after a
-// transient error reprocesses instead of being silently swallowed by an
-// event id that "looks" already-handled.
+// Idempotency: the StripeEvent insert gates the event's Workspace/CreditLedger
+// mutation. On Postgres both happen in one db.$transaction (duplicate id fails
+// the insert and rolls the mutation back; a mutation failure rolls the insert
+// back, so a Stripe retry reprocesses). On SQLite/D1 there are no interactive
+// transactions — see the sqlite branch in POST for the gate/compensating-delete
+// protocol that preserves the same guarantees.
 import type Stripe from 'stripe';
-import { Prisma } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import { db } from '../../src/db.js';
+import { dbDialect, isUniqueViolation } from '../../src/store.js';
 import { requireStripe, stripeWebhookSecret, stripeMode } from '../../src/lib/stripe.js';
 import { PLAN_CREDITS, FREE_TIER_PLAN_CREDITS, txSetPlan, txAddPackCredits, txUpdateBillingFields, workspaceByCustomerId } from '../../src/lib/credits.js';
 import { primaryWorkspaceByOwnerId } from '../../src/lib/workspaces.js';
@@ -221,12 +222,42 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
+    if (dbDialect() === 'sqlite') {
+      // D1 has no interactive transactions: the gate insert and the mutation
+      // cannot share a Postgres-style rollback. Same protocol, rearranged:
+      //   1. The StripeEvent insert alone is the idempotency gate — duplicate
+      //      event id throws P2002 and we ack as already-processed.
+      //   2. handleEvent runs against db (plain sequential statements).
+      //   3. On failure the gate row is DELETED (compensating action), so a
+      //      Stripe retry reprocesses from scratch instead of being swallowed
+      //      by an event id that "looks" already-handled. Residual window: a
+      //      hard crash between [1] and [3] marks the event processed without
+      //      its mutation — the price of D1's no-transaction model, accepted
+      //      because Stripe retries and the ledger's own refId idempotency
+      //      still bound the damage.
+      try {
+        await db.stripeEvent.create({ data: { id: event.id, type: event.type, payloadJson: raw } });
+      } catch (err) {
+        if (isUniqueViolation(err)) {
+          return json(200, { received: true, duplicate: true });
+        }
+        throw err;
+      }
+      try {
+        await handleEvent(db, event);
+      } catch (err) {
+        console.error(`[stripe-webhook] handler failed for ${event.id} (${event.type}):`, err);
+        await db.stripeEvent.delete({ where: { id: event.id } }).catch(() => { /* gate row already gone */ });
+        return json(500, { error: 'handler_failed' });
+      }
+      return json(200, { received: true });
+    }
     await db.$transaction(async (tx) => {
       await tx.stripeEvent.create({ data: { id: event.id, type: event.type, payloadJson: raw } });
       await handleEvent(tx, event);
     });
   } catch (err) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+    if (isUniqueViolation(err)) {
       // Already processed — success, not an error. Stripe should not retry.
       return json(200, { received: true, duplicate: true });
     }

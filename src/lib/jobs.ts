@@ -18,9 +18,17 @@
 
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
+import { coerceRowDates, dbDialect } from '../store.js';
 import { CREDIT_COSTS, refundCredits } from './credits.js';
 import { classifyFetchError } from './fetch-errors.js';
 import { notifyScrapeFailure, markScrapeSuccess } from './scrape-alert.js';
+
+/** Raw-row date columns, hydrated to Date on SQLite (raw SQL returns strings there). */
+const MEDIA_JOB_DATE_KEYS = ['deadlineAt', 'createdAt', 'startedAt', 'finishedAt'] as const;
+
+function toMediaJobRow(row: Record<string, unknown>): MediaJobRow {
+  return coerceRowDates(row, MEDIA_JOB_DATE_KEYS) as unknown as MediaJobRow;
+}
 
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 
@@ -490,6 +498,27 @@ export async function claimNextJob(kind = 'analyze'): Promise<MediaJobRow | null
   // latency is already minutes end to end (await_job is built for it).
   const holdMs = kind === 'refresh' ? refreshCoalesceMs() : 0;
   const claimableBefore = new Date(Date.now() - holdMs);
+  if (dbDialect() === 'sqlite') {
+    // D1/SQLite: no FOR UPDATE SKIP LOCKED — D1 is single-writer, so this
+    // single UPDATE..subquery..RETURNING statement is atomic on its own; two
+    // concurrent claimers serialize and the loser's subselect sees the row
+    // already 'running'.
+    const rows = await db.$queryRaw<Record<string, unknown>[]>`
+      UPDATE "MediaJob"
+         SET "status" = 'running',
+             "startedAt" = ${new Date()},
+             "attempts" = "attempts" + 1
+       WHERE "id" = (
+         SELECT "id" FROM "MediaJob"
+          WHERE "status" = 'queued' AND "kind" = ${kind}
+            AND "createdAt" <= ${claimableBefore}
+          ORDER BY "createdAt" ASC
+          LIMIT 1
+       )
+      RETURNING *
+    `;
+    return rows[0] ? toMediaJobRow(rows[0]) : null;
+  }
   const rows = await db.$queryRaw<MediaJobRow[]>`
     UPDATE "MediaJob"
        SET "status" = 'running',
@@ -581,6 +610,22 @@ export async function acquireCanonicalLock(
 ): Promise<boolean> {
   const expiresAt = new Date(Date.now() + ttlMs);
   try {
+    if (dbDialect() === 'sqlite') {
+      // Same upsert in SQLite dialect: DO UPDATE ... WHERE + RETURNING, where
+      // exactly one caller matches the expired-lease predicate and the losers
+      // get zero rows back.
+      const rows = await db.$queryRaw<Array<{ lockedBy: string }>>`
+        INSERT INTO "CanonicalScrapeLock" ("key", "lockedBy", "lockedAt", "expiresAt")
+        VALUES (${key}, ${owner}, ${new Date()}, ${expiresAt})
+        ON CONFLICT ("key") DO UPDATE
+           SET "lockedBy" = excluded."lockedBy",
+               "lockedAt" = excluded."lockedAt",
+               "expiresAt" = excluded."expiresAt"
+         WHERE "CanonicalScrapeLock"."expiresAt" < ${new Date()}
+       RETURNING "lockedBy"
+      `;
+      return rows[0]?.lockedBy === owner;
+    }
     const rows = await db.$queryRaw<Array<{ lockedBy: string }>>`
       INSERT INTO "CanonicalScrapeLock" ("key", "lockedBy", "lockedAt", "expiresAt")
       VALUES (${key}, ${owner}, now(), ${expiresAt})
@@ -790,13 +835,28 @@ export async function claimRefreshPeersForCanonical(opts: {
   return claimJobsByIds(matchIds);
 }
 
-/** Atomically claim a set of queued job ids (SKIP LOCKED — missing/raced ids are skipped). */
+/** Atomically claim a set of queued job ids (missing/raced ids are skipped). */
 export async function claimJobsByIds(ids: string[]): Promise<MediaJobRow[]> {
   if (ids.length === 0) return [];
   // Prisma.$queryRaw cannot expand arrays into IN ($1,$2) without Prisma.join
-  // in all versions — claim one-by-one with SKIP LOCKED is fine for N≤9.
+  // in all versions — claim one-by-one is fine for N≤9.
   const claimed: MediaJobRow[] = [];
   for (const id of ids) {
+    if (dbDialect() === 'sqlite') {
+      const rows = await db.$queryRaw<Record<string, unknown>[]>`
+        UPDATE "MediaJob"
+           SET "status" = 'running',
+               "startedAt" = ${new Date()},
+               "attempts" = "attempts" + 1
+         WHERE "id" = (
+           SELECT "id" FROM "MediaJob"
+            WHERE "id" = ${id} AND "status" = 'queued'
+         )
+        RETURNING *
+      `;
+      if (rows[0]) claimed.push(toMediaJobRow(rows[0]));
+      continue;
+    }
     const rows = await db.$queryRaw<MediaJobRow[]>`
       UPDATE "MediaJob"
          SET "status" = 'running',
@@ -827,6 +887,18 @@ export async function claimJobsByIds(ids: string[]): Promise<MediaJobRow[]> {
  * persisted. The retry limit still bounds real failures.
  */
 export async function yieldJob(id: string, reason: string): Promise<void> {
+  if (dbDialect() === 'sqlite') {
+    // SQLite scalar max() stands in for Postgres GREATEST.
+    await db.$executeRaw`
+      UPDATE "MediaJob"
+         SET "status" = 'queued',
+             "startedAt" = NULL,
+             "attempts" = MAX(0, "attempts" - 1),
+             "lastError" = ${reason.slice(0, 1000)}
+       WHERE "id" = ${id}
+    `;
+    return;
+  }
   await db.$executeRaw`
     UPDATE "MediaJob"
        SET "status" = 'queued',

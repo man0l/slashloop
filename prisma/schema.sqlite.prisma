@@ -1,12 +1,13 @@
+// GENERATED from prisma/schema.prisma by src/scripts/sync-sqlite-schema.ts — do not edit.
+// Edit the canonical schema, then re-run the script (see header there).
 generator client {
-  provider      = "prisma-client-js"
-  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+  provider = "prisma-client-js"
+  output   = "../src/generated/sqlite"
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "sqlite"
+  url      = env("SQLITE_DB_URL")
 }
 
 /// Mirror of a Supabase auth user (id = the JWT `sub`, i.e. Workspace.ownerId).

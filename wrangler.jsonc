@@ -1,0 +1,72 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "slashloop",
+  "main": "src/cf/worker.ts",
+  "compatibility_date": "2026-08-01",
+  // nodejs_compat: AsyncLocalStorage (src/context.ts), node:crypto randomUUID
+  // (api/videos.ts), and the Prisma client all need it.
+  "compatibility_flags": ["nodejs_compat"],
+  // ── Database ────────────────────────────────────────────────────────────
+  // Single shard today; the shard router (src/store.ts) reads SHARD_DIRECTORY
+  // KV so more DBs can be added later without a code change (10GB hard cap
+  // per D1 database — see docs in prisma/d1-migrations).
+  "d1_databases": [
+    {
+      "binding": "DB_SHARD0",
+      "database_name": "slashloop",
+      // wrangler d1 create slashloop --location weur (Western Europe — matches the old fra1 profile)
+      "database_id": "e1caee8f-3962-42a1-84d3-9d17eb3cab34",
+      "migrations_dir": "prisma/d1-migrations"
+    }
+  ],
+  // ── Media storage ───────────────────────────────────────────────────────
+  // The same buckets src/lib/storage.ts already uses over the S3 API; on the
+  // Worker they are reached through native bindings instead (no S3 sigv4,
+  // no egress, no extra latency).
+  "r2_buckets": [
+    { "binding": "R2_THUMBS", "bucket_name": "slashloop-thumbs" },
+    { "binding": "R2_MEDIA", "bucket_name": "slashloop-media" }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "SHARD_DIRECTORY",
+      // wrangler kv namespace create SHARD_DIRECTORY
+      "id": "dccd06ab3bdf4775b015822867290121"
+    }
+  ],
+  // ── Schedulers (replace Vercel Cron + Supabase pg_cron) ─────────────────
+  // */1  — job-queue drain (was pg_cron net.http_post → /api/jobs/analyze)
+  // 0 3  — daily media-retention sweep (was api/cron/media-retention)
+  // 0 9 * * 1 — weekly digest, Mondays 09:00 UTC (was api/cron/digest)
+  //
+  // CUTOVER 2026-09-01: triggers DISABLED while the freeze window is open —
+  // with live queued jobs in D1 the drain was processing real (billable) work
+  // before the VPS flip. Re-enable as the final cutover step.
+  "triggers": {
+    "crons": []
+  },
+  "observability": {
+    "enabled": true
+  },
+  // Node-only modules that shared code reaches through guarded dynamic imports
+  // (src/lib/scrapers/*, the Postgres bootstrap in src/db.ts). Wrangler 4 has
+  // no build.external; aliasing them to an empty module keeps their native
+  // binaries out of the bundle. They are never executed on the Worker: scraping
+  // runs on the VPS worker, and the Postgres bootstrap is dialect-guarded.
+  "alias": {
+    "@prisma/client": "./src/cf/node-only-stub.ts",
+    "playwright": "./src/cf/node-only-stub.ts",
+    "playwright-extra": "./src/cf/node-only-stub.ts",
+    "puppeteer-extra-plugin-stealth": "./src/cf/node-only-stub.ts",
+    "impit": "./src/cf/node-only-stub.ts",
+    "xbogus": "./src/cf/node-only-stub.ts"
+  },
+  "vars": {
+    // Dialect flag for the raw-SQL branch points (src/store.ts). The Worker is
+    // always sqlite; Postgres runtimes (VPS worker, scripts) keep the default.
+    "DB_DIALECT": "sqlite"
+  }
+  // Secrets (SUPABASE_URL, CRON_SECRET, STRIPE_*, RESEND_API_KEY, GEMINI_API_KEY,
+  // APIFY_*, R2_* S3 keys for the VPS path, etc.) are set with
+  // `wrangler secret put <NAME>` — same names as .env.example.
+}

@@ -53,7 +53,9 @@ export async function POST(request: Request): Promise<Response> {
 
   let body: { workspaceId?: string; digestEnabled?: boolean; digestEmail?: string | null };
   try {
-    body = await request.json();
+    // request.json() is unknown under some type libs (bun vs Vercel/Node) —
+    // the validation below narrows every field before use.
+    body = (await request.json()) as typeof body;
   } catch {
     return json(400, { error: 'invalid_json' });
   }

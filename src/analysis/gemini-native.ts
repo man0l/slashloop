@@ -5,19 +5,30 @@
 // Sees video + audio + on-screen text. No ffmpeg, no OCR, no Whisper needed.
 // ---------------------------------------------------------------------------
 
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { VideoAnalysisDataSchema } from './schema.js';
 import type { VideoAnalyzer, AnalysisContext, AnalysisOutput } from './types.js';
 import { getCostCents } from './types.js';
 import type { AnalysisConfig } from './types.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROMPT_PATH = resolve(__dirname, '../../prompts/gemini-observe.v2.md');
+// Prompt file reads must stay inside the loader: node:fs + import.meta.url
+// are VPS/Bun-only. Resolving either at module scope crashes the Workers
+// runtime at startup (this module is in the API graph via process-job); the
+// loader only ever RUNS where a filesystem exists (analyze jobs are VPS work).
+import { createRequire } from 'node:module';
+
+let cachedPrompt: string | undefined;
 
 export function loadPromptTemplate(): string {
-  return readFileSync(PROMPT_PATH, 'utf-8');
+  if (cachedPrompt === undefined) {
+    const req = createRequire(import.meta.url);
+    const { fileURLToPath } = req('node:url');
+    const { dirname, resolve } = req('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const loaded = req('node:fs').readFileSync(resolve(here, '../../prompts/gemini-observe.v2.md'), 'utf-8');
+    cachedPrompt = loaded;
+    return loaded;
+  }
+  return cachedPrompt;
 }
 
 export function buildUserMessage(ctx: AnalysisContext, template: string): string {
@@ -240,6 +251,9 @@ export class GeminiNativeAnalyzer implements VideoAnalyzer {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error('GEMINI_API_KEY environment variable is not set');
 
+    // VPS/Bun-only: reads the downloaded MP4 from disk (Workers have no fs;
+    // analyze jobs never run there while the VPS worker owns the queue).
+    const { readFileSync } = await import('node:fs');
     const fileBlob = new Blob([readFileSync(filePath)], { type: 'video/mp4' });
     const formData = new FormData();
     formData.append('file', fileBlob, 'video.mp4');

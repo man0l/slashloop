@@ -19,6 +19,8 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { getR2Bindings } from './storage-bindings.js';
+import { signMediaUrl } from './media-url.js';
 
 const DEFAULT_THUMB_BUCKET = 'thumbs';
 const DEFAULT_MEDIA_BUCKET = 'media';
@@ -27,9 +29,18 @@ const DEFAULT_R2_MEDIA_BUCKET = 'slashloop-media';
 
 // ---- Backend selection ----------------------------------------------------
 
-export type StorageBackend = 'r2' | 'supabase' | 'none';
+export type StorageBackend = 'r2-binding' | 'r2' | 'supabase' | 'none';
 
+/**
+ * First match wins:
+ *   1. r2-binding — Workers runtime with the R2 bucket bindings registered
+ *      (src/cf/env.ts). No S3 keys; private media is served through signed
+ *      /media URLs instead of presigned S3.
+ *   2. r2         — S3 API keys (Node/Bun runtimes, and the VPS ingest path).
+ *   3. supabase   — legacy fallback (Supabase Storage REST).
+ */
 export function storageBackend(): StorageBackend {
+  if (getR2Bindings()) return 'r2-binding';
   if (isR2Configured()) return 'r2';
   if (process.env.SUPABASE_URL && process.env.SUPABASE_SECRET_KEY) return 'supabase';
   return 'none';
@@ -53,7 +64,7 @@ export function isStorageEnabled(): boolean {
 }
 
 export function thumbBucket(): string {
-  if (storageBackend() === 'r2') {
+  if (storageBackend() === 'r2' || storageBackend() === 'r2-binding') {
     return process.env.R2_THUMB_BUCKET
       || process.env.STORAGE_THUMB_BUCKET
       || DEFAULT_R2_THUMB_BUCKET;
@@ -62,12 +73,22 @@ export function thumbBucket(): string {
 }
 
 export function mediaBucket(): string {
-  if (storageBackend() === 'r2') {
+  if (storageBackend() === 'r2' || storageBackend() === 'r2-binding') {
     return process.env.R2_MEDIA_BUCKET
       || process.env.STORAGE_MEDIA_BUCKET
       || DEFAULT_R2_MEDIA_BUCKET;
   }
   return process.env.STORAGE_MEDIA_BUCKET || DEFAULT_MEDIA_BUCKET;
+}
+
+/**
+ * Resolve a bucket NAME to the registered binding. Call sites always pass
+ * thumbBucket() / mediaBucket() output, so name comparison is exact.
+ */
+function bindingFor(bucket: string): R2Bucket | null {
+  const bindings = getR2Bindings();
+  if (!bindings) return null;
+  return bucket === thumbBucket() ? bindings.thumbs : bindings.media;
 }
 
 // ---- Paths ----------------------------------------------------------------
@@ -138,6 +159,16 @@ export async function putObject(opts: PutObjectOptions): Promise<{ path: string;
   const { bucket, path, body, contentType } = opts;
   const backend = storageBackend();
 
+  if (backend === 'r2-binding') {
+    const binding = bindingFor(bucket);
+    if (!binding) throw new Error(`R2 binding not registered for bucket ${bucket}`);
+    await binding.put(path, body, {
+      contentType,
+      httpMetadata: { cacheControl: 'max-age=31536000' },
+    });
+    return { path, sizeBytes: body.byteLength };
+  }
+
   if (backend === 'r2') {
     await getR2Client().send(new PutObjectCommand({
       Bucket: bucket,
@@ -189,6 +220,14 @@ export function publicUrl(bucket: string, path: string): string {
 
   const backend = storageBackend();
 
+  // Binding mode: thumbs are public data — serve them through the Worker's
+  // cacheable /thumbs route (immutable cache-control, edge-cached).
+  if (backend === 'r2-binding') {
+    const origin = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
+    if (origin) return `${origin}/thumbs/${path}`;
+    throw new Error('PUBLIC_URL is unset — cannot build a thumb URL without an R2 public base');
+  }
+
   if (backend === 'r2') {
     throw new Error(
       'R2 public URL requested but R2_THUMB_PUBLIC_BASE is unset '
@@ -209,6 +248,16 @@ export function publicUrl(bucket: string, path: string): string {
  */
 export async function signUrl(bucket: string, path: string, ttlSeconds: number): Promise<string> {
   const backend = storageBackend();
+
+  // Binding mode: no S3 keys to presign with — mint a JWT authorising this
+  // one object path and serve the bytes from the Worker's /media route
+  // (Range-aware, so <video> seeking works).
+  if (backend === 'r2-binding') {
+    const origin = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
+    const url = await signMediaUrl(path, ttlSeconds, origin || null);
+    if (!url) throw new Error('media signing unavailable: no signing secret or PUBLIC_URL');
+    return url;
+  }
 
   if (backend === 'r2') {
     const url = await getSignedUrl(
@@ -245,6 +294,13 @@ export async function signUrl(bucket: string, path: string, ttlSeconds: number):
 export async function deleteObjects(bucket: string, paths: string[]): Promise<number> {
   if (paths.length === 0) return 0;
   const backend = storageBackend();
+
+  if (backend === 'r2-binding') {
+    const binding = bindingFor(bucket);
+    if (!binding) throw new Error(`R2 binding not registered for bucket ${bucket}`);
+    await binding.delete(paths);
+    return paths.length;
+  }
 
   if (backend === 'r2') {
     // S3 DeleteObjects max 1000 keys per call.

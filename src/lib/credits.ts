@@ -20,7 +20,9 @@
 // per-customer entitlement check.
 // ---------------------------------------------------------------------------
 
+import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
+import { dbDialect, isUniqueViolation, rawBatch, type RawStatement } from '../store.js';
 import type { Prisma, Workspace } from '@prisma/client';
 import { customerIdField, subscriptionIdField } from './stripe.js';
 import { retentionCeiling } from './retention.js';
@@ -163,6 +165,10 @@ export async function debitCredits(
 
   const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId);
 
+  if (dbDialect() === 'sqlite') {
+    return debitSqlite(billingWorkspaceId, credits, tool, idempotencyKey, workspaceId);
+  }
+
   return db.$transaction(async (tx) => {
     const prior = await tx.creditLedger.findUnique({
       where: { workspaceId_refId: { workspaceId: billingWorkspaceId, refId: idempotencyKey } },
@@ -228,6 +234,10 @@ export async function refundCredits(
 
   const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId);
 
+  if (dbDialect() === 'sqlite') {
+    return refundSqlite(billingWorkspaceId, credits, tool, refId, reason);
+  }
+
   return db.$transaction(async (tx) => {
     const prior = await tx.creditLedger.findUnique({
       where: { workspaceId_refId: { workspaceId: billingWorkspaceId, refId } },
@@ -260,6 +270,104 @@ export async function refundCredits(
     });
     return { planCredits, packCredits, total: planCredits + packCredits };
   });
+}
+
+// ---------------------------------------------------------------------------
+// SQLite/D1 debit & refund — the Postgres transactions above have no D1
+// equivalent (no interactive transactions). Same contract, different atomic
+// unit: ONE rawBatch (D1Database.batch is transactional). Each batch pairs
+//   [1] the CreditLedger INSERT as idempotency gate + audit row, and
+//   [2] the conditional Workspace UPDATE.
+// Both statements see the same pre-update balance inside the batch, so the
+// ledger insert carries the SAME balance predicate as the debit: if the
+// workspace can't cover it, statement [1] matches zero rows and NOTHING is
+// written; a retried refId trips the [workspaceId, refId] unique and the
+// batch aborts — replayed by returning the current balance. balanceAfter is
+// computed in the INSERT..SELECT from the pre-update row, which inside the
+// batch equals the post-update balance.
+// ---------------------------------------------------------------------------
+
+async function debitSqlite(
+  billingWorkspaceId: string,
+  credits: number,
+  tool: string,
+  refId: string,
+  requesterWorkspaceId: string,
+): Promise<CreditBalance> {
+  const now = new Date();
+  const gateAndLedger: RawStatement = {
+    sql: `INSERT INTO "CreditLedger" ("id", "workspaceId", "delta", "bucket", "reason", "tool", "balanceAfter", "refId", "createdAt")
+          SELECT ?, ?, ?, 'plan', 'tool_call', ?, "planCredits" + "packCredits" - ?, ?, ?
+            FROM "Workspace"
+           WHERE "id" = ? AND "planCredits" + "packCredits" >= ?`,
+    params: [randomUUID(), billingWorkspaceId, -credits, tool, credits, now, refId, billingWorkspaceId, credits],
+  };
+  const debit: RawStatement = {
+    sql: `UPDATE "Workspace"
+             SET "planCredits" = "planCredits" - MIN("planCredits", ?),
+                 "packCredits" = "packCredits" - MAX(0, ? - "planCredits")
+           WHERE "id" = ? AND "planCredits" + "packCredits" >= ?
+        RETURNING "planCredits", "packCredits"`,
+    params: [credits, credits, billingWorkspaceId, credits],
+  };
+
+  let results: unknown[][];
+  try {
+    results = await rawBatch([gateAndLedger, debit]);
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      // Retried refId — replay the prior result: report the balance, move nothing.
+      return creditBalance(billingWorkspaceId);
+    }
+    throw err;
+  }
+
+  const rows = results[1] as Array<{ planCredits: number; packCredits: number }>;
+  if (!rows[0]) {
+    const balance = await creditBalance(billingWorkspaceId);
+    throw new InsufficientCreditsError(requesterWorkspaceId, credits, balance.total);
+  }
+  const { planCredits, packCredits } = rows[0];
+  return { planCredits, packCredits, total: planCredits + packCredits };
+}
+
+async function refundSqlite(
+  billingWorkspaceId: string,
+  credits: number,
+  tool: string,
+  refId: string,
+  reason: 'usage_settlement' | 'call_failed' | 'fetch_failed' | 'adjustment',
+): Promise<CreditBalance> {
+  const now = new Date();
+  const gateAndLedger: RawStatement = {
+    sql: `INSERT INTO "CreditLedger" ("id", "workspaceId", "delta", "bucket", "reason", "tool", "balanceAfter", "refId", "createdAt")
+          SELECT ?, ?, ?, 'pack', ?, ?, "planCredits" + "packCredits" + ?, ?, ?
+            FROM "Workspace"
+           WHERE "id" = ?`,
+    params: [randomUUID(), billingWorkspaceId, credits, reason, tool, credits, now, refId, billingWorkspaceId],
+  };
+  const credit: RawStatement = {
+    sql: `UPDATE "Workspace"
+             SET "packCredits" = "packCredits" + ?
+           WHERE "id" = ?
+        RETURNING "planCredits", "packCredits"`,
+    params: [credits, billingWorkspaceId],
+  };
+
+  let results: unknown[][];
+  try {
+    results = await rawBatch([gateAndLedger, credit]);
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      return creditBalance(billingWorkspaceId);
+    }
+    throw err;
+  }
+
+  const rows = results[1] as Array<{ planCredits: number; packCredits: number }>;
+  if (!rows[0]) throw new Error(`refundSqlite: workspace ${billingWorkspaceId} not found`);
+  const { planCredits, packCredits } = rows[0];
+  return { planCredits, packCredits, total: planCredits + packCredits };
 }
 
 /** Standard shape for the "can't afford this" tool response. Agents can't

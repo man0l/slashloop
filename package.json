@@ -10,8 +10,14 @@
     "seed": "bun src/seed.ts",
     "preview:gallery": "bun src/scripts/preview_gallery.ts",
     "db:push": "prisma db push --schema prisma/schema.prisma",
-    "db:generate": "prisma generate --schema prisma/schema.prisma",
-    "postinstall": "prisma generate --schema prisma/schema.prisma || true",
+    "db:generate": "prisma generate --schema prisma/schema.prisma && prisma generate --schema prisma/schema.sqlite.prisma",
+    "db:sync-sqlite": "bun src/scripts/sync-sqlite-schema.ts && prisma format --schema prisma/schema.sqlite.prisma",
+    "db:d1:migrate:local": "wrangler d1 migrations apply slashloop --local",
+    "db:d1:migrate": "wrangler d1 migrations apply slashloop --remote",
+    "db:migrate:supabase-to-d1": "bun src/scripts/migrate-supabase-to-d1.ts",
+    "cf:dev": "wrangler dev",
+    "cf:deploy": "wrangler deploy",
+    "postinstall": "prisma generate --schema prisma/schema.prisma; prisma generate --schema prisma/schema.sqlite.prisma; true",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit -p tsconfig.json",
     "typecheck:vercel": "bunx tsc --noEmit -p tsconfig.vercel.json",
@@ -22,13 +28,14 @@
     "@aws-sdk/s3-request-presigner": "^3.1107.0",
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@prisma/client": "6.11.1",
+    "@prisma/adapter-d1": "^6.16.0",
+    "@prisma/client": "^6.16.0",
     "date-fns": "^4.1.0",
     "impit": "^0.14.3",
     "jose": "^5.9.0",
     "playwright": "^1.62.1",
     "playwright-extra": "^4.3.6",
-    "prisma": "6.11.1",
+    "prisma": "^6.16.0",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "stripe": "^22.3.2",
     "uuid": "^11.1.0",
@@ -36,11 +43,13 @@
     "zod": "^4.0.2"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260831.1",
     "@types/bun": "^1.2.14",
     "@types/node": "^22.15.21",
     "@types/uuid": "^10.0.0",
     "@vercel/node": "^5.8.26",
-    "typescript": "^5"
+    "typescript": "^5",
+    "wrangler": "^4.127.1"
   },
   "engines": {
     "node": ">=18"

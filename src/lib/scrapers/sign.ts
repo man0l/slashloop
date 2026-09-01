@@ -9,8 +9,6 @@
 
 import { createRequire } from 'node:module';
 
-const require = createRequire(import.meta.url);
-
 type SignFn = (url: string, userAgent: string) => string;
 
 let impl: SignFn | null | undefined;
@@ -18,6 +16,11 @@ let impl: SignFn | null | undefined;
 function load(): SignFn | null {
   if (impl !== undefined) return impl;
   try {
+    // createRequire + require('xbogus') resolve the CJS package from
+    // node_modules at runtime — only possible on Node/Bun. Created lazily
+    // inside the try: module resolution itself doesn't exist on Workers
+    // (xbogus is build-external there and signing happens on the VPS).
+    const require = createRequire(import.meta.url);
     const mod = require('xbogus');
     const fn = typeof mod === 'function' ? mod : mod?.default;
     impl = typeof fn === 'function' ? fn : null;

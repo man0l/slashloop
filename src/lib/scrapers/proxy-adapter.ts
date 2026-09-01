@@ -26,7 +26,6 @@
 //      even with Chrome TLS + X-Bogus — probed live 2026-08-14.
 // ---------------------------------------------------------------------------
 
-import { writeFileSync } from 'node:fs';
 import {
   bytesToCents, fmtBytes, recordTrafficBytes, scopeBytesUsed, withMeterScope,
 } from './bandwidth.js';
@@ -380,6 +379,10 @@ export const proxyAdapter: ScraperAdapter = {
       if (buffer.length < 1024) {
         throw new Error(`Downloaded file too small (${buffer.length} bytes) — likely an error page`);
       }
+      // Lazy import: node:fs has no Workers implementation; this file is in
+      // the API graph (scrapers barrel) and must import cleanly there, while
+      // the file-writing download path only ever runs on the VPS worker.
+      const { writeFileSync } = await import('node:fs');
       writeFileSync(opts.outputPath, buffer);
 
       const bytes = scopeBytesUsed() || buffer.length;

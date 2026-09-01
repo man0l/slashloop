@@ -5,7 +5,7 @@
 // ReadableStream chunks correctly (unlike Node res.write() SSE, which it buffers
 // and causes the MCP handshake to hang until maxDuration).
 import { verifySupabaseJwt } from '../remote/auth.js';
-import { buildRemoteMcp, type Claims } from '../remote/handlers.js';
+import { buildRemoteMcp, type Claims } from '../remote/mcp-server.js';
 import { runWithUser } from '../src/context.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getUiCapability } from '@modelcontextprotocol/ext-apps/server';

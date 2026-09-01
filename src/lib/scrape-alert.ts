@@ -99,7 +99,9 @@ Workers: contabo VPS · <a href="https://dashboard.proxy-cheap.com">Proxy-Cheap 
 /// Release the incident claim — used both to re-arm on success and to retry
 /// the email if Resend rejected the send.
 async function rearm(): Promise<void> {
-  await db.$executeRaw`UPDATE "ScrapeAlertState" SET "notifiedAt" = NULL, "lastError" = NULL, "updatedAt" = now()
+  // Bound dates, not now(): works on both Postgres and SQLite/D1, and this
+  // single-row table gains nothing from server-side clock reads.
+  await db.$executeRaw`UPDATE "ScrapeAlertState" SET "notifiedAt" = NULL, "lastError" = NULL, "updatedAt" = ${new Date()}
     WHERE id = 'scrape' AND "notifiedAt" IS NOT NULL`;
 }
 
@@ -121,7 +123,7 @@ export async function notifyScrapeFailure(kind: string, message: string): Promis
     // container died mid-send — the owner got the same outage email twice,
     // which is exactly what this module must never do. Silence is the
     // accepted failure mode; recovery re-arms.
-    const claimed = await db.$executeRaw`UPDATE "ScrapeAlertState" SET "notifiedAt" = now(), "lastError" = ${message.slice(0, 500)}, "updatedAt" = now()
+    const claimed = await db.$executeRaw`UPDATE "ScrapeAlertState" SET "notifiedAt" = ${new Date()}, "lastError" = ${message.slice(0, 500)}, "updatedAt" = ${new Date()}
       WHERE id = 'scrape' AND "notifiedAt" IS NULL`;
     if (claimed === 0) return; // already mid-incident, or another worker just claimed it
 
@@ -163,9 +165,9 @@ export function rearmCooldownSeconds(): number {
 export async function markScrapeSuccess(kind: string): Promise<void> {
   try {
     if (!SCRAPE_ALERT_KINDS.has(kind)) return;
-    await db.$executeRaw`UPDATE "ScrapeAlertState" SET "notifiedAt" = NULL, "lastError" = NULL, "updatedAt" = now()
+    await db.$executeRaw`UPDATE "ScrapeAlertState" SET "notifiedAt" = NULL, "lastError" = NULL, "updatedAt" = ${new Date()}
       WHERE id = 'scrape' AND "notifiedAt" IS NOT NULL
-        AND "notifiedAt" < now() - (${rearmCooldownSeconds()} * interval '1 second')`;
+        AND "notifiedAt" < ${new Date(Date.now() - rearmCooldownSeconds() * 1000)}`;
   } catch (err) {
     console.warn(`[scrape-alert] rearm skipped: ${(err as Error).message.slice(0, 160)}`);
   }

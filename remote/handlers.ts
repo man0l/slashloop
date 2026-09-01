@@ -1,15 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { verifySupabaseJwt } from './auth.js';
 import { loginPage, consentPage } from './pages.js';
-import { registerAllTools } from '../src/register-tools.js';
+import { buildRemoteMcp, AUTHORIZATION_SERVER, type Claims } from './mcp-server.js';
 import { runWithUser } from '../src/context.js';
 
-const SUPABASE_URL = (process.env.SUPABASE_URL ?? '').replace(/\/$/, '');
-export const AUTHORIZATION_SERVER = `${SUPABASE_URL}/auth/v1`;
-
-export type Claims = Awaited<ReturnType<typeof verifySupabaseJwt>>;
+export { AUTHORIZATION_SERVER };
+export type { Claims };
 
 /** Resolve this deployment's public origin: explicit PUBLIC_URL, else the request host. */
 export function originFrom(req: IncomingMessage): string {
@@ -27,40 +24,6 @@ export function send(res: ServerResponse, status: number, body: unknown, headers
 export function html(res: ServerResponse, status: number, body: string) {
   res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(body);
-}
-
-/**
- * Authenticated remote MCP: full product tools, scoped by JWT `sub` via
- * AsyncLocalStorage → requireWorkspace().
- */
-export function buildRemoteMcp(claims: Claims) {
-  const mcp = new McpServer({
-    name: 'slashloop',
-    version: '1.0.0',
-    description: 'slashloop — viral content research for indie hackers.',
-  });
-
-  mcp.tool(
-    'whoami',
-    'Returns the authenticated user (proves the OAuth login worked).',
-    {},
-    async () => ({
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            { sub: claims.sub, email: claims.email ?? null, client_id: claims.client_id ?? null },
-            null,
-            2,
-          ),
-        },
-      ],
-    }),
-  );
-
-  registerAllTools(mcp);
-
-  return mcp;
 }
 
 export function handleHealth(req: IncomingMessage, res: ServerResponse, origin: string) {

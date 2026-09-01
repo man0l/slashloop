@@ -27,7 +27,11 @@ export { estimateScrapeBytes, extractSlideshowImages, slideshowImagesFromRaw, sl
 export { assertTrafficCap, trafficStatus, TrafficCapExceededError, wouldExceedCap } from './bandwidth.js';
 export { proxyCheapBandwidth, formatProxyCheap, parseProxiesResponse, bandwidthFromProxyRecord } from './proxy-cheap.js';
 export { remainingBudgetBytes, vendorRemainingBytes, assertProxyBudget } from './budget.js';
-export { closeWarmSigner, scrapeTikTokInBrowser } from './warm-signer.js';
+// NOTE: warm-signer (Playwright browser scraping) is deliberately NOT
+// re-exported here. No production call site reaches it, and a static or
+// dynamic re-export would drag Playwright into the Workers bundle — wrangler
+// bundles dynamic-import chunks too. It stays importable directly from
+// './warm-signer.js' for the VPS worker (Bun runs TS without a bundler).
 
 export const DEFAULT_PROVIDER = APIFY_PROVIDER;
 
