@@ -66,11 +66,12 @@ export async function ensureStore(env: Env): Promise<void> {
   // workers-types (which demands `dump()`); the runtime binding implements the
   // full interface — cast at the boundary, not in call code.
   //
-  // Do NOT wrap this binding in serializeD1(). Prisma's wasm engine fans
-  // `_count`/includes out as concurrent adapter calls and a JS mutex
-  // deadlocks it (the engine waits for all of them before yielding). Isolate
-  // concurrency is handled by the request gate in worker.ts plus sequential
-  // Prisma calls in the handlers (no Promise.all of db.*).
+  // Do NOT wrap this binding in serializeD1(), and do not gate fetch() on
+  // D1: Prisma's wasm engine fans `_count` includes out as concurrent
+  // adapter calls (a JS mutex deadlocks it), and a hung query behind a
+  // request gate takes /health down with it. Intra-handler concurrency is
+  // avoided by sequential Prisma calls (no Promise.all of db.*, no `_count`
+  // includes).
   const adapter = new PrismaD1(env.DB_SHARD0 as unknown as ConstructorParameters<typeof PrismaD1>[0]);
   const client = new PrismaClient({ adapter });
   setActiveClient(client as unknown as AppPrismaClient, d1BindingRawExecutor(env.DB_SHARD0));

@@ -12,26 +12,10 @@
 import { ensureStore, type Env } from './env.js';
 import { route } from './router.js';
 
-// Per-isolate request gate.
-//
-// The D1 binding intermittently never settles concurrent prepared-statement
-// promises (cpuTime ~1ms, wallTime until the client gives up). A JS mutex
-// around the binding deadlocks Prisma's wasm engine, which fans `_count`
-// includes out as concurrent adapter calls and waits for all of them before
-// yielding. Serializing whole handlers keeps in-flight D1 work at one
-// request; handlers themselves must not Promise.all Prisma queries.
-let gate: Promise<unknown> = Promise.resolve();
-
-function gated<T>(fn: () => Promise<T>): Promise<T> {
-  const run = gate.then(fn, fn);
-  gate = run.catch(() => {});
-  return run;
-}
-
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     await ensureStore(env);
-    return gated(() => route(request));
+    return route(request);
   },
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -61,7 +45,7 @@ export default {
     // waitUntil: the response body is only log output — let the drain finish
     // without blocking the scheduler's slot accounting.
     ctx.waitUntil(
-      gated(() => route(request))
+      route(request)
         .then(async (res) => {
           const body = await res.text();
           console.log(`[worker] cron ${cron} ${path} → ${res.status} ${body.slice(0, 500)}`);
