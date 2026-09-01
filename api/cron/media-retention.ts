@@ -28,35 +28,41 @@ function json(status: number, body: unknown): Response {
 type ExpiredRow = { id: string; key: string };
 
 /**
- * Rows whose stored media is older than their OWN workspace's window.
+ * Column-name map + the WHERE for "expired stored media of this kind".
  *
  * The cutoff is per-workspace (retention is a setting, see §1.4), so this
  * can't compare against a single constant — it joins through Source to
- * Workspace and uses that row's value. Ordered oldest-first so a backlog
- * (someone just lowered their retention) drains the most certainly-expired
- * objects first.
+ * Workspace and uses that row's value. SQLite: julianday() parses Prisma's
+ * stored ISO strings; per-row retention days forces the date math into SQL
+ * (a bound cutoff can't vary by row). The WHERE is shared VERBATIM by
+ * findExpired()'s SELECT and sweep()'s column-nulling UPDATE (same v/s/w
+ * aliases) so the two can never drift apart.
  */
-async function findExpired(kind: 'thumb' | 'media'): Promise<ExpiredRow[]> {
+function expiredColumns(kind: 'thumb' | 'media') {
   const keyCol = kind === 'thumb' ? 'thumbKey' : 'mediaKey';
   const statusCol = kind === 'thumb' ? 'thumbStatus' : 'mediaStatus';
   const storedAtCol = kind === 'thumb' ? 'thumbStoredAt' : 'mediaStoredAt';
   const retentionCol = kind === 'thumb' ? 'thumbRetentionDays' : 'mediaRetentionDays';
-
   // Column names are from the literal map above, never from user input.
-  // SQLite: julianday() parses Prisma's stored ISO strings; per-row retention
-  // days forces the date math into SQL (a bound cutoff can't vary by row).
   const cutoff = dbDialect() === 'sqlite'
     ? `julianday(v."${storedAtCol}") < julianday('now') - w."${retentionCol}"`
     : `v."${storedAtCol}" < now() - (w."${retentionCol}" * INTERVAL '1 day')`;
+  const where = `
+    v."${statusCol}" = 'stored'
+    AND v."${keyCol}" IS NOT NULL
+    AND v."${storedAtCol}" IS NOT NULL
+    AND ${cutoff}`;
+  return { keyCol, statusCol, storedAtCol, where };
+}
+
+async function findExpired(kind: 'thumb' | 'media'): Promise<ExpiredRow[]> {
+  const { keyCol, storedAtCol, where } = expiredColumns(kind);
   return db.$queryRawUnsafe<ExpiredRow[]>(`
     SELECT v."id" AS id, v."${keyCol}" AS key
     FROM "Video" v
     JOIN "Source" s ON s."id" = v."sourceId"
     JOIN "Workspace" w ON w."id" = s."workspaceId"
-    WHERE v."${statusCol}" = 'stored'
-      AND v."${keyCol}" IS NOT NULL
-      AND v."${storedAtCol}" IS NOT NULL
-      AND ${cutoff}
+    WHERE ${where}
     ORDER BY v."${storedAtCol}" ASC
     LIMIT ${BATCH_LIMIT}
   `);
@@ -68,13 +74,35 @@ async function sweep(kind: 'thumb' | 'media', bucket: string) {
 
   await deleteObjects(bucket, rows.map(r => r.key));
 
-  const ids = rows.map(r => r.id);
-  await db.video.updateMany({
-    where: { id: { in: ids } },
-    data: kind === 'thumb'
-      ? { thumbKey: null, thumbStatus: 'expired', thumbStoredAt: null }
-      : { mediaKey: null, mediaStatus: 'expired', mediaStoredAt: null, mediaBytes: null },
-  });
+  if (dbDialect() === 'sqlite') {
+    // Param-free re-selection UPDATE — D1 caps bound parameters at ~98 per
+    // statement and a full BATCH_LIMIT run produces up to 1000 ids, which
+    // overflowed Prisma's `in: ids` here: objects got deleted, the columns
+    // stayed 'stored' (found live 2026-09-01). Same WHERE as findExpired, so
+    // the UPDATE hits exactly the rows whose objects were just deleted.
+    const { keyCol, statusCol, storedAtCol, where } = expiredColumns(kind);
+    const clear = kind === 'thumb'
+      ? `"${keyCol}" = NULL, "${statusCol}" = 'expired', "${storedAtCol}" = NULL`
+      : `"${keyCol}" = NULL, "${statusCol}" = 'expired', "${storedAtCol}" = NULL, "mediaBytes" = NULL`;
+    await rawBatch([{
+      sql: `UPDATE "Video" SET ${clear} WHERE "id" IN (
+        SELECT v."id" FROM "Video" v
+        JOIN "Source" s ON s."id" = v."sourceId"
+        JOIN "Workspace" w ON w."id" = s."workspaceId"
+        WHERE ${where}
+        ORDER BY v."${storedAtCol}" ASC
+        LIMIT ${BATCH_LIMIT}
+      )`,
+    }]);
+  } else {
+    const ids = rows.map(r => r.id);
+    await db.video.updateMany({
+      where: { id: { in: ids } },
+      data: kind === 'thumb'
+        ? { thumbKey: null, thumbStatus: 'expired', thumbStoredAt: null }
+        : { mediaKey: null, mediaStatus: 'expired', mediaStoredAt: null, mediaBytes: null },
+    });
+  }
 
   return { scanned: rows.length, deleted: rows.length };
 }
