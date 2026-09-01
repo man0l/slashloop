@@ -54,6 +54,9 @@ const MANIFEST = {
   STRIPE_TEST_PRICE_PRO_MONTH: 'STRIPE_TEST_PRICE_PRO_MONTH',
   STRIPE_TEST_PRICE_PRO_YEAR: 'STRIPE_TEST_PRICE_PRO_YEAR',
   STRIPE_TEST_PRICE_PACK: 'STRIPE_TEST_PRICE_PACK',
+  // Runtime billing switch (live|test) — set as a GitHub VARIABLE. Unset
+  // leaves whatever the Worker currently has.
+  STRIPE_MODE: 'STRIPE_MODE',
   // ── from repo/environment VARIABLES ──
   SUPABASE_URL: 'SUPABASE_URL',
   APIFY_SPEND_CAP_CENTS: 'APIFY_SPEND_CAP_CENTS',

@@ -10,7 +10,14 @@ name: Stripe Setup (one-off)
 # Prints the resulting Price IDs to the job summary; copy them into Vercel's
 # STRIPE_PRICE_* env vars.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Stripe mode (live | test)'
+        required: false
+        default: live
+        type: choice
+        options: [live, test]
 
 jobs:
   setup:
@@ -39,4 +46,4 @@ jobs:
 
       - run: bun run src/scripts/stripe_setup.ts
         env:
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_API_KEY }}
+          STRIPE_SECRET_KEY: ${{ inputs.mode == 'test' && secrets.STRIPE_TEST_SECRET_KEY || secrets.STRIPE_SECRET_API_KEY }}

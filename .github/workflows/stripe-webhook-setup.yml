@@ -20,6 +20,12 @@ on:
         description: 'Full webhook URL (must end with /api/stripe/webhook)'
         required: true
         default: 'https://mcp.slashloop.dev/api/stripe/webhook'
+      mode:
+        description: 'Stripe mode (live | test)'
+        required: false
+        default: live
+        type: choice
+        options: [live, test]
 
 jobs:
   setup:
@@ -46,5 +52,5 @@ jobs:
 
       - run: bun run src/scripts/stripe_webhook_setup.ts
         env:
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_API_KEY }}
+          STRIPE_SECRET_KEY: ${{ inputs.mode == 'test' && secrets.STRIPE_TEST_SECRET_KEY || secrets.STRIPE_SECRET_API_KEY }}
           ENDPOINT_URL: ${{ inputs.endpoint_url }}

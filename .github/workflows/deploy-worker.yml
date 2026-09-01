@@ -70,6 +70,7 @@ jobs:
           STRIPE_TEST_PRICE_PRO_MONTH: ${{ vars.STRIPE_TEST_PRICE_PRO_MONTH }}
           STRIPE_TEST_PRICE_PRO_YEAR: ${{ vars.STRIPE_TEST_PRICE_PRO_YEAR }}
           STRIPE_TEST_PRICE_PACK: ${{ vars.STRIPE_TEST_PRICE_PACK }}
+          STRIPE_MODE: ${{ vars.STRIPE_MODE }}
           # ── variables (repo + production environment) ──
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           APIFY_SPEND_CAP_CENTS: ${{ vars.APIFY_SPEND_CAP_CENTS }}

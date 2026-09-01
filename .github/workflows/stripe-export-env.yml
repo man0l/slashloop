@@ -10,7 +10,14 @@
 name: Stripe Export Prices
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Stripe mode (live | test)'
+        required: false
+        default: live
+        type: choice
+        options: [live, test]
 
 jobs:
   export:
@@ -29,4 +36,5 @@ jobs:
       - name: Export price IDs
         run: bun run src/scripts/stripe_export_prices.ts
         env:
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_API_KEY }}
+          STRIPE_MODE_INPUT: ${{ inputs.mode }}
+          STRIPE_SECRET_KEY: ${{ inputs.mode == 'test' && secrets.STRIPE_TEST_SECRET_KEY || secrets.STRIPE_SECRET_API_KEY }}
