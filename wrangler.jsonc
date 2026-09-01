@@ -43,7 +43,7 @@
   // with live queued jobs in D1 the drain was processing real (billable) work
   // before the VPS flip. Re-enable as the final cutover step.
   "triggers": {
-    "crons": []
+    "crons": ["*/1 * * * *", "0 3 * * *", "0 9 * * 1"]
   },
   "observability": {
     "enabled": true
