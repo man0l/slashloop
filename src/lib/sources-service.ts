@@ -55,23 +55,17 @@ export interface ListSourcesFilters {
   nicheTag?: string;
 }
 
-function sqlIn(ids: string[]): { clause: string; params: string[] } {
-  if (dbDialect() === 'sqlite') {
-    return { clause: ids.map(() => '?').join(', '), params: ids };
-  }
-  return { clause: ids.map((_, i) => `$${i + 1}`).join(', '), params: ids };
-}
-
 function isoDate(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
   return String(value);
 }
 
 /**
- * One-row-per-source extras for the Sources page (thumb + last refresh).
- * The site used to GET gallery-data?limit=1 and GET /sources?id= per row —
- * N+1 HTTP, and each of those fanned Prisma includes. These window queries
- * are one statement per chunk instead.
+ * Thumb + last-refresh extras for GET /api/sources.
+ *
+ * Window-function scans over Video/Score/MediaJob took ~20s on D1. Instead:
+ * one bounded findMany per extra (latest-first), then keep the first row
+ * per sourceId in JS. Sequential, indexed, no N+1 HTTP.
  */
 async function listSourceRowExtras(ids: string[]): Promise<{
   thumbUrlBySource: Map<string, string | null>;
@@ -83,66 +77,57 @@ async function listSourceRowExtras(ids: string[]): Promise<{
   const lastJobBySource = new Map<string, { status: string; lastError: string | null; createdAt: string }>();
   if (ids.length === 0) return { thumbUrlBySource, lastRunBySource, lastJobBySource };
 
-  const baselineFalse = dbDialect() === 'sqlite' ? '0' : 'false';
-
   await chunked(ids, async (chunk) => {
-    const { clause, params } = sqlIn(chunk);
-
-    const thumbRows = await db.$queryRawUnsafe<Array<{
-      sourceId: string; thumbKey: string | null; thumbnailUrl: string | null;
-    }>>(
-      `SELECT sourceId, thumbKey, thumbnailUrl FROM (
-         SELECT v."sourceId" AS sourceId, v."thumbKey" AS thumbKey, v."thumbnailUrl" AS thumbnailUrl,
-                ROW_NUMBER() OVER (
-                  PARTITION BY v."sourceId"
-                  ORDER BY CASE WHEN s."outlierScore" IS NULL THEN 1 ELSE 0 END,
-                           s."outlierScore" DESC, v."postedAt" DESC
-                ) AS rn
-         FROM "Video" v
-         LEFT JOIN "Score" s ON s."videoId" = v."id"
-         WHERE v."sourceId" IN (${clause})
-           AND v."isBaselineSample" = ${baselineFalse}
-       ) ranked WHERE rn = 1`,
-      ...params,
-    );
-    for (const row of thumbRows) {
-      thumbUrlBySource.set(row.sourceId, resolveThumbUrl({
-        thumbKey: row.thumbKey,
-        thumbnailUrl: row.thumbnailUrl ?? '',
-      }));
+    // Highest-scoring video per source: pull a cap of scored rows (global
+    // order) then first-win per sourceId. Sources with no score fall through
+    // to a newest-video pass below.
+    const scored = await db.video.findMany({
+      where: { sourceId: { in: chunk }, isBaselineSample: false, score: { isNot: null } },
+      select: { sourceId: true, thumbKey: true, thumbnailUrl: true, score: { select: { outlierScore: true } } },
+      orderBy: { score: { outlierScore: 'desc' } },
+      take: Math.min(chunk.length * 25, 400),
+    });
+    for (const v of scored) {
+      if (thumbUrlBySource.has(v.sourceId)) continue;
+      thumbUrlBySource.set(v.sourceId, resolveThumbUrl(v));
+    }
+    const missing = chunk.filter((id) => !thumbUrlBySource.has(id));
+    if (missing.length > 0) {
+      const newest = await db.video.findMany({
+        where: { sourceId: { in: missing }, isBaselineSample: false },
+        select: { sourceId: true, thumbKey: true, thumbnailUrl: true, postedAt: true },
+        orderBy: { postedAt: 'desc' },
+        take: Math.min(missing.length * 10, 200),
+      });
+      for (const v of newest) {
+        if (thumbUrlBySource.has(v.sourceId)) continue;
+        thumbUrlBySource.set(v.sourceId, resolveThumbUrl(v));
+      }
     }
 
-    const runRows = await db.$queryRawUnsafe<Array<{
-      sourceId: string; errorsJson: string; ranAt: unknown;
-    }>>(
-      `SELECT sourceId, errorsJson, ranAt FROM (
-         SELECT r."sourceId" AS sourceId, r."errorsJson" AS errorsJson, r."ranAt" AS ranAt,
-                ROW_NUMBER() OVER (PARTITION BY r."sourceId" ORDER BY r."ranAt" DESC) AS rn
-         FROM "RefreshRun" r
-         WHERE r."sourceId" IN (${clause})
-       ) ranked WHERE rn = 1`,
-      ...params,
-    );
-    for (const row of runRows) {
-      lastRunBySource.set(row.sourceId, { errorsJson: row.errorsJson ?? '[]', ranAt: isoDate(row.ranAt) });
+    const runs = await db.refreshRun.findMany({
+      where: { sourceId: { in: chunk } },
+      select: { sourceId: true, errorsJson: true, ranAt: true },
+      orderBy: { ranAt: 'desc' },
+      take: Math.min(chunk.length * 5, 200),
+    });
+    for (const r of runs) {
+      if (lastRunBySource.has(r.sourceId)) continue;
+      lastRunBySource.set(r.sourceId, { errorsJson: r.errorsJson ?? '[]', ranAt: isoDate(r.ranAt) });
     }
 
-    const jobRows = await db.$queryRawUnsafe<Array<{
-      sourceId: string; status: string; lastError: string | null; createdAt: unknown;
-    }>>(
-      `SELECT sourceId, status, lastError, createdAt FROM (
-         SELECT j."sourceId" AS sourceId, j."status" AS status, j."lastError" AS lastError, j."createdAt" AS createdAt,
-                ROW_NUMBER() OVER (PARTITION BY j."sourceId" ORDER BY j."createdAt" DESC) AS rn
-         FROM "MediaJob" j
-         WHERE j."sourceId" IN (${clause}) AND j."kind" = 'refresh'
-       ) ranked WHERE rn = 1`,
-      ...params,
-    );
-    for (const row of jobRows) {
-      lastJobBySource.set(row.sourceId, {
-        status: row.status,
-        lastError: row.lastError,
-        createdAt: isoDate(row.createdAt),
+    const jobs = await db.mediaJob.findMany({
+      where: { sourceId: { in: chunk }, kind: 'refresh' },
+      select: { sourceId: true, status: true, lastError: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(chunk.length * 5, 200),
+    });
+    for (const j of jobs) {
+      if (j.sourceId == null || lastJobBySource.has(j.sourceId)) continue;
+      lastJobBySource.set(j.sourceId, {
+        status: j.status,
+        lastError: j.lastError,
+        createdAt: isoDate(j.createdAt),
       });
     }
   });
