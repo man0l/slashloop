@@ -25,8 +25,8 @@ import {
 import { seedSourceCandidates, verifySourceCandidate, dismissSuggestion, type SeedCandidate } from '../src/lib/suggestions.js';
 import { expandDiscoverySeeds, mineDiscoverSeed, type DiscoverySeed } from '../src/lib/discovery.js';
 
-export async function OPTIONS(): Promise<Response> {
-  return corsPreflight();
+export async function OPTIONS(request: Request): Promise<Response> {
+  return corsPreflight(request);
 }
 
 interface CreateSourceBody {
@@ -69,8 +69,8 @@ export async function GET(request: Request): Promise<Response> {
 
   if (sourceId) {
     const source = await getSourceForWorkspace(auth.workspace, sourceId);
-    if (!source) return jsonResponse(404, { error: 'source_not_found' });
-    return jsonResponse(200, source);
+    if (!source) return jsonResponse(404, { error: 'source_not_found' }, request);
+    return jsonResponse(200, source, request);
   }
 
   const sources = await listSourcesForWorkspace(auth.workspace, {
@@ -79,7 +79,7 @@ export async function GET(request: Request): Promise<Response> {
     isActive: url.searchParams.has('isActive') ? url.searchParams.get('isActive') === 'true' : undefined,
     nicheTag: url.searchParams.get('nicheTag') ?? undefined,
   });
-  return jsonResponse(200, sources);
+  return jsonResponse(200, sources, request);
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -92,7 +92,7 @@ export async function POST(request: Request): Promise<Response> {
     try {
       body = (await request.json()) as RefreshBody;
     } catch {
-      return jsonResponse(400, { error: 'invalid_json' });
+      return jsonResponse(400, { error: 'invalid_json' }, request);
     }
 
     const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
@@ -103,9 +103,9 @@ export async function POST(request: Request): Promise<Response> {
 
     switch (result.kind) {
       case 'not_found':
-        return jsonResponse(404, { error: 'source_not_found' });
+        return jsonResponse(404, { error: 'source_not_found' }, request);
       case 'already_queued':
-        return jsonResponse(200, { message: 'Refresh already queued', jobId: result.jobId, status: result.status, sourceId: result.sourceId });
+        return jsonResponse(200, { message: 'Refresh already queued', jobId: result.jobId, status: result.status, sourceId: result.sourceId }, request);
       case 'queued':
         return jsonResponse(200, {
           message: `Refresh queued for ${result.query}`,
@@ -116,15 +116,15 @@ export async function POST(request: Request): Promise<Response> {
           workerDispatched: result.workerDispatched,
         });
       case 'cap_breached':
-        return jsonResponse(429, { error: 'apify_spend_cap_breached', capStatus: result.capStatus });
+        return jsonResponse(429, { error: 'apify_spend_cap_breached', capStatus: result.capStatus }, request);
       case 'insufficient_credits':
-        return jsonResponse(402, { error: 'insufficient_credits', message: result.err.message });
+        return jsonResponse(402, { error: 'insufficient_credits', message: result.err.message }, request);
       case 'spend_cap_exceeded':
-        return jsonResponse(429, { error: 'apify_spend_cap_exceeded', message: result.message, creditsRemaining: result.creditsRemaining });
+        return jsonResponse(429, { error: 'apify_spend_cap_exceeded', message: result.message, creditsRemaining: result.creditsRemaining }, request);
       case 'done':
         // Only reachable if async:true is ever overridden to false — kept for
         // type completeness, since refreshSourceForWorkspace always queues here.
-        return jsonResponse(200, result);
+        return jsonResponse(200, result, request);
     }
   }
 
@@ -133,7 +133,7 @@ export async function POST(request: Request): Promise<Response> {
     try {
       body = (await request.json()) as { workspaceId?: string; keywords?: unknown };
     } catch {
-      return jsonResponse(400, { error: 'invalid_json' });
+      return jsonResponse(400, { error: 'invalid_json' }, request);
     }
 
     const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
@@ -144,7 +144,7 @@ export async function POST(request: Request): Promise<Response> {
     // action=discover-mine call, so results render as they land instead of
     // the request blocking on the slowest probe (same split as suggest).
     const keywords = Array.isArray(body.keywords) ? body.keywords.filter((k): k is string => typeof k === 'string' && k.trim() !== '') : [];
-    if (keywords.length === 0) return jsonResponse(400, { error: 'keywords must be a non-empty array of strings' });
+    if (keywords.length === 0) return jsonResponse(400, { error: 'keywords must be a non-empty array of strings' }, request);
 
     const result = await expandDiscoverySeeds(auth.workspace, keywords);
     if (!result.ok) {
@@ -153,9 +153,9 @@ export async function POST(request: Request): Promise<Response> {
         message: result.errors[0] ?? 'Could not expand keywords into seeds.',
         creditsCharged: result.creditsCharged,
         creditsRemaining: result.creditsRemaining,
-      });
+      }, request);
     }
-    return jsonResponse(200, result);
+    return jsonResponse(200, result, request);
   }
 
   if (action === 'discover-mine') {
@@ -163,16 +163,16 @@ export async function POST(request: Request): Promise<Response> {
     try {
       body = (await request.json()) as { workspaceId?: string } & Partial<DiscoverySeed>;
     } catch {
-      return jsonResponse(400, { error: 'invalid_json' });
+      return jsonResponse(400, { error: 'invalid_json' }, request);
     }
 
     const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
     if (!auth.ok) return auth.response;
 
     if (!body.sourceType || !SOURCE_TYPES.has(body.sourceType)) {
-      return jsonResponse(400, { error: 'sourceType must be one of creator, keyword, hashtag' });
+      return jsonResponse(400, { error: 'sourceType must be one of creator, keyword, hashtag' }, request);
     }
-    if (!body.query) return jsonResponse(400, { error: 'query is required' });
+    if (!body.query) return jsonResponse(400, { error: 'query is required' }, request);
 
     const result = await mineDiscoverSeed(auth.workspace, {
       sourceType: body.sourceType as DiscoverySeed['sourceType'],
@@ -180,7 +180,7 @@ export async function POST(request: Request): Promise<Response> {
       rationale: body.rationale ?? '',
       origin: body.origin === 'input' ? 'input' : 'ai',
     });
-    return jsonResponse(200, result);
+    return jsonResponse(200, result, request);
   }
 
   if (action === 'suggest') {
@@ -188,7 +188,7 @@ export async function POST(request: Request): Promise<Response> {
     try {
       body = (await request.json()) as { workspaceId?: string };
     } catch {
-      return jsonResponse(400, { error: 'invalid_json' });
+      return jsonResponse(400, { error: 'invalid_json' }, request);
     }
 
     const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
@@ -205,9 +205,9 @@ export async function POST(request: Request): Promise<Response> {
         message: result.errors[0] ?? 'Could not generate suggestions.',
         creditsCharged: result.creditsCharged,
         creditsRemaining: result.creditsRemaining,
-      });
+      }, request);
     }
-    return jsonResponse(200, result);
+    return jsonResponse(200, result, request);
   }
 
   if (action === 'suggest-verify') {
@@ -215,23 +215,23 @@ export async function POST(request: Request): Promise<Response> {
     try {
       body = (await request.json()) as { workspaceId?: string } & Partial<SeedCandidate>;
     } catch {
-      return jsonResponse(400, { error: 'invalid_json' });
+      return jsonResponse(400, { error: 'invalid_json' }, request);
     }
 
     const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
     if (!auth.ok) return auth.response;
 
     if (!body.sourceType || !SOURCE_TYPES.has(body.sourceType)) {
-      return jsonResponse(400, { error: 'sourceType must be one of creator, keyword, hashtag' });
+      return jsonResponse(400, { error: 'sourceType must be one of creator, keyword, hashtag' }, request);
     }
-    if (!body.query) return jsonResponse(400, { error: 'query is required' });
+    if (!body.query) return jsonResponse(400, { error: 'query is required' }, request);
 
     const result = await verifySourceCandidate(auth.workspace, {
       sourceType: body.sourceType as SeedCandidate['sourceType'],
       query: body.query,
       rationale: body.rationale ?? '',
     });
-    return jsonResponse(200, result);
+    return jsonResponse(200, result, request);
   }
 
   if (action === 'suggest-dismiss') {
@@ -239,43 +239,43 @@ export async function POST(request: Request): Promise<Response> {
     try {
       body = (await request.json()) as { workspaceId?: string; sourceType?: string; query?: string };
     } catch {
-      return jsonResponse(400, { error: 'invalid_json' });
+      return jsonResponse(400, { error: 'invalid_json' }, request);
     }
 
     const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
     if (!auth.ok) return auth.response;
 
     if (!body.sourceType || !SOURCE_TYPES.has(body.sourceType)) {
-      return jsonResponse(400, { error: 'sourceType must be one of creator, keyword, hashtag' });
+      return jsonResponse(400, { error: 'sourceType must be one of creator, keyword, hashtag' }, request);
     }
-    if (!body.query) return jsonResponse(400, { error: 'query is required' });
+    if (!body.query) return jsonResponse(400, { error: 'query is required' }, request);
 
     await dismissSuggestion(auth.workspace, { sourceType: body.sourceType as SeedCandidate['sourceType'], query: body.query });
-    return jsonResponse(200, { message: 'Suggestion dismissed', sourceType: body.sourceType, query: body.query });
+    return jsonResponse(200, { message: 'Suggestion dismissed', sourceType: body.sourceType, query: body.query }, request);
   }
 
   let body: CreateSourceBody;
   try {
     body = (await request.json()) as CreateSourceBody;
   } catch {
-    return jsonResponse(400, { error: 'invalid_json' });
+    return jsonResponse(400, { error: 'invalid_json' }, request);
   }
 
   const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
   if (!auth.ok) return auth.response;
 
-  if (!body.platform) return jsonResponse(400, { error: 'platform is required' });
+  if (!body.platform) return jsonResponse(400, { error: 'platform is required' }, request);
   if (!body.sourceType || !SOURCE_TYPES.has(body.sourceType)) {
-    return jsonResponse(400, { error: 'sourceType must be one of creator, keyword, hashtag' });
+    return jsonResponse(400, { error: 'sourceType must be one of creator, keyword, hashtag' }, request);
   }
-  if (!body.query) return jsonResponse(400, { error: 'query is required' });
+  if (!body.query) return jsonResponse(400, { error: 'query is required' }, request);
   const videoLimit = body.videoLimit ?? 20;
   if (!Number.isInteger(videoLimit) || videoLimit < 1 || videoLimit > 200) {
-    return jsonResponse(400, { error: 'videoLimit must be an integer between 1 and 200' });
+    return jsonResponse(400, { error: 'videoLimit must be an integer between 1 and 200' }, request);
   }
   const refreshSchedule = body.refreshSchedule ?? 'manual';
   if (!REFRESH_SCHEDULES.has(refreshSchedule)) {
-    return jsonResponse(400, { error: 'refreshSchedule must be one of manual, daily, weekly' });
+    return jsonResponse(400, { error: 'refreshSchedule must be one of manual, daily, weekly' }, request);
   }
 
   const result = await createSourceForWorkspace(auth.workspace, {
@@ -290,31 +290,31 @@ export async function POST(request: Request): Promise<Response> {
   });
 
   if (!result.ok) {
-    return jsonResponse(422, { error: result.error, platform: result.platform, message: result.message, suggestion: result.suggestion });
+    return jsonResponse(422, { error: result.error, platform: result.platform, message: result.message, suggestion: result.suggestion }, request);
   }
-  return jsonResponse(200, result.source);
+  return jsonResponse(200, result.source, request);
 }
 
 export async function PATCH(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const sourceId = url.searchParams.get('id');
-  if (!sourceId) return jsonResponse(400, { error: 'source id is required' });
+  if (!sourceId) return jsonResponse(400, { error: 'source id is required' }, request);
 
   let body: UpdateSourceBody;
   try {
     body = (await request.json()) as UpdateSourceBody;
   } catch {
-    return jsonResponse(400, { error: 'invalid_json' });
+    return jsonResponse(400, { error: 'invalid_json' }, request);
   }
 
   const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
   if (!auth.ok) return auth.response;
 
   if (body.refreshSchedule !== undefined && !REFRESH_SCHEDULES.has(body.refreshSchedule)) {
-    return jsonResponse(400, { error: 'refreshSchedule must be one of manual, daily, weekly' });
+    return jsonResponse(400, { error: 'refreshSchedule must be one of manual, daily, weekly' }, request);
   }
   if (body.videoLimit !== undefined && (!Number.isInteger(body.videoLimit) || body.videoLimit < 1 || body.videoLimit > 200)) {
-    return jsonResponse(400, { error: 'videoLimit must be an integer between 1 and 200' });
+    return jsonResponse(400, { error: 'videoLimit must be an integer between 1 and 200' }, request);
   }
 
   const source = await updateSourceForWorkspace(auth.workspace, sourceId, {
@@ -326,19 +326,19 @@ export async function PATCH(request: Request): Promise<Response> {
     language: body.language,
     isSelf: body.isSelf,
   });
-  if (!source) return jsonResponse(404, { error: 'source_not_found' });
-  return jsonResponse(200, source);
+  if (!source) return jsonResponse(404, { error: 'source_not_found' }, request);
+  return jsonResponse(200, source, request);
 }
 
 export async function DELETE(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const sourceId = url.searchParams.get('id');
-  if (!sourceId) return jsonResponse(400, { error: 'source id is required' });
+  if (!sourceId) return jsonResponse(400, { error: 'source id is required' }, request);
 
   const auth = await requireOwnedWorkspace(request, url.searchParams.get('workspaceId'));
   if (!auth.ok) return auth.response;
 
   const deleted = await deleteSourceForWorkspace(auth.workspace, sourceId);
-  if (!deleted) return jsonResponse(404, { error: 'source_not_found' });
-  return jsonResponse(200, { message: 'Source deleted', sourceId });
+  if (!deleted) return jsonResponse(404, { error: 'source_not_found' }, request);
+  return jsonResponse(200, { message: 'Source deleted', sourceId }, request);
 }

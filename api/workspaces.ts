@@ -13,8 +13,8 @@ import { buildWeeklyRetro } from '../src/lib/posts.js';
 import { buildBenchmark } from '../src/lib/benchmark.js';
 import { listHookTests } from '../src/lib/hook-tests.js';
 
-export async function OPTIONS(): Promise<Response> {
-  return corsPreflight();
+export async function OPTIONS(request: Request): Promise<Response> {
+  return corsPreflight(request);
 }
 
 export async function GET(request: Request): Promise<Response> {
@@ -27,7 +27,7 @@ export async function GET(request: Request): Promise<Response> {
     if (!owned.ok) return owned.response;
     if (resource === 'retro') {
       const retro = await buildWeeklyRetro(owned.workspace);
-      return jsonResponse(200, retro);
+      return jsonResponse(200, retro, request);
     }
     if (resource === 'hook-tests') {
       // The /tests page index. Open tests by default; ?includeClosed=1 adds
@@ -35,10 +35,10 @@ export async function GET(request: Request): Promise<Response> {
       const tests = await listHookTests(owned.workspace.id, {
         includeClosed: url.searchParams.get('includeClosed') === '1',
       });
-      return jsonResponse(200, { tests });
+      return jsonResponse(200, { tests }, request);
     }
     const bench = await buildBenchmark(owned.workspace);
-    return jsonResponse(200, bench);
+    return jsonResponse(200, bench, request);
   }
 
   const auth = await requireAuth(request);
@@ -50,7 +50,7 @@ export async function GET(request: Request): Promise<Response> {
     name: w.name,
     planKey: w.planKey,
     createdAt: w.createdAt.toISOString(),
-  })));
+  })), request);
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -61,19 +61,19 @@ export async function POST(request: Request): Promise<Response> {
   try {
     body = (await request.json()) as { name?: string };
   } catch {
-    return jsonResponse(400, { error: 'invalid_json' });
+    return jsonResponse(400, { error: 'invalid_json' }, request);
   }
 
   const name = (body.name ?? '').trim();
-  if (!name) return jsonResponse(400, { error: 'name is required' });
+  if (!name) return jsonResponse(400, { error: 'name is required' }, request);
 
   try {
     const workspace = await createWorkspaceForUser(auth.userId, name);
     const planKey = await resolveAccountPlanKey(auth.userId);
-    return jsonResponse(200, { id: workspace.id, name: workspace.name, planKey, createdAt: workspace.createdAt.toISOString() });
+    return jsonResponse(200, { id: workspace.id, name: workspace.name, planKey, createdAt: workspace.createdAt.toISOString() }, request);
   } catch (err) {
     if (err instanceof WorkspaceLimitError) {
-      return jsonResponse(403, { error: 'workspace_limit_reached', message: err.message, limit: err.limit, planKey: err.planKey });
+      return jsonResponse(403, { error: 'workspace_limit_reached', message: err.message, limit: err.limit, planKey: err.planKey }, request);
     }
     throw err;
   }
@@ -84,23 +84,23 @@ export async function PATCH(request: Request): Promise<Response> {
   if (!auth.ok) return auth.response;
 
   const id = new URL(request.url).searchParams.get('id');
-  if (!id) return jsonResponse(400, { error: 'workspace id is required' });
+  if (!id) return jsonResponse(400, { error: 'workspace id is required' }, request);
 
   let body: { name?: string };
   try {
     body = (await request.json()) as { name?: string };
   } catch {
-    return jsonResponse(400, { error: 'invalid_json' });
+    return jsonResponse(400, { error: 'invalid_json' }, request);
   }
 
   const name = (body.name ?? '').trim();
-  if (!name) return jsonResponse(400, { error: 'name is required' });
+  if (!name) return jsonResponse(400, { error: 'name is required' }, request);
 
   try {
     const workspace = await renameWorkspaceForUser(auth.userId, id, name);
     const planKey = await resolveAccountPlanKey(auth.userId);
-    return jsonResponse(200, { id: workspace.id, name: workspace.name, planKey });
+    return jsonResponse(200, { id: workspace.id, name: workspace.name, planKey }, request);
   } catch {
-    return jsonResponse(404, { error: 'workspace_not_found' });
+    return jsonResponse(404, { error: 'workspace_not_found' }, request);
   }
 }

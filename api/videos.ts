@@ -29,18 +29,18 @@ import {
   pickHookVersions, rerollHooks, closeHookTest, exportShotlist,
 } from '../src/lib/hook-tests.js';
 
-export async function OPTIONS(): Promise<Response> {
-  return corsPreflight();
+export async function OPTIONS(request: Request): Promise<Response> {
+  return corsPreflight(request);
 }
 
 /** Service error → HTTP status + body the site's ApiError can parse. */
-function hookTestErrorResponse(err: unknown): Response {
+function hookTestErrorResponse(err: unknown, request?: Request): Response {
   const status = err instanceof HookTestError ? err.httpStatus : 500;
   return jsonResponse(status, {
     error: 'hook_test_failed',
     message: err instanceof Error ? err.message : 'Hook test failed',
     ...(status !== 400 ? { status } : {}),
-  });
+  }, request);
 }
 
 /**
@@ -49,6 +49,7 @@ function hookTestErrorResponse(err: unknown): Response {
  * tools so UI and MCP charge the same for the same move.
  */
 async function runMetered(
+  request: Request,
   workspaceId: string,
   tool: string,
   cost: number,
@@ -58,7 +59,7 @@ async function runMetered(
   try {
     await debitCredits(workspaceId, cost, tool, `${opId}:preauth`);
   } catch (err) {
-    if (err instanceof InsufficientCreditsError) return jsonResponse(402, insufficientCreditsPayload(err));
+    if (err instanceof InsufficientCreditsError) return jsonResponse(402, insufficientCreditsPayload(err), request);
     throw err;
   }
 
@@ -70,7 +71,7 @@ async function runMetered(
       creditsCharged: cost,
       creditsRemaining: balance.total,
       cost: costBlock(cost, { remaining: balance.total }),
-    });
+    }, request);
   } catch (err) {
     const balance = await refundCredits(workspaceId, cost, tool, `${opId}:fail`, 'call_failed');
     if (err instanceof HookTestError) {
@@ -83,7 +84,7 @@ async function runMetered(
         creditsCharged: 0,
         creditsRemaining: balance.total,
         cost: costBlock(0, { remaining: balance.total, note: 'Pre-auth refunded.' }),
-      });
+      }, request);
     }
     return jsonResponse(500, {
       error: 'hook_test_failed',
@@ -91,14 +92,14 @@ async function runMetered(
       creditsCharged: 0,
       creditsRemaining: balance.total,
       cost: costBlock(0, { remaining: balance.total, note: 'Call failed — pre-auth refunded, nothing charged.' }),
-    });
+    }, request);
   }
 }
 
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const videoId = url.searchParams.get('id');
-  if (!videoId) return jsonResponse(400, { error: 'video id is required' });
+  if (!videoId) return jsonResponse(400, { error: 'video id is required' }, request);
   const action = url.searchParams.get('action');
 
   const auth = await requireOwnedWorkspace(request, url.searchParams.get('workspaceId'));
@@ -110,10 +111,10 @@ export async function GET(request: Request): Promise<Response> {
       // read-only behind its badge; mutations resolve through the open-only
       // lookup and keep refusing archived tests.
       const test = await getLatestTestForVideo(auth.workspace.id, videoId);
-      return jsonResponse(200, { test });
+      return jsonResponse(200, { test }, request);
     } catch (err) {
       if (err instanceof HookTestError && err.httpStatus === 404) {
-        return jsonResponse(404, { error: 'video_not_found' });
+        return jsonResponse(404, { error: 'video_not_found' }, request);
       }
       throw err;
     }
@@ -122,15 +123,15 @@ export async function GET(request: Request): Promise<Response> {
   if (action === 'hook-test-shotlist') {
     try {
       const markdown = await exportShotlist(await requireTestIdForVideo(auth.workspace.id, videoId), auth.workspace.id);
-      return jsonResponse(200, { markdown });
+      return jsonResponse(200, { markdown }, request);
     } catch (err) {
-      return hookTestErrorResponse(err);
+      return hookTestErrorResponse(err, request);
     }
   }
 
   const video = await getVideoDetailForWorkspace(auth.workspace, videoId);
-  if (!video) return jsonResponse(404, { error: 'video_not_found' });
-  return jsonResponse(200, video);
+  if (!video) return jsonResponse(404, { error: 'video_not_found' }, request);
+  return jsonResponse(200, video, request);
 }
 
 /** Resolve the open test id for a video, or null when none. */
@@ -144,13 +145,13 @@ export async function POST(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const videoId = url.searchParams.get('id');
   const action = url.searchParams.get('action');
-  if (!videoId) return jsonResponse(400, { error: 'video id is required' });
+  if (!videoId) return jsonResponse(400, { error: 'video id is required' }, request);
 
   let body: Record<string, unknown>;
   try {
     body = (await request.json()) as Record<string, unknown>;
   } catch {
-    return jsonResponse(400, { error: 'invalid_json' });
+    return jsonResponse(400, { error: 'invalid_json' }, request);
   }
 
   const auth = await requireOwnedWorkspace(request, (body.workspaceId as string) ?? null);
@@ -164,16 +165,16 @@ export async function POST(request: Request): Promise<Response> {
     // All error/status shaping lives in the pure mapper so it's unit-testable —
     // insufficient credits -> 402, Gemini quota -> 429 retryable, other -> 422.
     const mapped = mapAnalyzeOutcomeToHttp(outcome);
-    return jsonResponse(mapped.status, mapped.body);
+    return jsonResponse(mapped.status, mapped.body, request);
   }
 
   if (action === 'hook-test') {
     // Free pre-check first: starting on an already-tested video returns the
     // existing test WITHOUT charging — second attempts must never re-bill.
     const existing = await getOpenTestForVideo(wsId, videoId).catch(() => null);
-    if (existing) return jsonResponse(200, { test: existing, alreadyOpen: true });
+    if (existing) return jsonResponse(200, { test: existing, alreadyOpen: true }, request);
 
-    return runMetered(wsId, 'start_hook_test', CREDIT_COSTS.startHookTest, async () => ({
+    return runMetered(request, wsId, 'start_hook_test', CREDIT_COSTS.startHookTest, async () => ({
       test: await startHookTest(wsId, videoId, {
         brandContext: typeof body.brandContext === 'string' ? body.brandContext : undefined,
         insight: typeof body.insight === 'string' ? body.insight : undefined,
@@ -182,7 +183,7 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   if (action === 'hook-test-reroll') {
-    return runMetered(wsId, 'reroll_hooks', CREDIT_COSTS.rerollHooks, async () => {
+    return runMetered(request, wsId, 'reroll_hooks', CREDIT_COSTS.rerollHooks, async () => {
       const current = await requireTestIdForVideo(wsId, videoId);
       return { test: await rerollHooks(current, wsId) };
     });
@@ -190,13 +191,13 @@ export async function POST(request: Request): Promise<Response> {
 
   if (action === 'hook-test-pick') {
     const picks = Array.isArray(body.picks) ? body.picks.filter((p): p is string => typeof p === 'string') : [];
-    if (picks.length === 0) return jsonResponse(400, { error: 'picks array with at least one label is required' });
+    if (picks.length === 0) return jsonResponse(400, { error: 'picks array with at least one label is required' }, request);
     try {
       const current = await requireTestIdForVideo(wsId, videoId);
       const test = await pickHookVersions(current, wsId, picks);
-      return jsonResponse(200, { test });
+      return jsonResponse(200, { test }, request);
     } catch (err) {
-      return hookTestErrorResponse(err);
+      return hookTestErrorResponse(err, request);
     }
   }
 
@@ -206,27 +207,27 @@ export async function POST(request: Request): Promise<Response> {
     try {
       const current = await requireTestIdForVideo(wsId, videoId);
       const test = await closeHookTest(current, wsId, outcome, winner);
-      return jsonResponse(200, { test });
+      return jsonResponse(200, { test }, request);
     } catch (err) {
-      return hookTestErrorResponse(err);
+      return hookTestErrorResponse(err, request);
     }
   }
 
-  return jsonResponse(404, { error: 'not_found' });
+  return jsonResponse(404, { error: 'not_found' }, request);
 }
 
 export async function PATCH(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const videoId = url.searchParams.get('id');
   const action = url.searchParams.get('action');
-  if (!videoId) return jsonResponse(400, { error: 'video id is required' });
-  if (action !== 'hook-test') return jsonResponse(404, { error: 'not_found' });
+  if (!videoId) return jsonResponse(400, { error: 'video id is required' }, request);
+  if (action !== 'hook-test') return jsonResponse(404, { error: 'not_found' }, request);
 
   let body: { workspaceId?: string; insight?: string; sameIn?: unknown };
   try {
     body = (await request.json()) as typeof body;
   } catch {
-    return jsonResponse(400, { error: 'invalid_json' });
+    return jsonResponse(400, { error: 'invalid_json' }, request);
   }
 
   const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
@@ -238,8 +239,8 @@ export async function PATCH(request: Request): Promise<Response> {
       ...(typeof body.insight === 'string' ? { insight: body.insight } : {}),
       ...(Array.isArray(body.sameIn) ? { sameIn: body.sameIn.filter((c): c is string => typeof c === 'string') } : {}),
     });
-    return jsonResponse(200, { test });
+    return jsonResponse(200, { test }, request);
   } catch (err) {
-    return hookTestErrorResponse(err);
+    return hookTestErrorResponse(err, request);
   }
 }

@@ -11,10 +11,10 @@ import { verifySupabaseJwt } from '../../remote/auth.js';
 import { db } from '../db.js';
 import { corsHeaders } from './cors.js';
 
-export function jsonResponse(status: number, body: unknown): Response {
+export function jsonResponse(status: number, body: unknown, request?: Request): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json', ...corsHeaders() },
+    headers: { 'Content-Type': 'application/json', ...corsHeaders(request) },
   });
 }
 

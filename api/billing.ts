@@ -36,8 +36,8 @@ async function authenticate(request: Request) {
   }
 }
 
-export async function OPTIONS(): Promise<Response> {
-  return corsPreflight();
+export async function OPTIONS(request: Request): Promise<Response> {
+  return corsPreflight(request);
 }
 
 async function handleStatus(request: Request): Promise<Response> {

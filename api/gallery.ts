@@ -108,8 +108,8 @@ function analyzedByOf(raw: string | null): GalleryFilters['analyzedBy'] | undefi
     : undefined;
 }
 
-export async function OPTIONS(): Promise<Response> {
-  return corsPreflight();
+export async function OPTIONS(request: Request): Promise<Response> {
+  return corsPreflight(request);
 }
 
 const SORT_VALUES = new Set<GalleryFilters['sortBy']>(['outlier_score', 'views', 'newest']);
@@ -124,7 +124,7 @@ async function handleData(request: Request, url: URL): Promise<Response> {
   const creatorHandle = url.searchParams.get('creatorHandle');
   if (creatorHandle) {
     const preview = await buildCreatorPreview(auth.workspace, creatorHandle);
-    return jsonResponse(200, preview);
+    return jsonResponse(200, preview, request);
   }
 
   const sortByRaw = url.searchParams.get('sortBy') ?? 'outlier_score';
@@ -154,7 +154,7 @@ async function handleData(request: Request, url: URL): Promise<Response> {
     }),
   );
 
-  return jsonResponse(200, { cards, note, filters });
+  return jsonResponse(200, { cards, note, filters }, request);
 }
 
 export async function GET(request: Request): Promise<Response> {

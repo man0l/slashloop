@@ -25,8 +25,8 @@ async function authenticate(request: Request) {
   }
 }
 
-export async function OPTIONS(): Promise<Response> {
-  return corsPreflight();
+export async function OPTIONS(request: Request): Promise<Response> {
+  return corsPreflight(request);
 }
 
 const SELECT = { id: true, name: true, digestEnabled: true, digestEmail: true, lastDigestAt: true } as const;
