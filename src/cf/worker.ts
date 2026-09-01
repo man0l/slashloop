@@ -12,29 +12,10 @@
 import { ensureStore, type Env } from './env.js';
 import { route } from './router.js';
 
-// Per-isolate request gate.
-//
-// The D1 binding intermittently fails to settle concurrent prepared-statement
-// promises (requests hang forever with cpuTime ~1ms — reproduced live
-// 2026-09-01: bursts of 6+ concurrent /api calls left 1-5 pending until the
-// client timed out). Serializing handler execution per isolate keeps the
-// binding's in-flight query count at 1, which eliminates the stall. Latency
-// cost is negligible at this traffic level: handlers are ~150-700ms and
-// independent isolates (new colos/connections) still run in parallel.
-let gate: Promise<unknown> = Promise.resolve();
-
-/** Run `fn` so that at most one instance executes per isolate at a time. */
-function gated<T>(fn: () => Promise<T>): Promise<T> {
-  const run = gate.then(fn, fn);
-  // Keep the chain alive even if fn rejects — the next gated call must run.
-  gate = run.catch(() => {});
-  return run;
-}
-
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     await ensureStore(env);
-    return gated(() => route(request));
+    return route(request);
   },
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -64,7 +45,7 @@ export default {
     // waitUntil: the response body is only log output — let the drain finish
     // without blocking the scheduler's slot accounting.
     ctx.waitUntil(
-      gated(() => route(request))
+      route(request)
         .then(async (res) => {
           const body = await res.text();
           console.log(`[worker] cron ${cron} ${path} → ${res.status} ${body.slice(0, 500)}`);

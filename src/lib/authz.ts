@@ -26,13 +26,13 @@ export type AuthResult =
 export async function requireAuth(request: Request): Promise<AuthResult> {
   const authHeader = request.headers.get('authorization') ?? '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return { ok: false, response: jsonResponse(401, { error: 'invalid_token' }) };
+  if (!token) return { ok: false, response: jsonResponse(401, { error: 'invalid_token' }, request) };
 
   try {
     const claims = await verifySupabaseJwt(token);
     return { ok: true, userId: claims.sub, email: typeof claims.email === 'string' ? claims.email : undefined };
   } catch {
-    return { ok: false, response: jsonResponse(401, { error: 'invalid_token' }) };
+    return { ok: false, response: jsonResponse(401, { error: 'invalid_token' }, request) };
   }
 }
 
@@ -52,10 +52,10 @@ export async function requireOwnedWorkspace(
   const auth = await requireAuth(request);
   if (!auth.ok) return auth;
 
-  if (!workspaceId) return { ok: false, response: jsonResponse(400, { error: 'workspaceId is required' }) };
+  if (!workspaceId) return { ok: false, response: jsonResponse(400, { error: 'workspaceId is required' }, request) };
 
   const workspace = await db.workspace.findFirst({ where: { id: workspaceId, ownerId: auth.userId } });
-  if (!workspace) return { ok: false, response: jsonResponse(404, { error: 'workspace_not_found' }) };
+  if (!workspace) return { ok: false, response: jsonResponse(404, { error: 'workspace_not_found' }, request) };
 
   return { ok: true, userId: auth.userId, workspace };
 }

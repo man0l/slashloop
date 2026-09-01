@@ -21,8 +21,8 @@ const MIN_PACK_AMOUNT_CENTS = 1000;
 
 const SITE_URL = (process.env.SITE_URL ?? '').replace(/\/$/, '');
 
-function json(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders() } });
+function json(status: number, body: unknown, request: Request): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
 }
 
 async function authenticate(request: Request) {
@@ -42,14 +42,14 @@ export async function OPTIONS(request: Request): Promise<Response> {
 
 async function handleStatus(request: Request): Promise<Response> {
   const claims = await authenticate(request);
-  if (!claims) return json(401, { error: 'invalid_token' });
+  if (!claims) return json(401, { error: 'invalid_token' }, request);
 
   // Read-only: create nothing here. requireWorkspace() (the MCP tool path)
   // creates a workspace on first use; a billing-status check before that
   // happens just means "you're not provisioned yet", not an error to fix
   // by creating one.
   const workspace = await primaryWorkspaceByOwnerId(claims.sub);
-  if (!workspace) return json(404, { error: 'no_workspace' });
+  if (!workspace) return json(404, { error: 'no_workspace' }, request);
 
   return json(200, {
     planKey: workspace.planKey,
@@ -57,31 +57,31 @@ async function handleStatus(request: Request): Promise<Response> {
     packCredits: workspace.packCredits,
     periodEnd: workspace.periodEnd,
     billingStatus: workspace.billingStatus,
-  });
+  }, request);
 }
 
 async function handleCheckout(request: Request): Promise<Response> {
   const claims = await authenticate(request);
-  if (!claims) return json(401, { error: 'invalid_token' });
+  if (!claims) return json(401, { error: 'invalid_token' }, request);
 
-  if (!SITE_URL) return json(500, { error: 'SITE_URL is not configured on the server' });
+  if (!SITE_URL) return json(500, { error: 'SITE_URL is not configured on the server' }, request);
 
   let body: { planKey?: string; interval?: string; amountCents?: number };
   try {
     body = (await request.json()) as { planKey?: string; interval?: string; amountCents?: number };
   } catch {
-    return json(400, { error: 'invalid_json' });
+    return json(400, { error: 'invalid_json' }, request);
   }
 
   const { planKey, interval, amountCents } = body;
   if (planKey !== 'creator' && planKey !== 'pro' && planKey !== 'pack') {
-    return json(400, { error: 'planKey must be "creator", "pro", or "pack"' });
+    return json(400, { error: 'planKey must be "creator", "pro", or "pack"' }, request);
   }
   if (planKey !== 'pack' && interval !== 'month' && interval !== 'year') {
-    return json(400, { error: 'interval must be "month" or "year"' });
+    return json(400, { error: 'interval must be "month" or "year"' }, request);
   }
   if (planKey === 'pack' && (!Number.isInteger(amountCents) || (amountCents as number) < MIN_PACK_AMOUNT_CENTS)) {
-    return json(400, { error: `amountCents must be an integer >= ${MIN_PACK_AMOUNT_CENTS} ($${MIN_PACK_AMOUNT_CENTS / 100} minimum)` });
+    return json(400, { error: `amountCents must be an integer >= ${MIN_PACK_AMOUNT_CENTS} ($${MIN_PACK_AMOUNT_CENTS / 100} minimum)` }, request);
   }
 
   let workspace = await primaryWorkspaceByOwnerId(claims.sub);
@@ -144,23 +144,23 @@ async function handleCheckout(request: Request): Promise<Response> {
     }
   } catch (err) {
     // Most likely a missing/misconfigured STRIPE_PRICE_* env var.
-    return json(500, { error: 'checkout_session_failed', message: (err as Error).message });
+    return json(500, { error: 'checkout_session_failed', message: (err as Error).message }, request);
   }
 
-  if (!session.url) return json(500, { error: 'checkout_session_failed', message: 'Stripe did not return a session URL' });
-  return json(200, { url: session.url });
+  if (!session.url) return json(500, { error: 'checkout_session_failed', message: 'Stripe did not return a session URL' }, request);
+  return json(200, { url: session.url }, request);
 }
 
 async function handlePortal(request: Request): Promise<Response> {
   const claims = await authenticate(request);
-  if (!claims) return json(401, { error: 'invalid_token' });
+  if (!claims) return json(401, { error: 'invalid_token' }, request);
 
-  if (!SITE_URL) return json(500, { error: 'SITE_URL is not configured on the server' });
+  if (!SITE_URL) return json(500, { error: 'SITE_URL is not configured on the server' }, request);
 
   const workspace = await primaryWorkspaceByOwnerId(claims.sub);
   const customerId = workspace?.[customerIdField()];
   if (!customerId) {
-    return json(404, { error: 'no_stripe_customer', message: 'No billing account yet — subscribe first.' });
+    return json(404, { error: 'no_stripe_customer', message: 'No billing account yet — subscribe first.' }, request);
   }
 
   const stripe = requireStripe();
@@ -169,18 +169,18 @@ async function handlePortal(request: Request): Promise<Response> {
     return_url: `${SITE_URL}/account`,
   });
 
-  return json(200, { url: portal.url });
+  return json(200, { url: portal.url }, request);
 }
 
 export async function GET(request: Request): Promise<Response> {
   const action = new URL(request.url).searchParams.get('action');
   if (action === 'status') return handleStatus(request);
-  return json(404, { error: 'not_found' });
+  return json(404, { error: 'not_found' }, request);
 }
 
 export async function POST(request: Request): Promise<Response> {
   const action = new URL(request.url).searchParams.get('action');
   if (action === 'checkout') return handleCheckout(request);
   if (action === 'portal') return handlePortal(request);
-  return json(404, { error: 'not_found' });
+  return json(404, { error: 'not_found' }, request);
 }

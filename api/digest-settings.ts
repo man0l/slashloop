@@ -11,8 +11,8 @@ import { verifySupabaseJwt } from '../remote/auth.js';
 import { db } from '../src/db.js';
 import { corsHeaders, corsPreflight } from '../src/lib/cors.js';
 
-function json(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders() } });
+function json(status: number, body: unknown, request: Request): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
 }
 
 async function authenticate(request: Request) {
@@ -43,13 +43,13 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function GET(request: Request): Promise<Response> {
   const claims = await authenticate(request);
-  if (!claims) return json(401, { error: 'invalid_token' });
-  return json(200, { workspaces: await listFor(claims.sub) });
+  if (!claims) return json(401, { error: 'invalid_token' }, request);
+  return json(200, { workspaces: await listFor(claims.sub) }, request);
 }
 
 export async function POST(request: Request): Promise<Response> {
   const claims = await authenticate(request);
-  if (!claims) return json(401, { error: 'invalid_token' });
+  if (!claims) return json(401, { error: 'invalid_token' }, request);
 
   let body: { workspaceId?: string; digestEnabled?: boolean; digestEmail?: string | null };
   try {
@@ -57,21 +57,21 @@ export async function POST(request: Request): Promise<Response> {
     // the validation below narrows every field before use.
     body = (await request.json()) as typeof body;
   } catch {
-    return json(400, { error: 'invalid_json' });
+    return json(400, { error: 'invalid_json' }, request);
   }
 
   if (body.digestEnabled !== undefined && typeof body.digestEnabled !== 'boolean') {
-    return json(400, { error: 'digestEnabled must be boolean' });
+    return json(400, { error: 'digestEnabled must be boolean' }, request);
   }
   if (body.digestEmail !== undefined && body.digestEmail !== null
       && !(typeof body.digestEmail === 'string' && EMAIL_RE.test(body.digestEmail.trim()))) {
-    return json(400, { error: 'digestEmail must be null or a valid address' });
+    return json(400, { error: 'digestEmail must be null or a valid address' }, request);
   }
 
   const data: { digestEnabled?: boolean; digestEmail?: string | null } = {};
   if (body.digestEnabled !== undefined) data.digestEnabled = body.digestEnabled;
   if (body.digestEmail !== undefined) data.digestEmail = body.digestEmail === null ? null : body.digestEmail.trim();
-  if (Object.keys(data).length === 0) return json(400, { error: 'nothing to update' });
+  if (Object.keys(data).length === 0) return json(400, { error: 'nothing to update' }, request);
 
   // Ownership comes from the token; workspaceId only narrows the target set,
   // so a forged id can touch nothing.
@@ -80,5 +80,5 @@ export async function POST(request: Request): Promise<Response> {
     data,
   });
 
-  return json(200, { workspaces: await listFor(claims.sub) });
+  return json(200, { workspaces: await listFor(claims.sub) }, request);
 }
