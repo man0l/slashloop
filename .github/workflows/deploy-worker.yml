@@ -1,0 +1,101 @@
+# Deploy the Cloudflare Worker (API + MCP + crons) and sync its environment.
+#
+# GitHub is the source of truth for the Worker's environment: the job runs in
+# the `production` environment (repo secrets/variables + env overrides are all
+# injected), and scripts/sync-worker-secrets.mjs pushes every manifest-listed
+# value that is set — "if set" — to the Worker with `wrangler secret bulk`.
+# Values not set in GitHub are left as-is on the Worker, never deleted.
+#
+# Required GitHub secrets:
+#   CLOUDFLARE_API_TOKEN  — token with Workers Scripts:Edit + D1:Edit
+#   CLOUDFLARE_ACCOUNT_ID — (as a repo VARIABLE works too)
+# Plus everything scripts/sync-worker-secrets.mjs lists in its manifest.
+#
+# Rollback: re-run a previous deployment from the Actions tab
+# (or `wrangler rollback`).
+
+name: deploy-worker
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies (generates both Prisma clients)
+        run: bun install --frozen-lockfile
+
+      - name: Sync Worker secrets from GitHub
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # ── secrets (repo + production environment) ──
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          APIFY_API_KEY: ${{ secrets.APIFY_API_KEY }}
+          SCRAPER_PROXY_URL: ${{ secrets.SCRAPER_PROXY_URL }}
+          PROXY_CHEAP_API_KEY: ${{ secrets.PROXY_CHEAP_API_KEY }}
+          PROXY_CHEAP_API_SECRET: ${{ secrets.PROXY_CHEAP_API_SECRET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          STRIPE_SECRET_API_KEY: ${{ secrets.STRIPE_SECRET_API_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          STRIPE_PRICE_CREATOR_MONTH: ${{ secrets.STRIPE_PRICE_CREATOR_MONTH }}
+          STRIPE_PRICE_CREATOR_YEAR: ${{ secrets.STRIPE_PRICE_CREATOR_YEAR }}
+          STRIPE_PRICE_PRO_MONTH: ${{ secrets.STRIPE_PRICE_PRO_MONTH }}
+          STRIPE_PRICE_PRO_YEAR: ${{ secrets.STRIPE_PRICE_PRO_YEAR }}
+          STRIPE_PRICE_PACK: ${{ secrets.STRIPE_PRICE_PACK }}
+          STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+          STRIPE_TEST_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
+          STRIPE_TEST_PRICE_CREATOR_MONTH: ${{ secrets.STRIPE_TEST_PRICE_CREATOR_MONTH }}
+          STRIPE_TEST_PRICE_CREATOR_YEAR: ${{ secrets.STRIPE_TEST_PRICE_CREATOR_YEAR }}
+          STRIPE_TEST_PRICE_PRO_MONTH: ${{ secrets.STRIPE_TEST_PRICE_PRO_MONTH }}
+          STRIPE_TEST_PRICE_PRO_YEAR: ${{ secrets.STRIPE_TEST_PRICE_PRO_YEAR }}
+          STRIPE_TEST_PRICE_PACK: ${{ secrets.STRIPE_TEST_PRICE_PACK }}
+          # ── variables (repo + production environment) ──
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          APIFY_SPEND_CAP_CENTS: ${{ vars.APIFY_SPEND_CAP_CENTS }}
+          MEDIA_SIGNED_URL_TTL_SECONDS: ${{ vars.MEDIA_SIGNED_URL_TTL_SECONDS }}
+          OPENROUTER_VIDEO_MODEL: ${{ vars.OPENROUTER_VIDEO_MODEL }}
+          OPENROUTER_VIDEO_MODE: ${{ vars.OPENROUTER_VIDEO_MODE }}
+          OPENROUTER_VIDEO_MAX_TOKENS: ${{ vars.OPENROUTER_VIDEO_MAX_TOKENS }}
+          PROXY_TRAFFIC_CAP_GB: ${{ vars.PROXY_TRAFFIC_CAP_GB }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
+          R2_THUMB_BUCKET: ${{ vars.R2_THUMB_BUCKET }}
+          R2_MEDIA_BUCKET: ${{ vars.R2_MEDIA_BUCKET }}
+          R2_THUMB_PUBLIC_BASE: ${{ vars.R2_THUMB_PUBLIC_BASE }}
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SITE_URL: ${{ vars.SITE_URL }}
+          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+        run: bun scripts/sync-worker-secrets.mjs
+
+      - name: Apply D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bunx wrangler d1 migrations apply slashloop --remote
+
+      - name: Deploy Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bunx wrangler deploy
