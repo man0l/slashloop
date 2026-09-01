@@ -14,7 +14,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Prisma, Source, Workspace } from '@prisma/client';
 import { db } from '../db.js';
-import { dbDialect } from '../store.js';
+import { chunked, dbDialect } from '../store.js';
 import { scrapeCapKind, scrapeSource, trafficStatus } from './scrapers/index.js';
 import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
 import { TrafficCapExceededError } from './scrapers/bandwidth.js';
@@ -55,6 +55,9 @@ export interface ListSourcesFilters {
 }
 
 export async function listSourcesForWorkspace(workspace: Workspace, filters: ListSourcesFilters) {
+  // No `_count` include: Prisma's D1 adapter fans those into concurrent
+  // prepared statements, which hang the binding. Two sequential groupBys
+  // instead (chunked for the ~98-param cap).
   const sources = await db.source.findMany({
     where: {
       workspaceId: workspace.id,
@@ -63,14 +66,24 @@ export async function listSourcesForWorkspace(workspace: Workspace, filters: Lis
       isActive: filters.isActive,
       nicheTag: filters.nicheTag || undefined,
     },
-    include: {
-      // Filtered relation count: excludes baseline-only samples pulled to
-      // keep a creator's outlier baseline fresh (see Video.isBaselineSample)
-      // — they aren't content the workspace tracked, so they shouldn't
-      // inflate what looks like a source's real video count.
-      _count: { select: { videos: { where: { isBaselineSample: false } }, refreshRuns: true } },
-    },
     orderBy: { createdAt: 'desc' },
+  });
+
+  const videoCountBySource = new Map<string, number>();
+  const refreshCountBySource = new Map<string, number>();
+  await chunked(sources.map((s) => s.id), async (ids) => {
+    const videoCounts = await db.video.groupBy({
+      by: ['sourceId'],
+      where: { sourceId: { in: ids }, isBaselineSample: false },
+      _count: { _all: true },
+    });
+    for (const row of videoCounts) videoCountBySource.set(row.sourceId, row._count._all);
+    const refreshCounts = await db.refreshRun.groupBy({
+      by: ['sourceId'],
+      where: { sourceId: { in: ids } },
+      _count: { _all: true },
+    });
+    for (const row of refreshCounts) refreshCountBySource.set(row.sourceId, row._count._all);
   });
 
   return sources.map(s => ({
@@ -84,8 +97,8 @@ export async function listSourcesForWorkspace(workspace: Workspace, filters: Lis
     isActive: s.isActive,
     isSelf: s.isSelf,
     nicheTag: s.nicheTag,
-    videoCount: s._count.videos,
-    refreshCount: s._count.refreshRuns,
+    videoCount: videoCountBySource.get(s.id) ?? 0,
+    refreshCount: refreshCountBySource.get(s.id) ?? 0,
     lastRefreshedAt: s.lastRefreshedAt?.toISOString() ?? null,
     consecutiveFails: s.consecutiveFails,
     createdAt: s.createdAt.toISOString(),

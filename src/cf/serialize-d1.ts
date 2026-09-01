@@ -1,18 +1,14 @@
 // Serialize every D1 statement on one isolate.
 //
-// The binding intermittently never settles concurrent prepared-statement
-// promises (cpuTime ~1ms, wallTime until the client gives up). Reproduced
-// live 2026-09-01: a Studio page firing /api/sources + /api/studio/retro +
-// /api/studio/benchmark together left all three pending; retro/benchmark
-// each Promise.all several Prisma queries, which is enough to trip it.
+// NOT wired into src/cf/env.ts. Prisma's wasm engine fans `_count` includes
+// out as concurrent adapter calls and waits for all of them before yielding
+// to the JS event loop — a JS mutex around prepare()/raw() deadlocks it
+// (reproduced live 2026-09-01 after wrapping the binding: /api/sources hung
+// even with no other traffic, while single-query routes still responded).
 //
-// A request-level gate (src/cf/worker.ts, since reverted) was not enough:
-// one handler can still pipeline concurrent queries internally, and a hung
-// query then blocked every other request on the isolate. Serializing at the
-// binding means Prisma, rawBatch, and app-level Promise.all all share one
-// in-flight query. A timeout fails the caller instead of hanging the page;
-// a timed-out isolate is marked wedged so later queries fail fast until
-// workerd recycles it.
+// Isolate concurrency is handled by the request gate in worker.ts; intra-
+// handler concurrency is avoided by sequential Prisma calls (no Promise.all
+// of db.*, no `_count` includes). This helper stays for rawBatch/tests.
 
 export const D1_QUERY_TIMEOUT_MS = 8_000;
 

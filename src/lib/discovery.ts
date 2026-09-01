@@ -238,10 +238,8 @@ const MAX_AI_SEEDS = 8;
  * tracks or has dismissed — shared by seed expansion and suggestion
  * aggregation so both filter with the exact same keys. */
 export async function loadExclusionSets(workspaceId: string) {
-  const [sources, dismissals] = await Promise.all([
-    db.source.findMany({ where: { workspaceId }, select: { sourceType: true, query: true } }),
-    db.suggestionDismissal.findMany({ where: { workspaceId }, select: { sourceType: true, query: true } }),
-  ]);
+  const sources = await db.source.findMany({ where: { workspaceId }, select: { sourceType: true, query: true } });
+  const dismissals = await db.suggestionDismissal.findMany({ where: { workspaceId }, select: { sourceType: true, query: true } });
   return {
     trackedKeys: new Set(sources.map(s => `${s.sourceType}:${normalizeQuery(s.sourceType, s.query)}`)),
     dismissedKeys: new Set(dismissals.map(d => `${d.sourceType}:${d.query}`)),

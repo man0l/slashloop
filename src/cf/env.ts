@@ -8,7 +8,6 @@
 
 import { setActiveClient, type AppPrismaClient, type RawExecutor } from '../store.js';
 import { setR2Bindings } from '../lib/storage-bindings.js';
-import { serializeD1 } from './serialize-d1.js';
 
 export interface Env {
   /** D1 database "slashloop" — the single shard (see src/store.ts). */
@@ -63,16 +62,18 @@ export async function ensureStore(env: Env): Promise<void> {
 
   const { PrismaClient } = await import('../generated/sqlite/wasm.js');
   const { PrismaD1 } = await import('@prisma/adapter-d1');
-  // Serialize every prepared-statement execution on this isolate — concurrent
-  // D1 queries hang the binding (see src/cf/serialize-d1.ts). Prisma, rawBatch,
-  // and app-level Promise.all all go through this wrapper.
-  const d1 = serializeD1(env.DB_SHARD0);
   // The adapter types the binding against its own bundled copy of
   // workers-types (which demands `dump()`); the runtime binding implements the
   // full interface — cast at the boundary, not in call code.
-  const adapter = new PrismaD1(d1 as unknown as ConstructorParameters<typeof PrismaD1>[0]);
+  //
+  // Do NOT wrap this binding in serializeD1(). Prisma's wasm engine fans
+  // `_count`/includes out as concurrent adapter calls and a JS mutex
+  // deadlocks it (the engine waits for all of them before yielding). Isolate
+  // concurrency is handled by the request gate in worker.ts plus sequential
+  // Prisma calls in the handlers (no Promise.all of db.*).
+  const adapter = new PrismaD1(env.DB_SHARD0 as unknown as ConstructorParameters<typeof PrismaD1>[0]);
   const client = new PrismaClient({ adapter });
-  setActiveClient(client as unknown as AppPrismaClient, d1BindingRawExecutor(d1));
+  setActiveClient(client as unknown as AppPrismaClient, d1BindingRawExecutor(env.DB_SHARD0));
   // Media storage: bucket bindings (src/lib/storage.ts 'r2-binding' backend).
   setR2Bindings({ thumbs: env.R2_THUMBS, media: env.R2_MEDIA });
   globalForCfStore.__slashloopCfStoreReady = true;

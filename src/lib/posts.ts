@@ -48,23 +48,22 @@ export async function buildWeeklyRetro(workspace: Workspace, now = new Date()) {
     };
   }
 
-  const [baseline, weekVideos, totalOnSelf, latest] = await Promise.all([
-    db.baseline.findFirst({
-      where: { creatorHandle: handle!, platform: 'tiktok' },
-      select: { medianViews: true },
-    }),
-    db.video.findMany({
-      where: { sourceId: self.id, isBaselineSample: false, postedAt: { gte: since, lte: now } },
-      select: { id: true, url: true, postedAt: true, caption: true, views: true, score: { select: { outlierScore: true } } },
-      orderBy: { postedAt: 'desc' },
-    }),
-    db.video.count({ where: { sourceId: self.id, isBaselineSample: false } }),
-    db.video.findFirst({
-      where: { sourceId: self.id, isBaselineSample: false },
-      select: { postedAt: true },
-      orderBy: { postedAt: 'desc' },
-    }),
-  ]);
+  // Sequential on purpose: concurrent Prisma queries hang the D1 binding.
+  const baseline = await db.baseline.findFirst({
+    where: { creatorHandle: handle!, platform: 'tiktok' },
+    select: { medianViews: true },
+  });
+  const weekVideos = await db.video.findMany({
+    where: { sourceId: self.id, isBaselineSample: false, postedAt: { gte: since, lte: now } },
+    select: { id: true, url: true, postedAt: true, caption: true, views: true, score: { select: { outlierScore: true } } },
+    orderBy: { postedAt: 'desc' },
+  });
+  const totalOnSelf = await db.video.count({ where: { sourceId: self.id, isBaselineSample: false } });
+  const latest = await db.video.findFirst({
+    where: { sourceId: self.id, isBaselineSample: false },
+    select: { postedAt: true },
+    orderBy: { postedAt: 'desc' },
+  });
   const medianViews = baseline?.medianViews ?? null;
 
   const rows: RetroRow[] = weekVideos.map((v) => ({

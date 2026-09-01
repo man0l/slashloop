@@ -72,7 +72,9 @@ export async function buildBenchmark(workspace: Workspace, now = new Date()) {
   }
 
   const youStats = you ? await statsFor(you) : null;
-  const rivalStats = await Promise.all(rivals.map(statsFor));
+  // Sequential on purpose: concurrent Prisma queries hang the D1 binding.
+  const rivalStats: CreatorBenchmark[] = [];
+  for (const rival of rivals) rivalStats.push(await statsFor(rival));
 
   let headline = 'Track your own account, then any other creators, to compare cadence and medians.';
   if (youStats && rivalStats.length > 0) {
