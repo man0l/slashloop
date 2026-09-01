@@ -22,24 +22,28 @@ export function registerVideoTools(server: McpServer) {
       // Scoped to the caller's own workspace — a video id is a UUID (not
       // practically guessable), but nothing should ever return another
       // workspace's video regardless.
+      // Sequential finds — Prisma's D1 adapter fans a fat `include` into
+      // concurrent prepared statements, which hang the binding.
       const video = await db.video.findFirst({
         where: { id: videoId, source: { workspaceId: workspace.id } },
-        include: {
-          score: true,
-          source: { select: { id: true, query: true, platform: true, nicheTag: true, workspaceId: true } },
-          // Newest first. Without an explicit order Prisma returns whatever the
-          // database yields, which in practice was insertion order — so
-          // `analyses[0]`, named latestAnalysis and used for both the analysis
-          // payload and the recreation block, was actually the OLDEST row. A
-          // re-analysed video kept reporting its first result forever, and the
-          // recreation block read key moments from an analysis that predated
-          // the field and so was always null.
-          analyses: { include: { hooks: true }, orderBy: { createdAt: 'desc' } },
-          hooks: true,
-          ideas: true,
-        },
       });
       if (!video) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Video not found' }) }], isError: true };
+
+      const score = await db.score.findUnique({ where: { videoId: video.id } });
+      const source = await db.source.findFirst({
+        where: { id: video.sourceId },
+        select: { id: true, query: true, platform: true, nicheTag: true, workspaceId: true },
+      });
+      const analysisCount = await db.analysis.count({ where: { videoId: video.id } });
+      const latestRow = await db.analysis.findFirst({
+        where: { videoId: video.id },
+        orderBy: { createdAt: 'desc' },
+      });
+      const latestHooks = latestRow
+        ? await db.hook.findMany({ where: { analysisId: latestRow.id } })
+        : [];
+      const hooks = await db.hook.findMany({ where: { videoId: video.id } });
+      const ideaCount = await db.idea.count({ where: { videoId: video.id } });
 
       const engRate = video.views > 0
         ? ((video.likes + video.comments + (video.shares ?? 0)) / video.views * 100).toFixed(1)
@@ -65,8 +69,8 @@ export function registerVideoTools(server: McpServer) {
       // Emitted separately from `analysis` because this is the "go shoot this"
       // surface, not the "why did it work" one.
       let recreation: unknown = null;
-      if (video.analyses[0]) {
-        const parsed = JSON.parse(video.analyses[0].analysisJson) as { keyMoments?: unknown };
+      if (latestRow) {
+        const parsed = JSON.parse(latestRow.analysisJson) as { keyMoments?: unknown };
         const moments = Array.isArray(parsed.keyMoments) ? parsed.keyMoments : null;
         if (moments?.length) {
           const media = await signedMediaUrl(video);
@@ -85,15 +89,15 @@ export function registerVideoTools(server: McpServer) {
         }
       }
 
-      const latestAnalysis = video.analyses[0]
+      const latestAnalysis = latestRow
         ? {
-            id: video.analyses[0].id,
-            analysisBasis: video.analyses[0].analysisBasis,
-            backend: video.analyses[0].backend,
-            model: video.analyses[0].model,
-            costCents: video.analyses[0].costCents,
-            analysis: JSON.parse(video.analyses[0].analysisJson),
-            hookCount: video.analyses[0].hooks?.length ?? 0,
+            id: latestRow.id,
+            analysisBasis: latestRow.analysisBasis,
+            backend: latestRow.backend,
+            model: latestRow.model,
+            costCents: latestRow.costCents,
+            analysis: JSON.parse(latestRow.analysisJson),
+            hookCount: latestHooks.length,
           }
         : null;
 
@@ -121,19 +125,19 @@ export function registerVideoTools(server: McpServer) {
           },
           transcript: video.transcript,
           transcriptSource: video.transcriptSource,
-          score: video.score,
-          source: video.source,
+          score,
+          source,
           analysis: latestAnalysis,
           recreation,
           analysisJob,
-          hooks: video.hooks,
-          ideaCount: video.ideas?.length ?? 0,
+          hooks,
+          ideaCount,
           scrapedAt: video.scrapedAt.toISOString(),
           actions: {
             canAnalyze: true,
-            hasAnalysis: video.analyses.length > 0,
+            hasAnalysis: analysisCount > 0,
             canExtractHook: !!latestAnalysis && (latestAnalysis.analysisBasis.startsWith('video') || latestAnalysis.analysisBasis === 'transcript+thumbnail'),
-            hasIdea: (video.ideas?.length ?? 0) > 0,
+            hasIdea: ideaCount > 0,
           },
         }, null, 2) }],
       };

@@ -18,7 +18,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
-import { coerceRowDates, dbDialect } from '../store.js';
+import { chunked, coerceRowDates, dbDialect } from '../store.js';
 import { CREDIT_COSTS, refundCredits } from './credits.js';
 import { classifyFetchError } from './fetch-errors.js';
 import { notifyScrapeFailure, markScrapeSuccess } from './scrape-alert.js';
@@ -455,11 +455,15 @@ export async function latestFetchErrors(
 ): Promise<Record<string, { code: string; message: string }>> {
   if (videoIds.length === 0) return {};
   const ids = [...new Set(videoIds)];
-  const rows = (await db.mediaJob.findMany({
-    where: { videoId: { in: ids }, kind: 'fetch', status: 'failed', lastError: { not: null } },
-    orderBy: { createdAt: 'desc' },
-    select: { videoId: true, lastError: true },
-  })) as unknown as Array<{ videoId: string; lastError: string | null }>;
+  const rows: Array<{ videoId: string; lastError: string | null }> = [];
+  await chunked(ids, async (chunk) => {
+    const part = (await db.mediaJob.findMany({
+      where: { videoId: { in: chunk }, kind: 'fetch', status: 'failed', lastError: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      select: { videoId: true, lastError: true },
+    })) as unknown as Array<{ videoId: string; lastError: string | null }>;
+    rows.push(...part);
+  });
 
   const out: Record<string, { code: string; message: string }> = {};
   for (const r of rows) {

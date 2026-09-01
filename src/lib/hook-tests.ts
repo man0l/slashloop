@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { db } from '../db.js';
-import { isUniqueViolation } from '../store.js';
+import { chunked, isUniqueViolation } from '../store.js';
 import { resolveThumbUrl } from './media.js';
 import { generateHookTestDraft, type HookTestDraft, type HookTestLock } from '../analysis/hook-tests.js';
 
@@ -397,31 +397,53 @@ export async function listHookTests(
     },
     orderBy: { createdAt: 'desc' },
     take: 100,
-    include: {
-      video: {
-        select: { creatorHandle: true, caption: true, url: true, thumbKey: true, thumbStatus: true, thumbnailUrl: true },
-      },
-      versions: { select: { status: true } },
-    },
+  });
+
+  const videosById = new Map<string, {
+    id: string; creatorHandle: string; caption: string; url: string;
+    thumbKey: string | null; thumbStatus: string; thumbnailUrl: string;
+  }>();
+  const versionsByTest = new Map<string, Array<{ status: string }>>();
+  await chunked(tests.map((t) => t.videoId), async (ids) => {
+    const videos = await db.video.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, creatorHandle: true, caption: true, url: true, thumbKey: true, thumbStatus: true, thumbnailUrl: true },
+    });
+    for (const v of videos) videosById.set(v.id, v);
+  });
+  await chunked(tests.map((t) => t.id), async (ids) => {
+    const versions = await db.hookVersion.findMany({
+      where: { testId: { in: ids } },
+      select: { testId: true, status: true },
+    });
+    for (const ver of versions) {
+      const list = versionsByTest.get(ver.testId) ?? [];
+      list.push({ status: ver.status });
+      versionsByTest.set(ver.testId, list);
+    }
   });
 
   const rank = (status: string) => (OPEN_TEST_STATUSES.includes(status) ? 0 : 1);
   return tests
     .sort((a, b) => rank(a.status) - rank(b.status))
-    .map((t) => ({
-      id: t.id,
-      videoId: t.videoId,
-      status: t.status,
-      insight: t.insight,
-      winnerLabel: t.winnerLabel,
-      creatorHandle: t.video.creatorHandle,
-      caption: t.video.caption,
-      videoUrl: t.video.url,
-      thumbUrl: resolveThumbUrl(t.video),
-      pickedCount: t.versions.filter((v) => v.status === 'picked').length,
-      proposalCount: t.versions.filter((v) => v.status === 'proposed').length,
-      createdAt: t.createdAt.toISOString(),
-    }));
+    .map((t) => {
+      const video = videosById.get(t.videoId);
+      const versions = versionsByTest.get(t.id) ?? [];
+      return {
+        id: t.id,
+        videoId: t.videoId,
+        status: t.status,
+        insight: t.insight,
+        winnerLabel: t.winnerLabel,
+        creatorHandle: video?.creatorHandle ?? '',
+        caption: video?.caption ?? '',
+        videoUrl: video?.url ?? '',
+        thumbUrl: video ? resolveThumbUrl(video) : null,
+        pickedCount: versions.filter((v) => v.status === 'picked').length,
+        proposalCount: versions.filter((v) => v.status === 'proposed').length,
+        createdAt: t.createdAt.toISOString(),
+      };
+    });
 }
 
 /**

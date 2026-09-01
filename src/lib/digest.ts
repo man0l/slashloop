@@ -17,6 +17,7 @@ import { dbDialect } from '../store.js';
 import type { Workspace } from '@prisma/client';
 import { isStorageEnabled, publicUrl, thumbBucket, thumbPath } from './storage.js';
 import { backfillThumbsViaOembed } from './media.js';
+import { canonicalSiteUrl } from './cors.js';
 
 const DIGEST_MIN_OUTLIER_SCORE = 5;
 const TOP_OUTLIERS_IN_DIGEST = 5;
@@ -215,9 +216,9 @@ const fmtViews = (n: number): string =>
     : n >= 1_000 ? `${(n / 1_000).toFixed(0)}K`
       : `${n}`;
 
-/** Where "Email settings" points. SITE_URL is the slashloop-site frontend. */
+/** Where "Email settings" points. Prefer the live .dev host over a stale SITE_URL. */
 function siteUrl(): string {
-  return (process.env.SITE_URL ?? 'https://slashloop.dev').replace(/\/$/, '');
+  return canonicalSiteUrl();
 }
 
 /**

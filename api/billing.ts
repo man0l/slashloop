@@ -14,12 +14,12 @@ import { verifySupabaseJwt } from '../remote/auth.js';
 import { db } from '../src/db.js';
 import { primaryWorkspaceByOwnerId } from '../src/lib/workspaces.js';
 import { requireStripe, priceIdFor, customerIdField } from '../src/lib/stripe.js';
-import { corsHeaders, corsPreflight } from '../src/lib/cors.js';
+import { corsHeaders, corsPreflight, siteUrlForRequest } from '../src/lib/cors.js';
 
 // $10 minimum for a credit top-up (mirrors the stepper's floor on the site).
 const MIN_PACK_AMOUNT_CENTS = 1000;
 
-const SITE_URL = (process.env.SITE_URL ?? '').replace(/\/$/, '');
+
 
 function json(status: number, body: unknown, request: Request): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
@@ -64,7 +64,8 @@ async function handleCheckout(request: Request): Promise<Response> {
   const claims = await authenticate(request);
   if (!claims) return json(401, { error: 'invalid_token' }, request);
 
-  if (!SITE_URL) return json(500, { error: 'SITE_URL is not configured on the server' }, request);
+  const siteUrl = siteUrlForRequest(request);
+  if (!siteUrl) return json(500, { error: 'SITE_URL is not configured on the server' }, request);
 
   let body: { planKey?: string; interval?: string; amountCents?: number };
   try {
@@ -128,8 +129,8 @@ async function handleCheckout(request: Request): Promise<Response> {
             quantity: 1,
           },
         ],
-        success_url: `${SITE_URL}/billing/success`,
-        cancel_url: `${SITE_URL}/billing/cancel`,
+        success_url: `${siteUrl}/billing/success`,
+        cancel_url: `${siteUrl}/billing/cancel`,
       });
     } else {
       session = await stripe.checkout.sessions.create({
@@ -137,8 +138,8 @@ async function handleCheckout(request: Request): Promise<Response> {
         customer: customerId,
         client_reference_id: claims.sub,
         line_items: [{ price: priceIdFor(planKey, interval as string), quantity: 1 }],
-        success_url: `${SITE_URL}/billing/success`,
-        cancel_url: `${SITE_URL}/billing/cancel`,
+        success_url: `${siteUrl}/billing/success`,
+        cancel_url: `${siteUrl}/billing/cancel`,
         allow_promotion_codes: true,
       });
     }
@@ -155,7 +156,8 @@ async function handlePortal(request: Request): Promise<Response> {
   const claims = await authenticate(request);
   if (!claims) return json(401, { error: 'invalid_token' }, request);
 
-  if (!SITE_URL) return json(500, { error: 'SITE_URL is not configured on the server' }, request);
+  const siteUrl = siteUrlForRequest(request);
+  if (!siteUrl) return json(500, { error: 'SITE_URL is not configured on the server' }, request);
 
   const workspace = await primaryWorkspaceByOwnerId(claims.sub);
   const customerId = workspace?.[customerIdField()];
@@ -166,7 +168,7 @@ async function handlePortal(request: Request): Promise<Response> {
   const stripe = requireStripe();
   const portal = await stripe.billingPortal.sessions.create({
     customer: customerId,
-    return_url: `${SITE_URL}/account`,
+    return_url: `${siteUrl}/account`,
   });
 
   return json(200, { url: portal.url }, request);

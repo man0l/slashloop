@@ -252,19 +252,22 @@ export async function updateSourceForWorkspace(
   const isCreator = owned.sourceType === 'creator';
   const isSelf = wantSelf === undefined ? undefined : Boolean(wantSelf) && isCreator;
 
-  // See createSourceForWorkspace — sequential on D1 (race is cosmetic).
-  if (isSelf === true && dbDialect() === 'sqlite') {
-    await db.source.updateMany({
-      where: { workspaceId: workspace.id, isSelf: true, NOT: { id: sourceId } },
-      data: { isSelf: false },
-    });
-    return db.source.update({
-      where: { id: sourceId },
-      data: {
-        ...rest,
-        ...(isSelf === undefined ? {} : { isSelf }),
-      },
-    }).catch(() => null);
+  const data = {
+    ...rest,
+    ...(isSelf === undefined ? {} : { isSelf }),
+  };
+
+  // Sequential on D1: Prisma's adapter ignores interactive transactions and
+  // a phantom BEGIN + the UPDATE can hang the binding. Race on isSelf is
+  // cosmetic (self-heals on the next update).
+  if (dbDialect() === 'sqlite') {
+    if (isSelf === true) {
+      await db.source.updateMany({
+        where: { workspaceId: workspace.id, isSelf: true, NOT: { id: sourceId } },
+        data: { isSelf: false },
+      });
+    }
+    return db.source.update({ where: { id: sourceId }, data }).catch(() => null);
   }
 
   return db.$transaction(async (tx) => {
@@ -274,13 +277,7 @@ export async function updateSourceForWorkspace(
         data: { isSelf: false },
       });
     }
-    return tx.source.update({
-      where: { id: sourceId },
-      data: {
-        ...rest,
-        ...(isSelf === undefined ? {} : { isSelf }),
-      },
-    });
+    return tx.source.update({ where: { id: sourceId }, data });
   }).catch(() => null);
 }
 
@@ -288,12 +285,16 @@ export async function deleteSourceForWorkspace(workspace: Workspace, sourceId: s
   const owned = await db.source.findFirst({ where: { id: sourceId, workspaceId: workspace.id } });
   if (!owned) return false;
 
-  // Delete in FK order
+  // Delete in FK order. Chunk IN-lists: D1 caps bound params at ~98, and a
+  // busy source can have hundreds of videos.
+  const videoIds = (await db.video.findMany({ where: { sourceId }, select: { id: true } })).map((v) => v.id);
   await db.hook.deleteMany({ where: { video: { sourceId } } });
   await db.swipeEntry.deleteMany({ where: { video: { sourceId } } });
   await db.idea.deleteMany({ where: { video: { sourceId } } });
-  await db.analysis.deleteMany({ where: { videoId: { in: (await db.video.findMany({ where: { sourceId }, select: { id: true } })).map(v => v.id) } } });
-  await db.score.deleteMany({ where: { videoId: { in: (await db.video.findMany({ where: { sourceId }, select: { id: true } })).map(v => v.id) } } });
+  await chunked(videoIds, async (ids) => {
+    await db.analysis.deleteMany({ where: { videoId: { in: ids } } });
+    await db.score.deleteMany({ where: { videoId: { in: ids } } });
+  });
   await db.refreshRun.deleteMany({ where: { sourceId } });
   await db.video.deleteMany({ where: { sourceId } });
   await db.source.delete({ where: { id: sourceId } }).catch(() => null);

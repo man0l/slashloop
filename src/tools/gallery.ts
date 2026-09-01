@@ -16,6 +16,7 @@ import { z } from 'zod/v4';
 import type { Prisma } from '@prisma/client';
 import { registerAppTool, registerAppResource, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { db } from '../db.js';
+import { chunked } from '../store.js';
 import { requireWorkspace, currentUserId } from '../context.js';
 import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls } from '../lib/media.js';
 import { latestFetchErrors } from '../lib/jobs.js';
@@ -255,12 +256,20 @@ export async function buildCards(
   const BADGE_TEST_STATUSES = [...OPEN_TEST_STATUSES, 'won'];
   const openTests = ranked.length ? await db.hookTest.findMany({
     where: { workspaceId: workspace.id, videoId: { in: ranked.map(v => v.id) }, status: { in: BADGE_TEST_STATUSES } },
-    select: { id: true, videoId: true, status: true, winnerLabel: true, versions: { where: { status: 'picked' }, select: { id: true } } },
+    select: { id: true, videoId: true, status: true, winnerLabel: true },
   }) : [];
+  const pickedCountByTest = new Map<string, number>();
+  await chunked(openTests.map((t) => t.id), async (ids) => {
+    const picked = await db.hookVersion.findMany({
+      where: { testId: { in: ids }, status: 'picked' },
+      select: { testId: true },
+    });
+    for (const row of picked) pickedCountByTest.set(row.testId, (pickedCountByTest.get(row.testId) ?? 0) + 1);
+  });
   const testsByVideo = new Map(openTests.map(t => [t.videoId, {
     id: t.id,
     status: t.status,
-    pickedCount: t.versions.length,
+    pickedCount: pickedCountByTest.get(t.id) ?? 0,
     ...(t.winnerLabel ? { winnerLabel: t.winnerLabel } : {}),
   }]));
 
