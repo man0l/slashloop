@@ -18,6 +18,7 @@ on:
     branches: [master]
     paths:
       - 'src/worker/**'
+      - 'src/store.ts'
       - 'src/analysis/**'
       - 'src/lib/**'
       - 'src/scoring.ts'
