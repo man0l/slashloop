@@ -21,7 +21,7 @@ import { join } from 'node:path';
 /**
  * GH secret/variable name → Worker env name. Everything the Worker should see
  * goes here explicitly — an allowlist, not a firehose: CI runtimes export
- * dozens of GITHUB_*/RUNNER_* vars that must never reach the Worker.
+ * dozens of GITHUB_* and RUNNER_* vars that must never reach the Worker.
  */
 const MANIFEST = {
   // ── from repo/environment SECRETS ──
