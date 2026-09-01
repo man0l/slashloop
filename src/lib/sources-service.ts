@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import type { Prisma, Source, Workspace } from '@prisma/client';
 import { db } from '../db.js';
 import { chunked, dbDialect } from '../store.js';
+import { resolveThumbUrl } from './media.js';
 import { scrapeCapKind, scrapeSource, trafficStatus } from './scrapers/index.js';
 import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
 import { TrafficCapExceededError } from './scrapers/bandwidth.js';
@@ -54,6 +55,101 @@ export interface ListSourcesFilters {
   nicheTag?: string;
 }
 
+function sqlIn(ids: string[]): { clause: string; params: string[] } {
+  if (dbDialect() === 'sqlite') {
+    return { clause: ids.map(() => '?').join(', '), params: ids };
+  }
+  return { clause: ids.map((_, i) => `$${i + 1}`).join(', '), params: ids };
+}
+
+function isoDate(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
+/**
+ * One-row-per-source extras for the Sources page (thumb + last refresh).
+ * The site used to GET gallery-data?limit=1 and GET /sources?id= per row —
+ * N+1 HTTP, and each of those fanned Prisma includes. These window queries
+ * are one statement per chunk instead.
+ */
+async function listSourceRowExtras(ids: string[]): Promise<{
+  thumbUrlBySource: Map<string, string | null>;
+  lastRunBySource: Map<string, { errorsJson: string; ranAt: string }>;
+  lastJobBySource: Map<string, { status: string; lastError: string | null; createdAt: string }>;
+}> {
+  const thumbUrlBySource = new Map<string, string | null>();
+  const lastRunBySource = new Map<string, { errorsJson: string; ranAt: string }>();
+  const lastJobBySource = new Map<string, { status: string; lastError: string | null; createdAt: string }>();
+  if (ids.length === 0) return { thumbUrlBySource, lastRunBySource, lastJobBySource };
+
+  const baselineFalse = dbDialect() === 'sqlite' ? '0' : 'false';
+
+  await chunked(ids, async (chunk) => {
+    const { clause, params } = sqlIn(chunk);
+
+    const thumbRows = await db.$queryRawUnsafe<Array<{
+      sourceId: string; thumbKey: string | null; thumbnailUrl: string | null;
+    }>>(
+      `SELECT sourceId, thumbKey, thumbnailUrl FROM (
+         SELECT v."sourceId" AS sourceId, v."thumbKey" AS thumbKey, v."thumbnailUrl" AS thumbnailUrl,
+                ROW_NUMBER() OVER (
+                  PARTITION BY v."sourceId"
+                  ORDER BY CASE WHEN s."outlierScore" IS NULL THEN 1 ELSE 0 END,
+                           s."outlierScore" DESC, v."postedAt" DESC
+                ) AS rn
+         FROM "Video" v
+         LEFT JOIN "Score" s ON s."videoId" = v."id"
+         WHERE v."sourceId" IN (${clause})
+           AND v."isBaselineSample" = ${baselineFalse}
+       ) ranked WHERE rn = 1`,
+      ...params,
+    );
+    for (const row of thumbRows) {
+      thumbUrlBySource.set(row.sourceId, resolveThumbUrl({
+        thumbKey: row.thumbKey,
+        thumbnailUrl: row.thumbnailUrl ?? '',
+      }));
+    }
+
+    const runRows = await db.$queryRawUnsafe<Array<{
+      sourceId: string; errorsJson: string; ranAt: unknown;
+    }>>(
+      `SELECT sourceId, errorsJson, ranAt FROM (
+         SELECT r."sourceId" AS sourceId, r."errorsJson" AS errorsJson, r."ranAt" AS ranAt,
+                ROW_NUMBER() OVER (PARTITION BY r."sourceId" ORDER BY r."ranAt" DESC) AS rn
+         FROM "RefreshRun" r
+         WHERE r."sourceId" IN (${clause})
+       ) ranked WHERE rn = 1`,
+      ...params,
+    );
+    for (const row of runRows) {
+      lastRunBySource.set(row.sourceId, { errorsJson: row.errorsJson ?? '[]', ranAt: isoDate(row.ranAt) });
+    }
+
+    const jobRows = await db.$queryRawUnsafe<Array<{
+      sourceId: string; status: string; lastError: string | null; createdAt: unknown;
+    }>>(
+      `SELECT sourceId, status, lastError, createdAt FROM (
+         SELECT j."sourceId" AS sourceId, j."status" AS status, j."lastError" AS lastError, j."createdAt" AS createdAt,
+                ROW_NUMBER() OVER (PARTITION BY j."sourceId" ORDER BY j."createdAt" DESC) AS rn
+         FROM "MediaJob" j
+         WHERE j."sourceId" IN (${clause}) AND j."kind" = 'refresh'
+       ) ranked WHERE rn = 1`,
+      ...params,
+    );
+    for (const row of jobRows) {
+      lastJobBySource.set(row.sourceId, {
+        status: row.status,
+        lastError: row.lastError,
+        createdAt: isoDate(row.createdAt),
+      });
+    }
+  });
+
+  return { thumbUrlBySource, lastRunBySource, lastJobBySource };
+}
+
 export async function listSourcesForWorkspace(workspace: Workspace, filters: ListSourcesFilters) {
   // No `_count` include: Prisma's D1 adapter fans those into concurrent
   // prepared statements, which hang the binding. Two sequential groupBys
@@ -86,6 +182,8 @@ export async function listSourcesForWorkspace(workspace: Workspace, filters: Lis
     for (const row of refreshCounts) refreshCountBySource.set(row.sourceId, row._count._all);
   });
 
+  const extras = await listSourceRowExtras(sources.map((s) => s.id));
+
   return sources.map(s => ({
     id: s.id,
     platform: s.platform,
@@ -102,6 +200,9 @@ export async function listSourcesForWorkspace(workspace: Workspace, filters: Lis
     lastRefreshedAt: s.lastRefreshedAt?.toISOString() ?? null,
     consecutiveFails: s.consecutiveFails,
     createdAt: s.createdAt.toISOString(),
+    thumbUrl: extras.thumbUrlBySource.get(s.id) ?? null,
+    lastRefreshRun: extras.lastRunBySource.get(s.id) ?? null,
+    lastRefreshJob: extras.lastJobBySource.get(s.id) ?? null,
   }));
 }
 
