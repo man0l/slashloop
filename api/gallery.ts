@@ -117,6 +117,7 @@ const SORT_VALUES = new Set<GalleryFilters['sortBy']>(['outlier_score', 'views',
 async function handleData(request: Request, url: URL): Promise<Response> {
   const auth = await requireOwnedWorkspace(request, url.searchParams.get('workspaceId'));
   if (!auth.ok) return auth.response;
+  console.log('[gallery-data] auth ok', Date.now());
 
   // Hover preview on the site's Gallery — already-scraped outliers + last 5
   // for one creator, no live scrape. Distinct response shape (outliers/recent,
@@ -140,6 +141,7 @@ async function handleData(request: Request, url: URL): Promise<Response> {
   // reads the current user id from AsyncLocalStorage (the MCP-tool context
   // primitive, see src/context.ts) — run this REST handler inside that same
   // context rather than re-deriving workspace resolution here.
+  console.log('[gallery-data] calling buildCards', Date.now());
   const { cards, note, filters } = await runWithUser(auth.userId, () =>
     buildCards({
       workspaceId: auth.workspace.id,
@@ -154,6 +156,7 @@ async function handleData(request: Request, url: URL): Promise<Response> {
     }),
   );
 
+  console.log('[gallery-data] buildCards done', Date.now(), 'cards:', cards.length);
   return jsonResponse(200, { cards, note, filters }, request);
 }
 
