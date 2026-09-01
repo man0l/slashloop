@@ -180,6 +180,13 @@ async function sweepExpiredListings(): Promise<{ scanned: number; deleted: numbe
       db.swipeEntry.deleteMany({ where: { videoId: { in: ids } } }),
       db.score.deleteMany({ where: { videoId: { in: ids } } }),
       db.mediaJob.deleteMany({ where: { videoId: { in: ids } } }),
+      // Same latent-bug fix as the SQLite cascade: hook tests are
+      // Video-scoped, and skipping them failed the whole sweep with an FK
+      // error the first time an expiring video had an open test.
+      db.hookVersion.deleteMany({
+        where: { test: { videoId: { in: ids } } },
+      }),
+      db.hookTest.deleteMany({ where: { videoId: { in: ids } } }),
       db.analysis.deleteMany({ where: { videoId: { in: ids } } }),
       db.video.deleteMany({ where: { id: { in: ids } } }),
     ]);
@@ -224,6 +231,14 @@ async function sweepExpiredListingsSqlite(ids: string[]): Promise<void> {
     { sql: `DELETE FROM "SwipeEntry" WHERE "videoId" IN (${selection})` },
     { sql: `DELETE FROM "Score" WHERE "videoId" IN (${selection})` },
     { sql: `DELETE FROM "MediaJob" WHERE "videoId" IN (${selection})` },
+    // Hook tests are Video-scoped user content: HookVersion -> HookTest ->
+    // Video. The original Postgres cascade missed both, so expiring a video
+    // with an open hook test failed the whole FK-ordered sweep (found live
+    // 2026-09-01 on D1 — the same latent bug exists on the pg path).
+    { sql: `DELETE FROM "HookVersion" WHERE "testId" IN (
+        SELECT ht."id" FROM "HookTest" ht WHERE ht."videoId" IN (${selection})
+      )` },
+    { sql: `DELETE FROM "HookTest" WHERE "videoId" IN (${selection})` },
     { sql: `DELETE FROM "Analysis" WHERE "videoId" IN (${selection})` },
     { sql: `DELETE FROM "Video" WHERE "id" IN (${selection})` },
   ];
