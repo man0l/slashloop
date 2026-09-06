@@ -9,6 +9,7 @@ import { buildRemoteMcp, type Claims } from '../remote/mcp-server.js';
 import { runWithUser } from '../src/context.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getUiCapability } from '@modelcontextprotocol/ext-apps/server';
+import { trackAIBot } from '../src/ai-bots.js';
 
 function originFromWeb(request: Request): string {
   if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/$/, '');
@@ -80,9 +81,14 @@ export async function POST(request: Request): Promise<Response> {
       console.log(`mcp-apps host=${JSON.stringify(mcp.server.getClientVersion()?.name ?? '?')} ui=false (no io.modelcontextprotocol/ui at initialize — gallery will not render inline; /gallery link is the path)`);
     }
   });
+  await trackAIBot(request, response);
   return response;
 }
 
-export async function GET(): Promise<Response> { return methodNotAllowed(); }
+export async function GET(request: Request): Promise<Response> {
+  const r = methodNotAllowed();
+  await trackAIBot(request, r);
+  return r;
+}
 export async function PUT(): Promise<Response> { return methodNotAllowed(); }
 export async function DELETE(): Promise<Response> { return methodNotAllowed(); }
