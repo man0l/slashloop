@@ -9,7 +9,7 @@ import { buildRemoteMcp, type Claims } from '../remote/mcp-server.js';
 import { runWithUser } from '../src/context.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getUiCapability } from '@modelcontextprotocol/ext-apps/server';
-import { trackAIBot } from '../src/ai-bots.js';
+import { trackAIBot } from 'indiestack-ai-bots';
 
 function originFromWeb(request: Request): string {
   if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/$/, '');
