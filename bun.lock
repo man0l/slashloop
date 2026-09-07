@@ -13,7 +13,7 @@
         "@prisma/client": "^6.16.0",
         "date-fns": "^4.1.0",
         "impit": "^0.14.3",
-        "indiestack-ai-bots": "^0.1.0",
+        "indiestack-ai-bots": "^0.1.2",
         "jose": "^5.9.0",
         "playwright": "^1.62.1",
         "playwright-extra": "^4.3.6",
@@ -528,7 +528,7 @@
 
     "impit-win32-x64-msvc": ["impit-win32-x64-msvc@0.14.3", "", { "os": "win32", "cpu": "x64" }, "sha512-HIaLSpU5SGVx3UDH/R3ZaGMURVgyRVjmalqXj65ABxVUqfXiBo1t5ZObDPPjqvLT3klPnrya1+xF1DQ4dfT+og=="],
 
-    "indiestack-ai-bots": ["indiestack-ai-bots@0.1.0", "", {}, "sha512-bkGWxLZwfiv2K8ggPI2FpkXyEP//otPTgVGepu5/X9HPC7jRVwLIRjs9kAEbnkdgDrJB4ysEcIpwddUoNel1GA=="],
+    "indiestack-ai-bots": ["indiestack-ai-bots@0.1.2", "", {}, "sha512-QwP9y0lIiQYPNMYlLd+gLnDonyYe9V05gV4fAsA+vOK9C3Nid9Ww3viT7VU0bMGuXiF5OLlKt9S8KhaZewM0Jw=="],
 
     "inflight": ["inflight@1.0.6", "", { "dependencies": { "once": "^1.3.0", "wrappy": "1" } }, "sha512-k92I/b08q4wvFscXCLvqfsHCrjrF7yiXsQuIVvVE7N82W3+aqpzuUdBbfhWcy/FZR3/4IgflMgKLOsvPDrGCJA=="],
 
