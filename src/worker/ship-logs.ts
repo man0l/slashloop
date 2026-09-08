@@ -1,6 +1,7 @@
 // ---------------------------------------------------------------------------
 // Best-effort async log shipping from the VPS worker to indiestack.
-// POSTs buffered console output to INDIESTACK_LOG_URL (full /log/<token> URL).
+// POSTs one JSON object per console line:
+//   { service, host, ts, level, message }
 //
 // Fail-open by construction — a dead/slow endpoint must never affect the
 // worker loop:
@@ -12,32 +13,39 @@
 //   * bounded in-memory buffer (oldest dropped past the cap — memory cannot
 //     grow, even if the endpoint is down for days)
 //   * background interval flush that nothing awaits; each flush is
-//     try/caught with a short timeout, and a failed batch is dropped, not
-//     retried into an ever-growing backlog
-//   * bodies are measured to stay under indiestack's 8KB cap
+//     try/caught with a short per-request timeout, and failed lines are
+//     dropped, not retried into an ever-growing backlog
 //
 // Bun/Node only. Never imported by the Cloudflare Worker.
 // ---------------------------------------------------------------------------
 
 import { hostname } from 'node:os';
 
-/** indiestack keeps 8KB per POST — stay comfortably under it. */
-const MAX_BODY_BYTES = 7 * 1024;
-/** Longest single line kept; TikTok API error dumps can run to KBs. */
-const MAX_LINE_CHARS = 500;
-/** Most lines retained between flushes (memory bound). */
-const MAX_BUFFER_LINES = 400;
-/** Lines per POST at most (with truncation above, always under the byte cap). */
-const MAX_LINES_PER_POST = 40;
+/** Longest single message kept; TikTok API error dumps can run to KBs. */
+const MAX_MESSAGE_CHARS = 2000;
+/** Most entries retained between flushes (memory bound). */
+const MAX_BUFFER_ENTRIES = 400;
+/** Entries shipped per flush at most (keeps the burst small). */
+const MAX_ENTRIES_PER_FLUSH = 30;
+/** Parallel POSTs per flush at most. */
+const FLUSH_CONCURRENCY = 4;
 
-const FLUSH_TIMEOUT_MS = 10_000;
+const POST_TIMEOUT_MS = 10_000;
+
+export type LogLevel = 'log' | 'warn' | 'error';
+
+export interface LogEntry {
+  level: LogLevel;
+  message: string;
+  ts: number;
+}
 
 export interface LogShipper {
-  /** Append one pre-formatted line (drops oldest past the cap). */
-  push(line: string): void;
-  /** Send one batch now. Never throws. */
+  /** Append one entry (drops oldest past the cap). */
+  push(level: LogLevel, message: string): void;
+  /** Ship one batch now. Never throws. */
   flush(): Promise<void>;
-  /** Buffered line count (tests/diagnostics). */
+  /** Buffered entry count (tests/diagnostics). */
   size(): number;
 }
 
@@ -52,11 +60,10 @@ function formatArg(arg: unknown): string {
   }
 }
 
-/** One console call → one line, truncated. Pure (unit-tested). */
-export function formatLine(level: string, args: unknown[]): string {
+/** Console args → one message string, truncated. Pure (unit-tested). */
+export function formatMessage(args: unknown[]): string {
   const text = args.map(formatArg).join(' ');
-  const line = text.length > MAX_LINE_CHARS ? `${text.slice(0, MAX_LINE_CHARS)}…` : text;
-  return level === 'log' ? line : `[${level}] ${line}`;
+  return text.length > MAX_MESSAGE_CHARS ? `${text.slice(0, MAX_MESSAGE_CHARS)}…` : text;
 }
 
 export interface ShipperOptions {
@@ -70,22 +77,33 @@ export interface ShipperOptions {
 export function createLogShipper(opts: ShipperOptions): LogShipper {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const now = opts.now ?? Date.now;
-  const buf: string[] = [];
+  const host = opts.host ?? safeHostname();
+  const buf: LogEntry[] = [];
   let flushing = false;
 
-  function buildBody(lines: string[]): string {
-    return JSON.stringify({
-      service: opts.service,
-      host: opts.host ?? safeHostname(),
-      ts: new Date(now()).toISOString(),
-      lines,
-    });
+  function postOne(entry: LogEntry): Promise<void> {
+    const controller = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(POST_TIMEOUT_MS) : undefined;
+    return fetchImpl(opts.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        service: opts.service,
+        host,
+        ts: new Date(entry.ts).toISOString(),
+        level: entry.level === 'log' ? 'info' : entry.level,
+        message: entry.message,
+      }),
+      ...(controller ? { signal: controller } : {}),
+    }).then(
+      () => undefined,
+      () => undefined, // failed lines are dropped, never requeued
+    );
   }
 
   return {
-    push(line: string): void {
-      buf.push(line);
-      while (buf.length > MAX_BUFFER_LINES) buf.shift();
+    push(level: LogLevel, message: string): void {
+      buf.push({ level, message, ts: now() });
+      while (buf.length > MAX_BUFFER_ENTRIES) buf.shift();
     },
 
     size(): number {
@@ -96,28 +114,10 @@ export function createLogShipper(opts: ShipperOptions): LogShipper {
       if (flushing || buf.length === 0) return;
       flushing = true;
       try {
-        // Shift only what fits this post; the rest waits for the next tick
-        // (still bounded by the push-time cap).
-        const overhead = Buffer.byteLength(buildBody([]));
-        const batch: string[] = [];
-        let bytes = overhead;
-        while (buf.length > 0 && batch.length < MAX_LINES_PER_POST) {
-          const lb = Buffer.byteLength(buf[0]!) + 3; // quotes + comma/edge
-          if (bytes + lb > MAX_BODY_BYTES && batch.length > 0) break;
-          bytes += lb;
-          batch.push(buf.shift()!);
+        const batch = buf.splice(0, Math.min(buf.length, MAX_ENTRIES_PER_FLUSH));
+        for (let i = 0; i < batch.length; i += FLUSH_CONCURRENCY) {
+          await Promise.all(batch.slice(i, i + FLUSH_CONCURRENCY).map(postOne));
         }
-        if (batch.length === 0) return;
-        const controller = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(FLUSH_TIMEOUT_MS) : undefined;
-        await fetchImpl(opts.url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: buildBody(batch),
-          ...(controller ? { signal: controller } : {}),
-        }).catch(() => null);
-        // Response intentionally ignored: ok or not, the batch is dropped.
-        // Retrying a dead endpoint would backlog memory; the next tick ships
-        // fresh lines instead.
       } catch {
         // Never let shipping throw into the worker loop.
       } finally {
@@ -165,7 +165,7 @@ export function initLogShipping(kinds: string[]): void {
         return;
       }
       try {
-        shipper.push(formatLine(level, args));
+        shipper.push(level, formatMessage(args));
       } catch {
         // Buffering must never break logging.
       }

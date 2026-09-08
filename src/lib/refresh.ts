@@ -428,6 +428,10 @@ async function settleAndApply(opts: {
   platform: string;
   sourceType: string;
   query: string;
+  /** Scraper-resolved canonical identity (collection share URL). Adopted as
+   *  the source's display query when it differs — the row then shows the
+   *  real collection name instead of the bare id it was tracked with. */
+  canonicalQuery?: string | null;
   isBaselineOnly: boolean;
   modeLabel: string;
   planPostedAfter?: Date;
@@ -543,8 +547,21 @@ async function settleAndApply(opts: {
     }
   }
 
+  // Adopt the scraper-resolved canonical query (collection share URLs carry
+  // the real collection name). Best-effort: a label must never fail a
+  // refresh, and it only ever runs when the scrape itself landed items.
+  let query = opts.query;
+  if (opts.canonicalQuery && opts.canonicalQuery !== opts.query && opts.items.length > 0) {
+    try {
+      await db.source.update({ where: { id: opts.sourceId }, data: { query: opts.canonicalQuery } });
+      query = opts.canonicalQuery;
+    } catch (err) {
+      console.warn(`[refresh] canonical query not saved for ${opts.sourceId}: ${(err as Error).message}`);
+    }
+  }
+
   return {
-    ok: true, ...base,
+    ok: true, ...base, query,
     itemsPulled: opts.items.length,
     newVideos: apply.newVideos,
     costCents: opts.attributedCostCents,
@@ -661,6 +678,7 @@ async function runRefreshSolo(opts: {
 
   let items: NormalizedVideo[] = [];
   let costCents = 0;
+  let canonicalQuery: string | null = null;
   const errors: string[] = [];
 
   try {
@@ -674,6 +692,7 @@ async function runRefreshSolo(opts: {
     });
     items = result.items;
     costCents = result.costCents;
+    canonicalQuery = result.canonicalQuery ?? null;
     if (result.notices.length > 0) errors.push(...result.notices);
   } catch (err) {
     // Deferred refund (queue caller): keep the debit so a retry is still paid
@@ -714,6 +733,7 @@ async function runRefreshSolo(opts: {
     platform: source.platform,
     sourceType: effectiveSourceType,
     query: effectiveQuery,
+    canonicalQuery,
     isBaselineOnly,
     modeLabel,
     limit,
@@ -991,6 +1011,7 @@ export async function runBatchedRefresh(
       platform: r.source.platform,
       sourceType: r.source.sourceType,
       query: r.source.query,
+      canonicalQuery: scrape.canonicalQuery,
       isBaselineOnly: false,
       modeLabel: r.plan.mode,
       planPostedAfter: r.plan.postedAfter,

@@ -131,12 +131,13 @@ async function readScrapeReceipt(datasetId: string): Promise<ScrapeReceiptBody |
 export async function runTikTokProxyScrape(
   opts: ScrapeOptions & { platform: string },
   http: TikTokHttp,
-): Promise<{ items: ReturnType<typeof normalizeWebItems>; rawCount: number; notices: string[] }> {
+): Promise<{ items: ReturnType<typeof normalizeWebItems>; rawCount: number; notices: string[]; canonicalQuery: string | null }> {
   return withTikTokHttp(http, async () => {
     const req = { limit: opts.limit, postedAfter: opts.postedAfter };
     const notices: string[] = [];
 
     let raw: any[] = [];
+    let canonicalQuery: string | null = null;
 
     if (opts.sourceType === 'collection') {
       // No secUid/challenge lookup: the numeric collection id is the whole
@@ -147,6 +148,7 @@ export async function runTikTokProxyScrape(
         return {
           items: [],
           rawCount: 0,
+          canonicalQuery: null,
           notices: [`Could not read a TikTok collection id out of "${opts.query}" — pass the numeric id or a /collection/ share URL`],
         };
       }
@@ -158,6 +160,7 @@ export async function runTikTokProxyScrape(
         return {
           items: [],
           rawCount: 0,
+          canonicalQuery: null,
           notices: notices.length ? notices : [
             `TikTok collection "${opts.query}" returned no items — it may be invalid, private, or region-blocked`,
           ],
@@ -168,6 +171,13 @@ export async function runTikTokProxyScrape(
           `Collection "${detail.name ?? collectionId}" by @${detail.userName ?? 'unknown'}`
           + `${detail.total != null ? ` (${detail.total} videos)` : ''}`,
         );
+      }
+      if (raw.length && detail?.userName && detail?.name) {
+        // Canonical share URL: carries the human name AND the id, so the
+        // refresh pipeline can adopt it as the source's display query while
+        // extractCollectionId keeps resolving it for future scrapes.
+        canonicalQuery =
+          `https://www.tiktok.com/@${detail.userName}/collection/${detail.name}-${collectionId}`;
       }
     } else if (opts.sourceType === 'creator') {
       // Profile HTML is BOTH identity (secUid) and the first item page.
@@ -199,6 +209,7 @@ export async function runTikTokProxyScrape(
           return {
             items: [],
             rawCount: 0,
+            canonicalQuery: null,
             notices: [`Could not resolve TikTok profile "${opts.query}" — it may not exist, be private, or be region-blocked`],
           };
         }
@@ -221,6 +232,7 @@ export async function runTikTokProxyScrape(
         return {
           items: [],
           rawCount: 0,
+          canonicalQuery: null,
           notices: [`Could not resolve TikTok hashtag "${opts.query}" — it may not exist or has no posts`],
         };
       }
@@ -259,7 +271,7 @@ export async function runTikTokProxyScrape(
     }
 
     const items = normalizeWebItems(raw);
-    return { items, rawCount: raw.length, notices: notices.filter(Boolean) };
+    return { items, rawCount: raw.length, notices: notices.filter(Boolean), canonicalQuery };
   });
 }
 
@@ -373,6 +385,7 @@ export const proxyAdapter: ScraperAdapter = {
       notices: value!.notices,
       provider: PROXY_PROVIDER_NAME,
       bytesUsed: bytes,
+      canonicalQuery: value!.canonicalQuery,
     };
   },
 

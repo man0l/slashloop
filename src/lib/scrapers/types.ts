@@ -52,6 +52,13 @@ export interface ScrapeResult {
   provider?: string;
   /** Bytes moved over the network, when the adapter meters itself. */
   bytesUsed?: number;
+  /**
+   * Canonical identity resolved during the scrape (collections only today:
+   * the full /@owner/collection/<name>-<id> share URL). When present and
+   * different from the tracked query, the refresh pipeline adopts it as the
+   * source's new query so the row shows the real collection name.
+   */
+  canonicalQuery?: string | null;
 }
 
 export interface DownloadOptions {
