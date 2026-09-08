@@ -38,12 +38,14 @@ export async function resolveAccountPlanKey(ownerId: string): Promise<string> {
 }
 
 /** Every workspace a user owns, with `planKey` overridden to the account's
- *  real (primary workspace's) plan — see resolveAccountPlanKey. One extra
- *  query for the whole list, not per row: every row shares the same owner. */
+ *  real (primary workspace's) plan — see resolveAccountPlanKey. No second
+ *  query: rows arrive ordered oldest-first, so row 0 IS the primary. (A
+ *  separate findFirst used to re-ask D1 for what was already in hand — one
+ *  more REST round trip on every /api/workspaces hit.) */
 export async function listWorkspacesForUser(userId: string): Promise<Workspace[]> {
   const workspaces = await db.workspace.findMany({ where: { ownerId: userId }, orderBy: { createdAt: 'asc' } });
   if (workspaces.length === 0) return workspaces;
-  const planKey = await resolveAccountPlanKey(userId);
+  const planKey = workspaces[0].planKey;
   return workspaces.map(w => ({ ...w, planKey }));
 }
 
