@@ -220,8 +220,11 @@ export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
   const jar = new CookieJar();
   console.log('[proxy:impit] chrome TLS via residential proxy');
   try {
+    // Bounded like every other fetch here: a stalled warmup would hang
+    // scrape creation with no error (the catch below only sees failures).
     const warm = await client.fetch('https://www.tiktok.com/', {
       headers: { 'User-Agent': CHROME_UA, Accept: 'text/html' },
+      signal: AbortSignal.timeout(IMPIT_FETCH_TIMEOUT_MS),
     });
     jar.absorb(warm.headers);
     // Cookies live in headers; the body is ~1-2MB we never read. Cancel it.

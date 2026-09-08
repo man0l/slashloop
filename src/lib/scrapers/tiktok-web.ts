@@ -1067,7 +1067,12 @@ export async function fetchSearchPosts(
     }
     if (out.length >= req.limit) break;
     if (json.has_more !== 1 && json.hasMore !== true) break;
-    offset = Number(json.cursor ?? json.offset ?? offset + items.length);
+    const next = Number(json.cursor ?? json.offset ?? offset + items.length);
+    // TikTok repeats cursors on bad device_ids (the same-page loop yt-dlp
+    // guards against) — a repeated offset with has_more set would otherwise
+    // request the same page forever with no error.
+    if (!Number.isFinite(next) || next === offset) break;
+    offset = next;
   }
 
   return { items: out, notices };

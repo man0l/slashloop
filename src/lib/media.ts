@@ -570,7 +570,9 @@ export async function fetchStoredVideo(
 
   try {
     const url = await signUrl(mediaBucket(), mediaKey, signedUrlTtlSeconds());
-    const res = await fetch(url);
+    // Bounded: multi-MB MP4 on a constrained link, but a true stall must
+    // fall back to paying Apify (the caller's path) rather than hang.
+    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
     if (!res.ok) throw new Error(`signed GET ${res.status}`);
 
     const buf = new Uint8Array(await res.arrayBuffer());

@@ -34,6 +34,12 @@ import { isTikTokCdnUrl } from './tiktok-cdn.js';
 export { isTikTokCdnUrl };
 
 const APIFY_API_BASE = 'https://api.apify.com/v2';
+// Per-fetch ceilings. The run-level deadline (RUN_POLL_TIMEOUT_MS) bounds the
+// whole wait, but a single stalled TCP connection would never return to check
+// it — each HTTP call gets its own abort so a dead Apify connection fails the
+// scrape fast instead of occupying a worker slot (or request) indefinitely.
+const APIFY_FETCH_TIMEOUT_MS = 120_000;
+const APIFY_DOWNLOAD_TIMEOUT_MS = 300_000;
 const DEFAULT_TIKTOK_ACTOR_ID = 'clockworks~tiktok-scraper';
 
 /** The actor to try first. Defaults to the production-proven clockworks actor. */
@@ -139,7 +145,7 @@ function usdToCents(usd: unknown): number | null {
  */
 export async function fetchDatasetItems(datasetId: string, apiKey: string): Promise<any[]> {
   const url = `${APIFY_API_BASE}/datasets/${datasetId}/items?token=${apiKey}&clean=true&format=json`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(APIFY_FETCH_TIMEOUT_MS) });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Apify dataset ${datasetId} read failed (${res.status}): ${text.slice(0, 300)}`);
@@ -170,6 +176,7 @@ async function runTikTokActorResumable(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
+      signal: AbortSignal.timeout(APIFY_FETCH_TIMEOUT_MS),
     },
   );
   if (!startRes.ok) {
@@ -197,6 +204,7 @@ async function runTikTokActorResumable(
     }
     const pollRes = await fetch(
       `${APIFY_API_BASE}/actor-runs/${runId}?token=${apiKey}&waitForFinish=${RUN_WAIT_SECONDS}`,
+      { signal: AbortSignal.timeout(APIFY_FETCH_TIMEOUT_MS) },
     );
     if (!pollRes.ok) {
       const text = await pollRes.text();
@@ -244,10 +252,13 @@ async function runTikTokActorSync(
   apiKey: string,
 ): Promise<ActorRunResult> {
   const url = `${APIFY_API_BASE}/acts/${actorId}/run-sync-get-dataset-items?token=${apiKey}`;
+  // Generous: this endpoint blocks server-side until the whole actor run
+  // finishes, so only a true stall (no bytes for 5 min) may abort it.
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
+    signal: AbortSignal.timeout(APIFY_DOWNLOAD_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -737,11 +748,14 @@ export async function downloadTikTokVideo(opts: ApifyDownloadOptions): Promise<A
   // HTTP GET the MP4 binary from Apify's key-value store. These records
   // are public, but we send headers anyway in case we ever fall back to
   // a TikTok CDN URL (which requires User-Agent + Referer or it 403s).
+  // Bounded generously: multi-MB binaries on constrained links, but a true
+  // stall must still fail instead of occupying the job slot indefinitely.
   const videoRes = await fetch(cdnUrl, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'Referer': 'https://www.tiktok.com/',
     },
+    signal: AbortSignal.timeout(APIFY_DOWNLOAD_TIMEOUT_MS),
   });
 
   if (!videoRes.ok) {

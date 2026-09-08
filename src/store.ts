@@ -179,10 +179,14 @@ function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
   const d1Url = `https://api.cloudflare.com/client/v4/accounts/${params.accountId}/d1/database/${params.databaseId}/raw`;
 
   async function single(sql: string, sqlParams: unknown[]): Promise<Array<Record<string, unknown>>> {
+    // Bounded: a stalled D1 REST call would otherwise hang the VPS worker's
+    // current operation until the job timeout. 60s only trips on true stalls
+    // (these calls normally resolve in milliseconds).
     const res = await fetch(d1Url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ sql, params: sqlParams }),
+      signal: AbortSignal.timeout(60_000),
     });
     const body = res.ok
       ? (await res.json()) as { success?: boolean; errors?: Array<{ message?: string }>; result?: Array<{ results?: { columns?: string[]; rows?: unknown[][] } }> }
@@ -209,6 +213,7 @@ function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
         body: JSON.stringify({
           statements: statements.map((s) => ({ sql: s.sql, params: (s.params ?? []).map(d1HttpParam) })),
         }),
+        signal: AbortSignal.timeout(60_000),
       });
       const body = res.ok
         ? (await res.json()) as { success?: boolean; error?: string; results?: Array<Array<Record<string, unknown>>> }

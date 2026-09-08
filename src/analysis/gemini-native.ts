@@ -110,11 +110,14 @@ async function callGeminiGenerate(
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY environment variable is not set');
 
+  // Bounded like the text calls below: a stalled connection must fail the
+  // job fast, not occupy a VPS concurrency slot until the job timeout.
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(300_000),
       body: JSON.stringify({
         system_instruction: { parts: [{ text: systemPrompt }] },
         contents: [{
@@ -260,7 +263,7 @@ export class GeminiNativeAnalyzer implements VideoAnalyzer {
 
     const uploadRes = await fetch(
       `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`,
-      { method: 'POST', body: formData },
+      { method: 'POST', body: formData, signal: AbortSignal.timeout(120_000) },
     );
 
     if (!uploadRes.ok) {
@@ -284,6 +287,7 @@ export class GeminiNativeAnalyzer implements VideoAnalyzer {
     while (true) {
       const statusRes = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/${uploadData.file.name}?key=${apiKey}`,
+        { signal: AbortSignal.timeout(30_000) },
       );
       if (statusRes.ok) {
         const statusData = (await statusRes.json()) as { state?: string; error?: unknown };

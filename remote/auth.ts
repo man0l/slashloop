@@ -12,10 +12,20 @@ export async function verifySupabaseJwt(token: string) {
   const supabaseUrl = (process.env.SUPABASE_URL ?? '').replace(/\/$/, '');
   if (!supabaseUrl) throw new Error('SUPABASE_URL not set');
   const issuer = `${supabaseUrl}/auth/v1`;
-  const { payload } = await jwtVerify(token, getJwks(issuer), {
+  // Bounded: jose fetches the JWKS over plain fetch with no timeout of its
+  // own. A stalled Supabase response would otherwise hang every authed
+  // request forever (no response, no error — the infinite-spinner shape).
+  // Callers map any throw to 401; the site refreshes the session and retries
+  // once, by which time the JWKS is cached and verification is local.
+  const verified = jwtVerify(token, getJwks(issuer), {
     issuer,
     audience: 'authenticated',
   });
+  const timeout = new Promise<never>((_, reject) => {
+    const timer = setTimeout(() => reject(new Error('JWKS verification timed out after 15000ms')), 15_000);
+    timer.unref?.();
+  });
+  const { payload } = await Promise.race([verified, timeout]);
   return payload as {
     sub: string;
     email?: string;

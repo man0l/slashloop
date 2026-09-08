@@ -231,8 +231,10 @@ export async function callOpenRouterText(
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error('OPENROUTER_API_KEY environment variable is not set');
 
+  // Bounded like gemini.ts: text calls run on Worker request paths.
   const res = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
     method: 'POST',
+    signal: AbortSignal.timeout(90_000),
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,

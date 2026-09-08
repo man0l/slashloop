@@ -52,11 +52,15 @@ async function requestGeminiOnce(
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY environment variable is not set');
 
+  // Bounded: text generation runs on Worker request paths (suggest, hooks)
+  // where nothing else caps the wait — a stalled Google connection would
+  // hang the request with no error. 90s only trips on true stalls.
   const res = await fetch(
     `${GEMINI_BASE_URL}/models/${model}:generateContent?key=${apiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(90_000),
       body: JSON.stringify({
         system_instruction: { parts: [{ text: systemPrompt }] },
         contents: [{

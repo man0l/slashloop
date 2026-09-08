@@ -24,12 +24,15 @@ function authHeaders(): { key: string; secret: string } | null {
 async function pcGet<T>(path: string): Promise<T> {
   const auth = authHeaders();
   if (!auth) throw new Error('PROXY_CHEAP_API_KEY / PROXY_CHEAP_API_SECRET are not set');
+  // Bounded: this runs inside every proxy scrape's budget check — a stalled
+  // vendor API would hang the scrape (and the request) with no error.
   const res = await fetch(`${API_BASE}${path}`, {
     headers: {
       Accept: 'application/json',
       'X-Api-Key': auth.key,
       'X-Api-Secret': auth.secret,
     },
+    signal: AbortSignal.timeout(10_000),
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`Proxy-Cheap ${path} failed (${res.status}): ${text.slice(0, 200)}`);

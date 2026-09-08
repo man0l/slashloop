@@ -143,8 +143,10 @@ export async function assertApifyCap(
     if (hook) {
       try {
         if (hook.startsWith('http://') || hook.startsWith('https://')) {
+          // Bounded: notification must never hang the caller.
           await fetch(hook, {
             method: 'POST',
+            signal: AbortSignal.timeout(5_000),
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               event: 'apify_spend_cap_exceeded',

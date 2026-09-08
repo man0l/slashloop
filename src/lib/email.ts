@@ -39,8 +39,10 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
   if (!apiKey) return { sent: false, reason: 'not_configured' };
 
   try {
+    // Bounded: the digest cron must not hang on a stalled email API.
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
+      signal: AbortSignal.timeout(15_000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
