@@ -170,11 +170,13 @@ export async function ingestThumbnails(
 
   for (let i = 0; i < ingestable.length; i += THUMB_CONCURRENCY) {
     const batch = ingestable.slice(i, i + THUMB_CONCURRENCY);
+    // Fetch + store (network/R2) concurrently, then persist statuses
+    // SEQUENTIALLY: concurrent D1 writes wedge the binding on Workers.
     const outcomes = await Promise.all(
       batch.map(async t => ({ videoId: t.videoId, path: await ingestOneThumb(workspaceId, t) })),
     );
 
-    await Promise.all(outcomes.map(async o => {
+    for (const o of outcomes) {
       try {
         await db.video.update({
           where: { id: o.videoId },
@@ -187,7 +189,7 @@ export async function ingestThumbnails(
         console.warn(`[media] thumb status write failed for ${o.videoId}: ${(err as Error).message}`);
         result.failed++;
       }
-    }));
+    }
   }
 
   return result;
@@ -240,7 +242,10 @@ export async function backfillThumbsViaOembed(
   const result = { stored: 0, failed: 0 };
   if (!isStorageEnabled() || videos.length === 0) return result;
 
-  await Promise.all(videos.map(async v => {
+  // Sequential: each iteration ends in a D1 write, and concurrent D1
+  // prepared statements wedge the binding on Workers. Backfill is rare
+  // (weekly digest, unscored covers) so throughput doesn't matter.
+  for (const v of videos) {
     try {
       const coverUrl = await oembedThumbUrl(v.url);
       if (!coverUrl) throw new Error('oembed returned no thumbnail_url');
@@ -259,7 +264,7 @@ export async function backfillThumbsViaOembed(
       console.warn(`[media] oembed thumb backfill failed for ${v.videoId}: ${(err as Error).message}`);
       result.failed++;
     }
-  }));
+  }
 
   return result;
 }
@@ -388,40 +393,46 @@ export async function ingestSlideshows(
 
   for (let i = 0; i < targets.length; i += SLIDE_VIDEO_CONCURRENCY) {
     const batch = targets.slice(i, i + SLIDE_VIDEO_CONCURRENCY);
-    const outcomes = await Promise.all(batch.map(async (t) => {
+    // Fetch + store objects (network/R2) concurrently, then record to D1
+    // SEQUENTIALLY: persistSlideshow's read+write would otherwise fan out
+    // concurrent prepared statements and wedge the binding on Workers.
+    const stored = await Promise.all(batch.map(async (t) => {
       const urls = t.urls.filter(u => typeof u === 'string' && u.startsWith('http')).slice(0, MAX_SLIDES);
-      if (!urls.length) return false;
+      if (!urls.length) return null;
       const slides: Array<{ buffer: Buffer; contentType: string }> = [];
       for (const url of urls) {
         const got = await fetchImageBuffer(url);
-        if (!got) return false;
+        if (!got) return null;
         slides.push({ buffer: Buffer.from(got.body), contentType: got.contentType });
       }
       try {
-        await persistSlideshow(workspaceId, t.videoId, slides);
-        return true;
+        return { videoId: t.videoId, keys: await storeSlideshowObjects(workspaceId, t.videoId, slides) };
       } catch (err) {
         console.warn(`[media] slideshow persist failed for ${t.videoId}: ${(err as Error).message}`);
-        return false;
+        return null;
       }
     }));
-    for (const ok of outcomes) {
-      if (ok) result.stored++;
-      else result.failed++;
+    for (const s of stored) {
+      if (!s) { result.failed++; continue; }
+      try {
+        await recordSlideshow(s.videoId, s.keys);
+        result.stored++;
+      } catch (err) {
+        console.warn(`[media] slideshow record failed for ${s.videoId}: ${(err as Error).message}`);
+        result.failed++;
+      }
     }
   }
 
   return result;
 }
 
-export async function persistSlideshow(
+/** R2 half of slideshow persist: no D1, safe to run concurrently. */
+export async function storeSlideshowObjects(
   workspaceId: string,
   videoId: string,
   slides: Array<{ buffer: Buffer; contentType: string }>,
 ): Promise<string[]> {
-  if (!isStorageEnabled()) {
-    throw new Error('media storage disabled — cannot store slideshow slides');
-  }
   const keys: string[] = [];
   for (let i = 0; i < slides.length; i++) {
     const slide = slides[i]!;
@@ -434,6 +445,11 @@ export async function persistSlideshow(
     });
     keys.push(path);
   }
+  return keys;
+}
+
+/** D1 half of slideshow persist: must never run concurrently with other D1. */
+export async function recordSlideshow(videoId: string, keys: string[]): Promise<string[]> {
   const row = await db.video.findUnique({
     where: { id: videoId },
     select: { rawJson: true, thumbKey: true, thumbStatus: true },
@@ -456,6 +472,23 @@ export async function persistSlideshow(
   });
   console.log(`[media] stored slideshow (${keys.length} slides) in R2 for ${videoId}`);
   return keys;
+}
+
+/**
+ * Full slideshow persist (R2 objects, then the D1 record), strictly
+ * sequential — for single-video callers. Batched callers use
+ * storeSlideshowObjects concurrently and recordSlideshow sequentially.
+ */
+export async function persistSlideshow(
+  workspaceId: string,
+  videoId: string,
+  slides: Array<{ buffer: Buffer; contentType: string }>,
+): Promise<string[]> {
+  if (!isStorageEnabled()) {
+    throw new Error('media storage disabled — cannot store slideshow slides');
+  }
+  const keys = await storeSlideshowObjects(workspaceId, videoId, slides);
+  return recordSlideshow(videoId, keys);
 }
 
 /**

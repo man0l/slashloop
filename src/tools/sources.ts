@@ -318,9 +318,13 @@ export function registerSourceTools(server: McpServer) {
 
       // A conversational tool call has to return one final answer, so
       // (unlike the site UI, which shows each candidate as its own check
-      // resolves) verify every candidate here before responding — each is
-      // still its own independent Apify scrape, just run concurrently.
-      const verifications = await Promise.all(seed.candidates.map(c => verifySourceCandidate(workspace, c)));
+      // resolves) verify every candidate here before responding — strictly
+      // SEQUENTIALLY. Each verification does D1 reads/writes around a slow
+      // Apify scrape, and concurrent D1 prepared statements wedge the
+      // binding on Workers (an isolate that wedges hangs every later
+      // D1-touching fetch — observed live as an infinite /sources spinner).
+      const verifications = [];
+      for (const c of seed.candidates) verifications.push(await verifySourceCandidate(workspace, c));
 
       const suggestions = verifications.filter(v => v.verified).map(v => v.suggestion!);
       const notices = verifications.filter(v => v.error).map(v => v.error!);

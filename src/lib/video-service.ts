@@ -137,21 +137,28 @@ export interface VideoDetailForWorkspace {
  * enough to render itself, not the full conversational surface.
  */
 export async function getVideoDetailForWorkspace(workspace: Workspace, videoId: string): Promise<VideoDetailForWorkspace | null> {
+  // Sequential finds instead of a multi-relation `include`: Prisma's D1
+  // adapter fans nested reads into concurrent prepared statements, which
+  // hang the binding on Workers (same hang class as the `_count` includes
+  // removed from the sources list). Shape of the returned object is unchanged.
   const video = await db.video.findFirst({
     where: { id: videoId, source: { workspaceId: workspace.id } },
-    include: {
-      score: true,
-      analyses: { orderBy: { createdAt: 'desc' }, take: 1 },
-    },
   });
   if (!video) return null;
 
-  const latest = video.analyses[0];
+  const analyses = await db.analysis.findMany({
+    where: { videoId: video.id },
+    orderBy: { createdAt: 'desc' },
+    take: 1,
+  });
+  const latest = analyses[0] ?? null;
 
-  const [media, job] = await Promise.all([
-    signedMediaUrl(video),
-    latestReportingJobForVideo(video.id, { newerThan: latest?.createdAt }),
-  ]);
+  const score = await db.score.findUnique({ where: { videoId: video.id } });
+
+  // Sequential too: signedMediaUrl is storage-only, but keeping one await
+  // in flight keeps this handler's D1 usage trivially wedge-proof.
+  const media = await signedMediaUrl(video);
+  const job = await latestReportingJobForVideo(video.id, { newerThan: latest?.createdAt });
 
   return {
     id: video.id,
@@ -161,7 +168,7 @@ export async function getVideoDetailForWorkspace(workspace: Workspace, videoId: 
     creatorHandle: video.creatorHandle,
     caption: video.caption,
     views: video.views,
-    outlierScore: video.score?.outlierScore ?? null,
+    outlierScore: score?.outlierScore ?? null,
     analysis: latest
       ? { id: latest.id, analysisBasis: latest.analysisBasis, backend: latest.backend, model: latest.model, data: JSON.parse(latest.analysisJson) }
       : null,
