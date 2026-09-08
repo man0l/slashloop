@@ -8,6 +8,7 @@
 
 import { d1BindParam, setActiveClient, type AppPrismaClient, type RawExecutor } from '../store.js';
 import { setR2Bindings } from '../lib/storage-bindings.js';
+import { timedD1 } from './serialize-d1.js';
 
 export interface Env {
   /** D1 database "slashloop" — the single shard (see src/store.ts). */
@@ -74,9 +75,14 @@ export async function ensureStore(env: Env): Promise<void> {
   // request gate takes /health down with it. Intra-handler concurrency is
   // avoided by sequential Prisma calls (no Promise.all of db.*, no `_count`
   // includes).
-  const adapter = new PrismaD1(env.DB_SHARD0 as unknown as ConstructorParameters<typeof PrismaD1>[0]);
+  //
+  // timedD1() below is timeout-only (no queue, no shared state): it changes
+  // no ordering, so it cannot deadlock — a stuck call just logs its SQL and
+  // rejects instead of spinning the request forever.
+  const timed = timedD1(env.DB_SHARD0);
+  const adapter = new PrismaD1(timed as unknown as ConstructorParameters<typeof PrismaD1>[0]);
   const client = new PrismaClient({ adapter });
-  setActiveClient(client as unknown as AppPrismaClient, d1BindingRawExecutor(env.DB_SHARD0));
+  setActiveClient(client as unknown as AppPrismaClient, d1BindingRawExecutor(timed));
   // Media storage: bucket bindings (src/lib/storage.ts 'r2-binding' backend).
   setR2Bindings({ thumbs: env.R2_THUMBS, media: env.R2_MEDIA });
   globalForCfStore.__slashloopCfStoreReady = true;

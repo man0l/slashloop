@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { d1BindParam } from '../store.js';
-import { serializeD1 } from './serialize-d1.js';
+import { serializeD1, timedD1 } from './serialize-d1.js';
 
 describe('d1BindParam', () => {
   test('Dates become ISO strings D1 will accept', () => {
@@ -96,6 +96,57 @@ describe('serializeD1', () => {
       raw: async () => [],
     };
     const d1 = serializeD1({
+      prepare: () => innerStmt,
+      batch: async (statements: D1PreparedStatement[]) => {
+        seen.push(...statements);
+        return statements.map(() => ({ results: [], success: true }));
+      },
+      exec: async () => ({}),
+      withSession: () => ({ prepare: () => innerStmt, run: async () => [] }),
+    } as unknown as D1Database);
+    const a = d1.prepare('a').bind(1);
+    const b = d1.prepare('b');
+    await d1.batch([a, b]);
+    expect(seen).toEqual([innerStmt, innerStmt]);
+  });
+});
+
+describe('timedD1 (timeout-only, no gate)', () => {
+  test('healthy calls pass through untouched, concurrently', async () => {
+    const mock = mockD1();
+    const d1 = timedD1(mock.d1);
+    const [a, b] = await Promise.all([
+      d1.prepare('SELECT 1').all(),
+      d1.prepare('SELECT 2').bind(1).all(),
+    ]);
+    expect(a).toEqual({ results: [{ label: 'SELECT 1' }], success: true });
+    expect(b).toEqual({ results: [{ label: 'SELECT 2' }], success: true });
+    // No serialization: overlapping calls are allowed.
+    expect(mock.maxInflight).toBeGreaterThan(1);
+  });
+
+  test('a hung query rejects with its SQL instead of spinning forever', async () => {
+    const mock = mockD1({ hang: true });
+    const d1 = timedD1(mock.d1, { timeoutMs: 30 });
+    const t0 = Date.now();
+    await expect(d1.prepare('SELECT * FROM "Video" WHERE x = 1').all()).rejects.toThrow(
+      /timed out after 30ms.*SELECT \* FROM "Video"/,
+    );
+    expect(Date.now() - t0).toBeLessThan(1000);
+    // No shared wedge state: the next call gets its own race, not a rejection.
+    await expect(d1.prepare('SELECT 1').all()).rejects.toThrow(/timed out/);
+  });
+
+  test('batch unwraps wrapped statements for the real binding', async () => {
+    const seen: D1PreparedStatement[] = [];
+    const innerStmt: D1PreparedStatement = {
+      bind() { return innerStmt; },
+      first: async () => null,
+      run: async () => ({ results: [], success: true }),
+      all: async () => ({ results: [], success: true }),
+      raw: async () => [],
+    };
+    const d1 = timedD1({
       prepare: () => innerStmt,
       batch: async (statements: D1PreparedStatement[]) => {
         seen.push(...statements);

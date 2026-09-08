@@ -12,7 +12,12 @@
 
 export const D1_QUERY_TIMEOUT_MS = 8_000;
 
+/** Timeout for the timeout-only wrapper below (diagnostic, not a gate). */
+export const D1_CALL_TIMEOUT_MS = 15_000;
+
 const ORIGINALS = new WeakMap<D1PreparedStatement, D1PreparedStatement>();
+/** Query text per wrapped statement, so batch timeouts can name their SQL. */
+const QUERY_TEXT = new WeakMap<D1PreparedStatement, string>();
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -90,6 +95,87 @@ export function serializeD1(d1: D1Database, opts: SerializeD1Options = {}): D1Da
         prepare: (query: string) => wrappedDb.prepare(query),
         run: <T = unknown>(...statements: D1PreparedStatement[]) =>
           enqueue(() => session.run<T>(...statements.map(unwrap))),
+      } satisfies D1DatabaseSession;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Timeout-only wrapper (diagnostic + fail-fast).
+//
+// Unlike serializeD1 above, this holds NO shared state: no queue, no gate,
+// no wedge flag. Each binding call simply races the real thing against a
+// timeout, logging the stuck query text and rejecting so the request fails
+// fast (500 + retryable error downstream) instead of spinning forever.
+//
+// Why this is safe where the mutex was not: the Sept-1 deadlock needed the
+// gate — the wasm engine issues overlapping adapter calls within one logical
+// query and the mutex reordered/starved them. A pure timeout changes no
+// ordering; a healthy query never notices it, and a wedged one becomes a
+// log line with the exact SQL instead of a silent hang.
+//
+// Both the PrismaD1 adapter binding and the raw-batch executor go through
+// the wrapped object, so every D1 call on the Worker is covered.
+// ---------------------------------------------------------------------------
+
+export interface TimedD1Options {
+  timeoutMs?: number;
+}
+
+function snippet(query: string): string {
+  const oneLine = query.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 220 ? `${oneLine.slice(0, 220)}…` : oneLine;
+}
+
+export function timedD1(d1: D1Database, opts: TimedD1Options = {}): D1Database {
+  const timeoutMs = opts.timeoutMs ?? D1_CALL_TIMEOUT_MS;
+
+  const guard = <T,>(kind: string, query: string, promise: Promise<T>): Promise<T> =>
+    withTimeout(promise, timeoutMs, `D1 ${kind} timed out after ${timeoutMs}ms: ${snippet(query)}`).catch(
+      (err: unknown) => {
+        if (err instanceof Error && err.message.startsWith('D1 ') && err.message.includes('timed out')) {
+          console.error(`[d1-timeout] ${kind} stuck: ${snippet(query)}`);
+        }
+        throw err;
+      },
+    );
+
+  const wrapStatement = (stmt: D1PreparedStatement, query: string): D1PreparedStatement => {
+    const wrapped: D1PreparedStatement = {
+      bind(...values: unknown[]) {
+        return wrapStatement(stmt.bind(...values), query);
+      },
+      first: <T = unknown>(colName?: string) => guard('first', query, stmt.first<T>(colName)),
+      run: <T = unknown>() => guard('run', query, stmt.run<T>()),
+      all: <T = unknown>() => guard('all', query, stmt.all<T>()),
+      raw: <T = unknown[]>(options?: { columnNames?: boolean }) => guard('raw', query, stmt.raw<T>(options)),
+    };
+    ORIGINALS.set(wrapped, stmt);
+    QUERY_TEXT.set(wrapped, query);
+    return wrapped;
+  };
+
+  const unwrap = (stmt: D1PreparedStatement): D1PreparedStatement => ORIGINALS.get(stmt) ?? stmt;
+
+  return {
+    prepare(query: string) {
+      return wrapStatement(d1.prepare(query), query);
+    },
+    batch<T = unknown>(statements: D1PreparedStatement[]) {
+      const first = statements.length ? (QUERY_TEXT.get(statements[0]!) ?? '(batched statements)') : '(empty batch)';
+      const label = statements.length === 1 ? 'batch[1]' : `batch[${statements.length}]`;
+      return guard(label, first, d1.batch<T>(statements.map(unwrap)));
+    },
+    exec(query: string) {
+      return guard('exec', query, d1.exec(query));
+    },
+    withSession(constraintOrBookmark?: string) {
+      const session = d1.withSession(constraintOrBookmark);
+      const wrappedDb = timedD1(session as unknown as D1Database, opts);
+      return {
+        prepare: (query: string) => wrappedDb.prepare(query),
+        run: <T = unknown>(...statements: D1PreparedStatement[]) =>
+          guard('session.run', '(batched statements)', session.run<T>(...statements.map(unwrap))),
       } satisfies D1DatabaseSession;
     },
   };
