@@ -603,6 +603,10 @@ model MediaJob {
 
   // The worker's claim query: oldest queued row first.
   @@index([status, createdAt])
+  // The stuck-claim sweep: running rows older than the cutoff. Without this
+  // the sweep is a full MediaJob scan over the D1 HTTP API (observed: request
+  // timeouts on every worker, every loop).
+  @@index([status, startedAt])
   // get_video asks "is there a job for this video right now?"
   @@index([videoId, status])
   @@index([workspaceId])

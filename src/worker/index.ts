@@ -36,6 +36,14 @@ import { initLogShipping } from './ship-logs.js';
 const IDLE_MS = Number(process.env.WORKER_IDLE_MS ?? 3000);
 const RESCORE_EVERY = Number(process.env.WORKER_RESCORE_EVERY ?? 60);
 const CONCURRENCY = Math.max(1, Math.floor(Number(process.env.WORKER_CONCURRENCY ?? 2)));
+// Stuck-claim sweep cadence. reclaimStuckJobs is a whole-queue scan over the
+// D1 HTTP API — running it every loop iteration on every container caused
+// cascading D1 timeouts (all 3 workers × every 3–10s). Sweep at most this
+// often, maintenance worker only (same rule as failAbandonedQueuedJobs).
+const RECLAIM_INTERVAL_MS = (() => {
+  const n = Number(process.env.WORKER_RECLAIM_INTERVAL_MS ?? 5 * 60_000);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 5 * 60_000;
+})();
 
 // Which MediaJob kinds this worker claims. WORKER_KINDS is a comma-separated
 // list (e.g. "analyze,fetch" for video-only, or "refresh,rescore" for a
@@ -72,14 +80,23 @@ process.on('SIGTERM', () => { shuttingDown = true; });
 console.log(`[worker] started — kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms, concurrency ${CONCURRENCY}, rescore every ${RESCORE_EVERY} iterations`);
 
 let iteration = 0;
+// Staggered start so containers restarted together (deploy/watchtower) don't
+// fire the first sweep in lockstep against D1's single writer.
+let lastReclaimAt = Date.now() - Math.floor(Math.random() * RECLAIM_INTERVAL_MS);
 
 while (!shuttingDown) {
   try {
-    // Recover abandoned claims before taking new work — the single place the
-    // retry policy is applied (same as the Vercel worker; never a second copy).
-    const reclaimed = await reclaimStuckJobs();
-    if (reclaimed.requeued || reclaimed.failed) {
-      console.log(`[worker] reclaimed stuck: requeued=${reclaimed.requeued} failed=${reclaimed.failed} refunded=${reclaimed.refunded}`);
+    // Recover abandoned claims — throttled, maintenance-only. A D1 blip here
+    // must not abort the iteration (claiming continues below).
+    if (doesMaintenance && Date.now() - lastReclaimAt >= RECLAIM_INTERVAL_MS) {
+      lastReclaimAt = Date.now();
+      const reclaimed = await reclaimStuckJobs().catch((err) => {
+        console.warn(`[worker] stuck-job sweep failed: ${(err as Error).message}`);
+        return { requeued: 0, failed: 0, refunded: 0 };
+      });
+      if (reclaimed.requeued || reclaimed.failed) {
+        console.log(`[worker] reclaimed stuck: requeued=${reclaimed.requeued} failed=${reclaimed.failed} refunded=${reclaimed.refunded}`);
+      }
     }
 
     // Jobs that were never claimed at all. Only the maintenance worker runs

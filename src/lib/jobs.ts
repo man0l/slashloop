@@ -1049,6 +1049,12 @@ export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: nu
       id: true, attempts: true, workspaceId: true, opId: true, kind: true,
       preAuthCredits: true, sourceId: true, startedAt: true,
     },
+    // Bound the D1 response: a stuck storm (mass worker death) must degrade
+    // into several small sweeps, not one giant query that times out the API.
+    // STUCK_AFTER_MINUTES is 15 and the VPS sweep runs every ~5 min, so the
+    // backlog between sweeps is at most a handful of rows in practice.
+    take: 200,
+    orderBy: { startedAt: 'asc' },
   });
 
   let requeued = 0;
