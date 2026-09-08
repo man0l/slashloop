@@ -21,6 +21,7 @@
 import { randomUUID } from 'node:crypto';
 import { subMonths } from 'date-fns';
 import { db } from '../db.js';
+import { chunked } from '../store.js';
 import { scrapeSource, scrapeCapKind, trafficStatus, type ScrapeResult } from './scrapers/index.js';
 import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
 import { TrafficCapExceededError } from './scrapers/bandwidth.js';
@@ -195,13 +196,18 @@ export async function applyScrapeItems(opts: {
 
   // SAME SOURCE only — not global. Two workspaces tracking the same TikTok
   // each need their own Video row for isolation, retention, and scoring.
-  const existingRows = candidates.length > 0
-    ? await db.video.findMany({
-        where: { sourceId, externalId: { in: candidates.map(c => c.externalId) } },
+  // Chunked: D1 caps bound parameters at ~100 and a bootstrap pull can hold
+  // up to videoLimit (200) candidates.
+  const existingByKey = new Map<string, string>();
+  if (candidates.length > 0) {
+    await chunked(candidates.map(c => c.externalId), async (ids) => {
+      const existingRows = await db.video.findMany({
+        where: { sourceId, externalId: { in: ids } },
         select: { id: true, platform: true, externalId: true },
-      })
-    : [];
-  const existingByKey = new Map(existingRows.map(r => [`${r.platform}|${r.externalId}`, r.id]));
+      });
+      for (const r of existingRows) existingByKey.set(`${r.platform}|${r.externalId}`, r.id);
+    });
+  }
 
   for (const nv of candidates) {
     const existingId = existingByKey.get(`${nv.platform}|${nv.externalId}`);

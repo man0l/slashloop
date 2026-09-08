@@ -5,6 +5,7 @@
 
 import { z } from 'zod/v4';
 import { db } from '../db.js';
+import { chunked } from '../store.js';
 import { callModelText } from '../lib/llm.js';
 
 const HOOK_GEN_SYSTEM = `You are Gemini, a viral content strategist who generates hook variations. Given source hooks, create NEW variations preserving the MECHANISM (psychological principle) but using completely different words/framing.
@@ -23,9 +24,16 @@ export async function generateHookVariations(
   productDescription: string,
   model = 'gemini-3.5-flash',
 ): Promise<HookVariation[]> {
-  const hooks = await db.hook.findMany({
-    where: { id: { in: hookIds } },
-    include: { video: { select: { caption: true, platform: true } } },
+  // Chunked: D1 caps bound parameters at ~100. The video select is a
+  // to-one nested read (a join, safe on the D1 adapter) — kept inline.
+  const hooks: Array<{ id: string; text: string; hookType: string; placement: string; videoId: string; nicheTag: string | null; video: { caption: string; platform: string } }> = [];
+  await chunked([...new Set(hookIds)], async (chunk) => {
+    if (!chunk.length) return;
+    const part = await db.hook.findMany({
+      where: { id: { in: chunk } },
+      include: { video: { select: { caption: true, platform: true } } },
+    });
+    hooks.push(...part);
   });
   if (hooks.length === 0) throw new Error(`No hooks found for IDs: ${hookIds.join(', ')}`);
 

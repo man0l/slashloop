@@ -25,6 +25,7 @@
 
 import { z } from 'zod/v4';
 import { db } from '../db.js';
+import { chunked } from '../store.js';
 import { requireWorkspace } from '../context.js';
 import { CREATOR_BASELINE_MIN_SAMPLE, batchScoreVideos } from '../scoring.js';
 import { withNextSteps, refreshCreditLabel, scraperCostLabel } from '../lib/next-steps.js';
@@ -82,23 +83,27 @@ export function registerBaselineTools(server: McpServer) {
         take: 100,
       });
 
-      // How much history each of those creators actually has right now. One
-      // grouped query rather than a per-creator loop (the Supabase pooler drops
-      // idle connections mid-batch — see computeCreatorBaselinesBatch).
+      // How much history each of those creators actually has right now.
+      // Grouped per chunk rather than a per-creator loop (the Supabase
+      // pooler drops idle connections mid-batch — see
+      // computeCreatorBaselinesBatch). Chunked: take:100 above can yield
+      // ~100 handles, right at D1's ~100-param cap.
       const handles = [...new Set(candidateScores.map(s => s.video.creatorHandle))];
-      const historyRows = handles.length
-        ? await db.video.groupBy({
-            by: ['creatorHandle', 'platform'],
-            where: { creatorHandle: { in: handles } },
-            _count: { _all: true },
-          })
-        : [];
-      // Explicitly typed and coerced: Prisma's groupBy _count widens to `{}`
-      // under some client generations, which silently poisons every comparison
-      // downstream.
-      const historyCount = new Map<string, number>(
-        historyRows.map(r => [`${r.creatorHandle}__${r.platform}`, Number(r._count?._all ?? 0)] as const),
-      );
+      const historyCount = new Map<string, number>();
+      await chunked(handles, async (chunk) => {
+        if (!chunk.length) return;
+        const historyRows = await db.video.groupBy({
+          by: ['creatorHandle', 'platform'],
+          where: { creatorHandle: { in: chunk } },
+          _count: { _all: true },
+        });
+        // Explicitly typed and coerced: Prisma's groupBy _count widens to `{}`
+        // under some client generations, which silently poisons every comparison
+        // downstream.
+        for (const r of historyRows) {
+          historyCount.set(`${r.creatorHandle}__${r.platform}`, Number(r._count?._all ?? 0));
+        }
+      });
 
       // Creators we already track — re-creating those would just duplicate.
       const existingCreatorSources = await db.source.findMany({
@@ -358,9 +363,14 @@ export function registerBaselineTools(server: McpServer) {
 
       let targets: string[];
       if (sourceIds?.length) {
-        const owned = await db.source.findMany({
-          where: { id: { in: sourceIds }, workspaceId: workspace.id },
-          select: { id: true },
+        // Chunked: D1 caps bound parameters at ~100 and the caller picks the ids.
+        const owned: Array<{ id: string }> = [];
+        await chunked([...new Set(sourceIds)], async (chunk) => {
+          const part = await db.source.findMany({
+            where: { id: { in: chunk }, workspaceId: workspace.id },
+            select: { id: true },
+          });
+          owned.push(...part);
         });
         targets = owned.map(s => s.id);
       } else if (creatorHandle) {

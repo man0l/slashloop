@@ -75,28 +75,38 @@ export function registerFeedTools(server: McpServer) {
       // True total for the filter set, not the size of an over-fetched window.
       const totalCount = await db.video.count({ where });
 
-      const include = {
-        score: true,
-        source: { select: { id: true, query: true, nicheTag: true, platform: true } },
-        // Newest first — lines below read analyses[0] as "the" analysis, and
-        // unordered that is the oldest row, so a re-analysed video reports
-        // its first basis/backend forever. Same bug as get_video had.
-        analyses: {
-          select: { id: true, analysisBasis: true, backend: true },
-          orderBy: { createdAt: 'desc' as const },
-        },
-        // No `_count` include: Prisma's D1 adapter fans those into concurrent
-        // prepared statements, which hang the binding. Hook counts are loaded
-        // with a sequential groupBy after the page is sliced.
-      };
+      // NO `include` — not even `{ score: true }`. Prisma's D1 adapter fans
+      // nested reads (and the unbounded to-many `analyses` in particular)
+      // into concurrent prepared statements, which hang the binding on
+      // Workers. Sequential flat queries + maps below instead.
+      type FeedVideoRow = Awaited<ReturnType<typeof db.video.findMany>>[number];
+      type FeedAnalysisRow = { videoId: string; analysisBasis: string; backend: string };
+
+      /** Latest analysis basis/backend per video. Sequential, chunked. */
+      async function latestAnalysisByVideo(videoIds: string[]): Promise<Map<string, FeedAnalysisRow>> {
+        const byVideo = new Map<string, FeedAnalysisRow>();
+        await chunked([...new Set(videoIds)], async (chunk) => {
+          const rows = await db.analysis.findMany({
+            where: { videoId: { in: chunk } },
+            select: { videoId: true, analysisBasis: true, backend: true, createdAt: true },
+            orderBy: { createdAt: 'desc' },
+          });
+          for (const r of rows) {
+            if (!byVideo.has(r.videoId)) {
+              byVideo.set(r.videoId, { videoId: r.videoId, analysisBasis: r.analysisBasis, backend: r.backend });
+            }
+          }
+        });
+        return byVideo;
+      }
 
       // Over-fetch only for the one filter that cannot be pushed down.
       const take = inMemoryFilter ? limit + 50 : limit;
 
-      let videos;
+      let videos: FeedVideoRow[];
       if (sortBy === 'newest' || sortBy === 'most_views') {
         videos = await db.video.findMany({
-          where, include, take, skip: offset,
+          where, take, skip: offset,
           orderBy: sortBy === 'newest' ? { postedAt: 'desc' } : { views: 'desc' },
         });
       } else {
@@ -111,7 +121,7 @@ export function registerFeedTools(server: McpServer) {
         const scoredTotal = await db.video.count({ where: scoredWhere });
         const scored = offset < scoredTotal
           ? await db.video.findMany({
-              where: scoredWhere, include, take, skip: offset,
+              where: scoredWhere, take, skip: offset,
               orderBy: { score: { outlierScore: 'desc' } },
             })
           : [];
@@ -119,7 +129,7 @@ export function registerFeedTools(server: McpServer) {
         videos = scored;
         if (!hasScoreFilter && scored.length < take) {
           const unscored = await db.video.findMany({
-            where: { ...where, score: { is: null } }, include,
+            where: { ...where, score: { is: null } },
             take: take - scored.length,
             skip: Math.max(0, offset - scoredTotal),
             orderBy: { postedAt: 'desc' },
@@ -136,6 +146,28 @@ export function registerFeedTools(server: McpServer) {
 
       const paginated = filtered.slice(0, limit);
 
+      // Flat enrichment for the page (sequential, chunked — see the note on
+      // `include` above).
+      const latestByVideo = await latestAnalysisByVideo(paginated.map(v => v.id));
+      const scoreByVideo = new Map<string, { outlierScore: number; scoreType: string; explanation: string }>();
+      await chunked(paginated.map(v => v.id), async (ids) => {
+        const rows = await db.score.findMany({
+          where: { videoId: { in: ids } },
+          select: { videoId: true, outlierScore: true, scoreType: true, explanation: true },
+        });
+        for (const r of rows) {
+          scoreByVideo.set(r.videoId, { outlierScore: r.outlierScore, scoreType: r.scoreType, explanation: r.explanation });
+        }
+      });
+      const sourceById = new Map<string, { query: string; nicheTag: string | null }>();
+      await chunked([...new Set(paginated.map(v => v.sourceId))], async (ids) => {
+        const rows = await db.source.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, query: true, nicheTag: true },
+        });
+        for (const r of rows) sourceById.set(r.id, { query: r.query, nicheTag: r.nicheTag });
+      });
+
       const hookCountByVideo = new Map<string, number>();
       await chunked(paginated.map((v) => v.id), async (ids) => {
         const rows = await db.hook.groupBy({
@@ -148,6 +180,9 @@ export function registerFeedTools(server: McpServer) {
 
       const feed = paginated.map((v, i) => {
         const engRate = v.views > 0 ? ((v.likes + v.comments + (v.shares ?? 0)) / v.views * 100).toFixed(1) : '0';
+        const latest = latestByVideo.get(v.id) ?? null;
+        const score = scoreByVideo.get(v.id) ?? null;
+        const src = sourceById.get(v.sourceId);
         return {
           // 1-based position in THIS page — what "video 3" means when someone
           // references a result from this call. Resets each call rather than
@@ -174,16 +209,16 @@ export function registerFeedTools(server: McpServer) {
           saves: v.saves,
           durationSec: v.durationSec,
           engagementRate: `${engRate}%`,
-          score: v.score ? {
-            outlierScore: v.score.outlierScore,
-            scoreType: v.score.scoreType,
-            explanation: v.score.explanation,
+          score: score ? {
+            outlierScore: score.outlierScore,
+            scoreType: score.scoreType,
+            explanation: score.explanation,
           } : null,
-          hasAnalysis: v.analyses.length > 0,
-          analysisBasis: v.analyses[0]?.analysisBasis ?? null,
-          analysisBackend: v.analyses[0]?.backend ?? null,
+          hasAnalysis: latest !== null,
+          analysisBasis: latest?.analysisBasis ?? null,
+          analysisBackend: latest?.backend ?? null,
           hookCount: hookCountByVideo.get(v.id) ?? 0,
-          source: { query: v.source.query, nicheTag: v.source.nicheTag },
+          source: { query: src?.query ?? '', nicheTag: src?.nicheTag ?? null },
           sound: v.soundId ? { id: v.soundId, title: v.soundTitle, author: v.soundAuthor } : null,
         };
       });
@@ -192,7 +227,7 @@ export function registerFeedTools(server: McpServer) {
       // and scored against the creator's own baseline rather than a source
       // median. Drawn from the page the user is actually looking at.
       const analyzeCandidates = paginated
-        .filter(v => v.analyses.length === 0 && v.score?.scoreType === 'actual')
+        .filter(v => !latestByVideo.has(v.id) && scoreByVideo.get(v.id)?.scoreType === 'actual')
         .slice(0, 5);
 
       return {
@@ -223,7 +258,7 @@ export function registerFeedTools(server: McpServer) {
             cost: analyzeCostLabel(analyzeCandidates.length),
             spendsMoney: true,
             why: `Creator-relative scores: ${analyzeCandidates
-              .map(v => `@${v.creatorHandle} ${v.score?.outlierScore.toFixed(0)}×`)
+              .map(v => `@${v.creatorHandle} ${(scoreByVideo.get(v.id)?.outlierScore ?? 0).toFixed(0)}×`)
               .join(', ')}. Everything else on this page is scored against a source median, which mostly reflects account size.`,
           } : null,
           feed.length === 0 ? {

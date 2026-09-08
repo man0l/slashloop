@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { db } from '../db.js';
-import { dbDialect } from '../store.js';
+import { dbDialect, chunked } from '../store.js';
 import type { Workspace } from '@prisma/client';
 import { isStorageEnabled, publicUrl, thumbBucket, thumbPath } from './storage.js';
 import { backfillThumbsViaOembed } from './media.js';
@@ -86,25 +86,38 @@ export async function buildDigest(
   const totalVideos = await db.video.count({ where: { ...wsFilter, isBaselineSample: false } });
 
   // New scored outliers since the watermark. Over-fetch so the actual-first
-  // ranking can cut down to the display size.
+  // ranking can cut down to the display size. No `include`: the to-many
+  // `analyses` sub-select fans out into concurrent prepared statements on
+  // the D1 adapter and hangs the binding — a sequential existence query
+  // below covers the one boolean the email needs.
   const newScores = await db.score.findMany({
     where: {
       scoredAt: { gt: since },
       outlierScore: { gte: DIGEST_MIN_OUTLIER_SCORE },
       video: { ...wsFilter, isBaselineSample: false },
     },
-    include: {
+    select: {
+      outlierScore: true,
+      scoreType: true,
       video: {
         select: {
           id: true, creatorHandle: true, platform: true, views: true, url: true, postedAt: true,
           creatorFollowers: true, thumbKey: true, thumbStatus: true, thumbnailUrl: true,
-          analyses: { select: { videoId: true }, take: 1 },
           source: { select: { query: true, workspaceId: true } },
         },
       },
     },
     orderBy: { outlierScore: 'desc' },
     take: 100,
+  });
+
+  const analyzedVideoIds = new Set<string>();
+  await chunked(newScores.map(s => s.video.id), async (chunk) => {
+    const rows = await db.analysis.findMany({
+      where: { videoId: { in: chunk } },
+      select: { videoId: true },
+    });
+    for (const r of rows) analyzedVideoIds.add(r.videoId);
   });
 
   // Mirror get_outlier_summary: an estimated score on a creator who reached
@@ -170,7 +183,7 @@ export async function buildDigest(
     views: s.video.views,
     outlierScore: s.outlierScore,
     scoreType: s.scoreType as 'actual' | 'estimated',
-    hasAnalysis: s.video.analyses.length > 0,
+    hasAnalysis: analyzedVideoIds.has(s.video.id),
     postedAt: s.video.postedAt.toISOString(),
     thumbUrl: thumbUrlFor(s),
   }));

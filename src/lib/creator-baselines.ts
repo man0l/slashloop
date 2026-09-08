@@ -10,6 +10,7 @@
 // ---------------------------------------------------------------------------
 
 import { db } from '../db.js';
+import { chunked } from '../store.js';
 import { CREATOR_BASELINE_MIN_SAMPLE } from '../scoring.js';
 import { enqueueRefreshJob, parseRefreshJobPayload } from './jobs.js';
 
@@ -51,14 +52,20 @@ export async function enqueueMissingCreatorBaselines(opts: {
   if (unique.size === 0) return empty;
 
   const handles = [...unique.values()].map(c => c.handle);
-  const counts = await db.video.groupBy({
-    by: ['creatorHandle', 'platform'],
-    where: { creatorHandle: { in: handles }, platform: source.platform },
-    _count: { _all: true },
+  // Chunked: D1 caps bound parameters at ~100 and a hashtag source can hold
+  // hundreds of distinct creators.
+  const heldBy = new Map<string, number>();
+  await chunked(handles, async (chunk) => {
+    if (!chunk.length) return;
+    const counts = await db.video.groupBy({
+      by: ['creatorHandle', 'platform'],
+      where: { creatorHandle: { in: chunk }, platform: source.platform },
+      _count: { _all: true },
+    });
+    for (const r of counts) {
+      heldBy.set(`${r.creatorHandle}__${r.platform}`, Number(r._count?._all ?? 0));
+    }
   });
-  const heldBy = new Map(
-    counts.map(r => [`${r.creatorHandle}__${r.platform}`, Number(r._count?._all ?? 0)] as const),
-  );
 
   const pending = await db.mediaJob.findMany({
     where: {

@@ -18,6 +18,7 @@
 
 import { z } from 'zod/v4';
 import { db } from '../db.js';
+import { chunked } from '../store.js';
 import { requireWorkspace } from '../context.js';
 import { enqueueFetchJob, outstandingJobForVideo, dispatchWorker } from '../lib/jobs.js';
 import { costBlock } from '../lib/next-steps.js';
@@ -63,9 +64,14 @@ export function registerFetchTool(server: McpServer) {
       // Resolve target ids by mode.
       let pool: { id: string; creatorHandle: string; outlierScore: number | null }[] = [];
       if (videoIds && videoIds.length) {
-        const vids = await db.video.findMany({
-          where: { id: { in: videoIds }, source: { workspaceId: workspace.id } },
-          include: { score: true },
+        // Chunked: D1 caps bound parameters at ~100 and the caller picks the ids.
+        const vids: Array<{ id: string; creatorHandle: string; score: { outlierScore: number } | null }> = [];
+        await chunked([...new Set(videoIds)], async (chunk) => {
+          const part = await db.video.findMany({
+            where: { id: { in: chunk }, source: { workspaceId: workspace.id } },
+            select: { id: true, creatorHandle: true, score: { select: { outlierScore: true } } },
+          });
+          vids.push(...part);
         });
         pool = vids.map((v) => ({ id: v.id, creatorHandle: v.creatorHandle, outlierScore: v.score?.outlierScore ?? null }));
       } else if (minOutlierScore != null) {

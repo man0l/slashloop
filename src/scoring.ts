@@ -1,4 +1,5 @@
 import { db } from './db.js';
+import { chunked } from './store.js';
 import { subHours } from 'date-fns';
 import { enqueueRefreshJob, outstandingJobForSource } from './lib/jobs.js';
 
@@ -154,9 +155,15 @@ export async function computeCreatorBaselinesBatch(
   const handles = [...new Set(creators.map(c => c.handle))];
   const platforms = [...new Set(creators.map(c => c.platform))];
 
-  const rows = await db.video.findMany({
-    where: { creatorHandle: { in: handles }, platform: { in: platforms } },
-    select: { creatorHandle: true, platform: true, views: true, postedAt: true },
+  // Chunked: D1 caps bound parameters at ~100 and a big refresh can hold
+  // up to videoLimit (200) distinct creators.
+  const rows: Array<{ creatorHandle: string; platform: string; views: number; postedAt: Date }> = [];
+  await chunked(handles, async (chunk) => {
+    const part = await db.video.findMany({
+      where: { creatorHandle: { in: chunk }, platform: { in: platforms } },
+      select: { creatorHandle: true, platform: true, views: true, postedAt: true },
+    });
+    rows.push(...part);
   });
 
   const groups = new Map<string, { handle: string; platform: string; vids: { views: number; postedAt: Date }[] }>();
