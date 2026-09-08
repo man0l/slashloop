@@ -30,7 +30,7 @@ export function registerSourceTools(server: McpServer) {
     'List all tracked sources. Optional filters: platform, sourceType, isActive.',
     {
       platform: z.enum(['tiktok', 'reels', 'shorts']).optional(),
-      sourceType: z.enum(['creator', 'keyword', 'hashtag']).optional(),
+      sourceType: z.enum(['creator', 'keyword', 'hashtag', 'collection']).optional(),
       isActive: z.boolean().optional(),
       nicheTag: z.string().optional(),
     },
@@ -57,11 +57,11 @@ export function registerSourceTools(server: McpServer) {
 
   // ---- create_source ----
   server.tool('create_source',
-    'Add a new tracked source (creator, keyword, or hashtag) to monitor.',
+    'Add a new tracked source (creator, keyword, hashtag, or collection) to monitor.',
     {
       platform: z.enum(['tiktok', 'reels', 'shorts']).describe('Platform to track'),
-      sourceType: z.enum(['creator', 'keyword', 'hashtag']).describe('Type of source'),
-      query: z.string().describe('Handle, keyword phrase, or hashtag (with #)'),
+      sourceType: z.enum(['creator', 'keyword', 'hashtag', 'collection']).describe('Type of source'),
+      query: z.string().describe('Handle, keyword phrase, hashtag (with #), or collection share URL / numeric id'),
       language: z.string().default('en').describe('Language code'),
       // Bootstrap cap for the FIRST fill of a new source. Later refreshes use
       // the new-outlier policy (src/lib/refresh-policy.ts): ~5 latest videos

@@ -58,6 +58,10 @@ interface RefreshBody {
 }
 
 const SOURCE_TYPES = new Set(['creator', 'keyword', 'hashtag']);
+/** Source types that can be tracked (created + listed + refreshed). Discovery
+ *  and suggestions only know creator/keyword/hashtag — collections are
+ *  tracked directly from a share URL or numeric id (proxy-only scrape). */
+const TRACKABLE_TYPES = new Set(['creator', 'keyword', 'hashtag', 'collection']);
 const REFRESH_SCHEDULES = new Set(['manual', 'daily', 'weekly']);
 
 export async function GET(request: Request): Promise<Response> {
@@ -277,8 +281,8 @@ export async function POST(request: Request): Promise<Response> {
   if (!auth.ok) return auth.response;
 
   if (!body.platform) return jsonResponse(400, { error: 'platform is required' }, request);
-  if (!body.sourceType || !SOURCE_TYPES.has(body.sourceType)) {
-    return jsonResponse(400, { error: 'sourceType must be one of creator, keyword, hashtag' }, request);
+  if (!body.sourceType || !TRACKABLE_TYPES.has(body.sourceType)) {
+    return jsonResponse(400, { error: 'sourceType must be one of creator, keyword, hashtag, collection' }, request);
   }
   if (!body.query) return jsonResponse(400, { error: 'query is required' }, request);
   const videoLimit = body.videoLimit ?? 20;
@@ -292,7 +296,7 @@ export async function POST(request: Request): Promise<Response> {
 
   const result = await createSourceForWorkspace(auth.workspace, {
     platform: body.platform,
-    sourceType: body.sourceType as 'creator' | 'keyword' | 'hashtag',
+    sourceType: body.sourceType as 'creator' | 'keyword' | 'hashtag' | 'collection',
     query: body.query,
     language: body.language ?? 'en',
     videoLimit,

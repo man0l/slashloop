@@ -212,7 +212,7 @@ export interface RefreshJobPayload {
    * Drained by the refresh worker so scoring scrapes use the same provider
    * (proxy) as hashtag refreshes.
    */
-  sourceTypeOverride?: 'creator' | 'keyword' | 'hashtag';
+  sourceTypeOverride?: 'creator' | 'keyword' | 'hashtag' | 'collection';
   queryOverride?: string;
 }
 

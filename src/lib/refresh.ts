@@ -564,7 +564,7 @@ export async function runRefresh(opts: {
   limitOverride?: number;
   opId?: string;
   preAuthCredits?: number;
-  sourceTypeOverride?: 'creator' | 'keyword' | 'hashtag';
+  sourceTypeOverride?: 'creator' | 'keyword' | 'hashtag' | 'collection';
   queryOverride?: string;
   deferRefund?: boolean;
 }): Promise<RunRefreshResult> {
@@ -588,7 +588,7 @@ async function runRefreshSolo(opts: {
   limitOverride?: number;
   opId?: string;
   preAuthCredits?: number;
-  sourceTypeOverride?: 'creator' | 'keyword' | 'hashtag';
+  sourceTypeOverride?: 'creator' | 'keyword' | 'hashtag' | 'collection';
   queryOverride?: string;
   deferRefund?: boolean;
 }): Promise<RunRefreshResult> {
@@ -604,7 +604,7 @@ async function runRefreshSolo(opts: {
     };
   }
 
-  const effectiveSourceType = opts.sourceTypeOverride ?? (source.sourceType as 'creator' | 'keyword' | 'hashtag');
+  const effectiveSourceType = opts.sourceTypeOverride ?? (source.sourceType as 'creator' | 'keyword' | 'hashtag' | 'collection');
   const effectiveQuery = opts.queryOverride ?? source.query;
   const isBaselineOnly = !!opts.sourceTypeOverride;
   const limit = limitOverride ?? source.videoLimit;
@@ -866,7 +866,7 @@ export async function runBatchedRefresh(
 
   const leader = ready[0]!;
   const platform = leader.source.platform;
-  const sourceType = leader.source.sourceType as 'creator' | 'keyword' | 'hashtag';
+  const sourceType = leader.source.sourceType as 'creator' | 'keyword' | 'hashtag' | 'collection';
   const query = leader.source.query;
   const key = canonicalKey(platform, sourceType, query);
 

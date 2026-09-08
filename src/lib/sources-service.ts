@@ -229,7 +229,7 @@ export async function getSourceForWorkspace(workspace: Workspace, sourceId: stri
 
 export interface CreateSourceInput {
   platform: string;
-  sourceType: 'creator' | 'keyword' | 'hashtag';
+  sourceType: 'creator' | 'keyword' | 'hashtag' | 'collection';
   query: string;
   language: string;
   videoLimit: number;
@@ -541,7 +541,7 @@ export async function refreshSourceForWorkspace(
     const result = await scrapeSource({
       workspaceId: source.workspaceId,
       platform: source.platform,
-      sourceType: source.sourceType as 'creator' | 'keyword' | 'hashtag',
+      sourceType: source.sourceType as 'creator' | 'keyword' | 'hashtag' | 'collection',
       query: source.query,
       limit,
       // The watermark is half the policy: without it this path pays for the

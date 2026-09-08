@@ -162,7 +162,7 @@ model Source {
   id               String    @id @default(uuid())
   workspaceId      String
   platform         String // tiktok | reels | shorts
-  sourceType       String // creator | keyword | hashtag
+  sourceType       String // creator | keyword | hashtag | collection
   query            String
   language         String    @default("en")
   videoLimit       Int       @default(50)
