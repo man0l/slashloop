@@ -934,6 +934,29 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
     expect(result.notices.some(n => n.startsWith('[info] TikTok returned an unparseable response'))).toBe(true);
   });
 
+  test('fetchSearchPosts stops on a repeated cursor instead of looping', async () => {
+    clearLookupCaches();
+    const { fetchSearchPosts } = await import('./tiktok-web.js');
+    let calls = 0;
+    const http: TikTokHttp = {
+      async getJson() {
+        calls++;
+        return {
+          json: {
+            item_list: [{ item: { id: '1111111111111111111', desc: 'same page', createTime: 1_700_000_000 } }],
+            has_more: 1,
+            cursor: 0, // TikTok repeats the cursor on a bad device_id
+          },
+          status: 200, ok: true, text: '{}', bytes: 20,
+        };
+      },
+    };
+    const { withTikTokHttp } = await import('./tiktok-web.js');
+    const result = await withTikTokHttp(http, () => fetchSearchPosts('mewing', { limit: 10 }));
+    expect(calls).toBe(1);
+    expect(result.items).toHaveLength(1);
+  });
+
   test('dry limit=2 still asks the latest hashtag feed, not only embed popular', async () => {
     clearLookupCaches();
     const now = Math.floor(Date.now() / 1000);
