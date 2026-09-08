@@ -874,6 +874,66 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
     expect(result.items[0]?.externalId).toBe('7670597177768545566');
   });
 
+  test('api failure rescued by embed is info, not a user-facing error', async () => {
+    clearLookupCaches();
+    // Profile resolves the secUid but carries no videos, so the creator
+    // item_list API runs (and fails here) before the embed fallback delivers.
+    const profileHtml = `<html><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">${JSON.stringify({
+      __DEFAULT_SCOPE__: {
+        'webapp.user-detail': {
+          userInfo: { user: { secUid: 'SEC-JAW', uniqueId: 'jawhacks' }, stats: { followerCount: 12_345 } },
+          itemList: [],
+        },
+      },
+    })}</script></html>`;
+    const payload = {
+      source: {
+        data: {
+          '/embed/@jawhacks': {
+            userInfo: { uniqueId: 'jawhacks', followerCount: 12_345 },
+            videoList: [
+              {
+                id: '7178571592316783915',
+                desc: 'from embed',
+                coverUrl: 'https://cdn.example/cover.jpg',
+                playCount: 1_000,
+                authorUniqueId: 'jawhacks',
+              },
+            ],
+          },
+        },
+      },
+    };
+    const html = `<script id="__FRONTITY_CONNECT_STATE__">${JSON.stringify(payload)}</script>`;
+    const http: TikTokHttp = {
+      async getJson() {
+        // item_list wall: unparseable, like a blocked exit node.
+        return { json: null, status: 200, ok: true, text: '', bytes: 0 };
+      },
+      async getText(url) {
+        if (url.includes('/embed/')) {
+          return { json: null, status: 200, ok: true, text: html, bytes: html.length };
+        }
+        if (url.includes('/@jawhacks') && !url.includes('/video/')) {
+          return { json: null, status: 200, ok: true, text: profileHtml, bytes: profileHtml.length };
+        }
+        return { json: null, status: 200, ok: true, text: '<html></html>', bytes: 13 };
+      },
+    };
+
+    const result = await runTikTokProxyScrape({
+      workspaceId: 'ws-test',
+      platform: 'tiktok',
+      sourceType: 'creator',
+      query: 'jawhacks',
+      limit: 3,
+    }, http);
+
+    expect(result.rawCount).toBe(1);
+    expect(result.notices.some(n => n.startsWith('TikTok returned an unparseable response'))).toBe(false);
+    expect(result.notices.some(n => n.startsWith('[info] TikTok returned an unparseable response'))).toBe(true);
+  });
+
   test('dry limit=2 still asks the latest hashtag feed, not only embed popular', async () => {
     clearLookupCaches();
     const now = Math.floor(Date.now() / 1000);

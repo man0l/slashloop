@@ -41,6 +41,7 @@ import {
   itemStructFromWatchHtml, withTikTokHttp, ESTIMATED_LOOKUP_BYTES,
   type TikTokHttp,
 } from './tiktok-web.js';
+import { infoNote } from '../refresh-notes.js';
 import type { NormalizedVideo } from '../../normalizers.js';
 import { splitSpend } from '../apify.js';
 import {
@@ -182,6 +183,18 @@ export async function runTikTokProxyScrape(
         const embed = await fetchEmbedItems(opts.sourceType, opts.query, req);
         raw = dedupeItems([...raw, ...embed.items]);
         notices.push(...embed.notices);
+        if (raw.length) {
+          // The API path failed but the embed fallback delivered: the API
+          // failure is debugging context, not a user-facing error. Tag it
+          // [info] so the row doesn't wear a scary badge for a run that
+          // pulled videos fine (e.g. a dormant creator whose only listing
+          // is the evergreen embed playlist).
+          for (let i = 0; i < notices.length; i++) {
+            if (notices[i]!.startsWith('TikTok returned an unparseable response')) {
+              notices[i] = infoNote(notices[i]!);
+            }
+          }
+        }
         if (!raw.length && !identity) {
           return {
             items: [],
