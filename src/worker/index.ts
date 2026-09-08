@@ -31,6 +31,7 @@ import { processClaimedJob } from './process-job.js';
 import { rescoreStaleTooFresh } from '../scoring.js';
 import { withMeterScope } from '../lib/scrapers/bandwidth.js';
 import { refundCredits } from '../lib/credits.js';
+import { initLogShipping } from './ship-logs.js';
 
 const IDLE_MS = Number(process.env.WORKER_IDLE_MS ?? 3000);
 const RESCORE_EVERY = Number(process.env.WORKER_RESCORE_EVERY ?? 60);
@@ -53,6 +54,10 @@ function workerKinds(): string[] {
   return expandWorkerKinds(kinds);
 }
 const KINDS = workerKinds();
+// Ship console output to indiestack in the background (no-op unless
+// INDIESTACK_LOG_URL is set; never throws, never blocks the loop). Installed
+// before the first log line so startup is captured too.
+initLogShipping(KINDS);
 // Only the maintenance worker (refresh/rescore kinds) should spend Apify
 // credits on the periodic stale-score top-up scrape — the video worker
 // (analyze/fetch) must not double that spend.
