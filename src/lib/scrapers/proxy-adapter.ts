@@ -34,7 +34,8 @@ import { proxyConfig } from './proxy-http.js';
 import { createImpersonatedHttp } from './impersonate-http.js';
 import { isStorageEnabled, mediaBucket, putObject, signUrl } from '../storage.js';
 import {
-  dedupeItems, estimateScrapeBytes, fetchCreatorPosts, fetchEmbedItems,
+  dedupeItems, estimateScrapeBytes, extractCollectionId, fetchCollectionDetail,
+  fetchCollectionPosts, fetchCreatorPosts, fetchEmbedItems,
   fetchHashtagPosts, fetchSearchPosts, hydrateItemStats, normalizeWebItems,
   extractSlideshowImages, resolveChallengeId, resolveCreator, unsignedHttp,
   itemStructFromWatchHtml, withTikTokHttp, ESTIMATED_LOOKUP_BYTES,
@@ -136,7 +137,38 @@ export async function runTikTokProxyScrape(
 
     let raw: any[] = [];
 
-    if (opts.sourceType === 'creator') {
+    if (opts.sourceType === 'collection') {
+      // No secUid/challenge lookup: the numeric collection id is the whole
+      // key, and /api/collection/item_list answers even unsigned. The detail
+      // read is best-effort (owner handle + title for the notice line).
+      const collectionId = extractCollectionId(opts.query);
+      if (!collectionId) {
+        return {
+          items: [],
+          rawCount: 0,
+          notices: [`Could not read a TikTok collection id out of "${opts.query}" — pass the numeric id or a /collection/ share URL`],
+        };
+      }
+      const detail = await fetchCollectionDetail(collectionId).catch(() => null);
+      const extra = await fetchCollectionPosts(collectionId, req);
+      raw = dedupeItems([...extra.items]);
+      notices.push(...extra.notices);
+      if (!raw.length) {
+        return {
+          items: [],
+          rawCount: 0,
+          notices: notices.length ? notices : [
+            `TikTok collection "${opts.query}" returned no items — it may be invalid, private, or region-blocked`,
+          ],
+        };
+      }
+      if (detail?.name || detail?.userName) {
+        notices.unshift(
+          `Collection "${detail.name ?? collectionId}" by @${detail.userName ?? 'unknown'}`
+          + `${detail.total != null ? ` (${detail.total} videos)` : ''}`,
+        );
+      }
+    } else if (opts.sourceType === 'creator') {
       // Profile HTML is BOTH identity (secUid) and the first item page.
       // Fetching the embed playlist first spent ~330KB on items the profile
       // page was about to deliver.

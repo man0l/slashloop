@@ -27,10 +27,12 @@ import {
   createTimeFromItemId,
   challengeIdFromFrontity,
   challengeItemListUrl,
+  collectionItemListUrl,
   creatorItemListUrl,
   dedupeItems,
   embedPageUrl,
   estimateScrapeBytes,
+  extractCollectionId,
   extractFrontityJson,
   extractRehydrationJson,
   identityFromUserDetail,
@@ -322,6 +324,20 @@ describe('tiktok-web helpers', () => {
     expect(url).toContain('cursor=1700000000000');
     expect(url).toContain('from_page=user');
     expect(url).toContain('type=1');
+  });
+
+  test('collection helpers read the id and build the yt-dlp item_list URL', () => {
+    expect(extractCollectionId('7682881973966146335')).toBe('7682881973966146335');
+    expect(extractCollectionId('https://www.tiktok.com/@jenny.spoon/collection/Mogged-7682881973966146335'))
+      .toBe('7682881973966146335');
+    expect(extractCollectionId('not-a-collection')).toBeNull();
+    const url = collectionItemListUrl('7682881973966146335', '0', 30);
+    expect(url).toContain('/api/collection/item_list/');
+    expect(url).toContain('collectionId=7682881973966146335');
+    expect(url).toContain('sourceType=113');
+    expect(url).toContain('cursor=0');
+    expect(tiktokSourceUrl('collection', '7682881973966146335')).toBe('https://www.tiktok.com/');
+    expect(xhrPatternFor('collection').test('https://www.tiktok.com/api/collection/item_list/?collectionId=1')).toBe(true);
   });
 
   test('solveWafCookies brute-forces the yt-dlp SHA-256 puzzle', () => {
@@ -922,5 +938,95 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
     }, http);
     expect(itemListCalled).toBe(true);
     expect(result.items[0]?.externalId).toBe('7670597177768545566');
+  });
+
+  test('collection scrape pages the offset cursor and skips old items without truncating', async () => {
+    clearLookupCaches();
+    const oldTs = Math.floor(Date.now() / 1000) - 90 * 24 * 3600;
+    const freshTs = Math.floor(Date.now() / 1000) - 24 * 3600;
+    const item = (id: string, ts: number, handle: string) => ({
+      id,
+      desc: `video ${id}`,
+      createTime: ts,
+      author: { uniqueId: handle },
+      stats: { playCount: 100, diggCount: 10 },
+      video: { cover: 'https://cdn.example/c.jpg' },
+    });
+    const http: TikTokHttp = {
+      async getJson(url) {
+        if (url.includes('/api/collection/detail/')) {
+          return {
+            json: {
+              collectionInfo: {
+                collectionId: '7682881973966146335',
+                name: 'Mogged',
+                userName: 'jenny.spoon',
+                total: '3',
+                cover: { urlList: ['https://cdn.example/cover.jpg'] },
+              },
+            },
+            status: 200, ok: true, text: '{}', bytes: 20,
+          };
+        }
+        if (url.includes('/api/collection/item_list/')) {
+          const cursor = new URL(url).searchParams.get('cursor') ?? '0';
+          if (cursor === '0') {
+            return {
+              json: {
+                itemList: [item('1111111111111111111', freshTs, 'a'), item('2222222222222222222', oldTs, 'b')],
+                hasMore: true,
+                cursor: '2',
+              },
+              status: 200, ok: true, text: '{}', bytes: 20,
+            };
+          }
+          return {
+            json: {
+              itemList: [item('3333333333333333333', freshTs, 'c')],
+              hasMore: false,
+              cursor: '3',
+            },
+            status: 200, ok: true, text: '{}', bytes: 20,
+          };
+        }
+        return { json: null, status: 200, ok: true, text: '', bytes: 0 };
+      },
+      async getText() {
+        return { json: null, status: 200, ok: true, text: '<html></html>', bytes: 13 };
+      },
+    };
+    const result = await runTikTokProxyScrape({
+      workspaceId: 'ws-test',
+      platform: 'tiktok',
+      sourceType: 'collection',
+      query: 'https://www.tiktok.com/@jenny.spoon/collection/Mogged-7682881973966146335',
+      limit: 10,
+      postedAfter: new Date(Date.now() - 30 * 24 * 3600 * 1000),
+    }, http);
+    // Old middle item skipped, but the third page still reached (no newest-first truncation).
+    expect(result.items.map(v => v.externalId).sort()).toEqual(['1111111111111111111', '3333333333333333333']);
+    expect(result.notices.some(n => n.includes('Mogged'))).toBe(true);
+  });
+
+  test('collection scrape rejects an unparseable query without network', async () => {
+    clearLookupCaches();
+    let called = false;
+    const http: TikTokHttp = {
+      async getJson() {
+        called = true;
+        return { json: null, status: 200, ok: true, text: '', bytes: 0 };
+      },
+    };
+    const result = await runTikTokProxyScrape({
+      workspaceId: 'ws-test',
+      platform: 'tiktok',
+      sourceType: 'collection',
+      query: 'not-a-collection!!!',
+      limit: 10,
+    }, http);
+    expect(result.items).toEqual([]);
+    expect(result.rawCount).toBe(0);
+    expect(called).toBe(false);
+    expect(result.notices[0]).toMatch(/collection id/);
   });
 });

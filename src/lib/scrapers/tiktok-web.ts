@@ -532,6 +532,7 @@ export function embedPageUrl(sourceType: SourceKind, query: string): string {
   const q = query.replace(/^[@#]/, '').trim();
   if (sourceType === 'creator') return `${WEB_BASE}/embed/@${encodeURIComponent(q)}`;
   if (sourceType === 'hashtag') return `${WEB_BASE}/embed/tag/${encodeURIComponent(q)}`;
+  if (sourceType === 'collection') return `${WEB_BASE}/`;
   return `${WEB_BASE}/embed/search/${encodeURIComponent(q)}`;
 }
 
@@ -695,12 +696,19 @@ export function itemsFromApiPayload(json: any): any[] {
   return out;
 }
 
-export type SourceKind = 'creator' | 'hashtag' | 'keyword';
+export type SourceKind = 'creator' | 'hashtag' | 'keyword' | 'collection';
 
 export function tiktokSourceUrl(sourceType: SourceKind, query: string): string {
   const q = query.replace(/^[@#]/, '').trim();
   if (sourceType === 'creator') return `${WEB_BASE}/@${encodeURIComponent(q)}`;
   if (sourceType === 'hashtag') return `${WEB_BASE}/tag/${encodeURIComponent(q)}`;
+  if (sourceType === 'collection') {
+    // A collection query is a bare id or a full share URL. The page needs the
+    // owner handle, which only /api/collection/detail knows — so echo a URL
+    // back when we have one, else fall back to the root as the referer base.
+    if (/^https?:\/\//i.test(q)) return q;
+    return `${WEB_BASE}/`;
+  }
   return `${WEB_BASE}/search?q=${encodeURIComponent(q)}`;
 }
 
@@ -708,6 +716,7 @@ export function tiktokSourceUrl(sourceType: SourceKind, query: string): string {
 export function xhrPatternFor(sourceType: SourceKind): RegExp {
   if (sourceType === 'creator') return /\/api\/post\/item_list/;
   if (sourceType === 'hashtag') return /\/api\/challenge\/item_list/;
+  if (sourceType === 'collection') return /\/api\/collection\/item_list/;
   return /\/api\/search\/(item|general)/;
 }
 
@@ -900,6 +909,122 @@ export async function fetchHashtagPosts(
     `${WEB_BASE}/tag/${clean}`,
     req,
   );
+}
+
+// --- Collection --------------------------------------------------------------
+// TikTok user-curated collections (playlists/mixes of other people's videos).
+// URL form: /@owner/collection/<slug>-<collectionId>. The listing API needs
+// ONLY the numeric id — no secUid, no challenge lookup — and answers even
+// unsigned (probed live 2026-09-08: 200 + itemList on a bare fetch).
+// Mirrors yt-dlp TikTokCollectionIE: /api/collection/item_list with
+// sourceType=113, cursor as a numeric OFFSET ("0" -> "30" -> "35").
+
+/**
+ * Pull the numeric collection id out of a bare id or any share URL form:
+ *   7682881973966146335
+ *   https://www.tiktok.com/@jenny.spoon/collection/Mogged-7682881973966146335
+ */
+export function extractCollectionId(query: string): string | null {
+  const q = query.trim();
+  if (/^\d{3,}$/.test(q)) return q;
+  const m = q.match(/\/collection\/(?:[^/?#]*-)?(\d{3,})/)
+    ?? q.match(/collectionId=(\d{3,})/)
+    ?? q.match(/(\d{15,})/);
+  return m?.[1] ?? null;
+}
+
+/** yt-dlp TikTokCollectionIE._build_web_query. Cursor is a numeric offset. */
+export function collectionItemListUrl(
+  collectionId: string,
+  cursor: string | number,
+  count: number,
+): string {
+  const qs = new URLSearchParams({
+    aid: AID,
+    collectionId,
+    count: String(count),
+    cursor: String(cursor),
+    sourceType: '113',
+  });
+  return `${WEB_BASE}/api/collection/item_list/?${qs.toString()}`;
+}
+
+export function collectionDetailUrl(collectionId: string): string {
+  return buildUrl('/api/collection/detail/', { collectionId, sourceType: '113' });
+}
+
+export interface CollectionDetail {
+  id: string;
+  name: string | null;
+  userName: string | null;
+  total: number | null;
+  cover: string | null;
+}
+
+/** Tiny metadata read (~1KB): curator handle, title, declared size. Non-fatal. */
+export async function fetchCollectionDetail(collectionId: string): Promise<CollectionDetail | null> {
+  const { json } = await currentHttp.getJson(
+    collectionDetailUrl(collectionId),
+    apiHeaders(`${WEB_BASE}/`),
+  );
+  const info = json?.collectionInfo;
+  if (!info || typeof info !== 'object') return null;
+  const covers = Array.isArray(info.cover?.urlList) ? info.cover.urlList : [];
+  const total = Number(info.total);
+  return {
+    id: String(info.collectionId ?? collectionId),
+    name: typeof info.name === 'string' ? info.name : null,
+    userName: typeof info.userName === 'string' ? info.userName : null,
+    total: Number.isFinite(total) ? total : null,
+    cover: typeof covers[0] === 'string' ? covers[0] : null,
+  };
+}
+
+/**
+ * Walk a collection's offset-paginated item_list.
+ *
+ * Deliberately NOT collectPages: a collection is curator-ordered, not
+ * newest-first, so an old item proves nothing about the rest of the feed and
+ * the watermark early-exit would truncate the page. Old items are skipped
+ * instead, and pagination continues while hasMore says so.
+ */
+export async function fetchCollectionPosts(
+  collectionId: string,
+  req: PageRequest,
+): Promise<{ items: any[]; notices: string[] }> {
+  const out: any[] = [];
+  const notices: string[] = [];
+  const cutoffSec = req.postedAfter ? Math.floor(req.postedAfter.getTime() / 1000) : null;
+  let cursor = '0';
+
+  while (out.length < req.limit) {
+    const count = Math.min(MAX_PAGE_SIZE, req.limit - out.length);
+    const page = await fetchItemPage(collectionItemListUrl(collectionId, cursor, count), `${WEB_BASE}/`);
+    if (!page) {
+      notices.push('TikTok returned an unparseable response (rate limit, captcha wall, or blocked exit node)');
+      break;
+    }
+    if (page.items.length === 0) {
+      if (out.length === 0) {
+        notices.push(
+          page.statusCode && page.statusCode !== 0
+            ? `TikTok API status ${page.statusCode} — the collection may be invalid, private, or region-blocked`
+            : 'TikTok returned no items for this collection',
+        );
+      }
+      break;
+    }
+    for (const item of page.items) {
+      if (cutoffSec != null && Number(item?.createTime) < cutoffSec) continue;
+      out.push(item);
+      if (out.length >= req.limit) break;
+    }
+    if (out.length >= req.limit) break;
+    if (!page.hasMore || !page.cursor || page.cursor === cursor) break;
+    cursor = page.cursor;
+  }
+
+  return { items: out, notices };
 }
 
 export async function fetchSearchPosts(

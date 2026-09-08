@@ -15,7 +15,7 @@
 
 import type { NormalizedVideo } from '../../normalizers.js';
 
-export type SourceType = 'creator' | 'keyword' | 'hashtag';
+export type SourceType = 'creator' | 'keyword' | 'hashtag' | 'collection';
 export type Platform = 'tiktok' | 'reels' | 'shorts';
 
 export interface ScrapeOptions {

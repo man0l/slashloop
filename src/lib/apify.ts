@@ -384,7 +384,7 @@ export interface ApifyScrapeOptions {
    * Omit for a single-tenant scrape; it defaults to [workspaceId].
    */
   costShareWorkspaceIds?: string[];
-  sourceType: 'creator' | 'keyword' | 'hashtag';
+  sourceType: 'creator' | 'keyword' | 'hashtag' | 'collection';
   query: string; // handle, keyword phrase, or hashtag (with or without #)
   limit: number; // max results
   /**
@@ -476,6 +476,13 @@ function normalizeItems(rawItems: any[]): NormalizedVideo[] {
 export async function scrapeTikTok(opts: ApifyScrapeOptions): Promise<ApifyScrapeResult> {
   const apiKey = process.env.APIFY_API_KEY;
   if (!apiKey) throw new Error('APIFY_API_KEY is not set. Add it to .env (or the MCP server env block in your client config).');
+
+  if (opts.sourceType === 'collection') {
+    throw new Error(
+      'TikTok collections are only supported via SCRAPER_PROVIDER=proxy '
+      + '(clockworks/tiktok-scraper takes profiles/hashtags/searchQueries, not collection ids).',
+    );
+  }
 
   // Build the actor input. clockworks/tiktok-scraper accepts:
   //   - hashtags: array of hashtags (without #)
