@@ -13,7 +13,6 @@
 // ---------------------------------------------------------------------------
 
 import { z } from 'zod/v4';
-import type { Prisma } from '@prisma/client';
 import { registerAppTool, registerAppResource, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { db } from '../db.js';
 import { chunked } from '../store.js';
@@ -143,12 +142,14 @@ export async function buildCards(
   // silently did nothing there. Applied as a real DB filter below instead.
   const minOutlier = opts.minOutlier && opts.minOutlier > 0 ? opts.minOutlier : 0;
 
-  const include = {
-    score: true,
-    analyses: { orderBy: { createdAt: 'desc' as const }, take: 1 },
-    source: { select: { isSelf: true } },
-  };
-  type VideoCardRow = Prisma.VideoGetPayload<{ include: typeof include }>;
+  // NO `include` here — not even `{ score: true }`. Prisma's D1 adapter fans
+  // nested reads (and the to-many `analyses` in particular) into concurrent
+  // prepared statements, which hang the binding on Workers: one gallery load
+  // wedges the isolate and every later D1-touching fetch on it spins forever
+  // (observed live). Sequential flat queries + first-win assembly in JS
+  // instead; the returned cards are shaped identically.
+  type VideoRow = Awaited<ReturnType<typeof db.video.findMany>>[number];
+  type AnalysisRow = Awaited<ReturnType<typeof db.analysis.findMany>>[number];
 
   const selfSources = await db.source.findMany({
     where: { workspaceId: workspace.id, isSelf: true, sourceType: 'creator' },
@@ -156,7 +157,37 @@ export async function buildCards(
   });
   const selfHandles = new Set(selfSources.map(s => normalizeQuery('creator', s.query)));
 
-  let ranked: VideoCardRow[];
+  /** Latest analysis per video, newest-first first-win. Sequential, chunked. */
+  async function latestAnalysesByVideo(videoIds: string[]): Promise<Map<string, AnalysisRow>> {
+    const byVideo = new Map<string, AnalysisRow>();
+    const ids = [...new Set(videoIds)];
+    await chunked(ids, async (chunk) => {
+      const rows = await db.analysis.findMany({
+        where: { videoId: { in: chunk } },
+        orderBy: { createdAt: 'desc' },
+      });
+      for (const r of rows) {
+        if (!byVideo.has(r.videoId)) byVideo.set(r.videoId, r);
+      }
+    });
+    return byVideo;
+  }
+
+  /** Outlier score per video. Sequential, chunked. */
+  async function scoresByVideo(videoIds: string[]): Promise<Map<string, number>> {
+    const byVideo = new Map<string, number>();
+    const ids = [...new Set(videoIds)];
+    await chunked(ids, async (chunk) => {
+      const rows = await db.score.findMany({
+        where: { videoId: { in: chunk } },
+        select: { videoId: true, outlierScore: true },
+      });
+      for (const r of rows) byVideo.set(r.videoId, r.outlierScore);
+    });
+    return byVideo;
+  }
+
+  let buffer: VideoRow[];
 
   if (analyzedBackend) {
     // "Recently analyzed" pool: videos whose most recent analysis ran on the
@@ -167,25 +198,17 @@ export async function buildCards(
     // sort is the only way to rank by latest-analysis date here.
     const videos = await db.video.findMany({
       where: minOutlier > 0 ? { ...where, score: { is: { outlierScore: { gte: minOutlier } } } } : where,
-      include,
       orderBy: { postedAt: 'desc' },
       take: Math.max(limit * 4, 200),
     });
-    // The `some` filter above also matches a video whose newest analysis is a
-    // different backend (an old OpenRouter run superseded by a newer Gemini
-    // one) — keep only rows whose latest analysis is the requested backend.
-    ranked = videos
-      .filter(v => v.analyses[0]?.backend.startsWith(analyzedBackend))
-      .sort((a, b) => (b.analyses[0]?.createdAt.getTime() ?? 0) - (a.analyses[0]?.createdAt.getTime() ?? 0))
-      .slice(0, limit);
+    buffer = videos;
   } else if (sortBy === 'views' || sortBy === 'newest') {
     // Single query, no scored/unscored split needed — views and postedAt are
     // never null, so a plain ORDER BY already returns the true top-N.
     // A minOutlier filter here necessarily excludes unscored videos too —
     // there is no score to compare against the threshold.
-    ranked = await db.video.findMany({
+    buffer = await db.video.findMany({
       where: minOutlier > 0 ? { ...where, score: { is: { outlierScore: { gte: minOutlier } } } } : where,
-      include,
       orderBy: sortBy === 'views' ? { views: 'desc' } : { postedAt: 'desc' },
       take: limit,
     });
@@ -202,7 +225,6 @@ export async function buildCards(
       where: minOutlier > 0
         ? { ...where, score: { is: { outlierScore: { gte: minOutlier } } } }
         : { ...where, score: { isNot: null } },
-      include,
       orderBy: { score: { outlierScore: 'desc' } },
       take: limit,
     });
@@ -215,19 +237,49 @@ export async function buildCards(
     if (videos.length < limit && minOutlier === 0) {
       const unscored = await db.video.findMany({
         where: { ...where, score: { is: null } },
-        include,
         orderBy: { postedAt: 'desc' },
         take: limit - videos.length,
       });
       videos.push(...unscored);
     }
+    buffer = videos;
+  }
 
+  // Enrich the buffer sequentially: latest analysis, score, and source
+  // flag per video. Previously a triple `include` (score + to-many analyses
+  // + source) — the to-many fan-out wedges the D1 binding.
+  const latestByVideo = await latestAnalysesByVideo(buffer.map(v => v.id));
+  const bufferScores = await scoresByVideo(buffer.map(v => v.id));
+
+  let ranked: VideoRow[];
+  if (analyzedBackend) {
+    // The `some` filter above also matches a video whose newest analysis is a
+    // different backend (an old OpenRouter run superseded by a newer Gemini
+    // one) — keep only rows whose latest analysis is the requested backend.
+    ranked = buffer
+      .filter(v => latestByVideo.get(v.id)?.backend.startsWith(analyzedBackend))
+      .sort((a, b) => (latestByVideo.get(b.id)?.createdAt.getTime() ?? 0) - (latestByVideo.get(a.id)?.createdAt.getTime() ?? 0))
+      .slice(0, limit);
+  } else if (sortBy === 'views' || sortBy === 'newest') {
+    ranked = buffer;
+  } else {
     // Scores are non-null by construction above, but the backfill rows are not;
     // treat missing as 0 so they sort last.
-    ranked = [...videos].sort(
-      (a, b) => (b.score?.outlierScore ?? 0) - (a.score?.outlierScore ?? 0),
+    ranked = [...buffer].sort(
+      (a, b) => (bufferScores.get(b.id) ?? 0) - (bufferScores.get(a.id) ?? 0),
     );
   }
+
+  // Source flag for the final pool only (small IN-list, sequential).
+  const sourceIds = [...new Set(ranked.map(v => v.sourceId))];
+  const isSelfBySource = new Map<string, boolean>();
+  await chunked(sourceIds, async (chunk) => {
+    const rows = await db.source.findMany({
+      where: { id: { in: chunk } },
+      select: { id: true, isSelf: true },
+    });
+    for (const r of rows) isSelfBySource.set(r.id, r.isSelf);
+  });
 
   const filters: GalleryFilters = {
     minOutlier: opts.minOutlier && opts.minOutlier > 0 ? opts.minOutlier : 0,
@@ -274,10 +326,11 @@ export async function buildCards(
   }]));
 
   const cards: GalleryCard[] = ranked.map((v, i) => {
+    const latest = latestByVideo.get(v.id) ?? null;
     let keyMoments: GalleryCard['keyMoments'] = [];
-    if (v.analyses[0]) {
+    if (latest) {
       try {
-        const parsed = JSON.parse(v.analyses[0].analysisJson) as { keyMoments?: unknown };
+        const parsed = JSON.parse(latest.analysisJson) as { keyMoments?: unknown };
         if (Array.isArray(parsed.keyMoments)) {
           keyMoments = parsed.keyMoments.map((m) => {
             const o = m as Record<string, unknown>;
@@ -305,11 +358,11 @@ export async function buildCards(
       engagementRate: v.views > 0
         ? `${((v.likes + v.comments + (v.shares ?? 0)) / v.views * 100).toFixed(1)}%`
         : '0%',
-      outlierScore: v.score?.outlierScore ?? null,
+      outlierScore: bufferScores.get(v.id) ?? null,
       durationSec: v.durationSec,
       postedAt: v.postedAt.getTime(),
-      analyzedBy: analyzedByKeyOf(v.analyses[0]?.backend),
-      analyzedAt: v.analyses[0] ? v.analyses[0].createdAt.getTime() : null,
+      analyzedBy: analyzedByKeyOf(latest?.backend),
+      analyzedAt: latest ? latest.createdAt.getTime() : null,
       mediaUrl: media[i]!.url,
       slideshowImages,
       keyMoments,
@@ -318,7 +371,7 @@ export async function buildCards(
       fetchError: (media[i]!.url || slideshowImages.length)
         ? null
         : (fetchErrors[v.id] ?? null),
-      isSelf: Boolean(v.source.isSelf) || selfHandles.has(normalizeQuery('creator', v.creatorHandle)),
+      isSelf: Boolean(isSelfBySource.get(v.sourceId)) || selfHandles.has(normalizeQuery('creator', v.creatorHandle)),
       hookTest: testsByVideo.get(v.id) ?? null,
     };
   });

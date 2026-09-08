@@ -9,6 +9,7 @@
 
 import type { Workspace } from '@prisma/client';
 import { db } from '../db.js';
+import { dbDialect, type Dialect } from '../store.js';
 import { normalizeQuery } from './canonical-query.js';
 import { resolveThumbUrl } from './media.js';
 
@@ -73,10 +74,21 @@ export function emptyCreatorPreview(handle: string): CreatorPreview {
   };
 }
 
-/** Prisma OR for matching a handle with or without a leading @, case-insensitive. */
-export function creatorHandleWhere(handle: string) {
+/**
+ * Prisma OR for matching a handle with or without a leading @.
+ *
+ * `mode: 'insensitive'` is Postgres-only — the SQLite client rejects it
+ * (PrismaClientValidationError → unhandled 500 on the Worker, which the
+ * browser then misreports as a CORS failure). TikTok handles are lowercase
+ * by platform convention and normalizeQuery lowercases the input, so exact
+ * matches cover real data on sqlite.
+ */
+export function creatorHandleWhere(handle: string, dialect: Dialect = dbDialect()) {
   const key = normalizeQuery('creator', handle);
   if (!key) return null;
+  if (dialect === 'sqlite') {
+    return { OR: [{ creatorHandle: key }, { creatorHandle: `@${key}` }] };
+  }
   return {
     OR: [
       { creatorHandle: { equals: key, mode: 'insensitive' as const } },

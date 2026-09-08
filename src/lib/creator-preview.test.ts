@@ -8,12 +8,18 @@ import {
 } from './creator-preview.js';
 
 describe('creatorHandleWhere', () => {
-  test('matches the handle with and without a leading @', () => {
-    expect(creatorHandleWhere('@Maker')).toEqual({
+  test('matches the handle with and without a leading @ (postgres)', () => {
+    expect(creatorHandleWhere('@Maker', 'postgres')).toEqual({
       OR: [
         { creatorHandle: { equals: 'maker', mode: 'insensitive' } },
         { creatorHandle: { equals: '@maker', mode: 'insensitive' } },
       ],
+    });
+  });
+
+  test('sqlite uses exact matches — mode:insensitive is rejected there', () => {
+    expect(creatorHandleWhere('@Maker', 'sqlite')).toEqual({
+      OR: [{ creatorHandle: 'maker' }, { creatorHandle: '@maker' }],
     });
   });
 
