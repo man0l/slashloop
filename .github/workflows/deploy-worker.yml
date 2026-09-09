@@ -17,8 +17,11 @@
 name: deploy-worker
 
 on:
+  # Any push to the default branch — direct commits AND merged PRs both land
+  # here as push events, so both auto-deploy. `main` is covered too in case
+  # the default branch is ever renamed from `master`.
   push:
-    branches: [master]
+    branches: [master, main]
   workflow_dispatch:
 
 concurrency:

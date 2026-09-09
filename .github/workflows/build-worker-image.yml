@@ -15,7 +15,7 @@ name: build-worker-image
 # Run workflow) to force a rebuild.
 on:
   push:
-    branches: [master]
+    branches: [master, main]
     paths:
       - 'src/worker/**'
       - 'src/store.ts'
