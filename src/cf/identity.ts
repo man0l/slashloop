@@ -19,19 +19,10 @@ import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { verifySupabaseJwt } from '../../remote/auth.js';
 import type { GoogleIdentity } from './google.js';
 
-// ── Account linking (sibling: phase4-migrate, src/cf/account-link.ts) ──
-// At merge, DELETE the stub below and use the real contract instead:
-//   import { ensureNativeUser } from './account-link.js';
-// The real implementation maps a Google identity to the local sub,
-// transferring existing email-matched workspaces; brand-new Google users get
-// sub `google:<googlesub>`. Verified 2026-09-09: the real file exports
-// EXACTLY this signature, so the swap is one line — but it also needs that
-// branch's Prisma schema change (User.googleSub), which must land first
-// (account-link.ts alone does not typecheck without it).
-export async function ensureNativeUser(_google: GoogleIdentity): Promise<{ sub: string }> {
-  void _google;
-  throw new Error('account-link not merged yet');
-}
+// ── Account linking (src/cf/account-link.ts) ──
+// Maps a Google identity to the local sub, transferring existing
+// email-matched workspaces; brand-new Google users get sub `google:<googlesub>`.
+import { ensureNativeUser } from './account-link.js';
 
 export interface NativeIdentity {
   sub: string;

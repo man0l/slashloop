@@ -245,9 +245,15 @@ export function createOAuthProvider(defaultHandler: DefaultHandler) {
       // Browser flow is intercepted here so src/cf/router.ts needs NO new
       // routes: /authorize and /oauth/google/callback never reach route().
       // (The router's legacy /authorize login page is now shadowed.)
-      fetch: (request, env, ctx) => {
+      fetch: async (request, env, ctx) => {
         const e = env as Env;
         const url = new URL(request.url);
+        // ensureStore first: env vars (GOOGLE_CLIENT_ID) arrive on `env` and
+        // are copied to process.env per isolate — without this a cold isolate
+        // hitting /authorize first would see an empty client id.
+        if (url.pathname === '/authorize' || url.pathname === '/oauth/google/callback') {
+          await ensureStore(e);
+        }
         if (url.pathname === '/authorize') return handleAuthorize(request);
         if (url.pathname === '/oauth/google/callback') {
           return handleGoogleCallback(request, e, options);

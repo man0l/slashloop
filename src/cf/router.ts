@@ -22,7 +22,6 @@ import * as cronDigest from '../../api/cron/digest.js';
 import * as cronRetention from '../../api/cron/media-retention.js';
 import * as internalRawBatch from './internal.js';
 import * as mediaRoutes from './media-routes.js';
-import * as googleCallback from './google-callback.js';
 import { loginPage, legacyLoginPage, consentPage } from '../../remote/pages.js';
 import { AUTHORIZATION_SERVER } from '../../remote/mcp-server.js';
 import { corsHeaders } from '../lib/cors.js';
@@ -109,11 +108,10 @@ const ROUTES: Route[] = [
   // ACCEPT_SUPABASE_JWT (see servePage 'legacy-login'). The native loginPage
   // links here from its <details> fallback.
   { re: /^\/login\/legacy$/, page: 'legacy-login' },
-  // Phase 4 (additive): native Google OAuth callback used by the google agent.
-  // Handler is a documented 501 placeholder until the tokens agent's flow in
-  // src/cf/oauth.ts lands (see src/cf/google-callback.ts). No existing routes
-  // changed.
-  { re: /^\/oauth\/google\/callback$/, mod: googleCallback },
+  // NOTE: /authorize and /oauth/google/callback never reach this router —
+  // the OAuthProvider defaultHandler wrapper in src/cf/oauth.ts intercepts
+  // both first (Google redirect + code exchange). The /authorize page entry
+  // below is shadowed for the same reason; both stay as documentation.
   { re: /^\/health$/, page: 'health' },
   { re: /^\/gallery$/, mod: gallery },
   { re: /^\/api\/gallery-data$/, mod: gallery, inject: { mode: 'data' } },
