@@ -18,14 +18,19 @@ type JobRow = {
 let jobs: JobRow[] = [];
 const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
 const refunds: Array<{ workspaceId: string; amount: number; kind: string; refId: string }> = [];
+const findManyCalls: Array<{ take?: number; orderBy?: unknown }> = [];
 
 mock.module('../db.js', () => ({
   db: {
     mediaJob: {
-      findMany: async ({ where }: any) => jobs.filter(j =>
-        j.status === where.status
-        && (where.createdAt?.lt ? j.createdAt < where.createdAt.lt : true)
-        && (where.startedAt === null ? j.startedAt === null : true)),
+      findMany: async (args: any) => {
+        findManyCalls.push({ take: args?.take, orderBy: args?.orderBy });
+        const { where } = args;
+        return jobs.filter(j =>
+          j.status === where.status
+          && (where.createdAt?.lt ? j.createdAt < where.createdAt.lt : true)
+          && (where.startedAt === null ? j.startedAt === null : true));
+      },
       update: async ({ where, data }: any) => { updates.push({ id: where.id, data }); return {}; },
       findUnique: async ({ where }: any) => jobs.find(j => j.id === where.id) ?? null,
     },
@@ -43,7 +48,7 @@ mock.module('./credits.js', () => ({
   InsufficientCreditsError: class extends Error {},
 }));
 
-const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds, jobTimeoutMs } = await import('./jobs.js');
+const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds, jobTimeoutMs, QUEUE_SWEEP_TAKE } = await import('./jobs.js');
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
 
@@ -61,6 +66,7 @@ beforeEach(() => {
   jobs = [];
   updates.length = 0;
   refunds.length = 0;
+  findManyCalls.length = 0;
 });
 
 describe('failAbandonedQueuedJobs — jobs no worker ever took', () => {
@@ -69,8 +75,25 @@ describe('failAbandonedQueuedJobs — jobs no worker ever took', () => {
     const res = await failAbandonedQueuedJobs();
     expect(res.failed).toBe(1);
     expect(res.refunded).toBe(1);
+    expect(res.more).toBe(false);
     expect(updates[0]!.data.status).toBe('failed');
     expect(refunds[0]).toMatchObject({ workspaceId: 'ws-1', amount: 8, kind: 'refresh_source' });
+  });
+
+  test('the findMany is capped at QUEUE_SWEEP_TAKE, oldest first', async () => {
+    jobs = [job()];
+    await failAbandonedQueuedJobs();
+    expect(findManyCalls[0]).toMatchObject({
+      take: QUEUE_SWEEP_TAKE,
+      orderBy: { createdAt: 'asc' },
+    });
+  });
+
+  test('more is true when the take cap was hit — the queue is still deep', async () => {
+    jobs = Array.from({ length: QUEUE_SWEEP_TAKE }, (_, i) => job({ id: `job-${i}` }));
+    const res = await failAbandonedQueuedJobs();
+    expect(res.failed).toBe(QUEUE_SWEEP_TAKE);
+    expect(res.more).toBe(true);
   });
 
   test('a discover job is refunded under discover_mine, not analyze_video', async () => {
