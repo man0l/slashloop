@@ -70,7 +70,7 @@ export function setActiveClient(client: AppPrismaClient, raw?: RawExecutor): voi
 }
 
 // ---------------------------------------------------------------------------
-// Process-wide DB turn.
+// Process-wide DB turn (ticket queue with deserter removal).
 //
 // The Prisma engine behind the registered client cannot safely serve
 // overlapping queries from one process: concurrent findMany calls on a
@@ -85,14 +85,27 @@ export function setActiveClient(client: AppPrismaClient, raw?: RawExecutor): voi
 // case and costs nothing; it only bites when two requests would otherwise
 // overlap inside the engine.
 //
-// Timeouts, not queues: a waiter that can't acquire the turn in
-// DB_TURN_TIMEOUT_MS fails fast (DbBusyError → 503) instead of piling up
-// behind a wedged holder forever. Combined with the per-call D1 timeouts,
-// no DB stall can become a silent infinite spinner anymore.
+// Timeouts, not pile-ups: a waiter that can't acquire the turn in
+// DB_TURN_TIMEOUT_MS fails fast (DbBusyError → 503) instead of waiting
+// behind a wedged holder forever. Crucially, a timed-out waiter DESERTS —
+// it is removed from the queue without granting itself the turn. (The
+// previous promise-chain design released on timeout, which let the next
+// waiter barge in ahead of the still-running holder: overlapping engine
+// use, the exact wedge hazard above, compounding into a death spiral under
+// slow D1. Observed live 2026-09-09 as cascading DbBusyError storms.)
+// Serialization is therefore never broken: at most one fn runs at a time,
+// deserters or not. Combined with the per-call D1 timeouts, no DB stall can
+// become a silent infinite spinner anymore.
+//
+// Slow holders are logged ([db-turn-slow] with the acquisition stack) so the
+// next storm names its culprit instead of only its victims.
 // ---------------------------------------------------------------------------
 
 /** Max wait for the process-wide DB turn before failing fast. */
 export const DB_TURN_TIMEOUT_MS = 25_000;
+
+/** Hold durations at/above this are logged with the acquisition stack. */
+export const SLOW_DB_TURN_MS = 10_000;
 
 export class DbBusyError extends Error {
   constructor() {
@@ -101,36 +114,104 @@ export class DbBusyError extends Error {
   }
 }
 
-let dbTurn: Promise<unknown> = Promise.resolve();
+interface TurnTicket {
+  /** False once timed out (deserted) — pumpTurn skips these. */
+  live: boolean;
+  /** Resolve the waiter when the turn is granted. Cleared on grant/timeout. */
+  timer: ReturnType<typeof setTimeout> | undefined;
+  grant: () => void;
+}
 
-function withDbTurn<T>(fn: () => Promise<T>): Promise<T> {
-  const prev = dbTurn;
-  let release!: () => void;
-  dbTurn = new Promise<void>((r) => { release = r; });
-  const wait = prev.catch(() => {});
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new DbBusyError()), DB_TURN_TIMEOUT_MS);
-    (timer as unknown as { unref?: () => void }).unref?.();
-  });
-  const done = () => {
-    if (timer !== undefined) clearTimeout(timer);
-  };
-  return Promise.race([wait, timeout]).then(
-    async () => {
-      done();
-      try {
-        return await fn();
-      } finally {
-        release();
+let turnQueue: TurnTicket[] = [];
+let turnHeld = false;
+
+/** Grant the turn to the first live waiter, if the turn is free. */
+function pumpTurn(): void {
+  if (turnHeld) return;
+  while (turnQueue.length > 0 && !turnQueue[0]!.live) turnQueue.shift();
+  const next = turnQueue.shift();
+  if (!next) return;
+  turnHeld = true;
+  next.grant();
+}
+
+export interface DbTurnOptions {
+  /** Override for tests (default DB_TURN_TIMEOUT_MS). */
+  timeoutMs?: number;
+  /** Override for tests (default SLOW_DB_TURN_MS). */
+  slowMs?: number;
+  /** Slow-holder sink (default console.error). */
+  onSlow?: (message: string) => void;
+}
+
+/** @internal — exported for unit tests; all app code goes through the `db` proxy. */
+export function withDbTurn<T>(fn: () => Promise<T>, opts: DbTurnOptions = {}): Promise<T> {
+  const timeoutMs = opts.timeoutMs ?? DB_TURN_TIMEOUT_MS;
+  const slowMs = opts.slowMs ?? SLOW_DB_TURN_MS;
+  const onSlow = opts.onSlow ?? ((msg: string) => console.error(msg));
+  // Captured eagerly so a slow holder logs WHERE it was acquired, not just
+  // how long it ran. ~microseconds per call — negligible next to a D1
+  // round trip, and only formatted into output on the slow path.
+  const acquiredStack = new Error('db-turn acquisition').stack ?? '';
+  const requestedAt = Date.now();
+
+  return new Promise<T>((resolve, reject) => {
+    const ticket: TurnTicket = {
+      live: true,
+      timer: undefined,
+      grant: () => {
+        if (ticket.timer !== undefined) {
+          clearTimeout(ticket.timer);
+          ticket.timer = undefined;
+        }
+        const grantedAt = Date.now();
+        Promise.resolve()
+          .then(fn)
+          .then(
+            (value) => {
+              finishGrant(grantedAt);
+              resolve(value);
+            },
+            (err: unknown) => {
+              finishGrant(grantedAt);
+              reject(err);
+            },
+          );
+      },
+    };
+
+    function finishGrant(grantedAt: number): void {
+      const heldMs = Date.now() - grantedAt;
+      if (heldMs >= slowMs) {
+        const frames = acquiredStack
+          .split('\n')
+          .slice(2, 5)
+          .map((l) => l.trim())
+          .join(' <- ');
+        onSlow(
+          `[db-turn-slow] holder ran ${heldMs}ms (waited ${grantedAt - requestedAt}ms): ${frames}`,
+        );
       }
-    },
-    (err) => {
-      done();
-      release();
-      throw err;
-    },
-  );
+      turnHeld = false;
+      pumpTurn();
+    }
+
+    ticket.timer = setTimeout(() => {
+      ticket.timer = undefined;
+      if (!ticket.live) return;
+      // Desert: leave the chain intact for everyone else. Do NOT grant —
+      // granting here would overlap the still-running holder (the old
+      // release-on-timeout bug that wedged isolates under slow D1).
+      ticket.live = false;
+      const idx = turnQueue.indexOf(ticket);
+      if (idx >= 0) turnQueue.splice(idx, 1);
+      reject(new DbBusyError());
+    }, timeoutMs);
+    (ticket.timer as unknown as { unref?: () => void }).unref?.();
+
+    turnQueue.push(ticket);
+    pumpTurn();
+  });
 }
 
 /** Wrapped members per delegate object — keeps `db.video` identity stable. */
