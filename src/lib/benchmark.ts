@@ -57,7 +57,12 @@ async function buildBenchmarkUncached(workspace: Workspace, now: Date) {
 
   async function statsFor(source: (typeof sources)[number]): Promise<CreatorBenchmark> {
     const videos = await db.video.findMany({
-      where: { sourceId: source.id, isBaselineSample: false },
+      where: { sourceId: source.id, isBaselineSample: false, postedAt: { gte: since30 } },
+      // Safety cap: D1 enforces a 30s per-query limit and a 1000-query scaler
+      // budget per request — an unbounded per-creator pull OOMs/hangs on large
+      // libraries, so bound the 30d window to the top 2000 by views.
+      orderBy: { views: 'desc' },
+      take: 2000,
       select: {
         views: true, postedAt: true, caption: true,
         score: { select: { outlierScore: true } },
