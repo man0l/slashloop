@@ -1,43 +1,77 @@
-// POST /api/jobs/analyze — drain the queue on a time budget.
+// POST /api/jobs/analyze — Cloudflare Worker queue orchestrator (Phase 2).
 //
-// This is now the Vercel (HTTP) worker shell. The per-job processing logic
-// lives in src/worker/process-job.ts, shared with the long-running VPS/Bun
-// worker (src/worker/index.ts). Both use the same claim->process->complete/fail
-// cycle, the same retry policy, and the same credit/refund rules.
+// Phase 2: the Worker drains CHEAP work only. Heavy work stays `queued` for
+// external compute (the VPS/Bun worker, src/worker/index.ts), which has no
+// invocation ceiling, the proxy scraper provider, and the Apify budget.
 //
-// Two callers, both authenticating with CRON_SECRET: the enqueuing request
-// pokes it immediately (best-effort), and pg_cron pokes it every minute from
-// inside Postgres (the reliable path).
+// KIND-ROUTING TABLE — who owns what. Heavy kinds are NEVER claimed here; a
+// whole-queue drain that touched them would start scrapes/AI runs it cannot
+// finish inside its budget, get killed mid-flight, and leave paid-for work
+// stuck in `running` until the 15-minute reclaimer.
 //
-// It reclaims abandoned claims itself rather than trusting a caller to have
-// done so, which is what keeps the retry policy in one place.
+//   | kind     | owner             | why                                          |
+//   |----------|-------------------|----------------------------------------------|
+//   | thumb    | Worker (this)     | one image fetch+store, no Apify/AI, sub-30s  |
+//   | rescore  | Worker (this)     | free recompute, no Apify/AI, one source each |
+//   | fetch    | external compute  | Apify download (~90s), billed spend          |
+//   | analyze  | external compute  | Gemini/OpenRouter pipeline (300s+)           |
+//   | refresh  | external compute  | TikTok scrape (~20-170s), needs proxy        |
+//   | discover | external compute  | probe scrape, needs proxy, billed pre-auth   |
 //
-// Processes jobs until the time budget runs low rather than exactly one, so a
-// backlog drains without waiting for N dispatches. It stops early and leaves
-// the rest queued — the next dispatch or the next sweep continues.
+// Maintenance is also Worker-side but THROTTLED (see below), never per tick:
+// reclaimStuckJobs (abandoned `running` rows), failAbandonedQueuedJobs
+// (never-claimed `queued` rows + refunds), rescoreStaleTooFresh (enqueue-only
+// decisions plus free recompute — the scrapes it queues are `refresh` jobs
+// owned by external compute, and it self-bounds to 15s).
+//
+// Callers: the every-minute scheduled tick (src/cf/worker.ts dispatches internally
+// through route() with CRON_SECRET — one auth path) and a best-effort poke on
+// enqueue. Correctness never rests on either: unprocessed rows simply stay
+// queued for the next tick.
+//
+// Retry/refund policy lives in exactly one place — src/worker/process-job.ts
+// (via claim->process->complete/fail). This file only claims cheap kinds and
+// runs the throttled sweeps; it must NOT fork that logic.
+//
+// D1 discipline (do not regress): the sqlite branch of claimNextJob is a
+// single atomic UPDATE..RETURNING (D1 is single-writer; no FOR UPDATE
+// SKIP LOCKED), every D1 call carries a per-call timeout (timedD1 in
+// src/cf/env.ts), DbBusyError propagates to the router's 503 mapping, and
+// db.* calls are strictly sequential — never Promise.all(db.*).
 
-import { claimNextJob, reclaimStuckJobs } from '../../src/lib/jobs.js';
+import { claimNextJob, failAbandonedQueuedJobs, reclaimStuckJobs } from '../../src/lib/jobs.js';
 import { rescoreStaleTooFresh } from '../../src/scoring.js';
 import { processClaimedJob } from '../../src/worker/process-job.js';
 
 /**
  * Stop claiming new work with this much of the budget left.
  *
- * maxDuration is 60s (vercel.json). Claiming a job at 45s in would mean losing
- * it to the stuck-job sweeper 15 minutes later, having already charged an
- * attempt for work that never had time to run.
+ * Cheap jobs are sub-30s each; the loop drains as many as fit and leaves the
+ * rest queued — the next tick continues. Heavy kinds never enter this loop
+ * (see the kind-routing table above), so no REFRESH_MIN_BUDGET_MS-style guard
+ * is needed here: nothing claimed here can outlive the budget the way an
+ * opaque scrape could.
  */
 const RESERVE_MS = 45_000;
 
 /**
- * Budget a refresh needs before it is worth starting.
+ * Minimum gap between whole-queue maintenance sweeps, per isolate.
  *
- * A scrape is one opaque, uninterruptible call. Started with less than this
- * left it gets killed mid-flight — billed, half-applied, and only recovered by
- * the stuck sweeper 15 minutes later. Better to leave the row queued for the
- * next drain a minute away.
+ * reclaimStuckJobs / failAbandonedQueuedJobs / rescoreStaleTooFresh each scan
+ * whole tables against D1's single writer. The every-minute tick plus an enqueue poke
+ * per request would otherwise run them constantly — and from every isolate at
+ * once after a deploy. Module state is per isolate, so each isolate sweeps at
+ * most this often; the scheduled tick fires 1/min on one isolate, so sweeps
+ * effectively run every ~5th tick. Mirrors WORKER_RECLAIM_INTERVAL_MS on the
+ * VPS worker (src/worker/index.ts).
  */
-const REFRESH_MIN_BUDGET_MS = 30_000;
+export const MAINTENANCE_SWEEP_INTERVAL_MS = 5 * 60_000;
+
+// Initialized at module load (isolate start), not 0: isolates cold-started
+// together by a deploy must NOT all sweep in lockstep against the single
+// writer. First sweep happens one interval after isolate start — harmless,
+// since the stuck (15min) and abandoned (90min) windows are far longer.
+let lastSweepAt = Date.now();
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body, null, 2), {
@@ -58,53 +92,61 @@ export async function POST(request: Request): Promise<Response> {
   const startedAt = Date.now();
   const processed: Array<{ jobId: string; videoId: string | null; ok: boolean; error?: string }> = [];
 
-  // Recover abandoned claims before taking new work.
-  const reclaimed = await reclaimStuckJobs();
+  // Maintenance sweeps — throttled, sequential (never Promise.all over db.*).
+  // A D1 blip here degrades to zeros, not a failed drain: the cheap-job loop
+  // below still runs, and a real stall surfaces as DbBusyError from the claim
+  // path, which the router maps to 503.
+  const sweepsDue = Date.now() - lastSweepAt >= MAINTENANCE_SWEEP_INTERVAL_MS;
+  let reclaimed = { requeued: 0, failed: 0, refunded: 0 };
+  let abandoned = { failed: 0, refunded: 0 };
+  let rescoredStale: { creatorsRescraped: number; sourcesRescoredOnly: number; skipped?: 'throttled' } = {
+    creatorsRescraped: 0,
+    sourcesRescoredOnly: 0,
+    skipped: 'throttled',
+  };
+  if (sweepsDue) {
+    lastSweepAt = Date.now();
+    reclaimed = await reclaimStuckJobs().catch((err) => {
+      console.warn(`[jobs] reclaimStuckJobs failed: ${(err as Error).message}`);
+      return { requeued: 0, failed: 0, refunded: 0 };
+    });
+    abandoned = await failAbandonedQueuedJobs().catch((err) => {
+      console.warn(`[jobs] failAbandonedQueuedJobs failed: ${(err as Error).message}`);
+      return { failed: 0, refunded: 0 };
+    });
+    rescoredStale = await rescoreStaleTooFresh().catch((err) => {
+      console.warn(`[jobs] rescoreStaleTooFresh failed: ${(err as Error).message}`);
+      return { creatorsRescraped: 0, sourcesRescoredOnly: 0 };
+    });
+  }
 
-  // Same idea for scores stuck at 'too_fresh' — the 48h window has usually
-  // passed by the next drain. Spends real Apify credits (bounded), which is
-  // why it must run in exactly ONE place: the VPS maintenance worker already
-  // runs it every WORKER_RESCORE_EVERY iterations, so doing it here as well
-  // meant the same baseline top-up scrapes were bought twice per cycle.
-  const vpsActive = Boolean(process.env.WORKER_URL || process.env.WORKER_ACTIVE);
-  const rescoredStale = vpsActive
-    ? { creatorsRescraped: 0, sourcesRescoredOnly: 0, skipped: 'vps_worker_owns_this' as const }
-    : await rescoreStaleTooFresh().catch((err) => {
-        console.warn(`[jobs] rescoreStaleTooFresh failed: ${(err as Error).message}`);
-        return { creatorsRescraped: 0, sourcesRescoredOnly: 0 };
-      });
-
+  // Cheap kinds only, sequential claims. `thumb` first: its source CDN URL
+  // expires, so a backlog clears ahead of the slower rescore kind. Heavy
+  // kinds (fetch/analyze/refresh/discover) are left queued for external
+  // compute — never claimed here, not even as a fallback.
   while (Date.now() - startedAt < RESERVE_MS) {
-    // When the VPS workers (src/worker) are running they handle EVERY job kind
-    // with no 60s ceiling: a video worker claims analyze/fetch and a
-    // maintenance worker claims refresh/rescore — a scrape can take ~170s, far
-    // beyond this endpoint's budget. So with WORKER_URL set, Vercel claims
-    // nothing; it still reclaims stuck rows and runs rescoreStaleTooFresh
-    // above, and only processes jobs directly when no VPS worker is active.
-    if (vpsActive) break;
-
-    // Discover mines must NOT run here: this process has no residential
-    // proxy (Vercel defaults to Apify, whose token 401s). The Contabo
-    // scraper worker claims `discover`.
-    const job = (await claimNextJob('fetch'))
-      ?? (await claimNextJob('analyze'))
-      ?? (await claimNextJob('rescore'))
-      ?? (await claimNextJob('refresh'));
+    const job = (await claimNextJob('thumb'))
+      ?? (await claimNextJob('rescore'));
     if (!job) break;
 
-    const result = await processClaimedJob(job, {
-      deadlineMs: startedAt + RESERVE_MS,
-      refreshRequiresMs: REFRESH_MIN_BUDGET_MS,
-    });
+    // No deadline/budget opts: those only gate `refresh`, which is never
+    // claimed here. rescore/thumb run to completion inside the loop budget.
+    const result = await processClaimedJob(job);
 
     processed.push({ jobId: job.id, videoId: job.videoId, ok: result.ok, error: result.error });
 
-    // If the job was requeued because of budget, stop claiming more.
+    // rescore/thumb never requeue for budget today; keep the guard so a
+    // future cheap kind with a requeue path stops the loop instead of
+    // spin-claiming.
     if (result.requeued) break;
   }
 
   return json(200, {
+    drainedKinds: ['thumb', 'rescore'],
+    heavyKinds: 'left-queued-for-external-compute',
+    maintenance: sweepsDue ? 'ran' : 'throttled',
     reclaimed,
+    abandoned,
     rescoredStale,
     processed: processed.length,
     succeeded: processed.filter(p => p.ok).length,
