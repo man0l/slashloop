@@ -565,8 +565,16 @@ export function refreshBatchingEnabled(): boolean {
  * Bounds fan-out work (persist/score/thumbs per source) inside one invocation.
  * Override with REFRESH_BATCH_PEER_CAP so a batch can be narrowed in prod
  * without a redeploy.
+ *
+ * Default is 4 (was 9) since the D1 cutover: fan-out is one per-source stream
+ * of roughly 2-5 statements per scraped video (existence check, create/update,
+ * score upsert, baseline upsert), and D1 caps a single invocation at 1000
+ * queries with no parallel worker — with a ~200-video scrape the old 10-member
+ * batch was ~5000 statements and parked a worker slot for up to jobTimeoutMs
+ * (refresh = 120s). 4 keeps the same worst case ~2x lower than that ceiling
+ * while batching still fires.
  */
-export const REFRESH_BATCH_PEER_CAP_DEFAULT = 9;
+export const REFRESH_BATCH_PEER_CAP_DEFAULT = 4;
 
 export function refreshBatchPeerCap(): number {
   const raw = process.env.REFRESH_BATCH_PEER_CAP;
@@ -843,7 +851,7 @@ export async function claimRefreshPeersForCanonical(opts: {
 export async function claimJobsByIds(ids: string[]): Promise<MediaJobRow[]> {
   if (ids.length === 0) return [];
   // Prisma.$queryRaw cannot expand arrays into IN ($1,$2) without Prisma.join
-  // in all versions — claim one-by-one is fine for N≤9.
+  // in all versions — claim one-by-one is fine for N≤4 (REFRESH_BATCH_PEER_CAP_DEFAULT).
   const claimed: MediaJobRow[] = [];
   for (const id of ids) {
     if (dbDialect() === 'sqlite') {
