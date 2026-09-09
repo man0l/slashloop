@@ -1,6 +1,11 @@
 import { describe, expect, mock, test, beforeEach } from 'bun:test';
 
-// ── module mocks (registered before the first creator-baselines import) ──
+// ── module mocks (see the spread note: later test files re-import these
+// modules, so a partial mock would break them — spread the real surface,
+// override only what this file drives) ──
+
+const realJobs = await import('./jobs.js');
+const realCredits = await import('./credits.js');
 
 const enqueueCalls: Array<{ workspaceId: string; sourceId: string; payload: Record<string, unknown> }> = [];
 let balanceTotal = 100;
@@ -37,22 +42,15 @@ mock.module('../db.js', () => ({
 }));
 
 mock.module('./credits.js', () => ({
-  CREDIT_COSTS: { refreshSourcePerVideo: 1.5, analyzeVideo: 5 },
+  ...realCredits,
   creditBalance: async () => ({ planCredits: balanceTotal, packCredits: 0, total: balanceTotal }),
 }));
 
 mock.module('./jobs.js', () => ({
+  ...realJobs,
   enqueueRefreshJob: async (opts: any) => {
     enqueueCalls.push({ workspaceId: opts.workspaceId, sourceId: opts.sourceId, payload: JSON.parse(opts.payload ? JSON.stringify(opts.payload) : '{}') });
     return { id: `job-${enqueueCalls.length}` };
-  },
-  parseRefreshJobPayload: (raw: string | null | undefined) => {
-    try {
-      const parsed = JSON.parse(raw || '{}');
-      return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch {
-      return {};
-    }
   },
 }));
 

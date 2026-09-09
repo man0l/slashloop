@@ -3,13 +3,24 @@
 // cap, deleted source) must cost ONE attempt, not all three — each extra life
 // is a claim + billing reads + debit + failJob write against D1, and the
 // automatic sweeps mint fresh rows every few minutes regardless.
+//
+// Mocking discipline: bun shares one module registry across every test file in
+// the run, and a mocked module is re-evaluated for each later importer — so a
+// PARTIAL mock silently breaks whatever file imports the real thing next.
+// Every mock below therefore spreads the REAL module and overrides only the
+// few functions under test. (db.js stays narrow: it's the one module whose
+// surface can't be spread, same trade-off the other queue tests make.)
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
-type Row = Record<string, unknown>;
-const updates: Array<{ id: string; data: Row }> = [];
+const realMedia = await import('../lib/media.js');
+const realCredits = await import('../lib/credits.js');
+const realRefresh = await import('../lib/refresh.js');
+const realAnalysis = await import('../analysis/index.js');
+
+const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
 const refunds: Array<{ workspaceId: string; amount: number; refId: string }> = [];
-let jobRow: Row = {};
-let runRefreshResult: Row = {};
+let jobRow: Record<string, unknown> = {};
+let runRefreshResult: Record<string, unknown> = {};
 
 mock.module('../db.js', () => ({
   db: {
@@ -26,24 +37,27 @@ mock.module('../db.js', () => ({
 }));
 
 mock.module('../lib/refresh.js', () => ({
+  ...realRefresh,
   runRefresh: async () => runRefreshResult,
   runBatchedRefresh: async () => [],
 }));
 
 mock.module('../lib/credits.js', () => ({
-  CREDIT_COSTS: { refreshSourcePerVideo: 1.5, analyzeVideo: 5 },
+  ...realCredits,
+  CREDIT_COSTS: { ...realCredits.CREDIT_COSTS },
   refundCredits: async (workspaceId: string, amount: number, _tool: string, refId: string) => {
     refunds.push({ workspaceId, amount, refId });
     return { total: 100 };
   },
-  creditBalance: async () => ({ total: 100 }),
 }));
 
 mock.module('../analysis/index.js', () => ({
+  ...realAnalysis,
   analyzeVideoWithDownload: async () => { throw new Error('not under test'); },
 }));
 
 mock.module('../lib/media.js', () => ({
+  ...realMedia,
   ingestThumbnails: async () => ({ stored: 0, skipped: 0, failed: 0 }),
   downloadAndStoreVideo: async () => { throw new Error('not under test'); },
 }));
@@ -53,7 +67,7 @@ const { MAX_ATTEMPTS } = await import('../lib/jobs.js');
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
 
-function refreshJob(over: Row = {}): Row {
+function refreshJob(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: 'job-1', workspaceId: 'ws-1', videoId: null, sourceId: 'src-1',
     kind: 'refresh', status: 'running', attempts: 1,

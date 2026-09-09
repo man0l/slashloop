@@ -7,7 +7,15 @@
 // sweep (every ~5 min, from two workers) re-enqueued a creator scrape that was
 // claimed, refused by debitCredits and failed — forever, because the videos
 // stay too_fresh until a rescrape actually lands. That loop drained D1.
+//
+// Mocking discipline: bun re-evaluates a mocked module for every later
+// importer in the run, so each mock below spreads the REAL module and
+// overrides only what this file drives. db.js can't be spread (same
+// trade-off as the other queue tests).
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
+
+const realJobs = await import('./jobs.js');
+const realCredits = await import('./credits.js');
 
 const enqueues: Array<{ workspaceId: string; sourceId: string; videoLimit: number; payload: Record<string, unknown> }> = [];
 let balanceTotal = 100;
@@ -34,6 +42,7 @@ mock.module('../db.js', () => ({
 }));
 
 mock.module('./jobs.js', () => ({
+  ...realJobs,
   enqueueRefreshJob: async (opts: any) => {
     enqueues.push({ workspaceId: opts.workspaceId, sourceId: opts.sourceId, videoLimit: opts.videoLimit, payload: opts.payload });
     return { id: `job-${enqueues.length}` };
@@ -42,9 +51,8 @@ mock.module('./jobs.js', () => ({
 }));
 
 mock.module('./credits.js', () => ({
-  CREDIT_COSTS: { refreshSourcePerVideo: 1.5, analyzeVideo: 5 },
+  ...realCredits,
   creditBalance: async () => ({ planCredits: balanceTotal, packCredits: 0, total: balanceTotal }),
-  InsufficientCreditsError: class extends Error {},
 }));
 
 const { rescoreStaleTooFresh } = await import('../scoring.js');
