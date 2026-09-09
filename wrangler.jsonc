@@ -36,9 +36,9 @@
     {
       "binding": "OAUTH_KV",
       // Phase 1 (Cloudflare-native MCP): @cloudflare/workers-oauth-provider
-      // persists grants/tokens here. Integrator: run
-      // `wrangler kv namespace create OAUTH_KV` and replace the id below.
-      "id": "REPLACE_WITH_OAUTH_KV_NAMESPACE_ID"
+      // persists grants/tokens here.
+      // wrangler kv namespace create OAUTH_KV
+      "id": "8e079f9756ab4886b6783b311c2cdb24"
     }
   ],
   // ── Schedulers (replace Vercel Cron + Supabase pg_cron) ─────────────────

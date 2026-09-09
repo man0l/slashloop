@@ -72,6 +72,14 @@ jobs:
           PUBLIC_URL: ${{ vars.PUBLIC_URL }}
           WORKER_IDLE_MS: ${{ vars.WORKER_IDLE_MS }}
           WORKER_RESCORE_EVERY: ${{ vars.WORKER_RESCORE_EVERY }}
+          # D1 mode (Cloudflare cutover): the image talks to D1 over HTTP.
+          DB_DIALECT: ${{ vars.DB_DIALECT }}
+          D1_ACCOUNT_ID: ${{ vars.D1_ACCOUNT_ID }}
+          D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+          D1_API_TOKEN: ${{ secrets.D1_API_TOKEN }}
+          # Atomic rawBatch bridge (Worker /internal/raw-batch) + its auth.
+          WORKER_INTERNAL_URL: ${{ vars.WORKER_INTERNAL_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
           # Cloudflare R2 (preferred media backend when set — see src/lib/storage.ts)
           R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
           R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
@@ -113,6 +121,12 @@ jobs:
           printf 'PUBLIC_URL=%s\n' "$PUBLIC_URL"                >> "$out"
           printf 'WORKER_IDLE_MS=%s\n' "$WORKER_IDLE_MS"        >> "$out"
           printf 'WORKER_RESCORE_EVERY=%s\n' "$WORKER_RESCORE_EVERY" >> "$out"
+          printf 'DB_DIALECT=%s\n' "$DB_DIALECT"                    >> "$out"
+          printf 'D1_ACCOUNT_ID=%s\n' "$D1_ACCOUNT_ID"              >> "$out"
+          printf 'D1_DATABASE_ID=%s\n' "$D1_DATABASE_ID"            >> "$out"
+          printf 'D1_API_TOKEN=%s\n' "$D1_API_TOKEN"                >> "$out"
+          printf 'WORKER_INTERNAL_URL=%s\n' "$WORKER_INTERNAL_URL"  >> "$out"
+          printf 'CRON_SECRET=%s\n' "$CRON_SECRET"                  >> "$out"
           printf 'R2_ENDPOINT=%s\n' "$R2_ENDPOINT"              >> "$out"
           printf 'R2_ACCOUNT_ID=%s\n' "$R2_ACCOUNT_ID"          >> "$out"
           printf 'R2_THUMB_BUCKET=%s\n' "$R2_THUMB_BUCKET"      >> "$out"
