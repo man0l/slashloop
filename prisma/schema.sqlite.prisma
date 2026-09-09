@@ -19,6 +19,11 @@ datasource db {
 model User {
   id        String   @id
   email     String
+  /// Native Google subject (`google:<sub>`) linked at first Google login.
+  /// Null until then (all migrated Supabase rows start Null). Set together
+  /// with the Workspace.ownerId transfer in src/cf/account-link.ts
+  /// ensureNativeUser() — one Google identity links to at most one User row.
+  googleSub String?  @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
