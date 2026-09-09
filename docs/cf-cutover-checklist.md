@@ -62,6 +62,14 @@ Supabase JWT (step-1 auth).
 
 - [ ] `POST /api/cron/digest` with `CRON_SECRET` builds + stores digest; `get_digest`
       serves it; email sends only with `RESEND_API_KEY` set.
+- [ ] Digest drains in pages on the Worker: `DIGEST_PAGE_SIZE=10` workspaces per
+      invocation, resuming from the `digest:cursor:<monday>` index in the
+      SHARD_DIRECTORY KV (src/cf/kv.ts) — D1's 1000-query/invocation cap is
+      what paging exists for, so the weekly run spans multiple scheduled ticks
+      and `processed < dueWorkspaces` in an invocation's response is advancing,
+      not failing. Tune `DIGEST_PAGE_SIZE` in wrangler.jsonc vars if a page
+      ever approaches 60s. (On Vercel — no KV binding — the sweep is
+      one-shot and caps out around ~125 due workspaces.)
 - [ ] Re-enable order: `*/1` drain → observe one cycle → `0 3` retention →
       `0 9 * * 1` digest. Then unschedule pg_cron `drain-analyze-jobs`, then remove
       Vercel Crons (`vercel.json` + dashboard).
