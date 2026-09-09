@@ -46,18 +46,29 @@ function priceEnv(suffix: string): string | undefined {
   return env(`${prefix}${suffix}`);
 }
 
-export const stripe: Stripe | null = (() => {
-  const key = stripeSecretKey();
-  return key ? new Stripe(key) : null;
-})();
+let cachedStripe: Stripe | null = null;
+let cachedKey: string | null = null;
+
+/** Compat alias for the previous eager singleton — prefer requireStripe(). */
+export let stripe: Stripe | null = null;
 
 export function requireStripe(): Stripe {
-  if (!stripe) {
+  const key = stripeSecretKey();
+  if (!key) {
     const mode = stripeMode();
     const expected = mode === 'test' ? 'STRIPE_TEST_SECRET_KEY' : 'STRIPE_SECRET_KEY';
     throw new Error(`${expected} is not set (STRIPE_MODE=${mode}).`);
   }
-  return stripe;
+  // Lazily built, not at module load: on Workers env vars are copied into
+  // process.env per-isolate by src/cf/env.ts AFTER imports run, so an
+  // import-time `new Stripe(key)` would freeze a null client even with the
+  // secret set. Rebuilt if the active key rotates between isolates.
+  if (!cachedStripe || cachedKey !== key) {
+    cachedStripe = new Stripe(key);
+    cachedKey = key;
+    stripe = cachedStripe;
+  }
+  return cachedStripe;
 }
 
 /**

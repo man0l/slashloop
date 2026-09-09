@@ -164,8 +164,14 @@ export async function route(request: Request): Promise<Response> {
     const mod = entry.mod!;
     if (entry.inject) {
       for (const [key, value] of Object.entries(entry.inject)) {
-        // $N refers to the corresponding regex capture group.
-        url.searchParams.set(key, value.startsWith('$') ? (match[Number(value.slice(1))] ?? '') : value);
+        // $N refers to the corresponding regex capture group. An optional
+        // group that didn't participate (e.g. bare /api/billing with no
+        // /<action> segment) must NOT clobber an ?action= the caller already
+        // set — Vercel's rewrite only fires with the segment present, so the
+        // bare path keeps its own query string there too.
+        const resolved = value.startsWith('$') ? (match[Number(value.slice(1))] ?? '') : value;
+        if (value.startsWith('$') && !resolved) continue;
+        url.searchParams.set(key, resolved);
       }
       request = new Request(url.toString(), request);
     }

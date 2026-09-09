@@ -37,8 +37,12 @@ export default {
     }
 
     const secret = process.env.CRON_SECRET ?? '';
+    // Method per handler: the drain only accepts POST (its GET explains the
+    // 401/405 contract), while both crons are GET-only — dispatching them as
+    // POST would 405 every scheduled digest/retention run through the router.
+    const method = path === '/api/jobs/analyze' ? 'POST' : 'GET';
     const request = new Request(`https://internal${path}`, {
-      method: 'POST',
+      method,
       headers: secret ? { Authorization: `Bearer ${secret}` } : {},
     });
 
