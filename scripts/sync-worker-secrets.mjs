@@ -37,6 +37,9 @@ const MANIFEST = {
   R2_SECRET_ACCESS_KEY: 'R2_SECRET_ACCESS_KEY',
   CRON_SECRET: 'CRON_SECRET',
   ALERT_EMAIL: 'ALERT_EMAIL',
+  // Native Google OAuth (Phase 4 auth) — Worker reads GOOGLE_CLIENT_ID/SECRET.
+  GOOGLE_CLIENT_ID: 'GOOGLE_CLIENT_ID',
+  GOOGLE_CLIENT_SECRET: 'GOOGLE_CLIENT_SECRET',
   // Stripe: GH holds the live secret key under the name the stripe-setup
   // workflows already use (production environment). The rest are set directly
   // under their Worker names once real values exist in GitHub.

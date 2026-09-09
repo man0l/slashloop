@@ -82,6 +82,8 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           STRIPE_SECRET_API_KEY: ${{ secrets.STRIPE_SECRET_API_KEY }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
           STRIPE_PRICE_CREATOR_MONTH: ${{ vars.STRIPE_PRICE_CREATOR_MONTH }}
