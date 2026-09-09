@@ -119,7 +119,8 @@ interface TurnTicket {
   live: boolean;
   /** Resolve the waiter when the turn is granted. Cleared on grant/timeout. */
   timer: ReturnType<typeof setTimeout> | undefined;
-  grant: () => void;
+  /** Set by withDbTurn before the ticket can be granted. */
+  grant: (() => void) | undefined;
 }
 
 let turnQueue: TurnTicket[] = [];
@@ -132,7 +133,7 @@ function pumpTurn(): void {
   const next = turnQueue.shift();
   if (!next) return;
   turnHeld = true;
-  next.grant();
+  next.grant?.();
 }
 
 export interface DbTurnOptions {
@@ -156,33 +157,20 @@ export function withDbTurn<T>(fn: () => Promise<T>, opts: DbTurnOptions = {}): P
   const requestedAt = Date.now();
 
   return new Promise<T>((resolve, reject) => {
-    const ticket: TurnTicket = {
-      live: true,
-      timer: undefined,
-      grant: () => {
-        if (ticket.timer !== undefined) {
-          clearTimeout(ticket.timer);
-          ticket.timer = undefined;
-        }
-        const grantedAt = Date.now();
-        Promise.resolve()
-          .then(fn)
-          .then(
-            (value) => {
-              finishGrant(grantedAt);
-              resolve(value);
-            },
-            (err: unknown) => {
-              finishGrant(grantedAt);
-              reject(err);
-            },
-          );
-      },
-    };
+    let granted = false;
+    let slowLogged = false;
 
-    function finishGrant(grantedAt: number): void {
+    // Finish one turn: log slow holders, free the turn, and pump the queue.
+    const finish = (failed: boolean, value: T): void => {
+      if (!granted) return;
+      granted = false;
+      if (ticket.timer !== undefined) {
+        clearTimeout(ticket.timer);
+        ticket.timer = undefined;
+      }
       const heldMs = Date.now() - grantedAt;
-      if (heldMs >= slowMs) {
+      if (heldMs >= slowMs && !slowLogged) {
+        slowLogged = true;
         const frames = acquiredStack
           .split('\n')
           .slice(2, 5)
@@ -194,10 +182,19 @@ export function withDbTurn<T>(fn: () => Promise<T>, opts: DbTurnOptions = {}): P
       }
       turnHeld = false;
       pumpTurn();
-    }
+      if (failed) reject(value);
+      else resolve(value);
+    };
 
-    ticket.timer = setTimeout(() => {
-      ticket.timer = undefined;
+    const grantedAt = Date.now();
+
+    const ticket: TurnTicket = {
+      live: true,
+      timer: undefined,
+      grant: undefined,
+    };
+
+    const timer = setTimeout(() => {
       if (!ticket.live) return;
       // Desert: leave the chain intact for everyone else. Do NOT grant —
       // granting here would overlap the still-running holder (the old
@@ -207,14 +204,33 @@ export function withDbTurn<T>(fn: () => Promise<T>, opts: DbTurnOptions = {}): P
       if (idx >= 0) turnQueue.splice(idx, 1);
       reject(new DbBusyError());
     }, timeoutMs);
-    (ticket.timer as unknown as { unref?: () => void }).unref?.();
+    (timer as unknown as { unref?: () => void }).unref?.();
+    ticket.timer = timer;
+
+    // The turn is granted when this waiter reaches the front of the queue
+    // while the turn is free. grant() runs fn and finishes the turn when fn
+    // settles — never overlapping another fn (serialization is the whole
+    // point of the turn; a timed-out waiter may NOT barge in front of a
+    // still-running holder).
+    ticket.grant = () => {
+      if (granted) return;
+      granted = true;
+      if (ticket.timer !== undefined) {
+        clearTimeout(ticket.timer);
+        ticket.timer = undefined;
+      }
+      Promise.resolve()
+        .then(fn)
+        .then(
+          (value) => finish(false, value),
+          (err: unknown) => finish(true, err as unknown as T),
+        );
+    };
 
     turnQueue.push(ticket);
     pumpTurn();
   });
 }
-
-/** Wrapped members per delegate object — keeps `db.video` identity stable. */
 const wrappedMembers = new WeakMap<object, Map<PropertyKey, unknown>>();
 
 function wrapDelegate<T extends object>(delegate: T): T {
