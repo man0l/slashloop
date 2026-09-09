@@ -411,7 +411,7 @@ Everything below is on `feat/apify-multi-tenant-batching`, merged with `master` 
 
 1. Apply both migrations (`supabase db push` or the SQL directly). The lock acquire fails **open** with a warning if `CanonicalScrapeLock` is missing, so code can ship before the migration — but duplicate scrapes stay possible until it lands.
 2. `prisma generate` (postinstall already does it) — the `Video` compound unique is new.
-3. Optional on the maintenance worker: `REFRESH_COALESCE_MS` (default 30000), `REFRESH_BATCH_PEER_CAP` (default 9). No workspace-id config is needed — cost attribution is automatic.
+3. Optional on the maintenance worker: `REFRESH_COALESCE_MS` (default 30000), `REFRESH_BATCH_PEER_CAP` (default 4, lowered from 9 at the D1 cutover to bound per-invocation fan-out statements under D1's 1000-query cap). No workspace-id config is needed — cost attribution is automatic.
 4. Set `stop_grace_period: 300s` on both slashloop services **and** `WATCHTOWER_TIMEOUT=300s` on the watchtower service in `salonease/docker-compose.prod.yml` — watchtower passes its own stop timeout and ignores `stop_grace_period`. Still the one gap the code cannot close by itself (§14.4).
 5. Watch `[worker] refresh batch canonical=… size=…`. `size=1` on every line means the hold is too short for the enqueue pattern, not that grouping is broken.
 
@@ -452,7 +452,7 @@ Lease TTL (`CANONICAL_LOCK_TTL_MS`, 10 min) is deliberately shorter than `STUCK_
 
 **Losing the race costs nothing.** The loser calls `yieldJob`, which requeues *and gives the attempt back* — `attempts` increments at claim time, so using `failJob` here would let three lost races terminally fail a refresh that never attempted anything. The same applies to the Vercel budget-requeue path.
 
-**No extra config needed on the VPS:** cost attribution is automatic (per-sharer split), and the batching envs all have working defaults — batching on, 30s coalescing hold, peer cap 9.
+**No extra config needed on the VPS:** cost attribution is automatic (per-sharer split), and the batching envs all have working defaults — batching on, 30s coalescing hold, peer cap 4.
 
 ### 14.5 Running a second worker container
 

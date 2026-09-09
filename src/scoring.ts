@@ -1,5 +1,5 @@
 import { db } from './db.js';
-import { chunked } from './store.js';
+import { D1_PARAM_CHUNK, chunked, dbDialect, rawBatch, type RawStatement } from './store.js';
 import { subHours } from 'date-fns';
 import { enqueueRefreshJob, outstandingJobForSource } from './lib/jobs.js';
 
@@ -56,6 +56,70 @@ function trimmedMedian(values: number[]): number {
     : (trimmed[mid - 1] + trimmed[mid]) / 2;
 
   return Math.max(500, median); // floor of 500
+}
+
+// ---------------------------------------------------------------------------
+// D1 bulk upserts — one INSERT..ON CONFLICT..DO UPDATE per chunk instead of
+// one Prisma upsert per row (rawBatch throws on Postgres; every call site is
+// dialect-branched, exactly like src/lib/credits.ts).
+//
+// D1 caps bound parameters per query at ~100 (store.ts D1_PARAM_CHUNK), so a
+// chunk is D1_PARAM_CHUNK / params-per-row — NOT D1_PARAM_CHUNK rows — and
+// each chunk goes out as its own rawBatch statement.
+// ---------------------------------------------------------------------------
+
+/** Score upsert binds videoId, outlierScore, scoreType, explanation, scoredAt. */
+const SCORE_ROWS_PER_STATEMENT = Math.floor(D1_PARAM_CHUNK / 5); // 18 rows × 5 params = 90
+/** Baseline upsert binds creatorHandle, platform, medianViews, sampleSize, computedAt. */
+const BASELINE_ROWS_PER_STATEMENT = Math.floor(D1_PARAM_CHUNK / 5); // 18 rows × 5 params = 90
+
+async function upsertScoresSqlite(results: ScoreResult[]): Promise<void> {
+  const scoredAt = new Date();
+  for (let i = 0; i < results.length; i += SCORE_ROWS_PER_STATEMENT) {
+    const chunk = results.slice(i, i + SCORE_ROWS_PER_STATEMENT);
+    const placeholders: string[] = [];
+    const params: unknown[] = [];
+    for (const r of chunk) {
+      placeholders.push('(?, ?, ?, ?, ?)');
+      params.push(r.videoId, r.outlierScore, r.scoreType, r.explanation, scoredAt);
+    }
+    const stmt: RawStatement = {
+      sql: `INSERT INTO "Score" ("videoId", "outlierScore", "scoreType", "explanation", "scoredAt")
+            VALUES ${placeholders.join(', ')}
+            ON CONFLICT ("videoId") DO UPDATE SET
+              "outlierScore" = excluded."outlierScore",
+              "scoreType" = excluded."scoreType",
+              "explanation" = excluded."explanation",
+              "scoredAt" = excluded."scoredAt"`,
+      params,
+    };
+    await rawBatch([stmt]);
+  }
+}
+
+async function upsertBaselinesSqlite(
+  entries: Array<{ creatorHandle: string; platform: string; medianViews: number; sampleSize: number }>,
+): Promise<void> {
+  const computedAt = new Date();
+  for (let i = 0; i < entries.length; i += BASELINE_ROWS_PER_STATEMENT) {
+    const chunk = entries.slice(i, i + BASELINE_ROWS_PER_STATEMENT);
+    const placeholders: string[] = [];
+    const params: unknown[] = [];
+    for (const e of chunk) {
+      placeholders.push('(?, ?, ?, ?, ?)');
+      params.push(e.creatorHandle, e.platform, e.medianViews, e.sampleSize, computedAt);
+    }
+    const stmt: RawStatement = {
+      sql: `INSERT INTO "Baseline" ("creatorHandle", "platform", "medianViews", "sampleSize", "computedAt")
+            VALUES ${placeholders.join(', ')}
+            ON CONFLICT ("creatorHandle", "platform") DO UPDATE SET
+              "medianViews" = excluded."medianViews",
+              "sampleSize" = excluded."sampleSize",
+              "computedAt" = excluded."computedAt"`,
+      params,
+    };
+    await rawBatch([stmt]);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -173,21 +237,40 @@ export async function computeCreatorBaselinesBatch(
     groups.get(key)!.vids.push({ views: r.views, postedAt: r.postedAt });
   }
 
+  const persisted: Array<{ creatorHandle: string; platform: string; medianViews: number; sampleSize: number }> = [];
   for (const [, g] of groups) {
     g.vids.sort((a, b) => +b.postedAt - +a.postedAt);
     const sample = g.vids.slice(0, 20); // last 20 by recency
     const medianViews = trimmedMedian(sample.map(v => v.views));
     result.set(`${g.handle}__${g.platform}`, { medianViews, sampleSize: sample.length });
+    persisted.push({ creatorHandle: g.handle, platform: g.platform, medianViews, sampleSize: sample.length });
+  }
 
-    // Persist baseline (best-effort — scoring uses the returned median).
-    try {
-      await db.baseline.upsert({
-        where: { creatorHandle_platform: { creatorHandle: g.handle, platform: g.platform } },
-        create: { creatorHandle: g.handle, platform: g.platform, medianViews, sampleSize: sample.length },
-        update: { medianViews, sampleSize: sample.length, computedAt: new Date() },
-      });
-    } catch {
-      // best-effort
+  // Persist baselines (best-effort — scoring uses the returned median). The
+  // upsert is free on failures here on purpose: a baseline write must never
+  // fail a rescore that already has the median in memory.
+  if (persisted.length > 0) {
+    if (dbDialect() === 'sqlite') {
+      // D1 bulk upsert: ~N/18 chunky INSERT..ON CONFLICT statements instead of
+      // one baseline.upsert per creator group (a 200-creator hashtag scrape
+      // fired 200 sequential upserts against the single D1 writer).
+      try {
+        await upsertBaselinesSqlite(persisted);
+      } catch {
+        // best-effort
+      }
+    } else {
+      for (const e of persisted) {
+        try {
+          await db.baseline.upsert({
+            where: { creatorHandle_platform: { creatorHandle: e.creatorHandle, platform: e.platform } },
+            create: { creatorHandle: e.creatorHandle, platform: e.platform, medianViews: e.medianViews, sampleSize: e.sampleSize },
+            update: { medianViews: e.medianViews, sampleSize: e.sampleSize, computedAt: new Date() },
+          });
+        } catch {
+          // best-effort
+        }
+      }
     }
   }
 
@@ -469,7 +552,6 @@ export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]>
     orderBy: { postedAt: 'desc' },
   });
 
-  const results: ScoreResult[] = [];
   const source = await db.source.findUnique({ where: { id: sourceId } });
   const workspaceId = source?.workspaceId;
 
@@ -499,35 +581,21 @@ export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]>
   // Used when a creator has too little history for a meaningful personal baseline.
   const sourceBatchBaseline = computeSearchBatchBaseline(videos.map(v => v.views));
 
-  // Score each video
+  // Score each video — compute ALL results first, then persist in one shot.
+  // SQLite (D1): the whole page goes out as ~N/18 chunky INSERT..ON CONFLICT
+  // statements instead of N sequential score.upserts against the single D1
+  // writer (a 200-video refresh was 200 round-trips; now ≤12).
+  const results: ScoreResult[] = [];
   for (const video of videos) {
     const key = `${video.creatorHandle}__${video.platform}`;
     const baselineInfo = baselines.get(key) ?? { median: 500, sampleSize: 0 };
 
     if (isTooFresh(video.postedAt)) {
-      const result: ScoreResult = {
+      results.push({
         videoId: video.id,
         outlierScore: 0,
         scoreType: 'too_fresh',
         explanation: '⏳ Too fresh — posted less than 48 hours ago. Score will be calculated on next refresh.',
-      };
-      results.push(result);
-
-      // Upsert score
-      await db.score.upsert({
-        where: { videoId: video.id },
-        create: {
-          videoId: video.id,
-          outlierScore: 0,
-          scoreType: 'too_fresh',
-          explanation: result.explanation,
-        },
-        update: {
-          outlierScore: 0,
-          scoreType: 'too_fresh',
-          explanation: result.explanation,
-          scoredAt: new Date(),
-        },
       });
       continue;
     }
@@ -540,25 +608,33 @@ export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]>
     const baseline =
       scoreType === 'actual' ? baselineInfo.median : sourceBatchBaseline;
 
-    const result = scoreVideo(video.id, video.views, baseline, scoreType, video.creatorFollowers);
-    results.push(result);
+    results.push(scoreVideo(video.id, video.views, baseline, scoreType, video.creatorFollowers));
+  }
 
-    // Upsert score
-    await db.score.upsert({
-      where: { videoId: video.id },
-      create: {
-        videoId: video.id,
-        outlierScore: result.outlierScore,
-        scoreType: result.scoreType,
-        explanation: result.explanation,
-      },
-      update: {
-        outlierScore: result.outlierScore,
-        scoreType: result.scoreType,
-        explanation: result.explanation,
-        scoredAt: new Date(),
-      },
-    });
+  if (dbDialect() === 'sqlite') {
+    // D1 bulk upsert (rawBatch throws on Postgres — the branch above is the
+    // line in the sand). Same upsert semantics as the Prisma per-row call:
+    // create when the Score row is missing, overwrite + stamp scoredAt when it
+    // exists, identical columns in both branches.
+    await upsertScoresSqlite(results);
+  } else {
+    for (const result of results) {
+      await db.score.upsert({
+        where: { videoId: result.videoId },
+        create: {
+          videoId: result.videoId,
+          outlierScore: result.outlierScore,
+          scoreType: result.scoreType,
+          explanation: result.explanation,
+        },
+        update: {
+          outlierScore: result.outlierScore,
+          scoreType: result.scoreType,
+          explanation: result.explanation,
+          scoredAt: new Date(),
+        },
+      });
+    }
   }
 
   return results;
