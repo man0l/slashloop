@@ -1,5 +1,7 @@
-// Login uses Supabase Auth UI (@supabase/auth-ui-react) via ESM CDN.
-// Consent stays custom (OAuth approve/deny APIs are not part of Auth UI).
+// Native Google login (loginPage) + legacy Supabase Auth UI (legacyLoginPage).
+// The router chooses: /login and /authorize serve the native page; the Supabase
+// widget only survives at /login/legacy while ACCEPT_SUPABASE_JWT !== '0'.
+// Consent stays custom (approve/deny against the provider's authorization id).
 
 const SU = process.env.SUPABASE_URL ?? '';
 const ANON = process.env.SUPABASE_ANON_KEY ?? '';
@@ -25,6 +27,9 @@ const SHELL = (title: string, body: string) => `<!doctype html>
   .err { color:#c0392b; font-size:13px; min-height:18px; }
   .logo { font-weight:800; font-size:16px; margin-bottom:8px; }
   .dot { color:#FF4D00; }
+  a.btn { display:block; text-align:center; text-decoration:none; }
+  details { margin-top:14px; font-size:13px; color:#3A424B; }
+  summary { cursor:pointer; }
   #auth { margin-top:4px; }
   /* Align Auth UI primary with slashloop orange */
   #auth button[type="submit"] { background:#FF4D00 !important; }
@@ -32,7 +37,39 @@ const SHELL = (title: string, body: string) => `<!doctype html>
 </head>
 <body><div class="card">${body}</div></body></html>`;
 
+// Native Google login: no Supabase JS/widget, no anon key in the page. The
+// button hands off to the provider authorize endpoint (/authorize); the
+// ?redirect=... passthrough (plus any OAuth request params when this page is
+// served at /authorize) rides along in the query string. The <details> fallback
+// links to the legacy Supabase-hosted flow at /login/legacy — reachable only
+// while ACCEPT_SUPABASE_JWT !== '0' (gated by the router, src/cf/router.ts).
 export function loginPage(): string {
+  return SHELL('Sign in', `
+    <div class="logo">slashloop<span class="dot">/</span></div>
+    <h1>Sign in to authorize</h1>
+    <p>Sign in to your slashloop account to approve AI-agent access.</p>
+    <a id="google" class="btn primary" href="/authorize">Continue with Google</a>
+    <details>
+      <summary>Use Supabase login (legacy)</summary>
+      <p>Email + social login via the Supabase-hosted flow. Available during the dual-accept transition.</p>
+      <p><a id="legacy" href="/login/legacy">Open legacy login</a></p>
+    </details>
+    <script type="module">
+      // Preserve the ?redirect=... passthrough (and any OAuth request params)
+      // on both exits. Integrator: if the Google flow starts somewhere other
+      // than /authorize, repoint the #google href (keep the query passthrough).
+      const q = location.search;
+      const redirect = new URLSearchParams(q).get('redirect') || '/';
+      document.getElementById('google').href = '/authorize' + q;
+      document.getElementById('legacy').href = '/login/legacy?redirect=' + encodeURIComponent(redirect);
+    </script>
+  `);
+}
+
+// Legacy Supabase login (Auth UI widget, incl. providers ['google','github']).
+// Kept as-is for the dual-accept transition; served at /login/legacy only,
+// and only while ACCEPT_SUPABASE_JWT !== '0' (router-gated).
+export function legacyLoginPage(): string {
   return SHELL('Sign in', `
     <div class="logo">slashloop<span class="dot">/</span></div>
     <h1>Sign in to authorize</h1>
