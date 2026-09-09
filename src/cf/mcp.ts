@@ -6,16 +6,17 @@
 // `buildRemoteMcp()` (whoami + registerAllTools), satisfying the SDK
 // >=1.26 rule against reconnecting an already-connected server instance.
 //
-// Auth stays Supabase-JWT compatible in this phase. There are two entries:
+// Auth stays dual-accept in this phase (src/cf/identity.ts). There are two entries:
 //   • Provider path (production): worker.ts wraps this module's
 //     `mcpApiHandler` in OAuthProvider apiHandlers. Provider-issued tokens
-//     arrive with ctx.props set; Supabase JWTs arrive via the provider's
-//     `resolveExternalToken` hook (same jose/cached-JWKS/15s-timeout verify
-//     as api/mcp.ts), which also lands in ctx.props. Either way the `sub`
-//     below is the Supabase user id and `runWithUser(sub)` keeps
-//     requireWorkspace() working exactly as before.
-//   • Router path (direct route() dispatch, dev/tests): POST verifies the
-//     Supabase JWT inline, like api/mcp.ts does. Non-POST methods stay 405.
+//     arrive with ctx.props set; Google ID tokens and Supabase JWTs arrive
+//     via the provider's `resolveExternalToken` hook (oauth.ts), which also
+//     lands in ctx.props. Either way the `sub` below is the local user id
+//     (Supabase sub, or `google:<googlesub>` for new Google users) and
+//     `runWithUser(sub)` keeps requireWorkspace() working exactly as before.
+//   • Router path (direct route() dispatch, dev/tests): POST resolves the
+//     Bearer token inline with the same dual-accept resolver, like api/mcp.ts
+//     does for Supabase. Non-POST methods stay 405.
 //
 // MCP Apps behavior is unchanged: show_gallery still returns the inline
 // ui:// resource plus the signed /gallery link, and the initialize-only
@@ -26,9 +27,9 @@
 import { createMcpHandler } from 'agents/mcp';
 import { getUiCapability } from '@modelcontextprotocol/ext-apps/server';
 import { buildRemoteMcp } from '../../remote/mcp-server.js';
-import { verifySupabaseJwt } from '../../remote/auth.js';
 import { runWithUser } from '../context.js';
 import { ensureStore, type Env } from './env.js';
+import { resolveNativeToken } from './identity.js';
 
 export interface McpAuthProps {
   sub: string;
@@ -139,11 +140,13 @@ export async function POST(request: Request): Promise<Response> {
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   let props: Record<string, unknown> = {};
   if (token) {
-    try {
-      const claims = await verifySupabaseJwt(token);
-      props = { sub: claims.sub, email: claims.email ?? null, client_id: claims.client_id ?? null };
-    } catch {
-      props = {};
+    // Same dual-accept resolver as the provider path (Google ID token, then
+    // Supabase JWT while ACCEPT_SUPABASE_JWT !== '0'). Unresolvable → {} →
+    // the 401 in handleMcpRequest. (worker.ts runs ensureStore(env) before
+    // route(), which the resolver's env-var/DB access relies on.)
+    const identity = await resolveNativeToken(token);
+    if (identity) {
+      props = { sub: identity.sub, email: identity.email ?? null, client_id: identity.client_id ?? null };
     }
   }
   return handleMcpRequest(request, { props });
