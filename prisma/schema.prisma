@@ -52,26 +52,26 @@ model Workspace {
   /// of workspaces a user may own is gated by WORKSPACE_LIMITS in
   /// src/lib/workspaces.ts, keyed off the highest plan already held across
   /// their workspaces (see docs/pricing-research.md §4c).
-  planKey              String    @default("free")
+  planKey                  String    @default("free")
   /// Resets to the plan's allotment on each billing-period renewal.
-  planCredits          Int       @default(300)
+  planCredits              Int       @default(300)
   /// Purchased top-up credits. Never expire, never reset. Drained only after
   /// planCredits is exhausted (see debitCredits in src/lib/credits.ts).
-  packCredits          Int       @default(0)
-  billingStatus        String    @default("active") // active | past_due | canceled
-  periodStart          DateTime?
-  periodEnd            DateTime?
-  autoTopUp            Boolean   @default(false)
-  stripeCustomerId     String?   @unique
-  stripeSubscriptionId String?   @unique
+  packCredits              Int       @default(0)
+  billingStatus            String    @default("active") // active | past_due | canceled
+  periodStart              DateTime?
+  periodEnd                DateTime?
+  autoTopUp                Boolean   @default(false)
+  stripeCustomerId         String?   @unique
+  stripeSubscriptionId     String?   @unique
   /// Live and test mode each have their own Customer/Subscription id space
   /// in Stripe — a live-mode id is meaningless (and errors) against a test
   /// key. These mirror the two fields above for STRIPE_MODE=test, so
   /// flipping modes on an already-onboarded workspace doesn't try to reuse
   /// a live customer with a test key. See customerIdField() in
   /// src/lib/stripe.ts.
-  stripeTestCustomerId     String? @unique
-  stripeTestSubscriptionId String? @unique
+  stripeTestCustomerId     String?   @unique
+  stripeTestSubscriptionId String?   @unique
 
   // --- media retention ---
   /// Days to keep stored cover images / MP4s before the retention sweeper
@@ -80,22 +80,22 @@ model Workspace {
   /// in src/lib/retention.ts and is rejected above the plan ceiling —
   /// retention is a COGS lever, same class of field as monthlyBudgetCents.
   /// See docs/media-storage-plan.md §1.4.
-  thumbRetentionDays   Int       @default(3)
-  mediaRetentionDays   Int       @default(3)
+  thumbRetentionDays Int @default(3)
+  mediaRetentionDays Int @default(3)
 
   // --- weekly digest ---
   /// Opt-out for the weekly outlier digest (api/cron/digest.ts). On by
   /// default — the digest is the retention engine, not marketing.
-  digestEnabled        Boolean   @default(true)
+  digestEnabled Boolean   @default(true)
   /// Where the digest goes. Null = the owner's auth.users email. Set from
   /// the site's email-settings page; one owner may own several workspaces,
   /// but all of an owner's due digests combine into ONE email to this box.
-  digestEmail          String?
+  digestEmail   String?
   /// When the last digest was built+sent. Doubles as the "new outliers"
   /// watermark and the cron's idempotency gate (≥7 days since = due).
-  lastDigestAt         DateTime?
+  lastDigestAt  DateTime?
   /// Last built digest payload; get_digest serves this between runs.
-  digestJson           String?
+  digestJson    String?
 
   sources              Source[]
   boards               Board[]
@@ -190,6 +190,11 @@ model Source {
   @@index([workspaceId])
   @@index([platform])
   @@index([isActive])
+  // Covers isSelf lookups (posts.ts, gallery.ts, sources-service): equality on
+  // workspaceId + isSelf, optionally + sourceType. Leftmost prefix serves the
+  // two-column form too. D1 is single-threaded — this keeps /api/workspaces
+  // from degrading toward full Source scans.
+  @@index([workspaceId, isSelf, sourceType])
 }
 
 model Video {
@@ -222,22 +227,22 @@ model Video {
   /// from a Source's video count/preview — it isn't "content", it's baseline
   /// data. Cleared (promoted to visible) the moment a real, non-override
   /// refresh legitimately discovers the same video (src/lib/refresh.ts).
-  isBaselineSample Boolean  @default(false)
+  isBaselineSample Boolean @default(false)
 
   // --- stored media (docs/media-storage-plan.md) ---
   /// Object key in the public `thumbs` bucket. Null = not stored; the feed
   /// falls back to thumbnailUrl above, which stays as provenance and is the
   /// only way to re-ingest.
-  thumbKey         String?
+  thumbKey            String?
   /// none | stored | expired | failed. 'none' means nothing was attempted
   /// (storage off, or a non-TikTok platform); 'failed' means it was tried.
-  thumbStatus      String   @default("none")
-  thumbStoredAt    DateTime?
+  thumbStatus         String    @default("none")
+  thumbStoredAt       DateTime?
   /// Object key in the private `media` bucket. Reached via signed URL only.
-  mediaKey         String?
-  mediaStatus      String   @default("none")
-  mediaBytes       Int?
-  mediaStoredAt    DateTime?
+  mediaKey            String?
+  mediaStatus         String    @default("none")
+  mediaBytes          Int?
+  mediaStoredAt       DateTime?
   /// Gemini Files API handle for this video's MP4 (docs/media-storage-plan.md
   /// §2.2). The API keeps an upload ~48h; inside that window a re-analysis
   /// needs no upload at all, which is the slowest leg after the Apify download.
@@ -248,9 +253,9 @@ model Video {
   geminiFileExpiresAt DateTime?
 
   /// TikTok sound / original audio, when the scrape included musicMeta.
-  soundId          String?
-  soundTitle       String?
-  soundAuthor      String?
+  soundId     String?
+  soundTitle  String?
+  soundAuthor String?
 
   source       Source       @relation(fields: [sourceId], references: [id])
   score        Score?
@@ -270,6 +275,11 @@ model Video {
   @@index([creatorHandle])
   @@index([postedAt])
   @@index([views])
+  // Covers posts.ts + benchmark.ts + sources-service filters on
+  // (sourceId, isBaselineSample) with orderBy postedAt. D1 is
+  // single-threaded; without this the gallery/benchmark path degrades from
+  // ~20ms toward 100ms+ per query.
+  @@index([sourceId, isBaselineSample, postedAt])
   // Retention sweeper scans by stored-at within status; both are covered.
   @@index([thumbStatus, thumbStoredAt])
   @@index([mediaStatus, mediaStoredAt])
@@ -354,6 +364,9 @@ model Hook {
   @@index([hookType])
   @@index([nicheTag])
   @@index([origin])
+  // Backs cascade deletes by video (sources-service deleteSourceForWorkspace:
+  // Hook/Idea rows are removed per source via their video relation).
+  @@index([videoId])
 }
 
 model Board {
@@ -384,21 +397,23 @@ model SwipeEntry {
 }
 
 model Idea {
-  id                  String   @id @default(uuid())
+  id                  String    @id @default(uuid())
   videoId             String
   analysisId          String?
   transferablePattern String
   whyItWorked         String
   adaptation          String
-  status              String   @default("new") // new | briefed | tested | archived
+  status              String    @default("new") // new | briefed | tested | archived
   dueAt               DateTime? // planned post date — the posting queue (get_idea_queue)
-  createdAt           DateTime @default(now())
+  createdAt           DateTime  @default(now())
 
   video    Video     @relation(fields: [videoId], references: [id])
   analysis Analysis? @relation(fields: [analysisId], references: [id])
   briefs   Brief[]
 
   @@index([status])
+  // Backs cascade deletes by video (sources-service deleteSourceForWorkspace).
+  @@index([videoId])
 }
 
 model Script {
@@ -568,41 +583,41 @@ model AutoAnalyzeRun {
 /// sweeper returns rows stuck past a threshold to `queued`. attempts guards the
 /// resulting retry loop.
 model MediaJob {
-  id          String    @id @default(uuid())
-  workspaceId String
+  id             String    @id @default(uuid())
+  workspaceId    String
   /// Null for source-scoped kinds (refresh) and for discover probes (no
   /// source exists yet). For every kind except discover, exactly one of
   /// videoId/sourceId is set — enforced by MediaJob_one_target in
   /// supabase/migrations, since Prisma cannot express that CHECK.
-  videoId     String?
+  videoId        String?
   /// Set for source-scoped kinds. A refresh targets a Source, not a Video.
-  sourceId    String?
+  sourceId       String?
   /// analyze | fetch | refresh | rescore | thumb | discover. Named rather than
   /// implied so work like this shares the queue instead of growing a second one.
-  kind        String    @default("analyze")
+  kind           String    @default("analyze")
   /// Hard wall clock for callers waiting on this job. await_job refuses to
   /// report shouldKeepPolling once past it, so a waiter terminates even if the
   /// worker never reports back. Null means no deadline.
-  deadlineAt  DateTime?
+  deadlineAt     DateTime?
   /// Credits debited at enqueue. reclaimStuckJobs refunds THIS amount rather
   /// than assuming the analyze price — a refresh pre-auth scales with
   /// videoLimit, so a fixed refund would be wrong in both directions.
   preAuthCredits Int?
   /// queued | running | done | failed
-  status      String    @default("queued")
-  attempts    Int       @default(0)
-  lastError   String?
+  status         String    @default("queued")
+  attempts       Int       @default(0)
+  lastError      String?
   /// Call options captured at enqueue time (e.g. forceBackend), applied by the
   /// worker. The request that chose them is long gone by the time it runs.
-  payloadJson String    @default("{}")
+  payloadJson    String    @default("{}")
   /// Credit pre-authorisation reference. The caller is debited at enqueue, so
   /// the worker owns the refund when a job fails terminally.
-  opId        String?
+  opId           String?
   /// Set on success, so get_video can point at the result without a join.
-  analysisId  String?
-  createdAt   DateTime  @default(now())
-  startedAt   DateTime?
-  finishedAt  DateTime?
+  analysisId     String?
+  createdAt      DateTime  @default(now())
+  startedAt      DateTime?
+  finishedAt     DateTime?
 
   workspace Workspace @relation(fields: [workspaceId], references: [id])
 
@@ -615,6 +630,10 @@ model MediaJob {
   // get_video asks "is there a job for this video right now?"
   @@index([videoId, status])
   @@index([workspaceId])
+  // Covers outstandingJobForSource (jobs.ts) + sources-service lookups:
+  // WHERE sourceId + status + kind (queued/running refresh). Without this the
+  // /api/workspaces fan-out does full MediaJob scans over the D1 HTTP API.
+  @@index([sourceId, status, kind])
 }
 
 /// One-row incident marker for the scraping-failure email alert
