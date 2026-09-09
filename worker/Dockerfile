@@ -4,7 +4,15 @@
 # Same queue + codebase as the Vercel worker, but NO 60s ceiling: Apify
 # downloads and OpenRouter video analysis (Qwen on full-length clips) can take
 # 60s+, which the Vercel Hobby plan kills. This container runs the identical
-# claim->process->complete/fail cycle against the same Supabase MediaJob table.
+# claim->process->complete/fail cycle against the same MediaJob table.
+#
+# Two DB modes (see worker/.env.example + docs/cloudflare-migration.md §5):
+#   Postgres mode (pre-cutover):  DATABASE_URL (+ DIRECT_URL).
+#   D1 mode (post-cutover):       DB_DIALECT=sqlite + D1_ACCOUNT_ID /
+#     D1_DATABASE_ID / D1_API_TOKEN — DATABASE_URL not required, ignored.
+#     D1 is single-writer: WORKER_IDLE_MS defaults to 10000 there (vs 3000 on
+#     Postgres) and both recovery sweeps are throttled to
+#     WORKER_RECLAIM_INTERVAL_MS (default 5 min, staggered per container).
 #
 # Build:   docker build -t slashloop-worker -f worker/Dockerfile .
 # Run:     docker run --env-file worker/.env.worker slashloop-worker
