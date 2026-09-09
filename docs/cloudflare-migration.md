@@ -8,6 +8,11 @@ running — talking to D1 over Cloudflare's HTTP API.
 Cost outcome: Supabase + its 6GB egress bill disappear; Workers Paid ($5/mo)
 replaces them. D1 has no egress charges.
 
+> Phase 4 authority: `docs/cf-full-backend-plan.md` (end-state, deletion
+> order, rollback, secrets, domain/Stripe flip) + verification matrix
+> `docs/cf-cutover-checklist.md`. Where this file disagrees with the plan,
+> the plan wins.
+
 ## CI/CD (the normal path)
 
 Deploys run through **GitHub Actions** (`.github/workflows/deploy-worker.yml`):
@@ -60,8 +65,8 @@ Key runtime facts (why the code looks the way it does):
 
 1. **One-time setup** (after `wrangler login`):
    ```bash
-   bunx wrangler d1 create slashloop --location eu        # copy the database_id into wrangler.jsonc
-   bunx wrangler kv namespace create SHARD_DIRECTORY      # copy the id into wrangler.jsonc
+   bunx wrangler d1 create slashloop --location weur       # already done: id + KV id are filled in wrangler.jsonc (e1caee8f-… / dccd06ab-…)
+   bunx wrangler kv namespace create SHARD_DIRECTORY      # already done — skip unless adding a shard
    bun run db:d1:migrate                                   # apply prisma/d1-migrations remotely
    bunx wrangler secret put SUPABASE_URL                   # then every secret from .env (see list below)
    bunx wrangler deploy                                    # workers.dev preview URL
@@ -81,8 +86,13 @@ Key runtime facts (why the code looks the way it does):
    `vercel.json` rewrites can be pointed at a static page).
 4. **Final copy**: re-run `--copy` + `--verify` (INSERT OR IGNORE — idempotent).
 5. **Flip**:
-   - Point slashloop.app's API base / MCP client URLs at the Worker URL (or
+   - Point the site API base / MCP client URLs at the Worker URL (or
      attach the Worker to a custom domain via `wrangler triggers`/dashboard).
+     Live today is `https://mcp.slashloop.dev/mcp`; `slashloop.app` has no DNS
+     (retired — see `src/lib/cors.ts`). Do not point anything at `slashloop.app`.
+   - Keep Worker Cron Triggers commented out through the freeze copy and
+     re-enable one at a time after the flip (drain → retention → digest);
+     full order in `docs/cf-full-backend-plan.md` §4/§8.
    - Update the Stripe webhook endpoint URL (dashboard → test + live).
    - Redeploy the VPS worker with D1 credentials instead of `DATABASE_URL`:
      ```env
@@ -93,11 +103,13 @@ Key runtime facts (why the code looks the way it does):
      WORKER_IDLE_MS=10000     # was 3000 — D1 has no cheap per-3s polling
      ```
      (`src/db.ts` picks the D1 HTTP client up from those vars automatically.)
-6. **Verify live**: `/health`, login → gallery loads, one `refresh_source` +
-   `analyze_video` end-to-end, hook test, `get_usage`, and confirm the next
-   Monday digest + a scrape-alert dry run.
+6. **Verify live**: run `docs/cf-cutover-checklist.md` top to bottom
+   (health, well-known, 401s, Inspector handshake + tenant isolation, queue
+   exactly-once, Stripe test e2e, media round-trip, digest dry-run).
+   Any hard-gate failure → rollback (§7).
 7. **Rollback** (any time before Supabase is deleted): point clients back at
    Vercel/Supabase — both stay frozen and intact during the soak period.
+   Post-flip D1 writes do not copy back (accepted loss; keep the soak short).
 
 ## Secrets to set on the Worker (`wrangler secret put <NAME>`)
 
@@ -110,11 +122,15 @@ Same names as `.env.example`: `SUPABASE_URL`, `CRON_SECRET`, `PUBLIC_URL`,
 Worker itself uses the R2 bindings), `R2_PUBLIC_BASE`/`R2_THUMB_PUBLIC_BASE`,
 `SCRAPER_*` / `WORKER_URL` / `WORKER_ACTIVE` as applicable.
 
-## Phase 4 (after soak)
+## Phase 4 (after soak — see `docs/cf-full-backend-plan.md` for the authoritative sequence)
 
 - Swap Supabase Auth → Cloudflare-native IdP (`workers-oauth-provider` +
-  the `User` table), then delete the Supabase project.
-- Move `analyze`/`thumb`/`rescore` job kinds into Workers (Cron Triggers +
-  Queues), then decommission the VPS.
+  the `User` table; upstream choice still open), then delete the Supabase project.
+- Move `analyze`/`thumb`/`rescore` job kinds off the VPS into Workers
+  (Cron drain + Queues, or Workflows — Containers-vs-VPS still open), then
+  decommission the VPS. Until that decision, scraping stays on the VPS.
+- pg_cron/Vercel-Cron deletion order: Worker drain first → `cron.unschedule('drain-analyze-jobs')`
+  → remove Vercel Crons → delete Supabase project → decommission Vercel last.
+  Never run both drains against the same queue outside a minutes-long handover.
 - Sharding kicks in only if/when the DB nears ~7GB: create a second D1 DB,
   copy by `ownerId`, flip the KV shard directory — ops task, no code rewrite.
