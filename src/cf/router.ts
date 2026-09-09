@@ -4,10 +4,12 @@
 // rewrites the incoming URL and dispatches by HTTP method to the SAME
 // handler modules (api/*.ts export per-method Web-standard handlers, e.g.
 // `export async function POST(request: Request)`), so the migration moves
-// hosting without touching handler logic. Order matters exactly like it did
+// hosting without touching handler logic. Exception: /mcp is served by the
+// Cloudflare-native module (./mcp.ts — createMcpHandler, no transport
+// boilerplate); api/mcp.ts remains the Vercel path. Order matters exactly like it did
 // in vercel.json: specific actions before generic `/:id` captures.
 
-import * as mcp from '../../api/mcp.js';
+import * as mcp from './mcp.js';
 import * as gallery from '../../api/gallery.js';
 import * as sources from '../../api/sources.js';
 import * as videos from '../../api/videos.js';
@@ -79,6 +81,10 @@ function servePage(page: NonNullable<Route['page']>, url: URL): Response {
 const ROUTES: Route[] = [
   { re: /^\/mcp$/, mod: mcp },
   { re: /^\/\.well-known\/oauth-protected-resource$/, page: 'well-known' },
+  // OAuthProvider authorize endpoint (advertised in its metadata, served by
+  // the defaultHandler): Phase 1 reuses the Supabase login page. Completing
+  // the provider browser flow (parseAuthRequest → approve → grant) is later.
+  { re: /^\/authorize$/, page: 'login' },
   { re: /^\/oauth\/consent$/, page: 'consent' },
   { re: /^\/login$/, page: 'login' },
   { re: /^\/health$/, page: 'health' },

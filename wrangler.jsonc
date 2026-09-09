@@ -32,6 +32,13 @@
       "binding": "SHARD_DIRECTORY",
       // wrangler kv namespace create SHARD_DIRECTORY
       "id": "dccd06ab3bdf4775b015822867290121"
+    },
+    {
+      "binding": "OAUTH_KV",
+      // Phase 1 (Cloudflare-native MCP): @cloudflare/workers-oauth-provider
+      // persists grants/tokens here. Integrator: run
+      // `wrangler kv namespace create OAUTH_KV` and replace the id below.
+      "id": "REPLACE_WITH_OAUTH_KV_NAMESPACE_ID"
     }
   ],
   // ── Schedulers (replace Vercel Cron + Supabase pg_cron) ─────────────────
