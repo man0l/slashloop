@@ -1,4 +1,7 @@
-# Deploy the Cloudflare Worker (API + MCP + crons) and sync its environment.
+# Deploy the whole Cloudflare stack on every push to master/main
+# (direct commits AND merged PRs both land here as push events):
+# verify (typecheck + tests) → sync secrets → D1 migrations → wrangler deploy
+# (Worker + routes + D1/R2/KV bindings + cron triggers) → live smoke check.
 #
 # GitHub is the source of truth for the Worker's environment: the job runs in
 # the `production` environment (repo secrets/variables + env overrides are all
@@ -29,9 +32,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Gate: nothing deploys unless typecheck + tests pass on the pushed code.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies (generates both Prisma clients)
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Tests
+        run: bun test
+
   deploy:
     runs-on: ubuntu-latest
     environment: production
+    needs: verify
     steps:
       - uses: actions/checkout@v4
 
@@ -98,8 +121,22 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: bunx wrangler d1 migrations apply slashloop --remote
 
-      - name: Deploy Worker
+      - name: Deploy Worker (Worker + routes + D1/R2/KV bindings + cron triggers)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: bunx wrangler deploy
+
+      # Post-deploy smoke: fail the run if the live Worker doesn't answer.
+      - name: Smoke check live Worker
+        env:
+          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+        run: |
+          set -e
+          BASE="${PUBLIC_URL:-https://mcp.slashloop.dev}"
+          echo "health: $(curl -s -o /dev/null -w '%{http_code}' "$BASE/health")"
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/health")" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/login")" = "200"
+          # Unauthenticated MCP must 401, never 500
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/mcp")" = "401"
+          echo "smoke: ok"
