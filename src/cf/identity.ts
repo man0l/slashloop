@@ -23,6 +23,7 @@ import type { GoogleIdentity } from './google.js';
 // Maps a Google identity to the local sub, transferring existing
 // email-matched workspaces; brand-new Google users get sub `google:<googlesub>`.
 import { ensureNativeUser } from './account-link.js';
+export { ensureNativeUser };
 
 export interface NativeIdentity {
   sub: string;
