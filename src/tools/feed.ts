@@ -19,7 +19,8 @@ export function registerFeedTools(server: McpServer) {
     {
       platform: z.enum(['tiktok', 'reels', 'shorts']).optional(),
       sourceId: z.string().optional(),
-      search: z.string().optional().describe('Search in caption or creator handle'),
+      // D1 50-byte LIKE/GLOB limit: cap user input so `contains` below never exceeds it.
+      search: z.string().max(50).optional().describe('Search in caption or creator handle'),
       minViews: z.number().optional(),
       minOutlierScore: z.number().optional(),
       minEngagementRate: z.number().optional().describe('Minimum engagement rate as percentage (e.g. 3.0 for 3%)'),
@@ -287,7 +288,8 @@ export function registerFeedTools(server: McpServer) {
       + 'matching has been scraped yet, not that nothing exists. To bring in new videos use create_source '
       + 'then refresh_source.',
     schema: {
-      query: z.string().describe('Search query (keyword, hashtag, or creator handle)'),
+      // D1 50-byte LIKE/GLOB limit: cap user input so `contains` below never exceeds it.
+      query: z.string().max(50).describe('Search query (keyword, hashtag, or creator handle)'),
       platform: z.enum(['tiktok', 'reels', 'shorts']).describe('Platform to search'),
     },
   };

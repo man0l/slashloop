@@ -20,7 +20,8 @@ export function registerHookTools(server: McpServer) {
       hookType: z.string().optional(),
       nicheTag: z.string().optional(),
       origin: z.enum(['extracted', 'generated']).optional(),
-      search: z.string().optional(),
+      // D1 50-byte LIKE/GLOB limit: cap user input so `contains` below never exceeds it.
+      search: z.string().max(50).optional(),
       limit: z.number().min(1).max(100).default(30),
     },
     async ({ hookType, nicheTag, origin, search, limit }) => {
