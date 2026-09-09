@@ -12,7 +12,7 @@ import type { AnalysisResult } from '../analysis/types.js';
 import { loadAnalysisConfig } from '../analysis/config.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from './credits.js';
 import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls } from './media.js';
-import { enqueueAnalyzeJob, enqueueFetchJob, dispatchWorker, latestReportingJobForVideo, type MediaJobRow } from './jobs.js';
+import { enqueueAnalyzeJob, enqueueFetchJob, dispatchWorker, latestReportingJobForVideo, outstandingJobForVideo, type MediaJobRow } from './jobs.js';
 import { classifyGeminiError, errorCodeFor, parseJobLastError, friendlyGeminiMessage, type GeminiErrorCode } from './gemini-errors.js';
 
 export type AnalyzeVideoOutcome =
@@ -103,6 +103,40 @@ export async function analyzeVideoForWorkspace(
     const errorCode = errorCodeFor(classifyGeminiError(err).category);
     return { ok: false, errorCode, error: (err as Error).message, creditsCharged: 0, creditsRemaining: balance.total };
   }
+}
+
+export type FetchVideoOutcome =
+  | { ok: true; alreadyStored: true }
+  | { ok: true; alreadyStored?: false; queued: true; job: MediaJobRow; dispatched: boolean }
+  | { ok: false; errorCode: 'not_found'; error: string };
+
+/**
+ * Queue a download-only fetch for one video — the MP4 is downloaded and
+ * stored, with NO AI analysis chained (contrast analyzeVideoForWorkspace,
+ * whose fetch job carries enqueueAnalysis). Free: no credit pre-auth, no
+ * opId, so reclaimStuckJobs never tries to refund these rows. A second call
+ * while a fetch is outstanding returns the existing job instead of queueing
+ * a duplicate; an already-stored video short-circuits without queueing.
+ */
+export async function fetchVideoForWorkspace(
+  workspace: Workspace,
+  videoId: string,
+): Promise<FetchVideoOutcome> {
+  const video = await db.video.findFirst({
+    where: { id: videoId, source: { workspaceId: workspace.id } },
+    select: { id: true, mediaStatus: true },
+  });
+  if (!video) return { ok: false, errorCode: 'not_found', error: 'Video not found.' };
+  if (video.mediaStatus === 'stored') return { ok: true, alreadyStored: true };
+
+  const outstanding = await outstandingJobForVideo(videoId);
+  if (outstanding && (outstanding.status === 'queued' || outstanding.status === 'running')) {
+    return { ok: true, queued: true, job: outstanding, dispatched: false };
+  }
+
+  const job = await enqueueFetchJob({ workspaceId: workspace.id, videoId, payload: {} });
+  const dispatch = await dispatchWorker();
+  return { ok: true, queued: true, job, dispatched: dispatch.dispatched };
 }
 
 export interface VideoDetailForWorkspace {

@@ -1,5 +1,6 @@
 // GET   /api/videos/:id?workspaceId=...            — video detail (analysis, playback URL, job status).
 // POST  /api/videos/:id/analyze { workspaceId, forceBackend? } — trigger AI analysis.
+// POST  /api/videos/:id/fetch { workspaceId }      — queue a download-only fetch (store the MP4, no analysis, free).
 // GET   /api/videos/:id/hook-test                  — the video's open AI hook test (or {test:null}).
 // POST  /api/videos/:id/hook-test { brandContext?, insight? } — start one (2 credits).
 // PATCH /api/videos/:id/hook-test { insight?, sameIn? }        — edit the lock (free).
@@ -20,7 +21,7 @@
 import { randomUUID } from 'node:crypto';
 import { corsPreflight } from '../src/lib/cors.js';
 import { requireOwnedWorkspace, jsonResponse } from '../src/lib/authz.js';
-import { getVideoDetailForWorkspace, analyzeVideoForWorkspace, mapAnalyzeOutcomeToHttp } from '../src/lib/video-service.js';
+import { getVideoDetailForWorkspace, analyzeVideoForWorkspace, fetchVideoForWorkspace, mapAnalyzeOutcomeToHttp } from '../src/lib/video-service.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../src/lib/credits.js';
 import { costBlock } from '../src/lib/next-steps.js';
 import {
@@ -166,6 +167,16 @@ export async function POST(request: Request): Promise<Response> {
     // insufficient credits -> 402, Gemini quota -> 429 retryable, other -> 422.
     const mapped = mapAnalyzeOutcomeToHttp(outcome);
     return jsonResponse(mapped.status, mapped.body, request);
+  }
+
+  if (action === 'fetch') {
+    // Download-only: queue a fetch job (or reuse the outstanding one) with
+    // no analysis chained and no credits involved. Poll GET detail until
+    // mediaUrl appears; a failed fetch surfaces via analysisJob like any job.
+    const outcome = await fetchVideoForWorkspace(auth.workspace, videoId);
+    if (!outcome.ok) return jsonResponse(404, { error: 'video_not_found' }, request);
+    if (outcome.alreadyStored) return jsonResponse(200, { alreadyStored: true }, request);
+    return jsonResponse(200, { queued: true, jobId: outcome.job.id, status: outcome.job.status }, request);
   }
 
   if (action === 'hook-test') {

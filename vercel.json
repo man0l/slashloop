@@ -89,6 +89,10 @@
       "dest": "/api/videos?id=$1&action=analyze"
     },
     {
+      "src": "^/api/videos(?:/([^/]+?))/fetch$",
+      "dest": "/api/videos?id=$1&action=fetch"
+    },
+    {
       "src": "^/api/videos(?:/([^/]+?))/hook-test/pick$",
       "dest": "/api/videos?id=$1&action=hook-test-pick"
     },

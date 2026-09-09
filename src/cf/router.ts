@@ -132,6 +132,7 @@ const ROUTES: Route[] = [
   { re: /^\/api\/workspaces(?:\/([^/]+?))$/, mod: workspaces, inject: { id: '$1' } },
   // videos + hook tests.
   { re: /^\/api\/videos(?:\/([^/]+?))\/analyze$/, mod: videos, inject: { id: '$1', action: 'analyze' } },
+  { re: /^\/api\/videos(?:\/([^/]+?))\/fetch$/, mod: videos, inject: { id: '$1', action: 'fetch' } },
   { re: /^\/api\/videos(?:\/([^/]+?))\/hook-test\/pick$/, mod: videos, inject: { id: '$1', action: 'hook-test-pick' } },
   { re: /^\/api\/videos(?:\/([^/]+?))\/hook-test\/reroll$/, mod: videos, inject: { id: '$1', action: 'hook-test-reroll' } },
   { re: /^\/api\/videos(?:\/([^/]+?))\/hook-test\/close$/, mod: videos, inject: { id: '$1', action: 'hook-test-close' } },
