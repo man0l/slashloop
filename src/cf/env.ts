@@ -9,6 +9,7 @@
 import { d1BindParam, setActiveClient, type AppPrismaClient, type RawExecutor } from '../store.js';
 import { setR2Bindings } from '../lib/storage-bindings.js';
 import { timedD1 } from './serialize-d1.js';
+import { setShardDirectory } from './kv.js';
 
 export interface Env {
   /** D1 database "slashloop" — the single shard (see src/store.ts). */
@@ -85,5 +86,8 @@ export async function ensureStore(env: Env): Promise<void> {
   setActiveClient(client as unknown as AppPrismaClient, d1BindingRawExecutor(timed));
   // Media storage: bucket bindings (src/lib/storage.ts 'r2-binding' backend).
   setR2Bindings({ thumbs: env.R2_THUMBS, media: env.R2_MEDIA });
+  // KV bindings (src/cf/kv.ts) — the digest cron's paging cursor lives on
+  // SHARD_DIRECTORY.
+  setShardDirectory(env.SHARD_DIRECTORY);
   globalForCfStore.__slashloopCfStoreReady = true;
 }
