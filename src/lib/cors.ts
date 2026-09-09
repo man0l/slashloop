@@ -6,24 +6,38 @@
 // defaulting to a permissive "*" on endpoints that read Bearer tokens.
 // ---------------------------------------------------------------------------
 
-const SITE_URL = (process.env.SITE_URL ?? '').replace(/\/$/, '');
+// Read per call, not at module load: on Workers env vars are copied into
+// process.env per-isolate by src/cf/env.ts AFTER imports run, so import-time
+// reads would freeze an empty allowlist (failing closed on every billing
+// request) even with SITE_URL set.
+function siteUrlEnv(): string {
+  return (process.env.SITE_URL ?? '').replace(/\/$/, '');
+}
 
-const SECONDARY_SITE_URL = (process.env.SECONDARY_SITE_URL ?? '').replace(/\/$/, '');
+function secondarySiteUrlEnv(): string {
+  return (process.env.SECONDARY_SITE_URL ?? '').replace(/\/$/, '');
+}
 
 /** Live app origin. slashloop.app is a retired host (no DNS since the .dev cutover). */
 export const CANONICAL_SITE_URL = 'https://slashloop.dev';
 
 const RETIRED_SITE_URLS = new Set(['https://slashloop.app', 'http://slashloop.app']);
 
-const ALLOWED_ORIGINS = new Set(
-  [SITE_URL, SECONDARY_SITE_URL, CANONICAL_SITE_URL, 'https://www.slashloop.dev']
-    .filter((u) => Boolean(u) && !RETIRED_SITE_URLS.has(u)),
-);
+function allowedOrigins(): Set<string> {
+  const siteUrl = siteUrlEnv();
+  const secondary = secondarySiteUrlEnv();
+  return new Set(
+    [siteUrl, secondary, CANONICAL_SITE_URL, 'https://www.slashloop.dev']
+      .filter((u) => Boolean(u) && !RETIRED_SITE_URLS.has(u)),
+  );
+}
 
 /** SITE_URL env, unless it still points at the retired .app host. */
 export function canonicalSiteUrl(): string {
-  if (SITE_URL && !RETIRED_SITE_URLS.has(SITE_URL)) return SITE_URL;
-  if (SECONDARY_SITE_URL && !RETIRED_SITE_URLS.has(SECONDARY_SITE_URL)) return SECONDARY_SITE_URL;
+  const siteUrl = siteUrlEnv();
+  const secondary = secondarySiteUrlEnv();
+  if (siteUrl && !RETIRED_SITE_URLS.has(siteUrl)) return siteUrl;
+  if (secondary && !RETIRED_SITE_URLS.has(secondary)) return secondary;
   return CANONICAL_SITE_URL;
 }
 
@@ -33,14 +47,16 @@ export function canonicalSiteUrl(): string {
  * not land on a dead SITE_URL.
  */
 export function siteUrlForRequest(request?: Request): string {
+  const allowed = allowedOrigins();
   const origin = request?.headers.get('origin')?.replace(/\/$/, '');
-  if (origin && ALLOWED_ORIGINS.has(origin)) return origin;
+  if (origin && allowed.has(origin)) return origin;
   return canonicalSiteUrl();
 }
 
 export function corsHeaders(request?: Request): Record<string, string> {
+  const allowed = allowedOrigins();
   const origin = request?.headers.get('origin');
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
+  if (origin && allowed.has(origin)) {
     return {
       'Access-Control-Allow-Origin': origin,
       'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
@@ -48,7 +64,7 @@ export function corsHeaders(request?: Request): Record<string, string> {
       Vary: 'Origin',
     };
   }
-  if (ALLOWED_ORIGINS.size > 0 && !origin) {
+  if (allowed.size > 0 && !origin) {
     // Non-browser / direct tool call — echo the primary site.
     const primary = canonicalSiteUrl();
     return {
