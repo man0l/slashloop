@@ -188,7 +188,17 @@ export async function processClaimedJob(
         });
         if (!result.ok) {
           const message = failureLines(result.errors).join('; ') || result.refusal || 'refresh refused';
-          const { terminal } = await failJob(job.id, message);
+          // Refusals that cannot change within a retry window are terminal on
+          // the first attempt. An out-of-credits workspace refuses identically
+          // on all three lives (each life = claim + 2 billing reads + debit
+          // batch + failJob write, all against D1's single writer), and the
+          // automatic sweeps mint fresh rows every few minutes — the retry
+          // lives only multiplied a condition a top-up alone can clear.
+          const deterministic =
+            result.refusal === 'insufficient_credits'
+            || result.refusal === 'cap_breached'
+            || result.refusal === 'source_not_found';
+          const { terminal } = await failJob(job.id, message, deterministic ? { terminal: true } : undefined);
           if (terminal && result.pendingRefundCredits && job.opId) {
             await refundCredits(
               job.workspaceId, result.pendingRefundCredits, 'refresh_source',
@@ -345,7 +355,12 @@ export async function processClaimedJob(
           const message = result
             ? (failureLines(result.errors).join('; ') || result.refusal || 'refresh refused')
             : 'no result from batch';
-          const { terminal } = await failJob(j.id, message);
+          // Same deterministic-refusal rule as the solo path: one life, not
+          // three, for a refusal no retry can change.
+          const deterministic = result?.refusal === 'insufficient_credits'
+            || result?.refusal === 'cap_breached'
+            || result?.refusal === 'source_not_found';
+          const { terminal } = await failJob(j.id, message, deterministic ? { terminal: true } : undefined);
           if (terminal && result?.pendingRefundCredits && j.opId) {
             await refundCredits(
               j.workspaceId, result.pendingRefundCredits, 'refresh_source',

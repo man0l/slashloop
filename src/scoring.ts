@@ -2,6 +2,7 @@ import { db } from './db.js';
 import { D1_PARAM_CHUNK, chunked, dbDialect, rawBatch, type RawStatement } from './store.js';
 import { subHours } from 'date-fns';
 import { enqueueRefreshJob, outstandingJobForSource } from './lib/jobs.js';
+import { CREDIT_COSTS, creditBalance } from './lib/credits.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -393,7 +394,7 @@ const STALE_RESCRAPE_LIMIT = 5;
  * "don't scrape the same creator's 5 videos over and over" true even under a
  * burst of several videos from the same creator going stale close together.
  */
-const BASELINE_RESCRAPE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
+export const BASELINE_RESCRAPE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
 
 /**
  * Videos posted under 48h ago are scored 'too_fresh' with outlierScore 0.
@@ -474,10 +475,39 @@ export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: numbe
   let creatorsRescraped = 0;
   let sourcesRescoredOnly = 0;
 
+  // A workspace that cannot cover the pre-auth must not have refresh jobs
+  // enqueued for it. Every such job is claimed, refused by debitCredits, and
+  // failed within seconds — and this sweep reruns every few minutes from two
+  // workers, so one out-of-credit workspace with stale videos minted that
+  // claim/refuse/fail churn forever (the videos stay too_fresh, since only a
+  // landed rescrape re-scores them). Degrade to the free recompute instead; a
+  // top-up or plan reset re-arms the rescrape on a later sweep.
+  const staleRescrapeCost = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * STALE_RESCRAPE_LIMIT);
+  // One balance read per workspace per sweep — a burst of stale videos from
+  // one workspace collapses into many groups that all share its balance.
+  const balanceByWorkspace = new Map<string, number>();
+  const workspaceCanAfford = async (workspaceId: string): Promise<boolean> => {
+    const cached = balanceByWorkspace.get(workspaceId);
+    if (cached !== undefined) return cached >= staleRescrapeCost;
+    // A failed balance read counts as cannot-pay: enqueueing blind is the
+    // churn this gate exists to stop, and the next sweep retries the read.
+    const total = await creditBalance(workspaceId).then((b) => b.total).catch(() => -1);
+    balanceByWorkspace.set(workspaceId, total);
+    return total >= staleRescrapeCost;
+  };
+
   for (const { creatorHandle, platform, workspaceId, sourceId, latestStalePostedAt } of [...groups.values()].slice(0, RESCORE_STALE_GROUP_CAP)) {
     // Leave whatever's left for the next minute's drain rather than risking
     // this invocation's budget — the primary job queues still run after this.
     if (Date.now() - startedAt > RESCRAPE_STALE_MAX_DURATION_MS) break;
+
+    if (!(await workspaceCanAfford(workspaceId))) {
+      await batchScoreVideos(sourceId).catch((err) => {
+        console.warn(`[scoring] fallback rescore failed for source ${sourceId}: ${(err as Error).message}`);
+      });
+      sourcesRescoredOnly++;
+      continue;
+    }
 
     // Don't pay to re-scrape a creator whose baseline was refreshed recently
     // — likely by this same pass, for a different stale video of theirs.

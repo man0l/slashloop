@@ -949,12 +949,23 @@ export async function completeJob(
  * Returns whether this was terminal, because the caller owns the credit refund
  * and must only issue it once — a job going back to `queued` for another try
  * has not cost the user anything yet.
+ *
+ * `opts.terminal` forces the terminal state on the FIRST attempt, for failures
+ * that are deterministic — a refusal that will read exactly the same on every
+ * retry. An out-of-credits refresh re-debits (and refuses) identically on each
+ * of its three lives, so requeueing it only triples the claim/debit/D1 cost of
+ * a condition nothing short of a top-up can change; the sweeps re-enqueue much
+ * later anyway.
  */
-export async function failJob(id: string, message: string): Promise<{ terminal: boolean }> {
+export async function failJob(
+  id: string,
+  message: string,
+  opts?: { terminal?: boolean },
+): Promise<{ terminal: boolean }> {
   const job = await db.mediaJob.findUnique({ where: { id } });
   if (!job) return { terminal: false };
 
-  const terminal = job.attempts >= MAX_ATTEMPTS;
+  const terminal = opts?.terminal === true || job.attempts >= MAX_ATTEMPTS;
   await db.mediaJob.update({
     where: { id },
     data: {

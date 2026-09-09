@@ -11,7 +11,8 @@
 
 import { db } from '../db.js';
 import { chunked } from '../store.js';
-import { CREATOR_BASELINE_MIN_SAMPLE } from '../scoring.js';
+import { CREATOR_BASELINE_MIN_SAMPLE, BASELINE_RESCRAPE_COOLDOWN_MS } from '../scoring.js';
+import { CREDIT_COSTS, creditBalance } from './credits.js';
 import { enqueueRefreshJob, parseRefreshJobPayload } from './jobs.js';
 
 /** Extra videos to pull when a hashtag hit is the only history we have. */
@@ -75,8 +76,21 @@ export async function enqueueMissingCreatorBaselines(opts: {
     },
     select: { payloadJson: true },
   });
+  // A baseline scrape that FAILED recently counts as pending too. Without
+  // this, a creator whose top-up keeps failing (out of credits, broken actor)
+  // was re-enqueued by every subsequent refresh of this source — each row
+  // then burning its claim/debit/fail lives against D1 for nothing.
+  const recentlyFailed = await db.mediaJob.findMany({
+    where: {
+      sourceId: opts.sourceId,
+      kind: 'refresh',
+      status: 'failed',
+      finishedAt: { gt: new Date(Date.now() - BASELINE_RESCRAPE_COOLDOWN_MS) },
+    },
+    select: { payloadJson: true },
+  });
   const already = new Set(
-    pending
+    [...pending, ...recentlyFailed]
       .map(j => parseRefreshJobPayload(j.payloadJson).queryOverride)
       .filter((h): h is string => Boolean(h)),
   );
@@ -87,6 +101,18 @@ export async function enqueueMissingCreatorBaselines(opts: {
       held: heldBy.get(`${c.handle}__${c.platform}`) ?? 0,
     })),
   );
+
+  // Same gate the sweep path has: a workspace that cannot cover the per-creator
+  // pre-auth gets no jobs — they would all be claimed, refused by debitCredits
+  // and terminally failed within seconds, pure D1 churn. The next refresh of
+  // this source after a top-up re-runs this enqueue.
+  const baselineCost = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * CREATOR_HISTORY_EXTRA);
+  const affordable = await creditBalance(opts.workspaceId)
+    .then((b) => b.total >= baselineCost)
+    .catch(() => false);
+  if (!affordable) {
+    return { queued: 0, skipped: needed.length, handles: [] };
+  }
 
   let queued = 0;
   let skipped = unique.size - needed.length;

@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test';
 type JobRow = {
   id: string; workspaceId: string; kind: string; status: string;
   opId: string | null; preAuthCredits: number | null;
+  attempts: number;
   createdAt: Date; startedAt: Date | null; finishedAt: Date | null;
   lastError: string | null;
 };
@@ -48,14 +49,14 @@ mock.module('./credits.js', () => ({
   InsufficientCreditsError: class extends Error {},
 }));
 
-const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds, jobTimeoutMs, QUEUE_SWEEP_TAKE } = await import('./jobs.js');
+const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds, jobTimeoutMs, QUEUE_SWEEP_TAKE, failJob, MAX_ATTEMPTS } = await import('./jobs.js');
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
 
 function job(over: Partial<JobRow> = {}): JobRow {
   return {
     id: 'job-1', workspaceId: 'ws-1', kind: 'refresh', status: 'queued',
-    opId: 'op-1', preAuthCredits: 8,
+    opId: 'op-1', preAuthCredits: 8, attempts: 0,
     createdAt: minutesAgo(QUEUED_ABANDONED_AFTER_MINUTES + 10),
     startedAt: null, finishedAt: null, lastError: null,
     ...over,
@@ -216,5 +217,29 @@ describe('parseDiscoverJobPayload', () => {
 
   test('garbage becomes a keyword seed rather than throwing', () => {
     expect(parseDiscoverJobPayload('nope')).toMatchObject({ sourceType: 'keyword', query: '' });
+  });
+});
+
+describe('failJob — forced terminal for deterministic refusals', () => {
+  test('the forced flag fails the job on its first attempt', async () => {
+    jobs = [job({ status: 'running', attempts: 1 })];
+    const res = await failJob('job-1', 'Insufficient credits', { terminal: true });
+    expect(res.terminal).toBe(true);
+    expect(updates[0]!.data.status).toBe('failed');
+    expect(updates[0]!.data.finishedAt).toBeInstanceOf(Date);
+  });
+
+  test('without the flag a first failure still requeues', async () => {
+    jobs = [job({ status: 'running', attempts: 1 })];
+    const res = await failJob('job-1', 'scrape died');
+    expect(res.terminal).toBe(false);
+    expect(updates[0]!.data.status).toBe('queued');
+  });
+
+  test('attempts exhaustion alone still terminates, flag or not', async () => {
+    jobs = [job({ status: 'running', attempts: MAX_ATTEMPTS })];
+    const res = await failJob('job-1', 'scrape died');
+    expect(res.terminal).toBe(true);
+    expect(updates[0]!.data.status).toBe('failed');
   });
 });
