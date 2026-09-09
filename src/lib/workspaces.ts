@@ -16,6 +16,7 @@
 
 import type { Prisma, Workspace } from '@prisma/client';
 import { db } from '../db.js';
+import { cacheKey, getOrFill } from './cache.js';
 import { freeTierGrant } from './credits.js';
 
 type WorkspaceClient = Pick<typeof db, 'workspace'> | Prisma.TransactionClient;
@@ -43,10 +44,13 @@ export async function resolveAccountPlanKey(ownerId: string): Promise<string> {
  *  separate findFirst used to re-ask D1 for what was already in hand — one
  *  more REST round trip on every /api/workspaces hit.) */
 export async function listWorkspacesForUser(userId: string): Promise<Workspace[]> {
-  const workspaces = await db.workspace.findMany({ where: { ownerId: userId }, orderBy: { createdAt: 'asc' } });
-  if (workspaces.length === 0) return workspaces;
-  const planKey = workspaces[0].planKey;
-  return workspaces.map(w => ({ ...w, planKey }));
+  // Cached 60s: ownership barely changes; the switcher polls this constantly.
+  return getOrFill(cacheKey(['workspaces', userId]), 60_000, async () => {
+    const workspaces = await db.workspace.findMany({ where: { ownerId: userId }, orderBy: { createdAt: 'asc' } });
+    if (workspaces.length === 0) return workspaces;
+    const planKey = workspaces[0].planKey;
+    return workspaces.map(w => ({ ...w, planKey }));
+  });
 }
 
 /**

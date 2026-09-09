@@ -14,6 +14,7 @@
 
 import { db } from '../db.js';
 import { chunked, isUniqueViolation } from '../store.js';
+import { cacheKey, getOrFill } from './cache.js';
 import { resolveThumbUrl } from './media.js';
 import { generateHookTestDraft, type HookTestDraft, type HookTestLock } from '../analysis/hook-tests.js';
 
@@ -387,6 +388,18 @@ export interface HookTestListRow {
  * (newest first), then the graveyard when includeClosed is set.
  */
 export async function listHookTests(
+  workspaceId: string,
+  opts: { includeClosed?: boolean } = {},
+): Promise<HookTestListRow[]> {
+  // Cached 30s: the /tests index refetches on every navigation.
+  return getOrFill(
+    cacheKey(['hook-tests', workspaceId, opts.includeClosed ?? false]),
+    30_000,
+    () => listHookTestsUncached(workspaceId, opts),
+  );
+}
+
+async function listHookTestsUncached(
   workspaceId: string,
   opts: { includeClosed?: boolean } = {},
 ): Promise<HookTestListRow[]> {

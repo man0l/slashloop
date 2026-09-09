@@ -9,6 +9,7 @@
 
 import type { Workspace } from '@prisma/client';
 import { db } from '../db.js';
+import { cacheKey, getOrFill } from './cache.js';
 import { normalizeQuery } from './canonical-query.js';
 
 const RETRO_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -24,6 +25,15 @@ export interface RetroRow {
 }
 
 export async function buildWeeklyRetro(workspace: Workspace, now = new Date()) {
+  // Cached 120s, keyed by UTC day — studio aggregates barely move intraday.
+  return getOrFill(
+    cacheKey(['retro', workspace.id, now.toISOString().slice(0, 10)]),
+    120_000,
+    () => buildWeeklyRetroUncached(workspace, now),
+  );
+}
+
+async function buildWeeklyRetroUncached(workspace: Workspace, now: Date) {
   const since = new Date(now.getTime() - RETRO_WINDOW_MS);
   const self = await db.source.findFirst({
     where: { workspaceId: workspace.id, isSelf: true, sourceType: 'creator' },

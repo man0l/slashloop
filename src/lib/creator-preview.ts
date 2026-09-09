@@ -10,6 +10,7 @@
 import type { Workspace } from '@prisma/client';
 import { db } from '../db.js';
 import { dbDialect, type Dialect } from '../store.js';
+import { cacheKey, getOrFill } from './cache.js';
 import { normalizeQuery } from './canonical-query.js';
 import { resolveThumbUrl } from './media.js';
 
@@ -129,7 +130,16 @@ export async function buildCreatorPreview(
 ): Promise<CreatorPreview> {
   const handle = normalizeQuery('creator', rawHandle);
   if (!handle) return emptyCreatorPreview('');
+  // Cached 60s: hover cards re-request constantly while browsing.
+  return getOrFill(cacheKey(['creator-preview', workspace.id, handle]), 60_000, () =>
+    buildCreatorPreviewUncached(workspace, handle),
+  );
+}
 
+async function buildCreatorPreviewUncached(
+  workspace: Pick<Workspace, 'id'>,
+  handle: string,
+): Promise<CreatorPreview> {
   const handleWhere = creatorHandleWhere(handle);
   if (!handleWhere) return emptyCreatorPreview(handle);
 
