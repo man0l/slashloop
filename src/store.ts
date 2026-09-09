@@ -69,6 +69,92 @@ export function setActiveClient(client: AppPrismaClient, raw?: RawExecutor): voi
   globalForStore.__slashloopStore = { client, raw };
 }
 
+// ---------------------------------------------------------------------------
+// Process-wide DB turn.
+//
+// The Prisma engine behind the registered client cannot safely serve
+// overlapping queries from one process: concurrent findMany calls on a
+// shared isolate wedge — one settles, the other never does, with no error
+// and no log (observed live: every hung fetch stuck inside a plain,
+// sequential findMany while a peer request's identical query completed).
+//
+// So every top-level db.* call takes a process-wide turn first. Turns are
+// held only for the single call (released in `finally`), never across
+// awaits of non-DB work — long scrapes and AI calls don't hold it. App code
+// already sequences its own calls, so the turn is uncontended in the common
+// case and costs nothing; it only bites when two requests would otherwise
+// overlap inside the engine.
+//
+// Timeouts, not queues: a waiter that can't acquire the turn in
+// DB_TURN_TIMEOUT_MS fails fast (DbBusyError → 503) instead of piling up
+// behind a wedged holder forever. Combined with the per-call D1 timeouts,
+// no DB stall can become a silent infinite spinner anymore.
+// ---------------------------------------------------------------------------
+
+/** Max wait for the process-wide DB turn before failing fast. */
+export const DB_TURN_TIMEOUT_MS = 25_000;
+
+export class DbBusyError extends Error {
+  constructor() {
+    super(`Database is busy serving another request (no turn in ${DB_TURN_TIMEOUT_MS}ms)`);
+    this.name = 'DbBusyError';
+  }
+}
+
+let dbTurn: Promise<unknown> = Promise.resolve();
+
+function withDbTurn<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = dbTurn;
+  let release!: () => void;
+  dbTurn = new Promise<void>((r) => { release = r; });
+  const wait = prev.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new DbBusyError()), DB_TURN_TIMEOUT_MS);
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+  const done = () => {
+    if (timer !== undefined) clearTimeout(timer);
+  };
+  return Promise.race([wait, timeout]).then(
+    async () => {
+      done();
+      try {
+        return await fn();
+      } finally {
+        release();
+      }
+    },
+    (err) => {
+      done();
+      release();
+      throw err;
+    },
+  );
+}
+
+/** Wrapped members per delegate object — keeps `db.video` identity stable. */
+const wrappedMembers = new WeakMap<object, Map<PropertyKey, unknown>>();
+
+function wrapDelegate<T extends object>(delegate: T): T {
+  let cached = wrappedMembers.get(delegate);
+  if (!cached) {
+    cached = new Map();
+    wrappedMembers.set(delegate, cached);
+  }
+  return new Proxy(delegate, {
+    get(t, prop) {
+      if (cached!.has(prop)) return cached!.get(prop);
+      const value: unknown = Reflect.get(t, prop, t);
+      const out = typeof value === 'function'
+        ? (...args: unknown[]) => withDbTurn(() => (value as (...a: unknown[]) => Promise<unknown>).apply(t, args))
+        : value;
+      cached!.set(prop, out);
+      return out;
+    },
+  });
+}
+
 function activeStore(): { client: AppPrismaClient; raw?: RawExecutor } {
   const store = globalForStore.__slashloopStore;
   if (!store) {
@@ -84,12 +170,21 @@ function activeStore(): { client: AppPrismaClient; raw?: RawExecutor } {
  * The shared Prisma entry point. Proxy → the active client, bound. Tagged
  * templates (`db.$queryRaw\`...\``) work because the tagged callee is just a
  * function; `this` must be the client, hence the bind.
+ *
+ * Every call takes the process-wide DB turn first (see withDbTurn above):
+ * overlapping engine use from concurrent requests wedges isolates silently,
+ * so serialization lives here — one place — rather than in every caller.
  */
 export const db = new Proxy({} as AppPrismaClient, {
   get(_target, prop) {
     const { client } = activeStore();
     const value = Reflect.get(client as object, prop, client);
-    return typeof value === 'function' ? value.bind(client) : value;
+    if (typeof value === 'function') {
+      const fn = (value as (...args: unknown[]) => Promise<unknown>).bind(client);
+      return (...args: unknown[]) => withDbTurn(() => fn(...args));
+    }
+    if (value && typeof value === 'object') return wrapDelegate(value as object);
+    return value;
   },
 });
 

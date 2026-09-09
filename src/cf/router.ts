@@ -22,6 +22,7 @@ import * as internalRawBatch from './internal.js';
 import * as mediaRoutes from './media-routes.js';
 import { loginPage, consentPage } from '../../remote/pages.js';
 import { AUTHORIZATION_SERVER } from '../../remote/mcp-server.js';
+import { corsHeaders } from '../lib/cors.js';
 
 type HandlerModule = Record<string, unknown>;
 
@@ -130,7 +131,25 @@ async function dispatch(mod: HandlerModule, method: string, request: Request): P
       headers: { 'Content-Type': 'application/json', Allow: Object.keys(mod).filter((k) => /^[A-Z]+$/.test(k)).join(', ') },
     });
   }
-  return (handler as (req: Request) => Promise<Response> | Response)(request);
+  // Never let a handler throw past the runtime: an uncaught throw becomes a
+  // bare 500 with no CORS headers, which browsers misreport as a CORS
+  // failure and the site renders as a hang with no Retry. Log it and answer
+  // JSON with CORS so every failure is visible and retryable.
+  try {
+    return await (handler as (req: Request) => Promise<Response> | Response)(request);
+  } catch (err) {
+    const busy = (err as { name?: string }).name === 'DbBusyError';
+    console.error(
+      `[router] ${effective} ${new URL(request.url).pathname} threw: ${(err as Error).message}`,
+    );
+    return new Response(
+      JSON.stringify({ error: busy ? 'isolate_busy' : 'internal_error' }),
+      {
+        status: busy ? 503 : 500,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders(request) },
+      },
+    );
+  }
 }
 
 /** Route one request. Returns undefined only for internal upgrade paths (none today). */
