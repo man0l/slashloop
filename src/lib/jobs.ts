@@ -982,9 +982,22 @@ export async function failJob(id: string, message: string): Promise<{ terminal: 
  */
 export const QUEUED_ABANDONED_AFTER_MINUTES = 90;
 
+/**
+ * Hard cap on rows each recovery sweep processes per call.
+ *
+ * D1 caps one invocation at 1000 queries, and every swept row costs several
+ * D1 statements: the status UPDATE, the refund (a 2-statement rawBatch), and
+ * on reclaim the videos-landed findFirst. A full batch of 200 stays under the
+ * cap — ~600 queries for the abandoned sweep, ~800 worst case for reclaim.
+ * Older rows are picked first, so a stuck/abandoned storm degrades into
+ * several small sweeps (both callers re-run them on their sweep interval)
+ * instead of one invocation blowing its query budget mid-loop.
+ */
+export const QUEUE_SWEEP_TAKE = 200;
+
 export async function failAbandonedQueuedJobs(
   olderThanMinutes = QUEUED_ABANDONED_AFTER_MINUTES,
-): Promise<{ failed: number; refunded: number }> {
+): Promise<{ failed: number; refunded: number; more: boolean }> {
   const cutoff = new Date(Date.now() - olderThanMinutes * 60_000);
   const abandoned = await db.mediaJob.findMany({
     // startedAt null is the discriminator: a job that has run and been
@@ -994,6 +1007,12 @@ export async function failAbandonedQueuedJobs(
       id: true, workspaceId: true, opId: true, kind: true, preAuthCredits: true,
       createdAt: true,
     },
+    // Bound the per-invocation D1 work (see QUEUE_SWEEP_TAKE) the same way
+    // reclaimStuckJobs does: an unbounded scan would exceed the 1000-query
+    // cap once the per-row update + refund batch is factored in.
+    take: QUEUE_SWEEP_TAKE,
+    // Oldest first, so a capped sweep drains the rows that waited longest.
+    orderBy: { createdAt: 'asc' },
   });
 
   let failed = 0;
@@ -1032,7 +1051,10 @@ export async function failAbandonedQueuedJobs(
     }
   }
 
-  return { failed, refunded };
+  // more: the take cap was hit, so the abandoned set may still extend past
+  // this batch — callers (the VPS worker loop) log that the queue stayed deep
+  // and a later sweep will continue. False means the whole backlog drained.
+  return { failed, refunded, more: abandoned.length >= QUEUE_SWEEP_TAKE };
 }
 
 /**
@@ -1053,7 +1075,8 @@ export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: nu
     // into several small sweeps, not one giant query that times out the API.
     // STUCK_AFTER_MINUTES is 15 and the VPS sweep runs every ~5 min, so the
     // backlog between sweeps is at most a handful of rows in practice.
-    take: 200,
+    // (Same per-invocation query cap as the abandoned sweep — QUEUE_SWEEP_TAKE.)
+    take: QUEUE_SWEEP_TAKE,
     orderBy: { startedAt: 'asc' },
   });
 

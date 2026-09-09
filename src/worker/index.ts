@@ -185,12 +185,14 @@ while (!shuttingDown) {
       // without changing the outcome.
       const abandoned = await failAbandonedQueuedJobs().catch((err) => {
         console.warn(`[worker] abandoned-queue sweep failed: ${(err as Error).message}`);
-        return { failed: 0, refunded: 0 };
+        return { failed: 0, refunded: 0, more: false };
       });
       if (abandoned.failed) {
         console.warn(
           `[worker] failed ${abandoned.failed} never-claimed job(s), refunded ${abandoned.refunded} `
-          + `— the queue was not draining`,
+          + `— the queue was not draining${abandoned.more
+            ? ' and is still deep — the sweep hit its 200-row cap, more rows wait for the next sweep'
+            : ''}`,
         );
       }
     }

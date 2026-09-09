@@ -98,7 +98,7 @@ export async function POST(request: Request): Promise<Response> {
   // path, which the router maps to 503.
   const sweepsDue = Date.now() - lastSweepAt >= MAINTENANCE_SWEEP_INTERVAL_MS;
   let reclaimed = { requeued: 0, failed: 0, refunded: 0 };
-  let abandoned = { failed: 0, refunded: 0 };
+  let abandoned = { failed: 0, refunded: 0, more: false };
   let rescoredStale: { creatorsRescraped: number; sourcesRescoredOnly: number; skipped?: 'throttled' } = {
     creatorsRescraped: 0,
     sourcesRescoredOnly: 0,
@@ -112,7 +112,7 @@ export async function POST(request: Request): Promise<Response> {
     });
     abandoned = await failAbandonedQueuedJobs().catch((err) => {
       console.warn(`[jobs] failAbandonedQueuedJobs failed: ${(err as Error).message}`);
-      return { failed: 0, refunded: 0 };
+      return { failed: 0, refunded: 0, more: false };
     });
     rescoredStale = await rescoreStaleTooFresh().catch((err) => {
       console.warn(`[jobs] rescoreStaleTooFresh failed: ${(err as Error).message}`);
