@@ -8,6 +8,7 @@
 
 import type { Workspace } from '@prisma/client';
 import { db } from '../db.js';
+import { cacheKey, getOrFill } from './cache.js';
 import { normalizeQuery } from './canonical-query.js';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -33,6 +34,15 @@ function median(values: number[]): number {
 }
 
 export async function buildBenchmark(workspace: Workspace, now = new Date()) {
+  // Cached 120s, keyed by UTC day — same rationale as buildWeeklyRetro.
+  return getOrFill(
+    cacheKey(['benchmark', workspace.id, now.toISOString().slice(0, 10)]),
+    120_000,
+    () => buildBenchmarkUncached(workspace, now),
+  );
+}
+
+async function buildBenchmarkUncached(workspace: Workspace, now: Date) {
   const sources = await db.source.findMany({
     where: { workspaceId: workspace.id, sourceType: 'creator' },
     select: { id: true, query: true, isSelf: true },

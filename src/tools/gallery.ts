@@ -16,6 +16,7 @@ import { z } from 'zod/v4';
 import { registerAppTool, registerAppResource, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { db } from '../db.js';
 import { chunked } from '../store.js';
+import { cacheKey, getOrFill } from '../lib/cache.js';
 import { requireWorkspace, currentUserId } from '../context.js';
 import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls } from '../lib/media.js';
 import { latestFetchErrors } from '../lib/jobs.js';
@@ -112,6 +113,26 @@ export async function buildCards(
   opts: BuildCardsOptions = {},
 ): Promise<{ cards: GalleryCard[]; note?: string; sourceId?: string; filters: GalleryFilters }> {
   const workspace = await requireWorkspace(opts.workspaceId ? { workspaceId: opts.workspaceId } : undefined);
+  // Cached 30s: the heaviest read on the site (buffer + maps + signs).
+  return getOrFill(galleryCacheKey(workspace.id, opts), 30_000, () =>
+    buildCardsUncached(workspace, opts),
+  );
+}
+
+/** Stable key over every option that changes the card set. */
+export function galleryCacheKey(workspaceId: string, opts: BuildCardsOptions): string {
+  return cacheKey([
+    'gallery', workspaceId,
+    opts.sourceId ?? '', opts.videoId ?? '', opts.limit ?? 0,
+    opts.minOutlier ?? 0, opts.minViews ?? 0, opts.density ?? '',
+    opts.sortBy ?? '', opts.analyzedBy ?? '', opts.hasHookTest ?? false,
+  ]);
+}
+
+async function buildCardsUncached(
+  workspace: { id: string },
+  opts: BuildCardsOptions,
+): Promise<{ cards: GalleryCard[]; note?: string; sourceId?: string; filters: GalleryFilters }> {
   const limit = Math.min(Math.max(opts.limit ?? GALLERY_POOL, 1), 60);
   const sortBy = opts.sortBy ?? 'outlier_score';
   const analyzedBy = opts.analyzedBy ?? undefined;

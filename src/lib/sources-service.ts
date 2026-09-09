@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import type { Prisma, Source, Workspace } from '@prisma/client';
 import { db } from '../db.js';
 import { chunked, dbDialect } from '../store.js';
+import { cacheKey, getOrFill } from './cache.js';
 import { resolveThumbUrl } from './media.js';
 import { scrapeCapKind, scrapeSource, trafficStatus } from './scrapers/index.js';
 import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
@@ -136,6 +137,17 @@ async function listSourceRowExtras(ids: string[]): Promise<{
 }
 
 export async function listSourcesForWorkspace(workspace: Workspace, filters: ListSourcesFilters) {
+  // Cached 30s: the heaviest list on the site (groupBys + extras per row).
+  // Mutations already invalidate client-side; this only bounds cross-tab
+  // skew and collapses concurrent duplicate fetches into one fill.
+  return getOrFill(
+    cacheKey(['sources', workspace.id, filters.platform ?? '', filters.sourceType ?? '', String(filters.isActive ?? ''), filters.nicheTag ?? '']),
+    30_000,
+    () => listSourcesForWorkspaceUncached(workspace, filters),
+  );
+}
+
+async function listSourcesForWorkspaceUncached(workspace: Workspace, filters: ListSourcesFilters) {
   // No `_count` include: Prisma's D1 adapter fans those into concurrent
   // prepared statements, which hang the binding. Two sequential groupBys
   // instead (chunked for the ~98-param cap).
