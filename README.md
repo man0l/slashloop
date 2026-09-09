@@ -4,8 +4,11 @@ Hosted MCP server for viral short-form video research — track TikTok / Reels /
 Shorts sources, find outlier videos, run Gemini video analysis, and turn
 winners into hooks, ideas, and creative briefs.
 
-**Remote HTTP MCP only** (no local stdio server): deployed on Vercel,
-authenticated via Supabase OAuth2. API keys (Gemini, Apify) live server-side,
+**Remote HTTP MCP only** (no local stdio server): hosted on Cloudflare
+Workers (D1 + R2 + KV + Cron Triggers), authenticated via Supabase OAuth2
+until the native-IdP swap. Vercel + Supabase Postgres remain as the
+legacy/rollback backend during the cutover soak (see
+`docs/cf-full-backend-plan.md`). API keys (Gemini, Apify) live server-side,
 so installers never handle them.
 
 | Surface | Where | Install | Client |
@@ -56,7 +59,11 @@ All 32 tools are then available; ask in plain language
 
 ---
 
-## Self-host (Vercel + Supabase)
+## Self-host (Workers primary; Vercel + Supabase legacy/rollback)
+
+> Cutover in progress: Worker + D1 is primary (`docs/cf-full-backend-plan.md`,
+> runbook `docs/cloudflare-migration.md`, checks `docs/cf-cutover-checklist.md`).
+> Below is the legacy Vercel/Supabase path, kept as the rollback target.
 
 ### 1. Supabase dashboard
 1. **Auth → URL Configuration → Site URL** = your public connector URL.
