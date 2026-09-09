@@ -11,11 +11,21 @@
 
 import { ensureStore, type Env } from './env.js';
 import { route } from './router.js';
+import { createOAuthProvider } from './oauth.js';
+
+// OAuthProvider owns fetch: /mcp (apiHandlers) + /authorize, /token,
+// /register and the OAuth metadata endpoints; everything else falls through
+// to the existing router via defaultHandler. Scheduled crons bypass the
+// provider (it has no scheduled hook) and keep dispatching through the
+// router with CRON_SECRET, as before.
+const oauth = createOAuthProvider(async (request, env) => {
+  await ensureStore(env);
+  return route(request);
+});
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    await ensureStore(env);
-    return route(request);
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    return oauth.fetch(request, env, ctx);
   },
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
