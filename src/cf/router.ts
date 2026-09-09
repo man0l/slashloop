@@ -22,7 +22,8 @@ import * as cronDigest from '../../api/cron/digest.js';
 import * as cronRetention from '../../api/cron/media-retention.js';
 import * as internalRawBatch from './internal.js';
 import * as mediaRoutes from './media-routes.js';
-import { loginPage, consentPage } from '../../remote/pages.js';
+import * as googleCallback from './google-callback.js';
+import { loginPage, legacyLoginPage, consentPage } from '../../remote/pages.js';
 import { AUTHORIZATION_SERVER } from '../../remote/mcp-server.js';
 import { corsHeaders } from '../lib/cors.js';
 
@@ -34,7 +35,7 @@ interface Route {
   /** Static query params injected before dispatch (vercel.json dest params). */
   inject?: Record<string, string>;
   /** Non-module handlers (the pages set, re-implemented below). */
-  page?: 'well-known' | 'login' | 'consent' | 'health' | '404';
+  page?: 'well-known' | 'login' | 'legacy-login' | 'consent' | 'health' | '404';
 }
 
 /** PUBLIC_URL wins, else the request origin — same rule as api/mcp.ts. */
@@ -57,9 +58,26 @@ function servePage(page: NonNullable<Route['page']>, url: URL): Response {
   const origin = originOf(url);
   switch (page) {
     case 'well-known':
+      // RFC 9728 protected-resource metadata. The OAuthProvider owns this
+      // endpoint in production (it also serves authorization-server metadata at
+      // /.well-known/oauth-authorization-server); this static body is the
+      // dual-accept fallback used by defaultHandler/local paths. Final
+      // discovery shape post-merge:
+      //   { "resource": "<origin>/mcp",
+      //     "authorization_servers": ["<as-issuer>"],
+      //     "scopes_supported": [...], "bearer_methods_supported": ["header"],
+      //     "resource_name": "slashloop" }
+      // (the migrate agent flips AUTHORIZATION_SERVER off Supabase /auth/v1).
       return jsonResponse({ resource: `${origin}/mcp`, authorization_servers: [AUTHORIZATION_SERVER] });
     case 'login':
       return htmlResponse(loginPage());
+    case 'legacy-login':
+      // Dual-accept transition gate: the Supabase widget is only reachable
+      // while Supabase JWTs are accepted. With ACCEPT_SUPABASE_JWT=0 the legacy
+      // page degrades to the native Google login (never a 404 — the <details>
+      // fallback on the native page links here).
+      if ((process.env.ACCEPT_SUPABASE_JWT ?? '') === '0') return htmlResponse(loginPage());
+      return htmlResponse(legacyLoginPage());
     case 'consent':
       return htmlResponse(consentPage());
     case '404':
@@ -87,6 +105,15 @@ const ROUTES: Route[] = [
   { re: /^\/authorize$/, page: 'login' },
   { re: /^\/oauth\/consent$/, page: 'consent' },
   { re: /^\/login$/, page: 'login' },
+  // Phase 4 (additive): legacy Supabase widget, router-gated on
+  // ACCEPT_SUPABASE_JWT (see servePage 'legacy-login'). The native loginPage
+  // links here from its <details> fallback.
+  { re: /^\/login\/legacy$/, page: 'legacy-login' },
+  // Phase 4 (additive): native Google OAuth callback used by the google agent.
+  // Handler is a documented 501 placeholder until the tokens agent's flow in
+  // src/cf/oauth.ts lands (see src/cf/google-callback.ts). No existing routes
+  // changed.
+  { re: /^\/oauth\/google\/callback$/, mod: googleCallback },
   { re: /^\/health$/, page: 'health' },
   { re: /^\/gallery$/, mod: gallery },
   { re: /^\/api\/gallery-data$/, mod: gallery, inject: { mode: 'data' } },
