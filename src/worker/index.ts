@@ -15,12 +15,25 @@
 // so its proxy bytes are attributed to it alone.
 //
 // Run:  bun run worker        (or the Docker image in worker/)
-// Env:  the same as Vercel — DATABASE_URL, SUPABASE_URL + SUPABASE_SECRET_KEY,
-//       storage buckets, OPENROUTER_API_KEY + OPENROUTER_VIDEO_MODEL/MODE/
-//       TIMEOUT_MS, GEMINI_API_KEY, APIFY_API_KEY, APIFY_SPEND_CAP_CENTS.
-//       WORKER_IDLE_MS (default 3000) controls the poll interval when idle.
+// Env:  Postgres mode (pre-cutover): DATABASE_URL, SUPABASE_URL +
+//       SUPABASE_SECRET_KEY, storage buckets, OPENROUTER_API_KEY +
+//       OPENROUTER_VIDEO_MODEL/MODE/TIMEOUT_MS, GEMINI_API_KEY, APIFY_API_KEY,
+//       APIFY_SPEND_CAP_CENTS. DATABASE_URL is REQUIRED there.
+//       D1 mode (post-cutover, retained VPS): DB_DIALECT=sqlite plus the D1
+//       HTTP credentials D1_ACCOUNT_ID / D1_DATABASE_ID / D1_API_TOKEN —
+//       DATABASE_URL is NOT required and is ignored. src/db.ts picks the D1
+//       HTTP client up from those vars automatically; startup below fails fast
+//       with a clear message when the trio is incomplete.
+//       WORKER_IDLE_MS controls the poll interval when idle: default 3000 in
+//       Postgres mode, 10000 in D1 mode (D1 is single-writer with no cheap
+//       per-3s polling — see docs/cloudflare-migration.md cutover §5).
 //       WORKER_CONCURRENCY (default 2) is jobs drained in parallel. Raise
-//       DB_CONNECTION_LIMIT with it.
+//       DB_CONNECTION_LIMIT with it (Postgres mode only; D1 serializes).
+//       WORKER_RECLAIM_INTERVAL_MS (default 300000) throttles BOTH whole-queue
+//       sweeps (stuck-claim reclaim + never-claimed fail) on the maintenance
+//       worker. WORKER_INTERNAL_URL + CRON_SECRET route rawBatch through the
+//       Worker's atomic /internal/raw-batch; without them multi-statement
+//       batches run WITHOUT atomicity (dev only).
 // ---------------------------------------------------------------------------
 
 import {
@@ -33,13 +46,18 @@ import { withMeterScope } from '../lib/scrapers/bandwidth.js';
 import { refundCredits } from '../lib/credits.js';
 import { initLogShipping } from './ship-logs.js';
 
-const IDLE_MS = Number(process.env.WORKER_IDLE_MS ?? 3000);
+// D1 is single-writer with per-request billing: the 3s Postgres poll default
+// would hammer it from every container. In D1 mode (DB_DIALECT=sqlite) the
+// idle default is 10000 — an explicit WORKER_IDLE_MS still wins in both modes.
+const isD1Mode = (process.env.DB_DIALECT ?? 'postgres') === 'sqlite';
+const IDLE_MS = Number(process.env.WORKER_IDLE_MS ?? (isD1Mode ? 10000 : 3000));
 const RESCORE_EVERY = Number(process.env.WORKER_RESCORE_EVERY ?? 60);
 const CONCURRENCY = Math.max(1, Math.floor(Number(process.env.WORKER_CONCURRENCY ?? 2)));
-// Stuck-claim sweep cadence. reclaimStuckJobs is a whole-queue scan over the
-// D1 HTTP API — running it every loop iteration on every container caused
-// cascading D1 timeouts (all 3 workers × every 3–10s). Sweep at most this
-// often, maintenance worker only (same rule as failAbandonedQueuedJobs).
+// Stuck-claim sweep cadence. Both recovery sweeps (reclaimStuckJobs and
+// failAbandonedQueuedJobs) are whole-queue scans over the D1 HTTP API —
+// running them every loop iteration on every container caused cascading D1
+// timeouts (all 3 workers × every 3–10s). Both run at most this often,
+// maintenance worker only.
 const RECLAIM_INTERVAL_MS = (() => {
   const n = Number(process.env.WORKER_RECLAIM_INTERVAL_MS ?? 5 * 60_000);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 5 * 60_000;
@@ -73,11 +91,62 @@ const doesMaintenance = KINDS.includes('refresh') || KINDS.includes('rescore');
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
-let shuttingDown = false;
-process.on('SIGINT', () => { shuttingDown = true; });
-process.on('SIGTERM', () => { shuttingDown = true; });
+/**
+ * Idle sleep that wakes early on SIGINT/SIGTERM so an idle worker exits
+ * within ~250ms instead of sitting out the whole IDLE_MS. Only used between
+ * claim rounds — in-flight jobs are never interrupted (see the signal
+ * handlers above).
+ */
+async function idleSleep(ms: number): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!shuttingDown && Date.now() < deadline) {
+    await sleep(Math.min(250, deadline - Date.now()));
+  }
+}
 
-console.log(`[worker] started — kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms, concurrency ${CONCURRENCY}, rescore every ${RESCORE_EVERY} iterations`);
+// Fail fast on a misconfigured environment before the first claim. In D1
+// mode DATABASE_URL is neither needed nor read (src/store.ts talks to D1
+// over HTTP); in Postgres mode it is still required — no regression there.
+function assertWorkerEnv(): void {
+  if (isD1Mode) {
+    const missing = ['D1_ACCOUNT_ID', 'D1_DATABASE_ID', 'D1_API_TOKEN']
+      .filter((k) => !process.env[k]);
+    if (missing.length) {
+      console.error(
+        `[worker] DB_DIALECT=sqlite but missing ${missing.join(', ')} — `
+        + 'the D1 HTTP client cannot start. Set the trio (see worker/.env.example); '
+        + 'DATABASE_URL is not used in D1 mode.',
+      );
+      process.exit(1);
+    }
+    if (!process.env.WORKER_INTERNAL_URL || !process.env.CRON_SECRET) {
+      console.warn(
+        '[worker] WORKER_INTERNAL_URL/CRON_SECRET unset — rawBatch runs WITHOUT '
+        + 'atomicity (sequential D1 REST calls). Set both in production so money '
+        + 'paths stay transactional via /internal/raw-batch.',
+      );
+    }
+  } else if (!process.env.DATABASE_URL) {
+    console.error('[worker] DATABASE_URL is required in Postgres mode (DB_DIALECT != sqlite).');
+    process.exit(1);
+  }
+}
+assertWorkerEnv();
+
+let shuttingDown = false;
+let sigName = '';
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => {
+    // Checked BETWEEN jobs: the in-flight batch runs to completion (it may be
+    // a ~170s billed scrape), so the deploy MUST allow stop_grace_period 300s
+    // — see worker/Dockerfile. Only the idle sleep below wakes early.
+    if (!shuttingDown) console.log(`[worker] received ${sig} — finishing in-flight jobs, then exiting`);
+    shuttingDown = true;
+    sigName = sig;
+  });
+}
+
+console.log(`[worker] started — dialect=${isD1Mode ? 'sqlite(D1)' : 'postgres'} kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms, concurrency ${CONCURRENCY}, rescore every ${RESCORE_EVERY} iterations`);
 
 let iteration = 0;
 // Staggered start so containers restarted together (deploy/watchtower) don't
@@ -86,8 +155,12 @@ let lastReclaimAt = Date.now() - Math.floor(Math.random() * RECLAIM_INTERVAL_MS)
 
 while (!shuttingDown) {
   try {
-    // Recover abandoned claims — throttled, maintenance-only. A D1 blip here
-    // must not abort the iteration (claiming continues below).
+    // Recovery sweeps — throttled, maintenance-only, staggered across
+    // containers by the jittered lastReclaimAt below. BOTH sweeps are
+    // whole-queue scans over the D1 HTTP API: running the never-claimed sweep
+    // every iteration (every IDLE_MS) multiplied D1 single-writer load without
+    // changing the outcome (its threshold is 90 minutes). A D1 blip in either
+    // sweep must not abort the iteration (claiming continues below).
     if (doesMaintenance && Date.now() - lastReclaimAt >= RECLAIM_INTERVAL_MS) {
       lastReclaimAt = Date.now();
       const reclaimed = await reclaimStuckJobs().catch((err) => {
@@ -97,12 +170,11 @@ while (!shuttingDown) {
       if (reclaimed.requeued || reclaimed.failed) {
         console.log(`[worker] reclaimed stuck: requeued=${reclaimed.requeued} failed=${reclaimed.failed} refunded=${reclaimed.refunded}`);
       }
-    }
 
-    // Jobs that were never claimed at all. Only the maintenance worker runs
-    // this: it is a whole-queue sweep, and having every container race to do
-    // it would multiply the work without changing the outcome.
-    if (doesMaintenance) {
+      // Jobs that were never claimed at all. Same gate as the stuck sweep:
+      // it is a whole-queue sweep with a 90-minute threshold, and having every
+      // container race to do it every idle period would multiply the work
+      // without changing the outcome.
       const abandoned = await failAbandonedQueuedJobs().catch((err) => {
         console.warn(`[worker] abandoned-queue sweep failed: ${(err as Error).message}`);
         return { failed: 0, refunded: 0 };
@@ -144,7 +216,7 @@ while (!shuttingDown) {
     }
 
     if (jobs.length === 0) {
-      await sleep(IDLE_MS);
+      await idleSleep(IDLE_MS);
       continue;
     }
 
@@ -196,5 +268,5 @@ while (!shuttingDown) {
   }
 }
 
-console.log('[worker] shutting down');
+console.log(`[worker] shutting down${sigName ? ` (${sigName})` : ''}`);
 process.exit(0);
