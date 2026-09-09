@@ -1,6 +1,7 @@
 // Native Google login (loginPage) + legacy Supabase Auth UI (legacyLoginPage).
-// The router chooses: /login and /authorize serve the native page; the Supabase
-// widget only survives at /login/legacy while ACCEPT_SUPABASE_JWT !== '0'.
+// The router chooses: /login serves the Supabase widget (primary) while
+// ACCEPT_SUPABASE_JWT !== '0'; the native page lives at /login/legacy as the
+// pre-cutover test path (and takes over /login when the flag flips to '0').
 // Consent stays custom (approve/deny against the provider's authorization id).
 
 const SU = process.env.SUPABASE_URL ?? '';
@@ -41,8 +42,8 @@ const SHELL = (title: string, body: string) => `<!doctype html>
 // button hands off to the provider authorize endpoint (/authorize); the
 // ?redirect=... passthrough (plus any OAuth request params when this page is
 // served at /authorize) rides along in the query string. The <details> fallback
-// links to the legacy Supabase-hosted flow at /login/legacy — reachable only
-// while ACCEPT_SUPABASE_JWT !== '0' (gated by the router, src/cf/router.ts).
+// links to the Supabase-hosted flow at /login — primary while
+// ACCEPT_SUPABASE_JWT !== '0' (gated by the router, src/cf/router.ts).
 export function loginPage(): string {
   return SHELL('Sign in', `
     <div class="logo">slashloop<span class="dot">/</span></div>
@@ -52,7 +53,7 @@ export function loginPage(): string {
     <details>
       <summary>Use Supabase login (legacy)</summary>
       <p>Email + social login via the Supabase-hosted flow. Available during the dual-accept transition.</p>
-      <p><a id="legacy" href="/login/legacy">Open legacy login</a></p>
+      <p><a id="legacy" href="/login">Open Supabase login</a></p>
     </details>
     <script type="module">
       // Preserve the ?redirect=... passthrough (and any OAuth request params)
@@ -61,14 +62,14 @@ export function loginPage(): string {
       const q = location.search;
       const redirect = new URLSearchParams(q).get('redirect') || '/';
       document.getElementById('google').href = '/authorize' + q;
-      document.getElementById('legacy').href = '/login/legacy?redirect=' + encodeURIComponent(redirect);
+      document.getElementById('legacy').href = '/login?redirect=' + encodeURIComponent(redirect);
     </script>
   `);
 }
 
 // Legacy Supabase login (Auth UI widget, incl. providers ['google','github']).
-// Kept as-is for the dual-accept transition; served at /login/legacy only,
-// and only while ACCEPT_SUPABASE_JWT !== '0' (router-gated).
+// The primary login, served at /login while ACCEPT_SUPABASE_JWT !== '0'
+// (router-gated; with the flag at '0' /login degrades to the native page).
 export function legacyLoginPage(): string {
   return SHELL('Sign in', `
     <div class="logo">slashloop<span class="dot">/</span></div>

@@ -69,14 +69,15 @@ function servePage(page: NonNullable<Route['page']>, url: URL): Response {
       // (the migrate agent flips AUTHORIZATION_SERVER off Supabase /auth/v1).
       return jsonResponse({ resource: `${origin}/mcp`, authorization_servers: [AUTHORIZATION_SERVER] });
     case 'login':
-      return htmlResponse(loginPage());
-    case 'legacy-login':
-      // Dual-accept transition gate: the Supabase widget is only reachable
-      // while Supabase JWTs are accepted. With ACCEPT_SUPABASE_JWT=0 the legacy
-      // page degrades to the native Google login (never a 404 — the <details>
-      // fallback on the native page links here).
+      // Primary login is the Supabase widget while Supabase JWTs are
+      // accepted. With ACCEPT_SUPABASE_JWT=0 /login degrades to the native
+      // Google login (never a 404).
       if ((process.env.ACCEPT_SUPABASE_JWT ?? '') === '0') return htmlResponse(loginPage());
       return htmlResponse(legacyLoginPage());
+    case 'legacy-login':
+      // Pre-cutover test path for the native Google login. (Supabase is the
+      // primary at /login until the flag flips; then the two swap roles.)
+      return htmlResponse(loginPage());
     case 'consent':
       return htmlResponse(consentPage());
     case '404':
@@ -104,9 +105,8 @@ const ROUTES: Route[] = [
   { re: /^\/authorize$/, page: 'login' },
   { re: /^\/oauth\/consent$/, page: 'consent' },
   { re: /^\/login$/, page: 'login' },
-  // Phase 4 (additive): legacy Supabase widget, router-gated on
-  // ACCEPT_SUPABASE_JWT (see servePage 'legacy-login'). The native loginPage
-  // links here from its <details> fallback.
+  // Native Google login test path. Its <details> fallback links back to
+  // /login (Supabase, the primary). See servePage 'login'/'legacy-login'.
   { re: /^\/login\/legacy$/, page: 'legacy-login' },
   // NOTE: /authorize and /oauth/google/callback never reach this router —
   // the OAuthProvider defaultHandler wrapper in src/cf/oauth.ts intercepts
