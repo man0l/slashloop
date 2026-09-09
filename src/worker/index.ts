@@ -126,6 +126,14 @@ function assertWorkerEnv(): void {
         + 'paths stay transactional via /internal/raw-batch.',
       );
     }
+    if (IDLE_MS < 10000) {
+      console.warn(
+        `[worker] WORKER_IDLE_MS=${IDLE_MS}ms is below the D1-safe 10000ms — `
+        + 'per-3s polling from every container caused cascading timeouts on D1\'s '
+        + 'single-writer (~10 qps budget). Explicit value wins, but 10000 is '
+        + 'recommended in D1 mode (3000 OK in Postgres mode).',
+      );
+    }
   } else if (!process.env.DATABASE_URL) {
     console.error('[worker] DATABASE_URL is required in Postgres mode (DB_DIALECT != sqlite).');
     process.exit(1);

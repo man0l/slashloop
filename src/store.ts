@@ -275,13 +275,13 @@ function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
 
   async function single(sql: string, sqlParams: unknown[]): Promise<Array<Record<string, unknown>>> {
     // Bounded: a stalled D1 REST call would otherwise hang the VPS worker's
-    // current operation until the job timeout. 60s only trips on true stalls
-    // (these calls normally resolve in milliseconds).
+    // current operation until the job timeout. 25s fails fast under D1's 30s
+    // per-query ceiling (these calls normally resolve in milliseconds).
     const res = await fetch(d1Url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ sql, params: sqlParams }),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(25_000),
     });
     const body = res.ok
       ? (await res.json()) as { success?: boolean; errors?: Array<{ message?: string }>; result?: Array<{ results?: { columns?: string[]; rows?: unknown[][] } }> }
@@ -302,13 +302,15 @@ function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
       // Atomic path — the Worker holds the binding and its batch() is one
       // transaction. Dates were already serialized by d1HttpParam at the
       // boundary below, so JSON survives the round trip losslessly.
+      // Bounded at 25s to fail fast under D1's 30s per-query ceiling — don't
+      // hold dbTurn + worker slot another 30s after D1 already killed it.
       const res = await fetch(`${workerBase}/internal/raw-batch`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${process.env.CRON_SECRET}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           statements: statements.map((s) => ({ sql: s.sql, params: (s.params ?? []).map(d1HttpParam) })),
         }),
-        signal: AbortSignal.timeout(60_000),
+        signal: AbortSignal.timeout(25_000),
       });
       const body = res.ok
         ? (await res.json()) as { success?: boolean; error?: string; results?: Array<Array<Record<string, unknown>>> }
