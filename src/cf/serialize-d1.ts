@@ -6,9 +6,10 @@
 // (reproduced live 2026-09-01 after wrapping the binding: /api/sources hung
 // even with no other traffic, while single-query routes still responded).
 //
-// Isolate concurrency is handled by the request gate in worker.ts; intra-
-// handler concurrency is avoided by sequential Prisma calls (no Promise.all
-// of db.*, no `_count` includes). This helper stays for rawBatch/tests.
+// Isolate concurrency is handled by withDbTurn in src/store.ts (pinned with
+// ctx.waitUntil so a client abort cannot freeze the holder); intra-handler
+// concurrency is avoided by sequential Prisma calls (no Promise.all of db.*,
+// no `_count` includes). This helper stays for rawBatch/tests.
 
 export const D1_QUERY_TIMEOUT_MS = 8_000;
 

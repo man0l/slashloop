@@ -5,8 +5,13 @@
 // waiters time out. The old promise-chain design released the turn on
 // timeout, letting the next waiter barge in ahead of the still-running
 // holder — overlapping Prisma engine use that wedged isolates live.
-import { describe, expect, test } from 'bun:test';
-import { DbBusyError, withDbTurn } from './store.js';
+import { beforeEach, describe, expect, test } from 'bun:test';
+import { runWithWaitUntil } from './cf/wait-until.js';
+import { DbBusyError, resetDbTurnForTests, withDbTurn } from './store.js';
+
+beforeEach(() => {
+  resetDbTurnForTests();
+});
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -86,6 +91,17 @@ describe('withDbTurn', () => {
     });
     expect(logs.length).toBe(1);
     expect(logs[0]).toMatch(/\[db-turn-slow\] holder ran \d+ms \(waited \d+ms\): /);
+  });
+
+  test('holder work is pinned when a request waitUntil is installed', async () => {
+    const pinned: Promise<unknown>[] = [];
+    const result = await runWithWaitUntil(
+      (p) => { pinned.push(p); },
+      () => withDbTurn(() => Promise.resolve('ok'), { timeoutMs: 5000 }),
+    );
+    expect(result).toBe('ok');
+    expect(pinned).toHaveLength(1);
+    await pinned[0];
   });
 
   test('fast holders stay silent', async () => {

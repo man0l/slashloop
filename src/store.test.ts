@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { DbBusyError, db, setActiveClient } from './store.js';
+import { DbBusyError, db, resetDbTurnForTests, setActiveClient } from './store.js';
 
 /** Fake Prisma-ish client: delegates with async methods + a $queryRaw tag. */
 function fakeClient(events: string[], hangOn?: string) {
@@ -18,24 +18,48 @@ function fakeClient(events: string[], hangOn?: string) {
 }
 
 beforeEach(() => {
+  resetDbTurnForTests();
   setActiveClient(fakeClient([]));
 });
 
-describe('db turn (process-wide serialization)', () => {
-  test('concurrent calls on different delegates do not overlap', async () => {
+describe('db proxy', () => {
+  test('concurrent calls on different delegates overlap', async () => {
     const events: string[] = [];
-    setActiveClient(fakeClient(events));
+    const pause = () => new Promise((r) => setTimeout(r, 20));
+    setActiveClient({
+      video: {
+        findMany: async () => {
+          events.push('video.findMany:start');
+          await pause();
+          events.push('video.findMany:end');
+          return [];
+        },
+        findFirst: async () => {
+          events.push('video.findFirst:start');
+          await pause();
+          events.push('video.findFirst:end');
+          return null;
+        },
+      },
+      source: {
+        findMany: async () => {
+          events.push('source.findMany:start');
+          await pause();
+          events.push('source.findMany:end');
+          return [];
+        },
+      },
+    } as unknown as Parameters<typeof setActiveClient>[0]);
     await Promise.all([
       db.video.findMany({}),
       db.source.findMany({}),
       db.video.findFirst({}),
     ]);
-    // Strictly sequential: every start follows the previous end.
-    const order = events.map((e) => e.split(':')[1]);
-    expect(order).toEqual(['start', 'end', 'start', 'end', 'start', 'end']);
+    expect(events.filter((e) => e.endsWith(':start'))).toHaveLength(3);
+    expect(events.slice(0, 3).every((e) => e.endsWith(':start'))).toBe(true);
   });
 
-  test('a throw releases the turn for the next caller', async () => {
+  test('a throw does not break later calls', async () => {
     const events: string[] = [];
     setActiveClient(fakeClient(events));
     await expect(
@@ -47,7 +71,7 @@ describe('db turn (process-wide serialization)', () => {
     expect(events).toContain('source.findMany:end');
   });
 
-  test('$queryRaw tag calls go through the turn', async () => {
+  test('tagged $queryRaw reaches the client', async () => {
     const events: string[] = [];
     setActiveClient(fakeClient(events));
     await (db.$queryRaw`SELECT 1` as unknown as Promise<unknown>);

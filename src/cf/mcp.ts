@@ -85,7 +85,7 @@ interface HandleOptions {
 }
 
 export async function handleMcpRequest(request: Request, opts: HandleOptions = {}): Promise<Response> {
-  if (opts.env) await ensureStore(opts.env);
+  if (opts.env) await ensureStore(opts.env, opts.ctx);
 
   const props = opts.props ?? {};
   const sub = typeof props.sub === 'string' && props.sub ? props.sub : null;

@@ -1,18 +1,18 @@
 // ---------------------------------------------------------------------------
-// Per-process cache-aside with singleflight, for hot Workspace-scoped reads.
+// Per-process cache-aside for hot Workspace-scoped reads.
 //
-// Two wins in one helper:
+// TTL cache: repeated reads (page reloads, polls, second tabs, MCP + site
+// side by side) skip the DB chain for tens of seconds. Staleness is bounded
+// by the per-call TTL; mutations already invalidate client-side via
+// react-query, so the server TTL only governs cross-tab/cross-client skew.
 //
-//   1. TTL cache: repeated reads (page reloads, polls, second tabs, MCP +
-//      site side by side) skip the DB chain for tens of seconds. Staleness
-//      is bounded by the per-call TTL; mutations already invalidate
-//      client-side via react-query, so the server TTL only governs
-//      cross-tab/cross-client skew.
-//   2. Singleflight: concurrent identical in-flight fills share ONE promise.
-//      Probe bursts showed 10–30x duplicate concurrent GETs; without this
-//      each one runs the full query chain, and overlapping engine use is
-//      what wedges D1 isolates. Collapsing them removes that pressure with
-//      zero staleness for the waiters.
+// Do NOT singleflight (share an in-flight fill Promise across requests).
+// On Cloudflare Workers a promise created during request A belongs to A's
+// IoContext; if the client aborts A, workerd never settles it, and every
+// later request that awaits that cached promise hangs until the isolate is
+// recycled (better-auth#10315). Duplicate fills under concurrency are
+// cheaper than a wedged isolate. The process-wide DB turn already serializes
+// engine access.
 //
 // Rules (do not bend these):
 //   - Workspace-scoped keys only — never share entries across workspaces.
@@ -23,9 +23,7 @@
 //   - Bounded: MAX_ENTRIES with drop-oldest; short TTLs turn everything over.
 //
 // Memory-only (per isolate / per VPS process). No KV, no bindings, no
-// migration. Cross-isolate duplication is accepted — the TTLs are short and
-// the expensive part (duplicate concurrent fills) is already collapsed per
-// isolate by the singleflight.
+// migration. Cross-isolate duplication is accepted — the TTLs are short.
 // ---------------------------------------------------------------------------
 
 /** Most entries retained. Gallery payloads are the largest (~100KB+). */
@@ -37,7 +35,6 @@ interface Entry {
 }
 
 const store = new Map<string, Entry>();
-const inflight = new Map<string, Promise<unknown>>();
 
 /** Stable key builder. Callers must include the workspace id. */
 export function cacheKey(parts: Array<string | number | boolean>): string {
@@ -57,30 +54,21 @@ function evictIfNeeded(): void {
 }
 
 /**
- * Return the cached value when fresh, else run `fill` exactly once even
- * under concurrent identical calls. Errors from `fill` propagate and are
- * never cached.
+ * Return the cached value when fresh, else run `fill`. Concurrent callers
+ * each run fill — resolved values are cached, pending promises are not.
+ * Errors from `fill` propagate and are never cached.
  */
 export async function getOrFill<T>(key: string, ttlMs: number, fill: () => Promise<T>): Promise<T> {
   const hit = store.get(key);
   if (hit && hit.expiresAt > Date.now()) return hit.value as T;
   if (hit) store.delete(key);
 
-  const ongoing = inflight.get(key);
-  if (ongoing) return ongoing as Promise<T>;
-
-  const run = (async () => {
-    try {
-      const value = await fill();
-      evictIfNeeded();
-      store.set(key, { value, expiresAt: Date.now() + ttlMs });
-      return value;
-    } finally {
-      inflight.delete(key);
-    }
-  })();
-  inflight.set(key, run);
-  return run;
+  const value = await fill();
+  const raced = store.get(key);
+  if (raced && raced.expiresAt > Date.now()) return raced.value as T;
+  evictIfNeeded();
+  store.set(key, { value, expiresAt: Date.now() + ttlMs });
+  return value;
 }
 
 /** Drop entries by exact key or `prefix|` prefix (targeted invalidation). */
@@ -99,7 +87,6 @@ export function invalidateCache(keyOrPrefix: string): number {
 /** Test seam: clear everything. */
 export function clearCache(): void {
   store.clear();
-  inflight.clear();
 }
 
 /** Test seam: current entry count. */

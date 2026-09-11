@@ -168,7 +168,7 @@ export async function handleGoogleCallback(
       headers: { Allow: 'GET', 'Content-Type': 'application/json' },
     });
   }
-  await ensureStore(env);
+  await ensureStore(env); // waitUntil comes from fetch ALS
   const url = new URL(request.url);
   const origin = originOf(request);
 
@@ -252,7 +252,7 @@ export function createOAuthProvider(defaultHandler: DefaultHandler) {
         // are copied to process.env per isolate — without this a cold isolate
         // hitting /authorize first would see an empty client id.
         if (url.pathname === '/authorize' || url.pathname === '/oauth/google/callback') {
-          await ensureStore(e);
+          await ensureStore(e, ctx);
         }
         if (url.pathname === '/authorize') return handleAuthorize(request);
         if (url.pathname === '/oauth/google/callback') {
@@ -267,7 +267,7 @@ export function createOAuthProvider(defaultHandler: DefaultHandler) {
     // ensureStore first: env vars (SUPABASE_URL, GOOGLE_CLIENT_ID) arrive on
     // `env` in Workers and the verifiers read them via process.env.
     resolveExternalToken: async ({ token, env }) => {
-      await ensureStore(env as Env);
+      await ensureStore(env as Env); // waitUntil comes from fetch ALS
       const identity = await resolveNativeToken(token);
       if (!identity) return null;
       return {

@@ -23,6 +23,8 @@
 // for adding more — an ops task (create DB, copy rows by ownerId, update the
 // directory), not a code rewrite.
 
+import { keepAlive } from './cf/wait-until.js';
+
 /** Which SQL dialect the raw queries must speak. Set DB_DIALECT=sqlite on Workers. */
 export type Dialect = 'postgres' | 'sqlite';
 
@@ -70,46 +72,39 @@ export function setActiveClient(client: AppPrismaClient, raw?: RawExecutor): voi
 }
 
 // ---------------------------------------------------------------------------
-// Process-wide DB turn (ticket queue with deserter removal).
+// Process-wide DB turn — NOT wired into `db`.
 //
-// The Prisma engine behind the registered client cannot safely serve
-// overlapping queries from one process: concurrent findMany calls on a
-// shared isolate wedge — one settles, the other never does, with no error
-// and no log (observed live: every hung fetch stuck inside a plain,
-// sequential findMany while a peer request's identical query completed).
-//
-// So every top-level db.* call takes a process-wide turn first. Turns are
-// held only for the single call (released in `finally`), never across
-// awaits of non-DB work — long scrapes and AI calls don't hold it. App code
-// already sequences its own calls, so the turn is uncontended in the common
-// case and costs nothing; it only bites when two requests would otherwise
-// overlap inside the engine.
-//
-// Timeouts, not pile-ups: a waiter that can't acquire the turn in
-// DB_TURN_TIMEOUT_MS fails fast (DbBusyError → 503) instead of waiting
-// behind a wedged holder forever. Crucially, a timed-out waiter DESERTS —
-// it is removed from the queue without granting itself the turn. (The
-// previous promise-chain design released on timeout, which let the next
-// waiter barge in ahead of the still-running holder: overlapping engine
-// use, the exact wedge hazard above, compounding into a death spiral under
-// slow D1. Observed live 2026-09-09 as cascading DbBusyError storms.)
-// Serialization is therefore never broken: at most one fn runs at a time,
-// deserters or not. Combined with the per-call D1 timeouts, no DB stall can
-// become a silent infinite spinner anymore.
-//
-// Slow holders are logged ([db-turn-slow] with the acquisition stack) so the
-// next storm names its culprit instead of only its victims.
+// Isolating every db.* call behind one isolate-wide mutex made a single
+// user's tab (workspaces + sources + gallery + N video details + hovers)
+// queue and 503 at 25s. D1 handles concurrent reads; Prisma's actual
+// constraint is intra-query adapter fan-out (`_count` includes, Promise.all
+// of db.* in one handler). Callers stay sequential inside a request.
+// timedD1() still times out a stuck binding call. withDbTurn remains for
+// tests; do not put it back on the `db` proxy.
 // ---------------------------------------------------------------------------
 
+/**
+ * Worker HTTP (D1 binding, no D1_API_TOKEN): fail waiters in 3s so a hung
+ * holder cannot freeze the tab for 25s (DevTools: 503s at 25.01s).
+ * Contabo/Node talks D1 over HTTP and keeps the 25s window so a slow claim
+ * is not a false busy.
+ */
+function defaultTurnTimeoutMs(): number {
+  const override = Number(process.env.DB_TURN_TIMEOUT_MS);
+  if (Number.isFinite(override) && override > 0) return override;
+  const workerBinding = (process.env.DB_DIALECT ?? '') === 'sqlite' && !process.env.D1_API_TOKEN;
+  return workerBinding ? 3_000 : 25_000;
+}
+
 /** Max wait for the process-wide DB turn before failing fast. */
-export const DB_TURN_TIMEOUT_MS = 25_000;
+export const DB_TURN_TIMEOUT_MS = defaultTurnTimeoutMs();
 
 /** Hold durations at/above this are logged with the acquisition stack. */
 export const SLOW_DB_TURN_MS = 10_000;
 
 export class DbBusyError extends Error {
-  constructor() {
-    super(`Database is busy serving another request (no turn in ${DB_TURN_TIMEOUT_MS}ms)`);
+  constructor(waitedMs: number = DB_TURN_TIMEOUT_MS) {
+    super(`Database is busy serving another request (no turn in ${waitedMs}ms)`);
     this.name = 'DbBusyError';
   }
 }
@@ -125,6 +120,30 @@ interface TurnTicket {
 
 let turnQueue: TurnTicket[] = [];
 let turnHeld = false;
+/** When the current holder was granted. 0 if the turn is free. */
+let holderGrantedAt = 0;
+/** True when the current holder's work was pinned with ctx.waitUntil. */
+let holderPinned = false;
+
+/**
+ * Unpinned holder (client abort cancelled its IoContext) is force-released
+ * once a waiter has seen it held this long. On the Worker this matches the
+ * 3s waiter timeout so the first 503 also unsticks the isolate. Contabo
+ * stays at 20s so a slow D1 HTTP claim is not overlapped.
+ */
+export const DB_TURN_ABANDON_MS = (() => {
+  const override = Number(process.env.DB_TURN_ABANDON_MS);
+  if (Number.isFinite(override) && override > 0) return override;
+  return DB_TURN_TIMEOUT_MS <= 3_000 ? DB_TURN_TIMEOUT_MS : 20_000;
+})();
+
+/** @internal — test seam. */
+export function resetDbTurnForTests(): void {
+  turnQueue = [];
+  turnHeld = false;
+  holderGrantedAt = 0;
+  holderPinned = false;
+}
 
 /** Grant the turn to the first live waiter, if the turn is free. */
 function pumpTurn(): void {
@@ -141,6 +160,8 @@ export interface DbTurnOptions {
   timeoutMs?: number;
   /** Override for tests (default SLOW_DB_TURN_MS). */
   slowMs?: number;
+  /** Override for tests (default DB_TURN_ABANDON_MS). */
+  abandonMs?: number;
   /** Slow-holder sink (default console.error). */
   onSlow?: (message: string) => void;
 }
@@ -149,6 +170,7 @@ export interface DbTurnOptions {
 export function withDbTurn<T>(fn: () => Promise<T>, opts: DbTurnOptions = {}): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? DB_TURN_TIMEOUT_MS;
   const slowMs = opts.slowMs ?? SLOW_DB_TURN_MS;
+  const abandonMs = opts.abandonMs ?? DB_TURN_ABANDON_MS;
   const onSlow = opts.onSlow ?? ((msg: string) => console.error(msg));
   // Captured eagerly so a slow holder logs WHERE it was acquired, not just
   // how long it ran. ~microseconds per call — negligible next to a D1
@@ -181,6 +203,8 @@ export function withDbTurn<T>(fn: () => Promise<T>, opts: DbTurnOptions = {}): P
         );
       }
       turnHeld = false;
+      holderGrantedAt = 0;
+      holderPinned = false;
       pumpTurn();
       if (failed) reject(value);
       else resolve(value);
@@ -202,7 +226,20 @@ export function withDbTurn<T>(fn: () => Promise<T>, opts: DbTurnOptions = {}): P
       ticket.live = false;
       const idx = turnQueue.indexOf(ticket);
       if (idx >= 0) turnQueue.splice(idx, 1);
-      reject(new DbBusyError());
+      // Unpinned holder whose IoContext was aborted never calls finish().
+      // Force-release so this isolate is not wedged until eviction. Pinned
+      // holders (waitUntil) are left alone — they will finish.
+      if (
+        turnHeld
+        && !holderPinned
+        && holderGrantedAt > 0
+        && Date.now() - holderGrantedAt >= abandonMs
+      ) {
+        turnHeld = false;
+        holderGrantedAt = 0;
+        pumpTurn();
+      }
+      reject(new DbBusyError(timeoutMs));
     }, timeoutMs);
     (timer as unknown as { unref?: () => void }).unref?.();
     ticket.timer = timer;
@@ -219,38 +256,23 @@ export function withDbTurn<T>(fn: () => Promise<T>, opts: DbTurnOptions = {}): P
         clearTimeout(ticket.timer);
         ticket.timer = undefined;
       }
-      Promise.resolve()
+      holderGrantedAt = Date.now();
+      const work = Promise.resolve()
         .then(fn)
         .then(
           (value) => finish(false, value),
           (err: unknown) => finish(true, err as unknown as T),
         );
+      // Client abort of the holder must not cancel fn — otherwise turnHeld
+      // stays true forever and every later request 503s. No-op on Node.
+      holderPinned = keepAlive(work);
     };
 
     turnQueue.push(ticket);
     pumpTurn();
   });
 }
-const wrappedMembers = new WeakMap<object, Map<PropertyKey, unknown>>();
 
-function wrapDelegate<T extends object>(delegate: T): T {
-  let cached = wrappedMembers.get(delegate);
-  if (!cached) {
-    cached = new Map();
-    wrappedMembers.set(delegate, cached);
-  }
-  return new Proxy(delegate, {
-    get(t, prop) {
-      if (cached!.has(prop)) return cached!.get(prop);
-      const value: unknown = Reflect.get(t, prop, t);
-      const out = typeof value === 'function'
-        ? (...args: unknown[]) => withDbTurn(() => (value as (...a: unknown[]) => Promise<unknown>).apply(t, args))
-        : value;
-      cached!.set(prop, out);
-      return out;
-    },
-  });
-}
 
 function activeStore(): { client: AppPrismaClient; raw?: RawExecutor } {
   const store = globalForStore.__slashloopStore;
@@ -268,19 +290,17 @@ function activeStore(): { client: AppPrismaClient; raw?: RawExecutor } {
  * templates (`db.$queryRaw\`...\``) work because the tagged callee is just a
  * function; `this` must be the client, hence the bind.
  *
- * Every call takes the process-wide DB turn first (see withDbTurn above):
- * overlapping engine use from concurrent requests wedges isolates silently,
- * so serialization lives here — one place — rather than in every caller.
+ * Concurrent requests share this client on purpose: a page load is many
+ * fetches (workspaces, sources, gallery, video cards). Serializing them
+ * behind one isolate mutex was the 25s 503 storm.
  */
 export const db = new Proxy({} as AppPrismaClient, {
   get(_target, prop) {
     const { client } = activeStore();
     const value = Reflect.get(client as object, prop, client);
     if (typeof value === 'function') {
-      const fn = (value as (...args: unknown[]) => Promise<unknown>).bind(client);
-      return (...args: unknown[]) => withDbTurn(() => fn(...args));
+      return (value as (...args: unknown[]) => unknown).bind(client);
     }
-    if (value && typeof value === 'object') return wrapDelegate(value as object);
     return value;
   },
 });

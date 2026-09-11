@@ -41,20 +41,24 @@
       "id": "8e079f9756ab4886b6783b311c2cdb24"
     }
   ],
-  // ── Schedulers (replace Vercel Cron + Supabase pg_cron) ─────────────────
-  // */1  — job-queue drain (was pg_cron net.http_post → /api/jobs/analyze)
-  // 0 3  — daily media-retention sweep (was api/cron/media-retention)
-  // 0 9 * * 1 — weekly digest, Mondays 09:00 UTC (was api/cron/digest)
-  //
-  // CUTOVER 2026-09-01: triggers DISABLED while the freeze window is open —
-  // with live queued jobs in D1 the drain was processing real (billable) work
-  // before the VPS flip. Re-enable as the final cutover step.
+  // ── Schedulers ──────────────────────────────────────────────────────────
+  // Queue drain (`*/1` → POST /api/jobs/analyze) is OFF: Contabo already
+  // claims thumb/rescore/analyze/fetch/refresh. The minute tick was racing
+  // those containers for D1 and stalling HTTP (e.g. /api/workspaces).
+  // 0 3  — daily media-retention sweep (Contabo does not run this)
+  // 0 9 * * 1 — weekly digest, Mondays 09:00 UTC (Contabo does not run this)
   "triggers": {
-    "crons": ["*/1 * * * *", "0 3 * * *", "0 9 * * 1"]
+    "crons": ["0 3 * * *", "0 9 * * 1"]
   },
   "observability": {
     "enabled": true
   },
+  // A previous deploy registered Durable Object class HeavyContainer (the
+  // unused compute-containers sketch). This Worker no longer exports it;
+  // drop the class so deploys are not blocked (error 10064).
+  "migrations": [
+    { "tag": "drop_heavy_container", "deleted_classes": ["HeavyContainer"] }
+  ],
   // Node-only modules that shared code reaches through guarded dynamic imports
   // (src/lib/scrapers/*, the Postgres bootstrap in src/db.ts). Wrangler 4 has
   // no build.external; aliasing them to an empty module keeps their native

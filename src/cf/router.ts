@@ -91,6 +91,7 @@ function servePage(page: NonNullable<Route['page']>, url: URL): Response {
         public_url: origin,
         as: AUTHORIZATION_SERVER,
         tools: 'full',
+        db: 'parallel',
       });
   }
 }
@@ -178,7 +179,11 @@ async function dispatch(mod: HandlerModule, method: string, request: Request): P
       JSON.stringify({ error: busy ? 'isolate_busy' : 'internal_error' }),
       {
         status: busy ? 503 : 500,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders(request) },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(busy ? { 'Retry-After': '1' } : {}),
+          ...corsHeaders(request),
+        },
       },
     );
   }
