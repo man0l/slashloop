@@ -442,7 +442,8 @@ export function slideshowTargetFromNormalized(
   return { videoId, urls };
 }
 
-const MAX_SLIDES = 20;
+// TikTok photo mode allows up to 35 photos per post — store them all.
+const MAX_SLIDES = 35;
 const SLIDE_VIDEO_CONCURRENCY = 3;
 
 async function fetchImageBuffer(url: string): Promise<{ body: Uint8Array; contentType: string } | null> {

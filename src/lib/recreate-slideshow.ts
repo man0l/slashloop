@@ -9,7 +9,9 @@ import { callGeminiGenerate, GeminiNativeAnalyzer, isStaleFileError } from '../a
 import { liveGeminiFile } from '../analysis/index.js';
 import { SLIDESHOW_PLAN_TEMPLATE } from './slideshow-plan-prompt.js';
 
-export const MAX_RECREATE_SLIDES = 8;
+// TikTok photo mode caps posts at 35 photos — restage every stored slide,
+// not just the first 8 (14+ slide carousels are common).
+export const MAX_RECREATE_SLIDES = 35;
 
 export function buildRecreateSlidePrompt(opts: {
   slideIndex: number;
