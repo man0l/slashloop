@@ -61,7 +61,9 @@ jobs:
       # error|warn|info|all, default warn — change without a code push) into
       # the run's Job Summary + an artifact. Search the run summary for a quick
       # scan, download the artifact for the full text.
-      WORKFLOW_LOG: ${{ runner.temp }}/workflow.log
+      # github.workspace, not runner.temp: the runner context is not available
+      # in job-level env (that parsed-fine but failed the run at 0s).
+      WORKFLOW_LOG: ${{ github.workspace }}/workflow.log
       WORKFLOW_LOG_LEVEL: ${{ vars.WORKFLOW_LOG_LEVEL || 'warn' }}
     steps:
       - uses: actions/checkout@v4
