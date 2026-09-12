@@ -81,6 +81,9 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Dedicated Stream credential for the video-recreate stepper — when
+          # set, it wins over CLOUDFLARE_API_TOKEN inside the Worker.
+          CLOUDFLARE_STREAM_TOKEN: ${{ secrets.CLOUDFLARE_STREAM_TOKEN }}
           # ── secrets (repo + production environment) ──
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
