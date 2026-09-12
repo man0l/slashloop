@@ -27,8 +27,8 @@ import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
 import { TrafficCapExceededError } from './scrapers/bandwidth.js';
 import { batchScoreVideos } from '../scoring.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } from './credits.js';
-import { ingestThumbnails, ingestSlideshows, slideshowTargetFromNormalized, type ThumbIngestTarget, type SlideshowIngestTarget } from './media.js';
-import { enqueueRescoreJob, enqueueThumbJob } from './jobs.js';
+import { ingestThumbnails, ingestSlideshows, slideshowTargetFromNormalized, isPhotoPost, slideshowIsHydrated, type ThumbIngestTarget, type SlideshowIngestTarget } from './media.js';
+import { enqueueRescoreJob, enqueueThumbJob, enqueueSlideshowFetches } from './jobs.js';
 import { enqueueMissingCreatorBaselines } from './creator-baselines.js';
 import { resolveRefreshPlan, type RefreshPlan } from './refresh-policy.js';
 import { canonicalKey } from './canonical-query.js';
@@ -174,6 +174,7 @@ export async function applyScrapeItems(opts: {
   let itemsConsidered = 0;
   const thumbTargets: ThumbIngestTarget[] = [];
   const slideshowTargets: SlideshowIngestTarget[] = [];
+  const photoFetchIds: string[] = [];
 
   // Which items survive the per-source filters, in one pass, before any DB
   // work. Fan-out multiplies every query by the number of subscribers, so the
@@ -198,22 +199,28 @@ export async function applyScrapeItems(opts: {
   // each need their own Video row for isolation, retention, and scoring.
   // Chunked: D1 caps bound parameters at ~100 and a bootstrap pull can hold
   // up to videoLimit (200) candidates.
-  const existingByKey = new Map<string, string>();
+  const existingByKey = new Map<string, {
+    id: string;
+    mediaStatus: string | null;
+    rawJson: string | null;
+    durationSec: number | null;
+    thumbnailUrl: string | null;
+  }>();
   if (candidates.length > 0) {
     await chunked(candidates.map(c => c.externalId), async (ids) => {
       const existingRows = await db.video.findMany({
         where: { sourceId, externalId: { in: ids } },
-        select: { id: true, platform: true, externalId: true },
+        select: { id: true, platform: true, externalId: true, mediaStatus: true, rawJson: true, durationSec: true, thumbnailUrl: true },
       });
-      for (const r of existingRows) existingByKey.set(`${r.platform}|${r.externalId}`, r.id);
+      for (const r of existingRows) existingByKey.set(`${r.platform}|${r.externalId}`, r);
     });
   }
 
   for (const nv of candidates) {
-    const existingId = existingByKey.get(`${nv.platform}|${nv.externalId}`);
-    if (existingId) {
+    const existing = existingByKey.get(`${nv.platform}|${nv.externalId}`);
+    if (existing) {
       await db.video.update({
-        where: { id: existingId },
+        where: { id: existing.id },
         data: {
           views: nv.views,
           likes: nv.likes,
@@ -227,6 +234,9 @@ export async function applyScrapeItems(opts: {
       });
       updatedVideos++;
       skippedKnown++;
+      if (!isBaselineOnly && isPhotoPost(existing) && !slideshowIsHydrated(existing.rawJson)) {
+        photoFetchIds.push(existing.id);
+      }
       continue;
     }
 
@@ -269,7 +279,7 @@ export async function applyScrapeItems(opts: {
       if ((err as { code?: string }).code !== 'P2002') throw err;
       const raced = await db.video.findFirst({
         where: { sourceId, platform: nv.platform, externalId: nv.externalId },
-        select: { id: true },
+        select: { id: true, mediaStatus: true, rawJson: true, durationSec: true, thumbnailUrl: true },
       });
       if (!raced) throw err;
       await db.video.update({
@@ -287,6 +297,9 @@ export async function applyScrapeItems(opts: {
       });
       updatedVideos++;
       skippedKnown++;
+      if (!isBaselineOnly && isPhotoPost(raced) && !slideshowIsHydrated(raced.rawJson)) {
+        photoFetchIds.push(raced.id);
+      }
       continue;
     }
 
@@ -300,6 +313,13 @@ export async function applyScrapeItems(opts: {
       });
       const slides = slideshowTargetFromNormalized(created.id, nv.raw);
       if (slides) slideshowTargets.push(slides);
+      if (isPhotoPost({
+        durationSec: nv.durationSec,
+        thumbnailUrl: nv.thumbnailUrl,
+        rawJson: JSON.stringify(nv.raw),
+      })) {
+        photoFetchIds.push(created.id);
+      }
     }
   }
 
@@ -388,10 +408,26 @@ export async function applyScrapeItems(opts: {
     }
   }
 
+  const slideshowStoredIds = new Set<string>();
   if (slideshowTargets.length > 0) {
     const ingest = await ingestSlideshows(workspaceId, slideshowTargets);
     if (ingest.failed > 0) {
       errors.push(`Slideshow ingest: ${ingest.failed}/${ingest.stored + ingest.failed} failed`);
+    }
+    for (const id of ingest.storedIds) slideshowStoredIds.add(id);
+  }
+
+  const slideshowFetchIds = photoFetchIds.filter(id => !slideshowStoredIds.has(id));
+  if (slideshowFetchIds.length > 0) {
+    try {
+      const queued = await enqueueSlideshowFetches(workspaceId, slideshowFetchIds);
+      if (queued.queued > 0) {
+        errors.push(infoNote(
+          `Slideshow fetch: queued ${queued.queued} photo post(s) to download every slide from the watch page`,
+        ));
+      }
+    } catch (err) {
+      errors.push(`Slideshow fetch enqueue failed: ${(err as Error).message}`);
     }
   }
 

@@ -620,16 +620,6 @@ export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]>
     const key = `${video.creatorHandle}__${video.platform}`;
     const baselineInfo = baselines.get(key) ?? { median: 500, sampleSize: 0 };
 
-    if (isTooFresh(video.postedAt)) {
-      results.push({
-        videoId: video.id,
-        outlierScore: 0,
-        scoreType: 'too_fresh',
-        explanation: '⏳ Too fresh — posted less than 48 hours ago. Score will be calculated on next refresh.',
-      });
-      continue;
-    }
-
     // actual  = enough creator history → score vs that creator's trimmed median
     // estimated = thin history → score vs THIS SOURCE's view median so hashtag/
     // keyword discovery still ranks true niche outliers (not a wall of 1.0x).
@@ -637,8 +627,21 @@ export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]>
       baselineInfo.sampleSize >= CREATOR_BASELINE_MIN_SAMPLE ? 'actual' : 'estimated';
     const baseline =
       scoreType === 'actual' ? baselineInfo.median : sourceBatchBaseline;
+    const scored = scoreVideo(video.id, video.views, baseline, scoreType, video.creatorFollowers);
 
-    results.push(scoreVideo(video.id, video.views, baseline, scoreType, video.creatorFollowers));
+    if (isTooFresh(video.postedAt)) {
+      // Still compute the ratio so a 72k-view photo post is not a fake 0x
+      // in the gallery. scoreType stays too_fresh so the 48h rescore path
+      // picks it up once views have settled.
+      results.push({
+        ...scored,
+        scoreType: 'too_fresh',
+        explanation: `⏳ Too fresh — posted less than 48 hours ago. Early read: ${scored.explanation}`,
+      });
+      continue;
+    }
+
+    results.push(scored);
   }
 
   if (dbDialect() === 'sqlite') {

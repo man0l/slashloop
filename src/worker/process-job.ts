@@ -481,6 +481,36 @@ export async function processClaimedJob(
   // THUMB_INGEST_MAX_PER_RUN. No Apify, no AI — a single image fetch — so no
   // opId/preAuthCredits and nothing to refund. Idempotent: a row already
   // 'stored' (e.g. a backfill re-run) completes as a no-op.
+  if (job.kind === 'recreate') {
+    try {
+      // Defensive: claimNextJob filters video-mode rows away from this
+      // drainer (their state machines are stepped by the Cloudflare Worker).
+      // If one still lands here, fail it loudly instead of half-running a
+      // photo path that cannot serve it.
+      if (JSON.parse(job.payloadJson || '{}').mode === 'video') {
+        throw new Error('video recreates are built by the Workers stepper (Stream), not the VPS worker');
+      }
+      const { recreateSlideshowForVideo } = await import('../lib/recreate-slideshow.js');
+      await recreateSlideshowForVideo(job.workspaceId, videoId);
+      await completeJob(job.id, null);
+      return { ok: true };
+    } catch (err) {
+      const message = (err as Error).message;
+      const { terminal } = await failJob(job.id, message);
+      if (terminal && job.opId) {
+        await refundCredits(
+          job.workspaceId,
+          job.preAuthCredits ?? CREDIT_COSTS.recreateSlideshow,
+          'recreate_slideshow',
+          `${job.opId}:fail`,
+          'call_failed',
+        ).catch(e => console.warn(`[worker] refund failed for recreate ${job.id}: ${(e as Error).message}`));
+      }
+      console.warn(`[worker] recreate job ${job.id} failed (terminal=${terminal}): ${message}`);
+      return { ok: false, error: message };
+    }
+  }
+
   if (job.kind === 'thumb') {
     try {
       if (!videoId) throw new Error('thumb job has no videoId');

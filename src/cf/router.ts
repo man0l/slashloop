@@ -18,6 +18,7 @@ import * as billing from '../../api/billing.js';
 import * as digestSettings from '../../api/digest-settings.js';
 import * as stripeWebhook from '../../api/stripe/webhook.js';
 import * as jobsAnalyze from '../../api/jobs/analyze.js';
+import * as videoRecreateCron from './video-recreate-cron.js';
 import * as cronDigest from '../../api/cron/digest.js';
 import * as cronRetention from '../../api/cron/media-retention.js';
 import * as internalRawBatch from './internal.js';
@@ -134,6 +135,7 @@ const ROUTES: Route[] = [
   // videos + hook tests.
   { re: /^\/api\/videos(?:\/([^/]+?))\/analyze$/, mod: videos, inject: { id: '$1', action: 'analyze' } },
   { re: /^\/api\/videos(?:\/([^/]+?))\/fetch$/, mod: videos, inject: { id: '$1', action: 'fetch' } },
+  { re: /^\/api\/videos(?:\/([^/]+?))\/recreate$/, mod: videos, inject: { id: '$1', action: 'recreate' } },
   { re: /^\/api\/videos(?:\/([^/]+?))\/hook-test\/pick$/, mod: videos, inject: { id: '$1', action: 'hook-test-pick' } },
   { re: /^\/api\/videos(?:\/([^/]+?))\/hook-test\/reroll$/, mod: videos, inject: { id: '$1', action: 'hook-test-reroll' } },
   { re: /^\/api\/videos(?:\/([^/]+?))\/hook-test\/close$/, mod: videos, inject: { id: '$1', action: 'hook-test-close' } },
@@ -145,6 +147,7 @@ const ROUTES: Route[] = [
   { re: /^\/api\/cron\/digest$/, mod: cronDigest },
   { re: /^\/api\/digest-settings$/, mod: digestSettings },
   { re: /^\/api\/jobs\/analyze$/, mod: jobsAnalyze },
+  { re: /^\/api\/jobs\/video-recreate$/, mod: videoRecreateCron },
   { re: /^\/api\/stripe\/webhook$/, mod: stripeWebhook },
   // VPS-side atomic batch bridge (src/cf/internal.ts) — before the catch-all.
   { re: /^\/internal\/raw-batch$/, mod: internalRawBatch },

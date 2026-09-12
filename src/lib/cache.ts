@@ -3,16 +3,17 @@
 //
 // TTL cache: repeated reads (page reloads, polls, second tabs, MCP + site
 // side by side) skip the DB chain for tens of seconds. Staleness is bounded
-// by the per-call TTL; mutations already invalidate client-side via
-// react-query, so the server TTL only governs cross-tab/cross-client skew.
+// by the per-call TTL. Mutations MUST call invalidateCache — react-query
+// only drops the browser cache; this Map lives in the Worker isolate, so a
+// create-then-list without invalidation returns the pre-create payload
+// (missing workspace / missing source) for the rest of the TTL.
 //
 // Do NOT singleflight (share an in-flight fill Promise across requests).
 // On Cloudflare Workers a promise created during request A belongs to A's
 // IoContext; if the client aborts A, workerd never settles it, and every
 // later request that awaits that cached promise hangs until the isolate is
 // recycled (better-auth#10315). Duplicate fills under concurrency are
-// cheaper than a wedged isolate. The process-wide DB turn already serializes
-// engine access.
+// cheaper than a wedged isolate.
 //
 // Rules (do not bend these):
 //   - Workspace-scoped keys only — never share entries across workspaces.
@@ -35,6 +36,9 @@ interface Entry {
 }
 
 const store = new Map<string, Entry>();
+
+/** Bumped on every invalidate/clear so an in-flight fill cannot recache a stale snapshot. */
+let cacheEpoch = 0;
 
 /** Stable key builder. Callers must include the workspace id. */
 export function cacheKey(parts: Array<string | number | boolean>): string {
@@ -63,7 +67,13 @@ export async function getOrFill<T>(key: string, ttlMs: number, fill: () => Promi
   if (hit && hit.expiresAt > Date.now()) return hit.value as T;
   if (hit) store.delete(key);
 
+  const epoch = cacheEpoch;
   const value = await fill();
+  if (cacheEpoch !== epoch) {
+    const after = store.get(key);
+    if (after && after.expiresAt > Date.now()) return after.value as T;
+    return value;
+  }
   const raced = store.get(key);
   if (raced && raced.expiresAt > Date.now()) return raced.value as T;
   evictIfNeeded();
@@ -73,6 +83,7 @@ export async function getOrFill<T>(key: string, ttlMs: number, fill: () => Promi
 
 /** Drop entries by exact key or `prefix|` prefix (targeted invalidation). */
 export function invalidateCache(keyOrPrefix: string): number {
+  cacheEpoch++;
   let dropped = 0;
   const prefix = keyOrPrefix.endsWith('|') ? keyOrPrefix : `${keyOrPrefix}|`;
   for (const k of [...store.keys()]) {
@@ -84,8 +95,21 @@ export function invalidateCache(keyOrPrefix: string): number {
   return dropped;
 }
 
+/** Drop the per-user workspace switcher list. */
+export function invalidateWorkspaceList(userId: string): void {
+  invalidateCache(cacheKey(['workspaces', userId]));
+}
+
+/** Drop every workspace-scoped read cache (sources, gallery, studio, tests). */
+export function invalidateWorkspaceReads(workspaceId: string): void {
+  for (const kind of ['sources', 'gallery', 'retro', 'benchmark', 'hook-tests', 'creator-preview']) {
+    invalidateCache(cacheKey([kind, workspaceId]));
+  }
+}
+
 /** Test seam: clear everything. */
 export function clearCache(): void {
+  cacheEpoch++;
   store.clear();
 }
 

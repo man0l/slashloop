@@ -411,7 +411,10 @@ export const proxyAdapter: ScraperAdapter = {
         video = await resolvePlayableVideo(opts.videoUrl, itemId, http);
       } catch (err) {
         if (err instanceof SlideshowPostError && err.images.length > 0) {
-          const slides = await downloadSlideshowSlides(err.images, watchUrl, http);
+          const slideReferer = handle
+            ? `https://www.tiktok.com/@${handle}/photo/${itemId}`
+            : watchUrl;
+          const slides = await downloadSlideshowSlides(err.images, slideReferer, http);
           const sizeBytes = slides.reduce((n, s) => n + s.buffer.length, 0);
           const bytes = scopeBytesUsed() || sizeBytes;
           const costCents = await recordTrafficBytes(opts.workspaceId, bytes, opts.videoUrl);
@@ -485,27 +488,35 @@ export async function resolvePlayableVideo(
   if (!getter) throw new Error('TikTok HTTP client cannot fetch HTML');
 
   const handle = extractHandle(videoUrl);
-  const pageUrl = handle
-    ? `https://www.tiktok.com/@${encodeURIComponent(handle)}/video/${itemId}`
-    : `https://www.tiktok.com/embed/v2/${itemId}`;
+  const encodedHandle = handle ? encodeURIComponent(handle) : null;
   const referer = handle ? `https://www.tiktok.com/@${handle}` : 'https://www.tiktok.com/';
+  const videoPage = handle ? `https://www.tiktok.com/@${encodedHandle}/video/${itemId}` : null;
+  const photoPage = handle ? `https://www.tiktok.com/@${encodedHandle}/photo/${itemId}` : null;
+  const attempts = handle
+    ? (/\/photo\//i.test(videoUrl) ? [photoPage!, videoPage!] : [videoPage!, photoPage!])
+    : [`https://www.tiktok.com/embed/v2/${itemId}`];
 
-  const page = await getter(pageUrl, {
-    Accept: 'text/html,application/xhtml+xml',
-    Referer: referer,
-  });
-  const struct = page.ok ? itemStructFromWatchHtml(page.text) : null;
-  if (struct?.imagePost) {
-    throw new SlideshowPostError(extractSlideshowImages(struct));
+  let lastPage: { status: number; text?: string } | null = null;
+  let lastVideo: unknown = null;
+  for (const pageUrl of attempts) {
+    const page = await getter(pageUrl, {
+      Accept: 'text/html,application/xhtml+xml',
+      Referer: referer,
+    });
+    lastPage = page;
+    const struct = page.ok ? itemStructFromWatchHtml(page.text) : null;
+    const images = extractSlideshowImages(struct);
+    if (images.length > 0) throw new SlideshowPostError(images);
+    const video = struct?.video && typeof struct.video === 'object' ? struct.video : null;
+    if (video && listPlayableVariants(video).length > 0) return video;
+    lastVideo = video;
   }
-  const video = struct?.video && typeof struct.video === 'object' ? struct.video : null;
-  if (video && listPlayableVariants(video).length > 0) return video;
 
-  const rehydrate = Boolean(page.text?.includes('__UNIVERSAL_DATA_FOR_REHYDRATION__'));
+  const rehydrate = Boolean(lastPage?.text?.includes('__UNIVERSAL_DATA_FOR_REHYDRATION__'));
   throw new Error(
-    video
+    lastVideo
       ? 'TikTok returned no playable URL for this video'
-      : `TikTok watch page had no playable video (http=${page.status}, rehydrate=${rehydrate}) `
+      : `TikTok watch page had no playable video (http=${lastPage?.status ?? 0}, rehydrate=${rehydrate}) `
         + '— the post may be deleted, private, or region-blocked',
   );
 }

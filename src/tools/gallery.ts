@@ -18,7 +18,7 @@ import { db } from '../db.js';
 import { chunked } from '../store.js';
 import { cacheKey, getOrFill } from '../lib/cache.js';
 import { requireWorkspace, currentUserId } from '../context.js';
-import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls } from '../lib/media.js';
+import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls, resolveRecreationUrls, isPhotoPost } from '../lib/media.js';
 import { latestFetchErrors } from '../lib/jobs.js';
 import { signGalleryUrl, ttlHumanized } from '../lib/gallery-link.js';
 import { withNextSteps, analyzeCostLabel } from '../lib/next-steps.js';
@@ -368,6 +368,7 @@ async function buildCardsUncached(
     }
 
     const slideshowImages = resolveSlideshowUrls(v.rawJson);
+    const photo = isPhotoPost(v);
     return {
       id: v.id,
       index: i + 1,
@@ -384,12 +385,14 @@ async function buildCardsUncached(
       postedAt: v.postedAt.getTime(),
       analyzedBy: analyzedByKeyOf(latest?.backend),
       analyzedAt: latest ? latest.createdAt.getTime() : null,
-      mediaUrl: media[i]!.url,
+      mediaUrl: photo ? null : media[i]!.url,
       slideshowImages,
+      recreationImages: resolveRecreationUrls(v.rawJson),
+      isSlideshow: photo,
       keyMoments,
       // Only show a scrape error when there is no stored video or slideshow
       // to watch — a video that eventually got stored didn't "fail to scrape".
-      fetchError: (media[i]!.url || slideshowImages.length)
+      fetchError: (media[i]!.url || slideshowImages.length || photo)
         ? null
         : (fetchErrors[v.id] ?? null),
       isSelf: Boolean(isSelfBySource.get(v.sourceId)) || selfHandles.has(normalizeQuery('creator', v.creatorHandle)),

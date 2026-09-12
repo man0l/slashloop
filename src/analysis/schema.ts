@@ -45,6 +45,7 @@ export const ANALYSIS_BASIS = [
   'transcript+thumbnail',// GLM text-only with thumbnail
   'transcript-only',
   'thumbnail+caption',
+  'slideshow+caption',   // photo carousel — every stored slide attached
   'caption+metadata-only',
 ] as const;
 
@@ -57,7 +58,7 @@ export const ShotSchema = z.object({
   durationSec: z.number().min(0),
   type: z.enum(['talking_head', 'b_roll', 'product_closeup', 'text_overlay', 'split_screen', 'transition', 'reaction', 'demonstration', 'other'] as const).catch('other'),
   description: z.string().catch(''),
-  onScreenText: z.string().nullable().describe('Text visible in frame, null if none'),
+  onScreenText: z.string().nullable().catch(null).describe('Text visible in frame, null if none'),
 });
 
 export const OnScreenTextEntrySchema = z.object({

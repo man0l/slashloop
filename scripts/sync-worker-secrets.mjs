@@ -25,6 +25,10 @@ import { join } from 'node:path';
  */
 const MANIFEST = {
   // ── from repo/environment SECRETS ──
+  // CLOUDFLARE_API_TOKEN: the deploy credential is ALSO the runtime credential
+  // for the video-recreate stepper's Cloudflare Stream calls (Stream:Edit was
+  // added to it). Same value in both places by design.
+  CLOUDFLARE_API_TOKEN: 'CLOUDFLARE_API_TOKEN',
   SUPABASE_ANON_KEY: 'SUPABASE_ANON_KEY',
   SUPABASE_SECRET_KEY: 'SUPABASE_SECRET_KEY',
   GEMINI_API_KEY: 'GEMINI_API_KEY',

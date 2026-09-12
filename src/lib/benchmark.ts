@@ -1,9 +1,11 @@
 // ---------------------------------------------------------------------------
-// Creator comparison — your account vs everyone else you track.
+// Creator comparison — your account(s) vs everyone else you track.
 //
-// Every creator source in the workspace other than isSelf is automatically
-// in the comparison set — there is no rival flag to discover or set. Medians,
-// cadence, outlier mix; no live scrape, library data only.
+// Every creator source in the workspace other than the isSelf ones is
+// automatically in the comparison set — there is no rival flag to discover or
+// set. A workspace can flag several accounts as its own (a faceless page plus
+// a personal one); all of them report role 'you' and the rest are rivals.
+// Medians, cadence, outlier mix; no live scrape, library data only.
 // ---------------------------------------------------------------------------
 
 import type { Workspace } from '@prisma/client';
@@ -48,7 +50,7 @@ async function buildBenchmarkUncached(workspace: Workspace, now: Date) {
     select: { id: true, query: true, isSelf: true },
     orderBy: { createdAt: 'asc' },
   });
-  const you = sources.find((s) => s.isSelf) ?? null;
+  const you = sources.filter((s) => s.isSelf);
   // Every other tracked creator is the comparison set — no extra "rival" flag.
   const rivals = sources.filter((s) => !s.isSelf);
 
@@ -86,23 +88,33 @@ async function buildBenchmarkUncached(workspace: Workspace, now: Date) {
     };
   }
 
-  const youStats = you ? await statsFor(you) : null;
   // Sequential on purpose: concurrent Prisma queries hang the D1 binding.
+  const youStats: CreatorBenchmark[] = [];
+  for (const self of you) youStats.push(await statsFor(self));
   const rivalStats: CreatorBenchmark[] = [];
   for (const rival of rivals) rivalStats.push(await statsFor(rival));
 
+  // Headline compares the pooled week across your accounts (a faceless page
+  // and a personal page are one "you" for cadence), with the median quoted
+  // from the primary — the oldest flagged — account.
   let headline = 'Track your own account, then any other creators, to compare cadence and medians.';
-  if (youStats && rivalStats.length > 0) {
+  if (youStats.length > 0 && rivalStats.length > 0) {
     const vs = rivalStats[0]!;
-    const cadence = youStats.postsLast7d === vs.postsLast7d
-      ? `You and @${vs.handle} both posted ${youStats.postsLast7d} time${youStats.postsLast7d === 1 ? '' : 's'} this week.`
-      : `You posted ${youStats.postsLast7d}× this week; @${vs.handle} posted ${vs.postsLast7d}×.`;
+    const you = youStats[0]!;
+    const yourPosts = youStats.reduce((sum, s) => sum + s.postsLast7d, 0);
+    const accountNote = youStats.length > 1 ? ` across ${youStats.length} accounts` : '';
+    const cadence = yourPosts === vs.postsLast7d
+      ? `You and @${vs.handle} both posted ${yourPosts} time${yourPosts === 1 ? '' : 's'} this week.`
+      : `You posted ${yourPosts}× this week${accountNote}; @${vs.handle} posted ${vs.postsLast7d}×.`;
     const viewsLine = vs.medianViews > 0
-      ? ` Your median is ${youStats.medianViews.toLocaleString()} views vs @${vs.handle}'s ${vs.medianViews.toLocaleString()}.`
+      ? ` Your median is ${you.medianViews.toLocaleString()} views vs @${vs.handle}'s ${vs.medianViews.toLocaleString()}.`
       : '';
     headline = cadence + viewsLine;
-  } else if (youStats) {
-    headline = `Your median is ${youStats.medianViews.toLocaleString()} views · ${youStats.postsLast7d} post${youStats.postsLast7d === 1 ? '' : 's'} this week. Track another creator to compare.`;
+  } else if (youStats.length > 0) {
+    const you = youStats[0]!;
+    const yourPosts = youStats.reduce((sum, s) => sum + s.postsLast7d, 0);
+    const accountNote = youStats.length > 1 ? ` across ${youStats.length} accounts` : '';
+    headline = `Your median is ${you.medianViews.toLocaleString()} views · ${yourPosts} post${yourPosts === 1 ? '' : 's'} this week${accountNote}. Track another creator to compare.`;
   } else if (rivalStats.length > 0) {
     headline = 'Mark a tracked creator as your account on Sources to compare against the others.';
   }

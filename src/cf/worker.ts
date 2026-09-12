@@ -43,9 +43,10 @@ export default {
       const cron = event.cron;
       // Real triggers carry their expression; wrangler's local
       // /cdn-cgi/local/scheduled endpoint sends an empty string — default that
-      // to the drain (the most frequent trigger) so the path stays testable.
+      // to the video-recreate stepper (the most frequent trigger) so the path
+      // stays testable.
       const path =
-        cron === '*/1 * * * *' || cron === '' ? '/api/jobs/analyze'
+        cron === '*/2 * * * *' || cron === '' ? '/api/jobs/video-recreate'
         : cron === '0 3 * * *' ? '/api/cron/media-retention'
         : cron === '0 9 * * 1' ? '/api/cron/digest'
         : null;
@@ -55,10 +56,10 @@ export default {
       }
 
       const secret = process.env.CRON_SECRET ?? '';
-      // Method per handler: the drain only accepts POST (its GET explains the
-      // 401/405 contract), while both crons are GET-only — dispatching them as
-      // POST would 405 every scheduled digest/retention run through the router.
-      const method = path === '/api/jobs/analyze' ? 'POST' : 'GET';
+      // Method per handler: the stepper only accepts POST (its GET explains
+      // the 401/405 contract), while the retention/digest crons are GET-only —
+      // dispatching them as POST would 405 every scheduled run.
+      const method = path === '/api/cron/media-retention' || path === '/api/cron/digest' ? 'GET' : 'POST';
       const request = new Request(`https://internal${path}`, {
         method,
         headers: secret ? { Authorization: `Bearer ${secret}` } : {},

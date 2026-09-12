@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { resolveSlideshowUrls, resolveThumbUrl, slideshowTargetFromNormalized } from './media.js';
+import { resolveRecreationUrls, resolveSlideshowUrls, resolveThumbUrl, slideshowIsHydrated, slideshowTargetFromNormalized } from './media.js';
 
 const TIKTOK_COVER =
   'https://p19-common-sign.tiktokcdn-us.com/tos-useast8-p-0068-tx2/x~tplv-tiktokx-origin.image';
@@ -80,5 +80,44 @@ describe('slideshowTargetFromNormalized', () => {
       urls: ['https://cdn.example/a.jpg', 'https://cdn.example/b.jpg'],
     });
     expect(slideshowTargetFromNormalized('vid-1', { videoMeta: { originalCoverUrl: 'https://cdn.example/c.jpg' } })).toBeNull();
+  });
+
+  test('photomode cover alone is not an ingest target — watch page hydrates the carousel', () => {
+    const cover = 'https://p16-common-sign.tiktokcdn-us.com/tos-useast2a-i-photomode-euttp/x~tplv-photomode-zoomcover.jpeg';
+    expect(slideshowTargetFromNormalized('vid-1', {
+      postKind: 'slideshow',
+      videoMeta: { originalCoverUrl: cover, duration: 0 },
+    })).toBeNull();
+  });
+});
+
+describe('resolveRecreationUrls', () => {
+  test('emits public R2 URLs for stored recreation keys', () => {
+    process.env.R2_THUMB_PUBLIC_BASE = 'https://pub-thumbs.r2.dev';
+    const raw = JSON.stringify({
+      recreationKeys: ['ws-1/vid-1/recreate/00.jpg', 'ws-1/vid-1/recreate/01.jpg'],
+    });
+    expect(resolveRecreationUrls(raw)).toEqual([
+      'https://pub-thumbs.r2.dev/ws-1/vid-1/recreate/00.jpg',
+      'https://pub-thumbs.r2.dev/ws-1/vid-1/recreate/01.jpg',
+    ]);
+  });
+});
+
+describe('slideshowIsHydrated', () => {
+  test('2+ stored keys from scrape-time imagePost count as complete', () => {
+    expect(slideshowIsHydrated(JSON.stringify({
+      slideshowKeys: ['ws/v/slides/00.jpg', 'ws/v/slides/01.jpg'],
+    }))).toBe(true);
+  });
+
+  test('a single stored key is complete only after the watch-page hydrate stamp', () => {
+    expect(slideshowIsHydrated(JSON.stringify({
+      slideshowKeys: ['ws/v/slides/00.jpg'],
+    }))).toBe(false);
+    expect(slideshowIsHydrated(JSON.stringify({
+      slideshowKeys: ['ws/v/slides/00.jpg'],
+      slideshowHydrated: true,
+    }))).toBe(true);
   });
 });

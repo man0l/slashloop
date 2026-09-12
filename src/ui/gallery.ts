@@ -46,6 +46,10 @@ export interface GalleryCard {
   mediaUrl: string | null;
   /** Photo-carousel URLs when the TikTok is a slideshow (no MP4). */
   slideshowImages: string[];
+  /** AI-recreated carousel URLs. */
+  recreationImages: string[];
+  /** True when this TikTok is a photo post — never offer MP4 download. */
+  isSlideshow: boolean;
   /** Why this video couldn't be scraped by the fetch worker (Apify etc.), when
    *  it has no stored video — lets the card show an error icon + tooltip. */
   fetchError: { code: string; message: string } | null;

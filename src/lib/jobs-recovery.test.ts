@@ -181,7 +181,7 @@ describe('expandWorkerKinds', () => {
   });
 
   test('unset kinds are left alone', () => {
-    expect(expandWorkerKinds(['analyze', 'fetch'], 'proxy')).toEqual(['analyze', 'fetch']);
+    expect(expandWorkerKinds(['analyze', 'fetch'], 'proxy')).toEqual(['analyze', 'fetch', 'recreate']);
   });
 });
 
@@ -189,7 +189,8 @@ describe('jobTimeoutMs', () => {
   test('scrape jobs finish or die in minutes, not the 15-minute reclaim window', () => {
     expect(jobTimeoutMs('refresh')).toBe(120_000);
     expect(jobTimeoutMs('discover')).toBe(120_000);
-    expect(jobTimeoutMs('fetch')).toBe(90_000);
+    expect(jobTimeoutMs('fetch')).toBe(180_000);
+    expect(jobTimeoutMs('recreate')).toBe(420_000); // video mode adds the Gemini slide plan
     expect(jobTimeoutMs('thumb')).toBe(30_000);
     expect(jobTimeoutMs('refresh')).toBeLessThan(15 * 60_000);
   });
@@ -205,6 +206,7 @@ describe('jobCreditTool', () => {
     expect(jobCreditTool('discover')).toBe('discover_mine');
     expect(jobCreditTool('analyze')).toBe('analyze_video');
     expect(jobCreditTool('fetch')).toBe('analyze_video');
+    expect(jobCreditTool('recreate')).toBe('recreate_slideshow');
   });
 });
 

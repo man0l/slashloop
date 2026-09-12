@@ -65,11 +65,12 @@ async function requestGeminiOnce(
         system_instruction: { parts: [{ text: systemPrompt }] },
         contents: [{
           parts: [
-            // Images first: the model reads parts in order, and the prompt
-            // refers to "the thumbnail" as something it can see.
-            ...(options?.images ?? []).map(img => ({
-              inline_data: { mime_type: img.mimeType, data: img.dataBase64 },
-            })),
+            // Images first, labelled when there is more than one so a photo
+            // carousel is read slide-by-slide instead of as a single cover.
+            ...(options?.images ?? []).flatMap((img, i, all) => [
+              ...(all.length > 1 ? [{ text: `Slide ${i + 1} of ${all.length}:` }] : []),
+              { inline_data: { mime_type: img.mimeType, data: img.dataBase64 } },
+            ]),
             { text: userMessage },
           ],
         }],

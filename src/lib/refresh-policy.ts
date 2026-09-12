@@ -22,8 +22,8 @@
 import { subHours } from 'date-fns';
 import { db } from '../db.js';
 
-/** First fill — enough to seed scores without a $0.30 100-result scrape. */
-export const REFRESH_BOOTSTRAP_CAP = 20;
+/** First fill — honor the source's videoLimit up to this (the track-form max). */
+export const REFRESH_BOOTSTRAP_CAP = 100;
 
 /**
  * Routine re-check. clockworks returns latest-first for profiles; 5 newest
@@ -106,7 +106,11 @@ export async function resolveRefreshPlan(
     where: { sourceId: source.id },
   });
 
-  const isBootstrap = videoCount === 0;
+  const seedTarget = Math.min(Math.max(1, source.videoLimit), REFRESH_BOOTSTRAP_CAP);
+  // Still bootstrapping until the first fill reached the asked-for page
+  // (e.g. videoLimit 100 but TikTok only returned 9). Incremental is for
+  // catching new posts after the catalogue is seeded.
+  const isBootstrap = videoCount < seedTarget;
   const mode: RefreshMode = isBootstrap ? 'bootstrap' : 'incremental';
 
   let limit: number;

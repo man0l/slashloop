@@ -26,7 +26,7 @@ import { GeminiTextAnalyzer } from './gemini-text.js';
 import { OpenRouterVideoAnalyzer } from './openrouter-video.js';
 import { loadAnalysisConfig, updateAnalysisConfig } from './config.js';
 import { basisToConfidence, getCostCents, type AnalysisConfig, type AnalysisContext, type AnalysisResult, type VideoAnalyzer, DEFAULT_CONFIG } from './types.js';
-import { resolveThumbUrl, signedMediaUrl } from '../lib/media.js';
+import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls, isPhotoPost, slideshowIsHydrated } from '../lib/media.js';
 import { classifyGeminiError } from '../lib/gemini-errors.js';
 import { openRouterVideoEnabled } from '../lib/llm.js';
 
@@ -38,7 +38,7 @@ import { openRouterVideoEnabled } from '../lib/llm.js';
  * again; if Google dropped the file earlier than we predicted, the backend
  * catches that and re-uploads once.
  */
-function liveGeminiFile(video: {
+export function liveGeminiFile(video: {
   geminiFileUri: string | null;
   geminiFileName: string | null;
   geminiFileExpiresAt: Date | null;
@@ -257,6 +257,7 @@ export async function analyzeVideo(
     outlierExplanation: video.score?.explanation ?? null,
     workspaceId,
     thumbImageUrl: resolveThumbUrl(video),
+    slideImageUrls: resolveSlideshowUrls(video.rawJson),
     geminiFile: liveGeminiFile(video),
     storedMediaUrl: storedMedia.url,
     videoFilePath: options?.videoFilePath,
@@ -273,8 +274,13 @@ export async function analyzeVideo(
     console.warn(`[analysis] ${primaryBackend} has ${primaryFailureCount} consecutive failures (persisted), using fallback: ${fallbackBackend}`);
   }
 
-  // 5. Try primary -> same-capability model fallback -> configured fallback.
-  const attempts = planBackendAttempts(config, { forceBackend: options?.forceBackend, flipToFallback });
+  // Photo carousels have no MP4. Native video / OpenRouter would fail and
+  // then gemini-text would only see the cover — skip straight to text with
+  // every stored slide attached.
+  const photo = isPhotoPost(video);
+  const attempts = photo
+    ? [{ backendId: 'gemini-text' }]
+    : planBackendAttempts(config, { forceBackend: options?.forceBackend, flipToFallback });
 
   let lastError: Error | null = null;
   // The model fallback is worth trying only after a retryable failure (5xx /
@@ -428,6 +434,19 @@ export async function analyzeVideoWithDownload(
   const workspaceId = video.source?.workspaceId;
   const config = workspaceId ? await loadAnalysisConfig(workspaceId) : { ...DEFAULT_CONFIG };
   const backend = options?.forceBackend ?? config.backend;
+
+  if (isPhotoPost(video)) {
+    if (workspaceId && video.url && !slideshowIsHydrated(video.rawJson)) {
+      try {
+        const { downloadAndStoreVideo } = await import('../lib/media.js');
+        console.log(`[analysis] Hydrating photo-carousel slides for ${videoId} before analysis`);
+        await downloadAndStoreVideo(workspaceId, videoId, video.url);
+      } catch (err) {
+        console.warn(`[analysis] Slideshow hydrate failed, analysing with whatever images we have: ${(err as Error).message}`);
+      }
+    }
+    return analyzeVideo(videoId, { ...options, forceBackend: 'gemini-text' });
+  }
 
   // The openrouter-video backend can send the clip by URL when it is STORED
   // (URL mode — no download); otherwise it needs the local file for base64.

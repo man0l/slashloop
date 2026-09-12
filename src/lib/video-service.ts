@@ -11,8 +11,8 @@ import { analyzeVideoWithDownload } from '../analysis/index.js';
 import type { AnalysisResult } from '../analysis/types.js';
 import { loadAnalysisConfig } from '../analysis/config.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from './credits.js';
-import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls } from './media.js';
-import { enqueueAnalyzeJob, enqueueFetchJob, dispatchWorker, latestReportingJobForVideo, outstandingJobForVideo, type MediaJobRow } from './jobs.js';
+import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls, resolveRecreationUrls, isPhotoPost, slideshowIsHydrated } from './media.js';
+import { enqueueAnalyzeJob, enqueueFetchJob, enqueueRecreateJob, dispatchWorker, latestReportingJobForVideo, outstandingJobForVideo, latestJobForVideo, type MediaJobRow } from './jobs.js';
 import { classifyGeminiError, errorCodeFor, parseJobLastError, friendlyGeminiMessage, type GeminiErrorCode } from './gemini-errors.js';
 
 export type AnalyzeVideoOutcome =
@@ -61,25 +61,33 @@ export async function analyzeVideoForWorkspace(
   }
 
   const effectiveBackend = opts?.forceBackend ?? (await loadAnalysisConfig(workspace.id)).backend;
+  const videoInfo = await db.video.findUnique({
+    where: { id: videoId },
+    select: { mediaStatus: true, rawJson: true, durationSec: true, thumbnailUrl: true },
+  });
+  const photo = videoInfo ? isPhotoPost(videoInfo) : false;
 
-  if (effectiveBackend === 'gemini-native' || effectiveBackend === 'openrouter-video') {
+  if (photo || effectiveBackend === 'gemini-native' || effectiveBackend === 'openrouter-video') {
     // Check if the video is already stored — if so, skip the fetch phase and
     // enqueue the analyze job directly. Otherwise split into two queue steps:
     // a fetch job (download + store), then an analyze job (AI analysis on the
     // stored video). The fetch job handler chains the analyze job automatically.
-    const videoInfo = await db.video.findUnique({ where: { id: videoId }, select: { mediaStatus: true } });
-    const isStored = videoInfo?.mediaStatus === 'stored';
+    // Photo posts: 'slideshow' is stored (every slide in R2). Analyze with
+    // gemini-text so the model sees each slide, not an MP4 that does not exist.
+    const slidesReady = photo && slideshowIsHydrated(videoInfo?.rawJson);
+    const isStored = videoInfo?.mediaStatus === 'stored' || slidesReady;
+    const photoBackend = photo ? 'gemini-text' as const : opts?.forceBackend;
 
     let job: MediaJobRow;
     if (isStored) {
-      job = await enqueueAnalyzeJob({ workspaceId: workspace.id, videoId, payload: { forceBackend: opts?.forceBackend }, opId });
+      job = await enqueueAnalyzeJob({ workspaceId: workspace.id, videoId, payload: { forceBackend: photoBackend }, opId });
     } else {
       job = await enqueueFetchJob({
         workspaceId: workspace.id,
         videoId,
         payload: {
           opId,
-          enqueueAnalysis: { forceBackend: opts?.forceBackend },
+          enqueueAnalysis: { forceBackend: photoBackend },
         },
       });
     }
@@ -88,7 +96,7 @@ export async function analyzeVideoForWorkspace(
     const balance = await creditBalance(workspace.id);
     return {
       ok: true, queued: true, job, dispatched: dispatch.dispatched, dispatchReason: dispatch.reason,
-      backend: effectiveBackend, creditsCharged: CREDIT_COSTS.analyzeVideo, creditsRemaining: balance.total,
+      backend: photo ? 'gemini-text' : effectiveBackend, creditsCharged: CREDIT_COSTS.analyzeVideo, creditsRemaining: balance.total,
     };
   }
 
@@ -124,10 +132,15 @@ export async function fetchVideoForWorkspace(
 ): Promise<FetchVideoOutcome> {
   const video = await db.video.findFirst({
     where: { id: videoId, source: { workspaceId: workspace.id } },
-    select: { id: true, mediaStatus: true },
+    select: { id: true, mediaStatus: true, durationSec: true, rawJson: true, thumbnailUrl: true },
   });
   if (!video) return { ok: false, errorCode: 'not_found', error: 'Video not found.' };
   if (video.mediaStatus === 'stored') return { ok: true, alreadyStored: true };
+  if (slideshowIsHydrated(video.rawJson)) return { ok: true, alreadyStored: true };
+  // Photo posts have no MP4. Queue the same fetch job as videos — the worker
+  // hits the watch page (imagePost) and persists every slide. Do not ingest
+  // the photomode cover here and call that done: item_list usually omits
+  // the rest of the carousel.
 
   const outstanding = await outstandingJobForVideo(videoId);
   if (outstanding && (outstanding.status === 'queued' || outstanding.status === 'running')) {
@@ -146,6 +159,11 @@ export interface VideoDetailForWorkspace {
   mediaUrl: string | null;
   /** Photo-carousel URLs when the TikTok is a slideshow (no MP4). */
   slideshowImages: string[];
+  /** AI-recreated carousel URLs (OpenRouter gpt-image-2.5-sunburst). */
+  recreationImages: string[];
+  /** True when this TikTok is a photo post — never offer MP4 download. */
+  isSlideshow: boolean;
+  recreateJob: { jobId: string; status: string; lastError: string | null } | null;
   creatorHandle: string;
   caption: string;
   views: number;
@@ -191,14 +209,22 @@ export async function getVideoDetailForWorkspace(workspace: Workspace, videoId: 
 
   // Sequential too: signedMediaUrl is storage-only, but keeping one await
   // in flight keeps this handler's D1 usage trivially wedge-proof.
-  const media = await signedMediaUrl(video);
+  const photo = isPhotoPost(video);
+  const media = photo ? { url: null as string | null } : await signedMediaUrl(video);
   const job = await latestReportingJobForVideo(video.id, { newerThan: latest?.createdAt });
+  const recreateJob = await latestJobForVideo(video.id, 'recreate');
+  const recreationImages = resolveRecreationUrls(video.rawJson);
 
   return {
     id: video.id,
     thumbUrl: resolveThumbUrl(video),
     mediaUrl: media.url,
     slideshowImages: resolveSlideshowUrls(video.rawJson),
+    recreationImages,
+    isSlideshow: photo,
+    recreateJob: recreateJob && (recreateJob.status === 'queued' || recreateJob.status === 'running' || (recreateJob.status === 'failed' && !recreationImages.length))
+      ? { jobId: recreateJob.id, status: recreateJob.status, lastError: recreateJob.lastError }
+      : null,
     creatorHandle: video.creatorHandle,
     caption: video.caption,
     views: video.views,
@@ -208,6 +234,58 @@ export async function getVideoDetailForWorkspace(workspace: Workspace, videoId: 
       : null,
     analysisJob: job ? { jobId: job.id, status: job.status, lastError: job.lastError, errorCode: parseJobLastError(job.lastError)?.errorCode ?? null } : null,
   };
+}
+
+export type RecreateSlideshowOutcome =
+  | { ok: true; alreadyStored: true; recreationImages: string[] }
+  | { ok: true; queued: true; job: MediaJobRow; dispatched: boolean; creditsCharged: number; creditsRemaining: number }
+  | { ok: false; errorCode: string; error: string; creditsCharged: number; creditsRemaining: number; required?: number };
+
+export async function recreateSlideshowForWorkspace(
+  workspace: Workspace,
+  videoId: string,
+): Promise<RecreateSlideshowOutcome> {
+  const video = await db.video.findFirst({
+    where: { id: videoId, source: { workspaceId: workspace.id } },
+    select: { id: true, rawJson: true, mediaStatus: true, mediaKey: true, durationSec: true, thumbnailUrl: true },
+  });
+  if (!video) return { ok: false, errorCode: 'not_found', error: 'Video not found.', creditsCharged: 0, creditsRemaining: (await creditBalance(workspace.id)).total };
+  if (isPhotoPost(video)) {
+    if (!resolveSlideshowUrls(video.rawJson).length) {
+      return { ok: false, errorCode: 'no_slides', error: 'Download the original slides first.', creditsCharged: 0, creditsRemaining: (await creditBalance(workspace.id)).total };
+    }
+  } else if (!video.mediaKey) {
+    return { ok: false, errorCode: 'no_media', error: 'Download the video first, then recreate it as a slideshow.', creditsCharged: 0, creditsRemaining: (await creditBalance(workspace.id)).total };
+  }
+  if (!process.env.OPENROUTER_API_KEY) {
+    return { ok: false, errorCode: 'not_configured', error: 'OPENROUTER_API_KEY is not configured.', creditsCharged: 0, creditsRemaining: (await creditBalance(workspace.id)).total };
+  }
+
+  const outstanding = await latestJobForVideo(videoId, 'recreate');
+  if (outstanding && (outstanding.status === 'queued' || outstanding.status === 'running')) {
+    return { ok: true, queued: true, job: outstanding, dispatched: false, creditsCharged: 0, creditsRemaining: (await creditBalance(workspace.id)).total };
+  }
+
+  const opId = randomUUID();
+  try {
+    await debitCredits(workspace.id, CREDIT_COSTS.recreateSlideshow, 'recreate_slideshow', `${opId}:preauth`);
+  } catch (err) {
+    if (err instanceof InsufficientCreditsError) {
+      return { ok: false, errorCode: 'insufficient_credits', error: err.message, required: err.required, creditsCharged: 0, creditsRemaining: err.remaining };
+    }
+    throw err;
+  }
+
+  const job = await enqueueRecreateJob({
+    workspaceId: workspace.id,
+    videoId,
+    opId,
+    preAuthCredits: CREDIT_COSTS.recreateSlideshow,
+    payload: { mode: isPhotoPost(video) ? 'photo' : 'video' },
+  });
+  const dispatch = await dispatchWorker();
+  const balance = await creditBalance(workspace.id);
+  return { ok: true, queued: true, job, dispatched: dispatch.dispatched, creditsCharged: CREDIT_COSTS.recreateSlideshow, creditsRemaining: balance.total };
 }
 
 /**

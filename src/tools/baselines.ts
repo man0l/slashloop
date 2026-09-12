@@ -30,6 +30,7 @@ import { requireWorkspace } from '../context.js';
 import { CREATOR_BASELINE_MIN_SAMPLE, batchScoreVideos } from '../scoring.js';
 import { withNextSteps, refreshCreditLabel, scraperCostLabel } from '../lib/next-steps.js';
 import { enqueueRescoreJob, dispatchWorker } from '../lib/jobs.js';
+import { invalidateWorkspaceReads } from '../lib/cache.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 /**
@@ -307,6 +308,7 @@ export function registerBaselineTools(server: McpServer) {
         });
         created.push({ creatorHandle: c.creatorHandle, sourceId: source.id, wasAlreadyTracked: false });
       }
+      if (created.some((c) => !c.wasAlreadyTracked)) invalidateWorkspaceReads(workspace.id);
 
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({

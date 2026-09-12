@@ -93,6 +93,10 @@
       "dest": "/api/videos?id=$1&action=fetch"
     },
     {
+      "src": "^/api/videos(?:/([^/]+?))/recreate$",
+      "dest": "/api/videos?id=$1&action=recreate"
+    },
+    {
       "src": "^/api/videos(?:/([^/]+?))/hook-test/pick$",
       "dest": "/api/videos?id=$1&action=hook-test-pick"
     },

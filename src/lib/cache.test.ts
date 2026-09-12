@@ -74,6 +74,42 @@ describe('invalidateCache', () => {
     expect(invalidateCache('sources|ws-1')).toBe(1);
     expect(cacheSize()).toBe(1);
   });
+
+  test('next getOrFill after invalidate refills', async () => {
+    clearCache();
+    let fills = 0;
+    const fill = async () => (++fills, `v${fills}`);
+    expect(await getOrFill('workspaces|u1', 60_000, fill)).toBe('v1');
+    invalidateCache('workspaces|u1');
+    expect(await getOrFill('workspaces|u1', 60_000, fill)).toBe('v2');
+    expect(fills).toBe(2);
+  });
+
+  test('an in-flight fill started before invalidate is not recached', async () => {
+    clearCache();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const startedP = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let fills = 0;
+    const slow = async () => {
+      fills++;
+      started();
+      await gate;
+      return `stale-${fills}`;
+    };
+    const inflight = getOrFill('workspaces|u1', 60_000, slow);
+    await startedP;
+    invalidateCache('workspaces|u1');
+    release();
+    expect(await inflight).toBe('stale-1');
+    expect(await getOrFill('workspaces|u1', 60_000, async () => 'fresh')).toBe('fresh');
+    expect(fills).toBe(1);
+  });
 });
 
 describe('bounds', () => {

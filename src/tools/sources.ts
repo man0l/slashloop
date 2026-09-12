@@ -78,7 +78,7 @@ export function registerSourceTools(server: McpServer) {
       refreshSchedule: z.enum(['manual', 'daily', 'weekly']).default('manual'),
       nicheTag: z.string().optional().describe('Niche/workspace tag'),
       isSelf: z.boolean().optional()
-        .describe('True when this creator is the user\'s own TikTok. Creator sources only. At most one per workspace.'),
+        .describe('True when this creator is the user\'s own TikTok. Creator sources only. Several accounts can be flagged per workspace (e.g. a faceless page and a personal one).'),
     },
     async ({ platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf }) => {
       const workspace = await requireWorkspace();

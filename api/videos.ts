@@ -1,6 +1,7 @@
 // GET   /api/videos/:id?workspaceId=...            — video detail (analysis, playback URL, job status).
 // POST  /api/videos/:id/analyze { workspaceId, forceBackend? } — trigger AI analysis.
 // POST  /api/videos/:id/fetch { workspaceId }      — queue a download-only fetch (store the MP4, no analysis, free).
+// POST  /api/videos/:id/recreate { workspaceId }   — queue a cheap OpenRouter slideshow restage (2 credits).
 // GET   /api/videos/:id/hook-test                  — the video's open AI hook test (or {test:null}).
 // POST  /api/videos/:id/hook-test { brandContext?, insight? } — start one (2 credits).
 // PATCH /api/videos/:id/hook-test { insight?, sameIn? }        — edit the lock (free).
@@ -21,7 +22,7 @@
 import { randomUUID } from 'node:crypto';
 import { corsPreflight } from '../src/lib/cors.js';
 import { requireOwnedWorkspace, jsonResponse } from '../src/lib/authz.js';
-import { getVideoDetailForWorkspace, analyzeVideoForWorkspace, fetchVideoForWorkspace, mapAnalyzeOutcomeToHttp } from '../src/lib/video-service.js';
+import { getVideoDetailForWorkspace, analyzeVideoForWorkspace, fetchVideoForWorkspace, recreateSlideshowForWorkspace, mapAnalyzeOutcomeToHttp } from '../src/lib/video-service.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../src/lib/credits.js';
 import { costBlock } from '../src/lib/next-steps.js';
 import {
@@ -167,6 +168,37 @@ export async function POST(request: Request): Promise<Response> {
     // insufficient credits -> 402, Gemini quota -> 429 retryable, other -> 422.
     const mapped = mapAnalyzeOutcomeToHttp(outcome);
     return jsonResponse(mapped.status, mapped.body, request);
+  }
+
+  if (action === 'recreate') {
+    const outcome = await recreateSlideshowForWorkspace(auth.workspace, videoId);
+    if (!outcome.ok) {
+      if (outcome.errorCode === 'not_found') return jsonResponse(404, { error: 'video_not_found' }, request);
+      if (outcome.errorCode === 'insufficient_credits') {
+        return jsonResponse(402, {
+          error: 'insufficient_credits',
+          message: outcome.error,
+          required: outcome.required,
+          remaining: outcome.creditsRemaining,
+          upgradeUrl: process.env.UPGRADE_URL ?? 'https://slashloop.dev/upgrade',
+        }, request);
+      }
+      return jsonResponse(422, { error: outcome.errorCode, message: outcome.error }, request);
+    }
+    if ('alreadyStored' in outcome && outcome.alreadyStored) {
+      return jsonResponse(200, { alreadyStored: true, recreationImages: outcome.recreationImages }, request);
+    }
+    if ('job' in outcome) {
+      return jsonResponse(200, {
+        queued: true,
+        jobId: outcome.job.id,
+        status: outcome.job.status,
+        creditsCharged: outcome.creditsCharged,
+        creditsRemaining: outcome.creditsRemaining,
+        ...costBlock(outcome.creditsRemaining),
+      }, request);
+    }
+    return jsonResponse(500, { error: 'unexpected_recreate_outcome' }, request);
   }
 
   if (action === 'fetch') {

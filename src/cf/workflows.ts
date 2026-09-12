@@ -27,9 +27,12 @@ export interface WorkflowBinding<P> {
 }
 
 /** Per-kind Container step timeouts — must match jobTimeoutMs(kind). */
-export function workflowStepTimeoutMs(kind: HeavyKind): number {
-  // fetch 90s / analyze = OPENROUTER_VIDEO_TIMEOUT_MS + 30s / refresh+discover 120s.
-  if (kind === 'fetch') return 90_000;
+export function workflowStepTimeoutMs(kind: HeavyKind | 'recreate'): number {
+  // fetch 180s (watch-page slideshows can be many slides) / recreate 420s
+  // (video mode adds the Gemini slide plan on top of the image gens) /
+  // analyze = OPENROUTER_VIDEO_TIMEOUT_MS + 30s / refresh+discover 120s.
+  if (kind === 'fetch') return 180_000;
+  if (kind === 'recreate') return 420_000;
   if (kind === 'analyze') {
     const video = Number(process.env.OPENROUTER_VIDEO_TIMEOUT_MS ?? 300_000);
     return (Number.isFinite(video) && video > 0 ? video : 300_000) + 30_000;

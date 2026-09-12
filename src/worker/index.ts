@@ -73,7 +73,7 @@ const RECLAIM_INTERVAL_MS = (() => {
 // discover sits ahead of refresh (user is waiting on the Discover screen) and
 // is claimed by any proxy refresh worker via expandWorkerKinds — no compose
 // WORKER_KINDS change required.
-const ALL_KINDS = ['fetch', 'analyze', 'thumb', 'discover', 'rescore', 'refresh'] as const;
+const ALL_KINDS = ['fetch', 'analyze', 'recreate', 'thumb', 'discover', 'rescore', 'refresh'] as const;
 function workerKinds(): string[] {
   const raw = (process.env.WORKER_KINDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
   const kinds = raw.length ? raw : [...ALL_KINDS];

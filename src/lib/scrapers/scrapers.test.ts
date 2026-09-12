@@ -224,6 +224,24 @@ describe('tiktok-web helpers', () => {
     expect(shaped.postKind).toBe('slideshow');
     expect(shaped.slideshowImages).toEqual(['https://cdn.example/a.jpg', 'https://cdn.example/b.jpg']);
     expect(shaped.videoMeta.originalCoverUrl).toBe('https://cdn.example/a.jpg');
+    expect(shaped.webVideoUrl).toBe('https://www.tiktok.com/@creator/photo/99');
+  });
+
+  test('webItemToApifyShape treats a photomode cover with duration 0 as a slideshow', () => {
+    const shaped = webItemToApifyShape({
+      id: '88',
+      desc: 'photo',
+      createTime: 1_700_000_000,
+      author: { uniqueId: 'creator' },
+      stats: { playCount: 10 },
+      video: {
+        duration: 0,
+        cover: 'https://p16-common-sign.tiktokcdn-us.com/tos-useast2a-i-photomode-euttp/x~tplv-photomode-zoomcover.jpeg',
+      },
+    });
+    expect(shaped.postKind).toBe('slideshow');
+    expect(shaped.slideshowImages).toBeUndefined();
+    expect(shaped.webVideoUrl).toBe('https://www.tiktok.com/@creator/photo/88');
   });
 
   test('estimateScrapeBytes charges a lookup only when one is needed', () => {
@@ -420,6 +438,49 @@ describe('proxy adapter helpers', () => {
     expect(urls).toEqual(['https://www.tiktok.com/@mr.paidsocial/video/7672558938923076877']);
   });
 
+  test('resolvePlayableVideo falls back to the /photo/ watch page for carousels', async () => {
+    const photoHtml = `<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">${JSON.stringify({
+      __DEFAULT_SCOPE__: {
+        'webapp.video-detail': {
+          itemInfo: {
+            itemStruct: {
+              imagePost: {
+                images: [
+                  { imageURL: { urlList: ['https://cdn.example/a.jpg'] } },
+                  { imageURL: { urlList: ['https://cdn.example/b.jpg'] } },
+                ],
+              },
+              video: { playAddr: '', duration: 0 },
+            },
+          },
+        },
+      },
+    })}</script>`;
+    const urls: string[] = [];
+    const http: TikTokHttp = {
+      async getJson() { return { json: null, status: 200, ok: true, text: '', bytes: 0 }; },
+      async getText(url) {
+        urls.push(url);
+        if (url.includes('/photo/')) {
+          return { json: null, status: 200, ok: true, text: photoHtml, bytes: photoHtml.length };
+        }
+        return { json: null, status: 200, ok: true, text: '<html></html>', bytes: 13 };
+      },
+    };
+    await expect(resolvePlayableVideo(
+      'https://www.tiktok.com/@emirailab/video/7656450385845996830',
+      '7656450385845996830',
+      http,
+    )).rejects.toMatchObject({
+      name: 'SlideshowPostError',
+      images: ['https://cdn.example/a.jpg', 'https://cdn.example/b.jpg'],
+    });
+    expect(urls).toEqual([
+      'https://www.tiktok.com/@emirailab/video/7656450385845996830',
+      'https://www.tiktok.com/@emirailab/photo/7656450385845996830',
+    ]);
+  });
+
   test('resolvePlayableVideo rejects a photo/slideshow post', async () => {
     const payload = {
       __DEFAULT_SCOPE__: {
@@ -453,6 +514,23 @@ describe('proxy adapter helpers', () => {
         images: [
           { imageURL: { urlList: ['https://cdn.example/a.jpg'] } },
           { imageURL: { urlList: ['https://cdn.example/b.jpg'] } },
+        ],
+      },
+    })).toEqual(['https://cdn.example/a.jpg', 'https://cdn.example/b.jpg']);
+  });
+
+  test('extractSlideshowImages keeps one URL per slide, not imageURL + displayImage', () => {
+    expect(extractSlideshowImages({
+      imagePost: {
+        images: [
+          {
+            imageURL: { urlList: ['https://cdn.example/a.jpg', 'https://cdn2.example/a.jpg'] },
+            displayImage: { urlList: ['https://cdn.example/a-display.jpg'] },
+          },
+          {
+            imageURL: { urlList: ['https://cdn.example/b.jpg'] },
+            displayImage: { urlList: ['https://cdn.example/b-display.jpg'] },
+          },
         ],
       },
     })).toEqual(['https://cdn.example/a.jpg', 'https://cdn.example/b.jpg']);

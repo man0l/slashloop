@@ -61,6 +61,17 @@ describe('buildUserContent', () => {
     expect(parts[0]).toEqual({ type: 'text', text: 'analyze this' });
     expect(parts[1]).toEqual({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,AAAA' } });
   });
+
+  test('labels each image when a carousel of slides is attached', () => {
+    const parts = buildUserContent('analyze this', [
+      { mimeType: 'image/jpeg', dataBase64: 'AAAA' },
+      { mimeType: 'image/jpeg', dataBase64: 'BBBB' },
+    ]) as Array<Record<string, unknown>>;
+    expect(parts[1]).toEqual({ type: 'text', text: 'Slide 1 of 2:' });
+    expect(parts[2]).toEqual({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,AAAA' } });
+    expect(parts[3]).toEqual({ type: 'text', text: 'Slide 2 of 2:' });
+    expect(parts[4]).toEqual({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,BBBB' } });
+  });
 });
 
 describe('classifyOpenRouterError', () => {

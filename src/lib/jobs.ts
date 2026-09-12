@@ -26,7 +26,8 @@ import { notifyScrapeFailure, markScrapeSuccess } from './scrape-alert.js';
 /** Raw-row date columns, hydrated to Date on SQLite (raw SQL returns strings there). */
 const MEDIA_JOB_DATE_KEYS = ['deadlineAt', 'createdAt', 'startedAt', 'finishedAt'] as const;
 
-function toMediaJobRow(row: Record<string, unknown>): MediaJobRow {
+/** Exported for the recreate-video stepper's raw claim (same shape needs). */
+export function toMediaJobRow(row: Record<string, unknown>): MediaJobRow {
   return coerceRowDates(row, MEDIA_JOB_DATE_KEYS) as unknown as MediaJobRow;
 }
 
@@ -64,7 +65,11 @@ export function jobTimeoutMs(kind: string): number {
     const video = Number(process.env.OPENROUTER_VIDEO_TIMEOUT_MS ?? 300_000);
     return (Number.isFinite(video) && video > 0 ? video : 300_000) + 30_000;
   }
-  if (kind === 'fetch') return 90_000;
+  if (kind === 'fetch') return 180_000;
+  // Recreate photo restages finish in ~1-2min (8 slides × image gen); the
+  // video variant adds the Gemini slide plan (upload + poll can eat 60s) on
+  // top, so the cap covers the slower mode for both.
+  if (kind === 'recreate') return 420_000;
   if (kind === 'thumb') return 30_000;
   if (kind === 'refresh' || kind === 'discover' || kind === 'rescore') return 120_000;
   return 120_000;
@@ -114,6 +119,27 @@ export interface FetchJobPayload {
   };
 }
 
+export async function enqueueRecreateJob(opts: {
+  workspaceId: string;
+  videoId: string;
+  opId: string;
+  preAuthCredits: number;
+  /** 'video' when the target is an MP4 (slide plan + ffmpeg extraction). */
+  payload?: { mode?: 'photo' | 'video' };
+}): Promise<MediaJobRow> {
+  return db.mediaJob.create({
+    data: {
+      workspaceId: opts.workspaceId,
+      videoId: opts.videoId,
+      kind: 'recreate',
+      status: 'queued',
+      payloadJson: JSON.stringify(opts.payload ?? {}),
+      opId: opts.opId,
+      preAuthCredits: opts.preAuthCredits,
+    },
+  }) as unknown as Promise<MediaJobRow>;
+}
+
 export async function enqueueFetchJob(opts: {
   workspaceId: string;
   videoId: string;
@@ -131,6 +157,33 @@ export async function enqueueFetchJob(opts: {
       opId: opts.payload?.opId ?? null,
     },
   }) as unknown as Promise<MediaJobRow>;
+}
+
+/**
+ * Queue watch-page slideshow downloads for photo posts that scrape only
+ * captured a photomode cover (or whose off-proxy slide ingest 403'd).
+ * Dedupes against already-queued/running jobs for the same video.
+ */
+export async function enqueueSlideshowFetches(
+  workspaceId: string,
+  videoIds: string[],
+): Promise<{ queued: number; skipped: number }> {
+  let queued = 0;
+  let skipped = 0;
+  const seen = new Set<string>();
+  for (const videoId of videoIds) {
+    if (!videoId || seen.has(videoId)) { skipped++; continue; }
+    seen.add(videoId);
+    const outstanding = await outstandingJobForVideo(videoId);
+    if (outstanding && (outstanding.status === 'queued' || outstanding.status === 'running')) {
+      skipped++;
+      continue;
+    }
+    await enqueueFetchJob({ workspaceId, videoId, payload: {} });
+    queued++;
+  }
+  if (queued) await dispatchWorker();
+  return { queued, skipped };
 }
 
 /**
@@ -238,6 +291,7 @@ export function isSoloRefreshPayload(payload: RefreshJobPayload): boolean {
 export function jobCreditTool(kind: string): string {
   if (kind === 'refresh') return 'refresh_source';
   if (kind === 'discover') return 'discover_mine';
+  if (kind === 'recreate') return 'recreate_slideshow';
   return 'analyze_video';
 }
 
@@ -249,10 +303,15 @@ export function jobCreditTool(kind: string): string {
  */
 export function expandWorkerKinds(kinds: string[], scraperProvider?: string): string[] {
   const provider = (scraperProvider ?? process.env.SCRAPER_PROVIDER ?? '').trim().toLowerCase();
+  let out = kinds;
   if (kinds.includes('refresh') && !kinds.includes('discover') && provider === 'proxy') {
-    return [...kinds, 'discover'];
+    out = [...out, 'discover'];
   }
-  return kinds;
+  // Recreate slideshow is the same worker as analyze (OpenRouter image calls).
+  if (out.includes('analyze') && !out.includes('recreate')) {
+    out = [...out, 'recreate'];
+  }
+  return out;
 }
 
 /**
@@ -422,6 +481,18 @@ export async function outstandingJobForVideo(videoId: string): Promise<MediaJobR
   }) as unknown as Promise<MediaJobRow | null>;
 }
 
+export async function latestJobForVideo(
+  videoId: string,
+  kind: string,
+): Promise<MediaJobRow | null> {
+  const rows = await db.mediaJob.findMany({
+    where: { videoId, kind, status: { in: ['queued', 'running', 'failed'] } },
+    orderBy: { createdAt: 'desc' },
+    take: 1,
+  }) as unknown as MediaJobRow[];
+  return rows[0] ?? null;
+}
+
 /**
  * The newest analyze job worth reporting to a detail endpoint — queued/running
  * means "in progress, poll me"; a *failed* job is only worth surfacing when
@@ -507,6 +578,10 @@ export async function claimNextJob(kind = 'analyze'): Promise<MediaJobRow | null
     // single UPDATE..subquery..RETURNING statement is atomic on its own; two
     // concurrent claimers serialize and the loser's subselect sees the row
     // already 'running'.
+    //
+    // Recreate video-mode rows (payloadJson mode:'video') are NEVER claimed
+    // here: the ffmpeg path is gone and those state machines are stepped by
+    // the Cloudflare Worker's video-recreate cron (recreate-video-stream.ts).
     const rows = await db.$queryRaw<Record<string, unknown>[]>`
       UPDATE "MediaJob"
          SET "status" = 'running',
@@ -515,6 +590,7 @@ export async function claimNextJob(kind = 'analyze'): Promise<MediaJobRow | null
        WHERE "id" = (
          SELECT "id" FROM "MediaJob"
           WHERE "status" = 'queued' AND "kind" = ${kind}
+            AND (${kind} <> 'recreate' OR "payloadJson" NOT LIKE '%"mode":"video"%')
             AND "createdAt" <= ${claimableBefore}
           ORDER BY "createdAt" ASC
           LIMIT 1

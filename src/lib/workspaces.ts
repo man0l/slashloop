@@ -16,7 +16,7 @@
 
 import type { Prisma, Workspace } from '@prisma/client';
 import { db } from '../db.js';
-import { cacheKey, getOrFill } from './cache.js';
+import { cacheKey, getOrFill, invalidateWorkspaceList } from './cache.js';
 import { freeTierGrant } from './credits.js';
 
 type WorkspaceClient = Pick<typeof db, 'workspace'> | Prisma.TransactionClient;
@@ -119,9 +119,11 @@ export async function createWorkspaceForUser(userId: string, name: string): Prom
   // MUST set it explicitly to 0 rather than omitting it, or it would silently
   // inherit the column default and grant free credits anyway.
   const grant = existing.length === 0 ? freeTierGrant() : { planKey: 'free', planCredits: 0, packCredits: 0 };
-  return db.workspace.create({
+  const created = await db.workspace.create({
     data: { ownerId: userId, name, ...grant },
   });
+  invalidateWorkspaceList(userId);
+  return created;
 }
 
 export async function renameWorkspaceForUser(
@@ -131,5 +133,7 @@ export async function renameWorkspaceForUser(
 ): Promise<Workspace> {
   const owned = await db.workspace.findFirst({ where: { id: workspaceId, ownerId: userId } });
   if (!owned) throw new Error('Workspace not found.');
-  return db.workspace.update({ where: { id: workspaceId }, data: { name } });
+  const updated = await db.workspace.update({ where: { id: workspaceId }, data: { name } });
+  invalidateWorkspaceList(userId);
+  return updated;
 }

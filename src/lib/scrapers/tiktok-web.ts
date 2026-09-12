@@ -364,32 +364,51 @@ export function videoFromWatchHtml(html: string): any | null {
   return video && typeof video === 'object' ? video : null;
 }
 
-/** HTTP URLs of a TikTok photo/slideshow, in display order. */
+/** First HTTP URL on a TikTok image object (urlList[0], nested imageURL, …). */
+function firstHttpUrl(node: unknown): string | null {
+  if (typeof node === 'string') return node.startsWith('http') ? node : null;
+  if (Array.isArray(node)) {
+    for (const n of node) {
+      const u = firstHttpUrl(n);
+      if (u) return u;
+    }
+    return null;
+  }
+  if (!node || typeof node !== 'object') return null;
+  const o = node as Record<string, unknown>;
+  return firstHttpUrl(o.urlList ?? o.UrlList ?? o.url ?? o.Url ?? o.imageURL ?? o.imageUrl);
+}
+
+/**
+ * HTTP URLs of a TikTok photo/slideshow, in display order — one URL per slide.
+ *
+ * `imagePost.images[]` repeats the same photo under `imageURL` (full-res) and
+ * `displayImage` (cropped/display). Walking every urlList used to store each
+ * slide twice. Prefer `imageURL`, then `displayImage`, then a nested urlList.
+ */
 export function extractSlideshowImages(struct: any): string[] {
   const post = struct?.imagePost;
   if (!post || typeof post !== 'object') return [];
+  const images = Array.isArray(post.images) ? post.images : null;
   const out: string[] = [];
   const seen = new Set<string>();
-  const take = (u: unknown) => {
-    if (typeof u === 'string' && u.startsWith('http') && !seen.has(u)) {
-      seen.add(u);
-      out.push(u);
+  const take = (u: string | null) => {
+    if (!u || seen.has(u)) return;
+    seen.add(u);
+    out.push(u);
+  };
+  if (images?.length) {
+    for (const img of images) {
+      if (!img || typeof img !== 'object') {
+        take(firstHttpUrl(img));
+        continue;
+      }
+      const o = img as Record<string, unknown>;
+      take(firstHttpUrl(o.imageURL) ?? firstHttpUrl(o.imageUrl) ?? firstHttpUrl(o.displayImage) ?? firstHttpUrl(o.urlList ?? o.UrlList));
     }
-  };
-  const walk = (node: unknown): void => {
-    if (node == null) return;
-    if (typeof node === 'string') { take(node); return; }
-    if (Array.isArray(node)) { for (const n of node) walk(n); return; }
-    if (typeof node !== 'object') return;
-    const o = node as Record<string, unknown>;
-    if (Array.isArray(o.urlList)) o.urlList.forEach(take);
-    if (Array.isArray(o.UrlList)) o.UrlList.forEach(take);
-    if (o.imageURL) walk(o.imageURL);
-    if (o.imageUrl) walk(o.imageUrl);
-    if (o.displayImage) walk(o.displayImage);
-    if (Array.isArray(o.images)) walk(o.images);
-  };
-  walk(post.images ?? post);
+    return out;
+  }
+  take(firstHttpUrl(post));
   return out;
 }
 
@@ -399,6 +418,17 @@ export function slideshowKeysFromRaw(rawJson: string | null | undefined): string
     const raw = JSON.parse(rawJson) as { slideshowKeys?: unknown };
     if (!Array.isArray(raw.slideshowKeys)) return [];
     return raw.slideshowKeys.filter((k): k is string => typeof k === 'string' && k.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function recreationKeysFromRaw(rawJson: string | null | undefined): string[] {
+  if (!rawJson) return [];
+  try {
+    const raw = JSON.parse(rawJson) as { recreationKeys?: unknown };
+    if (!Array.isArray(raw.recreationKeys)) return [];
+    return raw.recreationKeys.filter((k): k is string => typeof k === 'string' && k.length > 0);
   } catch {
     return [];
   }
@@ -1099,14 +1129,23 @@ export function webItemToApifyShape(item: any): any {
   // imagePost) so media ingest can copy them to R2 off-proxy — same deal as
   // covers. The gallery never hotlinks these; resolveSlideshowUrls only
   // emits the stored keys.
-  const slides = extractSlideshowImages(item);
+  const cover = video.cover || video.originCover || video.dynamicCover || '';
+  const duration = typeof video.duration === 'number' ? video.duration : Number(video.duration) || 0;
+  let slides = extractSlideshowImages(item);
+  // Photo posts on item_list often omit imagePost and only ship a photomode
+  // cover with duration 0. Stamp postKind so ingest/gallery never try an
+  // MP4, but do NOT put the cover in slideshowImages — that is one cropped
+  // still, not the carousel. The fetch worker hydrates every slide from the
+  // watch page.
+  const photomodeOnly = !slides.length && duration <= 0 && /photomode|tplv-photo/i.test(String(cover));
+  const isPhoto = slides.length > 0 || photomodeOnly;
   const music = (item?.music ?? {}) as Record<string, unknown>;
 
   return {
     id,
     text: item?.desc ?? '',
     createTime: Number(item?.createTime) || undefined,
-    webVideoUrl: `https://www.tiktok.com/@${handle}/video/${id}`,
+    webVideoUrl: `https://www.tiktok.com/@${handle}/${isPhoto ? 'photo' : 'video'}/${id}`,
     authorMeta: {
       name: handle,
       nickName: author.nickname,
@@ -1116,7 +1155,7 @@ export function webItemToApifyShape(item: any): any {
       // Platform CDN cover only. Nothing is downloaded through the proxy, so
       // there is no key-value-store copy — coverDownloadUrl stays null and
       // ingest fetches this URL direct, off-proxy, on demand.
-      originalCoverUrl: video.cover || video.originCover || video.dynamicCover || slides[0] || '',
+      originalCoverUrl: cover || slides[0] || '',
       duration: video.duration,
     },
     playCount: toNum(stats.playCount),
@@ -1129,7 +1168,7 @@ export function webItemToApifyShape(item: any): any {
       musicName: typeof music.title === 'string' ? music.title : '',
       musicAuthor: typeof music.authorName === 'string' ? music.authorName : '',
     },
-    ...(slides.length ? { postKind: 'slideshow', slideshowImages: slides } : {}),
+    ...(isPhoto ? { postKind: 'slideshow', ...(slides.length ? { slideshowImages: slides } : {}) } : {}),
   };
 }
 

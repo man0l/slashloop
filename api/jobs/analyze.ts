@@ -13,10 +13,16 @@
 //   |----------|-------------------|----------------------------------------------|
 //   | thumb    | Worker (this)     | one image fetch+store, no Apify/AI, sub-30s  |
 //   | rescore  | Worker (this)     | free recompute, no Apify/AI, one source each |
+//   | recreate | Worker (this) *   | video mode only: stepped via Stream (below)  |
 //   | fetch    | external compute  | Apify download (~90s), billed spend          |
 //   | analyze  | external compute  | Gemini/OpenRouter pipeline (300s+)           |
 //   | refresh  | external compute  | TikTok scrape (~20-170s), needs proxy        |
 //   | discover | external compute  | probe scrape, needs proxy, billed pre-auth   |
+//
+//   * recreate video-mode rows are never CLAIMED here (processClaimedJob's
+//     ffmpeg path is VPS-only); the drain advances them one phase per tick
+//     via recreate-video-stream.ts when Stream creds exist, else they stay
+//     queued for external compute like the other heavy kinds.
 //
 // Maintenance is also Worker-side but THROTTLED (see below), never per tick:
 // reclaimStuckJobs (abandoned `running` rows), failAbandonedQueuedJobs
@@ -42,6 +48,8 @@
 import { claimNextJob, failAbandonedQueuedJobs, reclaimStuckJobs } from '../../src/lib/jobs.js';
 import { rescoreStaleTooFresh } from '../../src/scoring.js';
 import { processClaimedJob } from '../../src/worker/process-job.js';
+import { stepRecreateVideoJobs } from '../../src/lib/recreate-video-stream.js';
+import { streamRecreateConfigured } from '../../src/lib/stream-frames.js';
 
 /**
  * Stop claiming new work with this much of the budget left.
@@ -141,9 +149,27 @@ export async function POST(request: Request): Promise<Response> {
     if (result.requeued) break;
   }
 
+  // Video-mode recreations (mode:'video' in payloadJson) are Workers-native
+  // when Stream is configured: each tick advances ONE cheap phase of ONE job
+  // (Stream copy → processing wait → Gemini plan → one image-gen per tick),
+  // with the state machine in the job's payloadJson. No Stream credentials →
+  // the rows stay queued for the VPS drainer's ffmpeg path.
+  let videoRecreate: { stepped: number; error?: string } = { stepped: 0 };
+  if (streamRecreateConfigured()) {
+    const remaining = RESERVE_MS - (Date.now() - startedAt);
+    if (remaining > 15_000) {
+      try {
+        videoRecreate = await stepRecreateVideoJobs(remaining);
+      } catch (err) {
+        videoRecreate = { stepped: 0, error: (err as Error).message };
+      }
+    }
+  }
+
   return json(200, {
     drainedKinds: ['thumb', 'rescore'],
     heavyKinds: 'left-queued-for-external-compute',
+    videoRecreate,
     maintenance: sweepsDue ? 'ran' : 'throttled',
     reclaimed,
     abandoned,

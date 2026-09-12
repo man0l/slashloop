@@ -96,12 +96,12 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 const GEMINI_FILE_TTL_MS = 40 * 60 * 60 * 1000;
 
 /** Does this error mean the reused file handle is gone? */
-function isStaleFileError(err: unknown): boolean {
+export function isStaleFileError(err: unknown): boolean {
   const m = (err as Error)?.message ?? '';
   return /\b(403|404)\b/.test(m) && /file|permission|not found/i.test(m);
 }
 
-async function callGeminiGenerate(
+export async function callGeminiGenerate(
   model: string,
   fileUri: string,
   systemPrompt: string,
@@ -250,16 +250,25 @@ export class GeminiNativeAnalyzer implements VideoAnalyzer {
     return { uri: fileUri, name: fileName };
   }
 
-  private async uploadWithFileName(filePath: string): Promise<{ fileUri: string; fileName: string }> {
+  /** Upload a local MP4 and wait for it to reach ACTIVE. Public so the
+   *  slideshow plan call (recreate-slideshow) reuses the exact analyze upload
+   *  path — same file, same polling budget, same error shapes. VPS/Bun-only:
+   *  reads the file from disk. */
+  async uploadWithFileName(filePath: string): Promise<{ fileUri: string; fileName: string }> {
+    // Workers have no fs; analyze jobs never run there while the VPS worker
+    // owns the queue.
+    const { readFileSync } = await import('node:fs');
+    return this.uploadWithBuffer(readFileSync(filePath));
+  }
+
+  /** Upload raw video bytes — the workerd-safe variant (no disk access). */
+  async uploadWithBuffer(bytes: Uint8Array, fileName = 'video.mp4'): Promise<{ fileUri: string; fileName: string }> {
+    const fileBlob = new Blob([bytes], { type: 'video/mp4' });
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error('GEMINI_API_KEY environment variable is not set');
 
-    // VPS/Bun-only: reads the downloaded MP4 from disk (Workers have no fs;
-    // analyze jobs never run there while the VPS worker owns the queue).
-    const { readFileSync } = await import('node:fs');
-    const fileBlob = new Blob([readFileSync(filePath)], { type: 'video/mp4' });
     const formData = new FormData();
-    formData.append('file', fileBlob, 'video.mp4');
+    formData.append('file', fileBlob, fileName);
 
     const uploadRes = await fetch(
       `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`,

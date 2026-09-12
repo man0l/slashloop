@@ -12,19 +12,18 @@
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from 'node:crypto';
-import type { Prisma, Source, Workspace } from '@prisma/client';
+import type { Source, Workspace } from '@prisma/client';
 import { db } from '../db.js';
-import { chunked, dbDialect } from '../store.js';
-import { cacheKey, getOrFill } from './cache.js';
-import { resolveThumbUrl } from './media.js';
+import { chunked } from '../store.js';
+import { cacheKey, getOrFill, invalidateWorkspaceReads } from './cache.js';
 import { scrapeCapKind, scrapeSource, trafficStatus } from './scrapers/index.js';
 import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
 import { TrafficCapExceededError } from './scrapers/bandwidth.js';
 import { batchScoreVideos } from '../scoring.js';
 import { infoNote } from './refresh-notes.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } from './credits.js';
-import { ingestThumbnails, ingestSlideshows, slideshowTargetFromNormalized, type ThumbIngestTarget, type SlideshowIngestTarget } from './media.js';
-import { enqueueRefreshJob, enqueueRescoreJob, outstandingJobForSource, dispatchWorker } from './jobs.js';
+import { resolveThumbUrl, ingestThumbnails, ingestSlideshows, slideshowTargetFromNormalized, isPhotoPost, type ThumbIngestTarget, type SlideshowIngestTarget } from './media.js';
+import { enqueueRefreshJob, enqueueRescoreJob, outstandingJobForSource, dispatchWorker, enqueueSlideshowFetches } from './jobs.js';
 import { dismissSuggestion } from './suggestions.js';
 import { resolveRefreshPlan } from './refresh-policy.js';
 
@@ -138,8 +137,8 @@ async function listSourceRowExtras(ids: string[]): Promise<{
 
 export async function listSourcesForWorkspace(workspace: Workspace, filters: ListSourcesFilters) {
   // Cached 30s: the heaviest list on the site (groupBys + extras per row).
-  // Mutations already invalidate client-side; this only bounds cross-tab
-  // skew and collapses concurrent duplicate fetches into one fill.
+  // create/update/delete/refresh MUST invalidateWorkspaceReads so the next
+  // GET is not a pre-mutation snapshot (new source missing, lastJob stale).
   return getOrFill(
     cacheKey(['sources', workspace.id, filters.platform ?? '', filters.sourceType ?? '', String(filters.isActive ?? ''), filters.nicheTag ?? '']),
     30_000,
@@ -247,7 +246,9 @@ export interface CreateSourceInput {
   videoLimit: number;
   refreshSchedule: 'manual' | 'daily' | 'weekly';
   nicheTag?: string;
-  /** Own TikTok handle. Ignored unless sourceType is creator. At most one per workspace. */
+  /** Own TikTok handle. Ignored unless sourceType is creator. Several
+   *  accounts can be flagged — e.g. a creator running a faceless page and a
+   *  personal page side by side; Studio reads them all. */
   isSelf?: boolean;
 }
 
@@ -283,48 +284,15 @@ export async function createSourceForWorkspace(
     };
   }
 
-  // D1 has no interactive transactions; the statements run sequentially
-  // there. The only invariant at stake — at most one isSelf source per
-  // workspace under two concurrent toggles — is enforced in service code and
-  // self-heals on the next update, so a momentary race is accepted.
-  const unsetOtherSelf = async (tx: Prisma.TransactionClient, excludeId?: string) => {
-    await tx.source.updateMany({
-      where: excludeId
-        ? { workspaceId: workspace.id, isSelf: true, NOT: { id: excludeId } }
-        : { workspaceId: workspace.id, isSelf: true },
-      data: { isSelf: false },
-    });
-  };
-
-  if (isSelf) {
-    if (dbDialect() === 'sqlite') {
-      await unsetOtherSelf(db);
-      const source = await db.source.create({
-        data: {
-          workspaceId: workspace.id,
-          platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf,
-        },
-      });
-      return { ok: true, source };
-    }
-    const source = await db.$transaction(async (tx) => {
-      await unsetOtherSelf(tx);
-      return tx.source.create({
-        data: {
-          workspaceId: workspace.id,
-          platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf,
-        },
-      });
-    });
-    return { ok: true, source };
-  }
-
+  // A workspace can flag any number of creator sources as its own accounts —
+  // marking one never unmarks another, so nothing here touches sibling rows.
   const source = await db.source.create({
     data: {
       workspaceId: workspace.id,
       platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf,
     },
   });
+  invalidateWorkspaceReads(workspace.id);
   return { ok: true, source };
 }
 
@@ -355,28 +323,10 @@ export async function updateSourceForWorkspace(
     ...(isSelf === undefined ? {} : { isSelf }),
   };
 
-  // Sequential on D1: Prisma's adapter ignores interactive transactions and
-  // a phantom BEGIN + the UPDATE can hang the binding. Race on isSelf is
-  // cosmetic (self-heals on the next update).
-  if (dbDialect() === 'sqlite') {
-    if (isSelf === true) {
-      await db.source.updateMany({
-        where: { workspaceId: workspace.id, isSelf: true, NOT: { id: sourceId } },
-        data: { isSelf: false },
-      });
-    }
-    return db.source.update({ where: { id: sourceId }, data }).catch(() => null);
-  }
-
-  return db.$transaction(async (tx) => {
-    if (isSelf === true) {
-      await tx.source.updateMany({
-        where: { workspaceId: workspace.id, isSelf: true, NOT: { id: sourceId } },
-        data: { isSelf: false },
-      });
-    }
-    return tx.source.update({ where: { id: sourceId }, data });
-  }).catch(() => null);
+  // Marking several accounts as self is allowed — no sibling rows are touched.
+  const updated = await db.source.update({ where: { id: sourceId }, data }).catch(() => null);
+  if (updated) invalidateWorkspaceReads(workspace.id);
+  return updated;
 }
 
 export async function deleteSourceForWorkspace(workspace: Workspace, sourceId: string): Promise<boolean> {
@@ -403,6 +353,7 @@ export async function deleteSourceForWorkspace(workspace: Workspace, sourceId: s
   // the exact thing just removed.
   await dismissSuggestion(workspace, { sourceType: owned.sourceType as 'hashtag' | 'keyword' | 'creator', query: owned.query });
 
+  invalidateWorkspaceReads(workspace.id);
   return true;
 }
 
@@ -477,6 +428,7 @@ export async function refreshSourceForWorkspace(
   if (shouldQueue) {
     const existing = await outstandingJobForSource(sourceId);
     if (existing) {
+      invalidateWorkspaceReads(workspace.id);
       return { kind: 'already_queued', jobId: existing.id, status: existing.status, sourceId };
     }
 
@@ -494,6 +446,7 @@ export async function refreshSourceForWorkspace(
     // Best-effort poke; pg_cron drains within a minute regardless.
     const dispatch = await dispatchWorker('refresh');
 
+    invalidateWorkspaceReads(workspace.id);
     return {
       kind: 'queued',
       jobId: job.id,
@@ -584,6 +537,7 @@ export async function refreshSourceForWorkspace(
     // Persist videos (dedup by platform + externalId)
     const thumbTargets: ThumbIngestTarget[] = [];
     const slideshowTargets: SlideshowIngestTarget[] = [];
+    const photoFetchIds: string[] = [];
     for (const nv of result.items) {
       const existing = await db.video.findFirst({
         where: { platform: nv.platform, externalId: nv.externalId },
@@ -626,6 +580,13 @@ export async function refreshSourceForWorkspace(
       });
       const slides = slideshowTargetFromNormalized(created.id, nv.raw);
       if (slides) slideshowTargets.push(slides);
+      if (isPhotoPost({
+        durationSec: nv.durationSec,
+        thumbnailUrl: nv.thumbnailUrl,
+        rawJson: JSON.stringify(nv.raw),
+      })) {
+        photoFetchIds.push(created.id);
+      }
     }
 
     // Persist cover images to Supabase Storage. Deliberately after the
@@ -638,10 +599,20 @@ export async function refreshSourceForWorkspace(
         errors.push(`Thumbnail ingest: ${ingest.failed}/${ingest.stored + ingest.failed} failed`);
       }
     }
+    const slideshowStoredIds = new Set<string>();
     if (slideshowTargets.length > 0) {
       const ingest = await ingestSlideshows(source.workspaceId, slideshowTargets);
       if (ingest.failed > 0) {
         errors.push(`Slideshow ingest: ${ingest.failed}/${ingest.stored + ingest.failed} failed`);
+      }
+      for (const id of ingest.storedIds) slideshowStoredIds.add(id);
+    }
+    const slideshowFetchIds = photoFetchIds.filter(id => !slideshowStoredIds.has(id));
+    if (slideshowFetchIds.length > 0) {
+      try {
+        await enqueueSlideshowFetches(source.workspaceId, slideshowFetchIds);
+      } catch (err) {
+        errors.push(`Slideshow fetch enqueue failed: ${(err as Error).message}`);
       }
     }
 
@@ -677,6 +648,7 @@ export async function refreshSourceForWorkspace(
     data: { sourceId, itemsPulled, newVideos, errorsJson: JSON.stringify(errors), costCents, ranAt: new Date() },
   });
   await db.source.update({ where: { id: sourceId }, data: { lastRefreshedAt: new Date() } });
+  invalidateWorkspaceReads(workspace.id);
 
   // Refreshing a CREATOR source is the moment that creator's history can
   // cross CREATOR_BASELINE_MIN_SAMPLE — which changes the score of their

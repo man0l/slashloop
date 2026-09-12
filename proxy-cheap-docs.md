@@ -1,0 +1,101 @@
+- generic [ref=e5]:
+  - generic [ref=e8]:
+    - generic [ref=e9]: Public
+    - generic [ref=e13] [cursor=pointer]
+  - generic [ref=e16]:
+    - generic [ref=e17]:
+      - generic [ref=e18]: ENVIRONMENT
+      - generic [ref=e24]:
+        - generic [ref=e79]: Production
+        - combobox [ref=e80]
+    - generic [ref=e32]:
+      - generic [ref=e33]: LAYOUT
+      - generic [ref=e39]:
+        - generic [ref=e40]: Double Column
+        - combobox [ref=e41]
+    - generic [ref=e47]:
+      - generic [ref=e48]: LANGUAGE
+      - generic [ref=e54]:
+        - generic [ref=e81]: cURL - cURL
+        - combobox [ref=e82]
+    - button [ref=e63] [cursor=pointer]
+    - generic [ref=e84] [cursor=pointer]
+  - generic [ref=e67]:
+    - generic [ref=e87]:
+      - generic [ref=e88]: Proxy-Cheap API
+      - link "Introduction" [ref=e91] [cursor=pointer]:
+        - /url: "#intro"
+      - generic [ref=e92]:
+        - generic [ref=e93] [cursor=pointer]
+        - generic [ref=e101]: REST API
+      - generic [ref=e102]:
+        - generic [ref=e103] [cursor=pointer]
+        - generic [ref=e111]: Webhooks
+    - main [ref=e112]:
+      - generic [ref=e113]:
+        - generic [ref=e116]:
+          - heading "Proxy-Cheap API" [level=1] [ref=e118]
+          - generic [ref=e121]:
+            - heading "Proxy-Cheap uses REST API to enable proxy ordering." [level=2] [ref=e122]
+            - paragraph [ref=e123]: "This is Proxy-Cheap documentation for developers interested in integrating our services in your product. We offer 2 types of APIs currently:"
+            - list [ref=e124]:
+              - listitem [ref=e125]:
+                - paragraph [ref=e126]:
+                  - strong [ref=e127]: REST API
+                  - text: ": Calls made by you to do a requested operation"
+              - listitem [ref=e128]:
+                - paragraph [ref=e129]:
+                  - strong [ref=e130]: Webhooks
+                  - text: ": Calls made by us, you consume them"
+            - paragraph [ref=e131]: Pick a type from the sidebar to know more.
+            - paragraph [ref=e132]:
+              - strong [ref=e133]: "Contact Support:"
+              - text: "Email:"
+              - link "support@proxy-cheap.com" [ref=e134] [cursor=pointer]:
+                - /url: https://mailto:support@proxy-cheap.com
+        - generic [ref=e138]:
+          - heading "REST API" [level=2] [ref=e140]
+          - generic [ref=e143]:
+            - heading "Proxy-Cheap uses REST API to enable proxy ordering." [level=2] [ref=e144]
+            - paragraph [ref=e145]:
+              - text: Authentication is implemented using API keys passed as HTTP headers with each request. Use
+              - code [ref=e146]: X-Api-Key
+              - text: and
+              - code [ref=e147]: X-Api-Secret
+              - text: obtained at our dashboard
+              - link "https://app.proxy-cheap.com/api-keys" [ref=e148] [cursor=pointer]:
+                - /url: https://app.proxy-cheap.com/api-keys
+              - text: .
+            - paragraph [ref=e149]: All request and response payloads are in JSON format.
+            - separator [ref=e150]
+            - paragraph [ref=e151]:
+              - strong [ref=e152]: Usage
+              - text: ":"
+            - list [ref=e153]:
+              - listitem [ref=e154]:
+                - paragraph [ref=e155]:
+                  - text: Fetch the available services & plans using the
+                  - emphasis [ref=e156]: Services
+                  - text: endpoint.
+              - listitem [ref=e157]:
+                - paragraph [ref=e158]:
+                  - text: Fetch the available configuration like countries, ISPs, packages, etc using the
+                  - emphasis [ref=e159]: Setup
+                  - text: endpoint.
+              - listitem [ref=e160]:
+                - paragraph [ref=e161]:
+                  - text: Price the selected configuration using the
+                  - emphasis [ref=e162]: Price
+                  - text: endpoint.
+              - listitem [ref=e163]:
+                - paragraph [ref=e164]:
+                  - text: Order the selected configuration using the
+                  - emphasis [ref=e165]: Execute
+                  - text: endpoint.
+            - paragraph [ref=e166]:
+              - strong [ref=e167]: "Contact Support:"
+              - text: "Email:"
+              - link "support@proxy-cheap.com" [ref=e168] [cursor=pointer]:
+                - /url: https://mailto:support@proxy-cheap.com
+        - heading "orders" [level=2] [ref=e174]
+        - 'heading "{id}" [level=2] [ref=e181]'

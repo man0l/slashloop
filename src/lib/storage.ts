@@ -108,6 +108,11 @@ export function slideshowPath(workspaceId: string, videoId: string, index: numbe
   return `${workspaceId}/${videoId}/slides/${String(index).padStart(2, '0')}.jpg`;
 }
 
+/** Public thumb-bucket key for one AI-recreated slideshow slide. */
+export function recreationPath(workspaceId: string, videoId: string, index: number): string {
+  return `${workspaceId}/${videoId}/recreate/${String(index).padStart(2, '0')}.jpg`;
+}
+
 // ---- R2 / S3 client -------------------------------------------------------
 
 let r2Client: S3Client | null = null;

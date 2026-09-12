@@ -53,12 +53,16 @@ export function buildUserContent(
   images?: Array<{ mimeType: string; dataBase64: string }>,
 ): string | Array<Record<string, unknown>> {
   if (!images?.length) return userMessage;
-  return [
-    { type: 'text', text: userMessage },
-    ...images.map(img => ({
+  const slideParts = images.flatMap((img, i) => [
+    ...(images.length > 1 ? [{ type: 'text', text: `Slide ${i + 1} of ${images.length}:` }] : []),
+    {
       type: 'image_url',
       image_url: { url: `data:${img.mimeType};base64,${img.dataBase64}` },
-    })),
+    },
+  ]);
+  return [
+    { type: 'text', text: userMessage },
+    ...slideParts,
   ];
 }
 
@@ -287,4 +291,63 @@ export async function callOpenRouterText(
   } catch {
     throw new Error('Failed to parse OpenRouter response as JSON');
   }
+}
+
+/** Cheap TikTok-slide recreation: GPT Image 2.5 Sunburst at low quality. */
+export const RECREATE_IMAGE_MODEL = 'openai/gpt-image-2.5-sunburst';
+
+export async function generateOpenRouterImage(opts: {
+  prompt: string;
+  referenceUrl?: string;
+  quality?: 'low' | 'medium' | 'high';
+  aspectRatio?: string;
+}): Promise<{ buffer: Buffer; contentType: string; costUsd: number }> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error('OPENROUTER_API_KEY environment variable is not set');
+
+  const body: Record<string, unknown> = {
+    model: RECREATE_IMAGE_MODEL,
+    prompt: opts.prompt,
+    quality: opts.quality ?? 'low',
+    aspect_ratio: opts.aspectRatio ?? '9:16',
+    output_format: 'jpeg',
+    output_compression: 70,
+  };
+  if (opts.referenceUrl) {
+    body.input_references = [{
+      type: 'image_url',
+      image_url: { url: opts.referenceUrl },
+    }];
+  }
+
+  const res = await fetch(`${OPENROUTER_BASE_URL}/images`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(90_000),
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      ...(process.env.PUBLIC_URL ? { 'HTTP-Referer': process.env.PUBLIC_URL, 'X-Title': 'slashloop' } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`OpenRouter image error ${res.status}: ${text.slice(0, 400)}`);
+
+  let data: {
+    data?: Array<{ b64_json?: string; media_type?: string }>;
+    usage?: { cost?: number };
+    error?: { message?: string };
+  };
+  try { data = JSON.parse(text); } catch {
+    throw new Error('OpenRouter image response was not JSON');
+  }
+  if (data.error?.message) throw new Error(`OpenRouter image error: ${data.error.message}`);
+  const b64 = data.data?.[0]?.b64_json;
+  if (!b64) throw new Error('OpenRouter returned no image');
+  const contentType = data.data?.[0]?.media_type || 'image/jpeg';
+  return {
+    buffer: Buffer.from(b64, 'base64'),
+    contentType,
+    costUsd: typeof data.usage?.cost === 'number' ? data.usage.cost : 0,
+  };
 }

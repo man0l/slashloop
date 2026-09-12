@@ -45,10 +45,14 @@
   // Queue drain (`*/1` → POST /api/jobs/analyze) is OFF: Contabo already
   // claims thumb/rescore/analyze/fetch/refresh. The minute tick was racing
   // those containers for D1 and stalling HTTP (e.g. /api/workspaces).
+  // */2 — video-recreate stepper ONLY (src/cf/video-recreate-cron.ts): one
+  //       cheap phase per video-mode recreate job per tick (Stream copy →
+  //       ready-wait → one gpt-image slide). No claims, no sweeps — it cannot
+  //       re-create the contention that got the */1 drain disabled.
   // 0 3  — daily media-retention sweep (Contabo does not run this)
   // 0 9 * * 1 — weekly digest, Mondays 09:00 UTC (Contabo does not run this)
   "triggers": {
-    "crons": ["0 3 * * *", "0 9 * * 1"]
+    "crons": ["*/2 * * * *", "0 3 * * *", "0 9 * * 1"]
   },
   "observability": {
     "enabled": true
@@ -75,7 +79,11 @@
   "vars": {
     // Dialect flag for the raw-SQL branch points (src/store.ts). The Worker is
     // always sqlite; Postgres runtimes (VPS worker, scripts) keep the default.
-    "DB_DIALECT": "sqlite"
+    "DB_DIALECT": "sqlite",
+    // Account id for the Stream API (video-recreate stepper). The token that
+    // goes with it is a secret: CLOUDFLARE_STREAM_TOKEN (Stream:Edit) or a
+    // CLOUDFLARE_API_TOKEN whose scope covers Stream.
+    "CLOUDFLARE_ACCOUNT_ID": "efaa72fe64b9d2798df1388b15c7674a"
   }
   // Secrets (SUPABASE_URL, CRON_SECRET, STRIPE_*, RESEND_API_KEY, GEMINI_API_KEY,
   // APIFY_*, R2_* S3 keys for the VPS path, etc.) are set with

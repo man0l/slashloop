@@ -13,9 +13,9 @@
 import { db } from '../db.js';
 import {
   isStorageEnabled, putObject, publicUrl, signUrl, signedUrlTtlSeconds,
-  thumbBucket, mediaBucket, thumbPath, mediaPath, slideshowPath,
+  thumbBucket, mediaBucket, thumbPath, mediaPath, slideshowPath, recreationPath,
 } from './storage.js';
-import { slideshowImagesFromNormalizedRaw, slideshowKeysFromRaw } from './scrapers/tiktok-web.js';
+import { slideshowImagesFromNormalizedRaw, slideshowImagesFromRaw, slideshowKeysFromRaw, recreationKeysFromRaw } from './scrapers/tiktok-web.js';
 import { isTikTokCdnUrl } from './tiktok-cdn.js';
 
 /**
@@ -337,12 +337,102 @@ export function resolveSlideshowUrls(rawJson: string | null | undefined): string
   }
 }
 
+export function resolveRecreationUrls(rawJson: string | null | undefined): string[] {
+  const keys = recreationKeysFromRaw(rawJson);
+  if (!keys.length) return [];
+  try {
+    return keys.map(k => publicUrl(thumbBucket(), k));
+  } catch {
+    return [];
+  }
+}
+
+const RECREATION_MODEL = 'openai/gpt-image-2.5-sunburst';
+
+/** Stamp AI-recreated slide keys onto the video's rawJson. Split from
+ *  persistRecreation so the Workers-native stepper (which uploads slides to
+ *  R2 one per tick) can finalize without re-uploading anything. */
+export async function stampRecreationKeys(videoId: string, keys: string[]): Promise<void> {
+  const row = await db.video.findUnique({ where: { id: videoId }, select: { rawJson: true } });
+  let raw: Record<string, unknown> = {};
+  try { raw = JSON.parse(row?.rawJson || '{}') as Record<string, unknown>; } catch { raw = {}; }
+  raw.recreationKeys = keys;
+  raw.recreationModel = RECREATION_MODEL;
+  await db.video.update({ where: { id: videoId }, data: { rawJson: JSON.stringify(raw) } });
+  console.log(`[media] stored recreation (${keys.length} slides) in R2 for ${videoId}`);
+}
+
+export async function persistRecreation(
+  workspaceId: string,
+  videoId: string,
+  slides: Array<{ buffer: Buffer; contentType: string }>,
+): Promise<string[]> {
+  if (!isStorageEnabled()) {
+    throw new Error('media storage disabled — cannot store recreated slides');
+  }
+  const keys: string[] = [];
+  for (let i = 0; i < slides.length; i++) {
+    const slide = slides[i]!;
+    const path = recreationPath(workspaceId, videoId, i);
+    await putObject({
+      bucket: thumbBucket(),
+      path,
+      body: new Uint8Array(slide.buffer),
+      contentType: slide.contentType || 'image/jpeg',
+    });
+    keys.push(path);
+  }
+  await stampRecreationKeys(videoId, keys);
+  return keys;
+}
+
 export interface SlideshowIngestTarget {
   videoId: string;
   urls: string[];
 }
 
-/** Slide CDN URLs captured at scrape, if this NormalizedVideo is a photo post. */
+const PHOTO_COVER_RE = /photomode|tplv-photo/i;
+
+/** True when this TikTok is a photo carousel (no MP4), even if slide ingest has not run yet. */
+export function isPhotoPost(opts: {
+  durationSec?: number | null;
+  mediaStatus?: string | null;
+  rawJson?: string | null;
+  thumbnailUrl?: string | null;
+}): boolean {
+  if (opts.mediaStatus === 'slideshow') return true;
+  if (slideshowKeysFromRaw(opts.rawJson).length > 0) return true;
+  if (slideshowImagesFromRaw(opts.rawJson).length > 0) return true;
+  if (opts.rawJson) {
+    try {
+      const raw = JSON.parse(opts.rawJson) as { postKind?: unknown };
+      if (raw.postKind === 'slideshow') return true;
+    } catch { /* ignore malformed raw */ }
+  }
+  if (opts.durationSec != null && opts.durationSec > 0) return false;
+  const blob = `${opts.thumbnailUrl ?? ''}\n${opts.rawJson ?? ''}`;
+  return PHOTO_COVER_RE.test(blob);
+}
+
+/**
+ * True once the full photo carousel is in R2 — either a watch-page download
+ * stamped `slideshowHydrated`, or a scrape that already had 2+ imagePost URLs.
+ * A single photomode cover stored at scrape time is NOT complete: item_list
+ * omits the rest of the slides.
+ */
+export function slideshowIsHydrated(rawJson: string | null | undefined): boolean {
+  const keys = slideshowKeysFromRaw(rawJson);
+  if (keys.length >= 2) return true;
+  if (!rawJson || keys.length === 0) return false;
+  try {
+    const raw = JSON.parse(rawJson) as { slideshowHydrated?: unknown };
+    return raw.slideshowHydrated === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Slide CDN URLs captured at scrape from imagePost — never the photomode cover fallback. */
 export function slideshowTargetFromNormalized(
   videoId: string,
   raw: unknown,
@@ -384,8 +474,8 @@ async function fetchImageBuffer(url: string): Promise<{ body: Uint8Array; conten
 export async function ingestSlideshows(
   workspaceId: string,
   targets: SlideshowIngestTarget[],
-): Promise<{ stored: number; failed: number; skipped: number }> {
-  const result = { stored: 0, failed: 0, skipped: 0 };
+): Promise<{ stored: number; failed: number; skipped: number; storedIds: string[] }> {
+  const result = { stored: 0, failed: 0, skipped: 0, storedIds: [] as string[] };
   if (!isStorageEnabled()) {
     result.skipped = targets.length;
     return result;
@@ -417,6 +507,7 @@ export async function ingestSlideshows(
       try {
         await recordSlideshow(s.videoId, s.keys);
         result.stored++;
+        result.storedIds.push(s.videoId);
       } catch (err) {
         console.warn(`[media] slideshow record failed for ${s.videoId}: ${(err as Error).message}`);
         result.failed++;
@@ -449,7 +540,11 @@ export async function storeSlideshowObjects(
 }
 
 /** D1 half of slideshow persist: must never run concurrently with other D1. */
-export async function recordSlideshow(videoId: string, keys: string[]): Promise<string[]> {
+export async function recordSlideshow(
+  videoId: string,
+  keys: string[],
+  opts?: { hydrated?: boolean },
+): Promise<string[]> {
   const row = await db.video.findUnique({
     where: { id: videoId },
     select: { rawJson: true, thumbKey: true, thumbStatus: true },
@@ -458,6 +553,7 @@ export async function recordSlideshow(videoId: string, keys: string[]): Promise<
   try { raw = JSON.parse(row?.rawJson || '{}') as Record<string, unknown>; } catch { raw = {}; }
   raw.postKind = 'slideshow';
   raw.slideshowKeys = keys;
+  if (opts?.hydrated) raw.slideshowHydrated = true;
   delete raw.slideshowImages;
   // First slide is the cover the Sources row and unscored cards should show
   // — don't leave them on the TikTok CDN URL when we already own the bytes.
@@ -488,7 +584,7 @@ export async function persistSlideshow(
     throw new Error('media storage disabled — cannot store slideshow slides');
   }
   const keys = await storeSlideshowObjects(workspaceId, videoId, slides);
-  return recordSlideshow(videoId, keys);
+  return recordSlideshow(videoId, keys, { hydrated: true });
 }
 
 /**
@@ -562,6 +658,26 @@ export async function downloadAndStoreVideo(
  * retention between the DB read and this fetch, or storage being disabled must
  * degrade to the slow path, not lose the analysis.
  */
+/**
+ * Read the stored MP4 into memory — the workerd-safe sibling of
+ * fetchStoredVideo (which writes a temp file). Same floor: anything this
+ * small is an error page.
+ */
+export async function fetchStoredVideoBytes(mediaKey: string): Promise<Uint8Array | null> {
+  if (!isStorageEnabled()) return null;
+  try {
+    const url = await signUrl(mediaBucket(), mediaKey, signedUrlTtlSeconds());
+    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+    if (!res.ok) throw new Error(`signed GET ${res.status}`);
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.byteLength < 1024) throw new Error(`stored object too small (${buf.byteLength}b)`);
+    return buf;
+  } catch (err) {
+    console.warn(`[media] could not read stored MP4 ${mediaKey}: ${(err as Error).message}`);
+    return null;
+  }
+}
+
 export async function fetchStoredVideo(
   mediaKey: string,
   outputPath: string,

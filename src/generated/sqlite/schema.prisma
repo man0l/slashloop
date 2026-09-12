@@ -1,0 +1,653 @@
+// GENERATED from prisma/schema.prisma by src/scripts/sync-sqlite-schema.ts — do not edit.
+// Edit the canonical schema, then re-run the script (see header there).
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/sqlite"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("SQLITE_DB_URL")
+}
+
+/// Mirror of a Supabase auth user (id = the JWT `sub`, i.e. Workspace.ownerId).
+/// Populated by the Supabase→D1 data migration and refreshed at login. Exists
+/// because the weekly digest resolves the owner's email without joining into
+/// Supabase's `auth` schema (src/lib/digest.ts) — once the app runs on D1 there
+/// is no auth schema to read. Phase 4 (Cloudflare-native auth) turns this into
+/// the identity source of truth.
+model User {
+  id        String   @id
+  email     String
+  /// Native Google subject (`google:<sub>`) linked at first Google login.
+  /// Null until then (all migrated Supabase rows start Null). Set together
+  /// with the Workspace.ownerId transfer in src/cf/account-link.ts
+  /// ensureNativeUser() — one Google identity links to at most one User row.
+  googleSub String?  @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Workspace {
+  id                   String   @id @default(uuid())
+  /// Supabase auth user id (JWT `sub`). Null = local single-tenant workspace.
+  /// Not unique — a user may own several workspaces (see WORKSPACE_LIMITS in
+  /// src/lib/workspaces.ts), each billed independently.
+  ownerId              String?
+  name                 String   @default("Default")
+  /// Legacy: reported by get_usage but no longer enforced. Superseded by the
+  /// planCredits/packCredits ledger below (see src/lib/credits.ts). Kept so
+  /// existing rows/tools don't break; do not wire new enforcement to this.
+  monthlyBudgetCents   Int      @default(5000)
+  autoAnalyzeRulesJson String   @default("{}")
+  analysisConfigJson   String   @default("{\"backend\":\"gemini-native\",\"fallback\":\"gemini-text\",\"geminiModel\":\"gemini-3.5-flash\",\"fallbackModel\":\"gemini-3.5-flash-lite\"}")
+  failureCountsJson    String   @default("{}")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  // --- billing ---
+  /// free | creator | pro. Server-controlled — never set this from a
+  /// user-facing tool input. Changed only by the Stripe webhook (Phase 2)
+  /// or a trusted admin path. Billing is per-workspace, not per-seat — a
+  /// user with multiple workspaces pays for each independently. The number
+  /// of workspaces a user may own is gated by WORKSPACE_LIMITS in
+  /// src/lib/workspaces.ts, keyed off the highest plan already held across
+  /// their workspaces (see docs/pricing-research.md §4c).
+  planKey                  String    @default("free")
+  /// Resets to the plan's allotment on each billing-period renewal.
+  planCredits              Int       @default(300)
+  /// Purchased top-up credits. Never expire, never reset. Drained only after
+  /// planCredits is exhausted (see debitCredits in src/lib/credits.ts).
+  packCredits              Int       @default(0)
+  billingStatus            String    @default("active") // active | past_due | canceled
+  periodStart              DateTime?
+  periodEnd                DateTime?
+  autoTopUp                Boolean   @default(false)
+  stripeCustomerId         String?   @unique
+  stripeSubscriptionId     String?   @unique
+  /// Live and test mode each have their own Customer/Subscription id space
+  /// in Stripe — a live-mode id is meaningless (and errors) against a test
+  /// key. These mirror the two fields above for STRIPE_MODE=test, so
+  /// flipping modes on an already-onboarded workspace doesn't try to reuse
+  /// a live customer with a test key. See customerIdField() in
+  /// src/lib/stripe.ts.
+  stripeTestCustomerId     String?   @unique
+  stripeTestSubscriptionId String?   @unique
+
+  // --- media retention ---
+  /// Days to keep stored cover images / MP4s before the retention sweeper
+  /// deletes them (api/cron/media-retention.ts). User-writable via
+  /// update_settings, but every write goes through validateRetentionDays()
+  /// in src/lib/retention.ts and is rejected above the plan ceiling —
+  /// retention is a COGS lever, same class of field as monthlyBudgetCents.
+  /// See docs/media-storage-plan.md §1.4.
+  thumbRetentionDays Int @default(3)
+  mediaRetentionDays Int @default(3)
+
+  // --- weekly digest ---
+  /// Opt-out for the weekly outlier digest (api/cron/digest.ts). On by
+  /// default — the digest is the retention engine, not marketing.
+  digestEnabled Boolean   @default(true)
+  /// Where the digest goes. Null = the owner's auth.users email. Set from
+  /// the site's email-settings page; one owner may own several workspaces,
+  /// but all of an owner's due digests combine into ONE email to this box.
+  digestEmail   String?
+  /// When the last digest was built+sent. Doubles as the "new outliers"
+  /// watermark and the cron's idempotency gate (≥7 days since = due).
+  lastDigestAt  DateTime?
+  /// Last built digest payload; get_digest serves this between runs.
+  digestJson    String?
+
+  sources              Source[]
+  boards               Board[]
+  hookTests            HookTest[]
+  usageLogs            UsageLog[]
+  autoAnalyzeRuns      AutoAnalyzeRun[]
+  creditLedger         CreditLedger[]
+  mediaJobs            MediaJob[]
+  suggestionDismissals SuggestionDismissal[]
+
+  @@index([ownerId])
+}
+
+/// Append-only audit trail for credit grants/debits. The Workspace row holds
+/// the live balance (for atomic conditional updates); this table explains
+/// how it got there. Unique on [workspaceId, refId] doubles as the
+/// idempotency check — see debitCredits/refundCredits in src/lib/credits.ts.
+model CreditLedger {
+  id           String   @id @default(uuid())
+  workspaceId  String
+  delta        Int // positive = grant, negative = debit
+  bucket       String // plan | pack
+  reason       String // tool_call | usage_settlement | call_failed | subscription_renewal | pack_purchase | adjustment
+  tool         String? // e.g. refresh_source, analyze_video
+  balanceAfter Int // planCredits + packCredits after this entry
+  refId        String // idempotency key (op id, or Stripe event id in Phase 2)
+  createdAt    DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@unique([workspaceId, refId])
+  @@index([workspaceId, createdAt])
+}
+
+/// Idempotency gate for the Stripe webhook (id = Stripe event id). Inserted
+/// in the same transaction as the event's Workspace/CreditLedger mutation —
+/// if the insert fails on a duplicate id, the whole transaction (including
+/// the mutation) rolls back, so a Stripe retry after a transient failure
+/// reprocesses cleanly instead of silently no-op'ing. See
+/// api/stripe/webhook.ts.
+model StripeEvent {
+  id          String   @id
+  type        String
+  payloadJson String
+  processedAt DateTime @default(now())
+}
+
+/// A workspace's "no thanks" on an AI-suggested hashtag/keyword/creator
+/// (src/lib/suggestions.ts) — excluded from both the candidates shown on a
+/// future suggest run and the "already considered" list sent to Gemini, so
+/// a rejected suggestion doesn't keep coming back.
+model SuggestionDismissal {
+  id          String   @id @default(uuid())
+  workspaceId String
+  sourceType  String // hashtag | keyword | creator
+  /// Normalized the same way the tracked-sources dedupe is: lowercase, no
+  /// leading # or @.
+  query       String
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@unique([workspaceId, sourceType, query])
+  @@index([workspaceId])
+}
+
+model Source {
+  id               String    @id @default(uuid())
+  workspaceId      String
+  platform         String // tiktok | reels | shorts
+  sourceType       String // creator | keyword | hashtag | collection
+  query            String
+  language         String    @default("en")
+  videoLimit       Int       @default(50)
+  refreshSchedule  String    @default("manual") // manual | daily | weekly
+  isActive         Boolean   @default(true)
+  /// True when this creator source is the workspace owner's own TikTok.
+  /// Scoring already uses the creator's median, so the gallery reads
+  /// "your video vs your baseline" instead of niche outliers. At most one
+  /// self source per workspace (enforced in sources-service, not a unique
+  /// index — toggling off must stay a plain update).
+  isSelf           Boolean   @default(false)
+  nicheTag         String?
+  createdAt        DateTime  @default(now())
+  lastRefreshedAt  DateTime?
+  consecutiveFails Int       @default(0)
+
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id])
+  videos      Video[]
+  refreshRuns RefreshRun[]
+
+  @@index([workspaceId])
+  @@index([platform])
+  @@index([isActive])
+  // Covers isSelf lookups (posts.ts, gallery.ts, sources-service): equality on
+  // workspaceId + isSelf, optionally + sourceType. Leftmost prefix serves the
+  // two-column form too. D1 is single-threaded — this keeps /api/workspaces
+  // from degrading toward full Source scans.
+  @@index([workspaceId, isSelf, sourceType])
+}
+
+model Video {
+  id               String   @id @default(uuid())
+  sourceId         String
+  platform         String // tiktok | reels | shorts
+  externalId       String
+  url              String
+  thumbnailUrl     String   @default("")
+  creatorHandle    String
+  creatorFollowers Int?
+  caption          String   @default("")
+  postedAt         DateTime
+  views            Int      @default(0)
+  likes            Int      @default(0)
+  comments         Int      @default(0)
+  shares           Int?
+  saves            Int?
+  durationSec      Int?
+  transcript       String?
+  transcriptSource String   @default("none") // captions | asr | none
+  rawJson          String   @default("{}")
+  scrapedAt        DateTime @default(now())
+
+  /// True for a video pulled purely to keep a creator's outlier baseline
+  /// fresh (src/scoring.ts rescoreStaleTooFresh, via runRefresh's
+  /// sourceTypeOverride/queryOverride) rather than found by a source the
+  /// workspace is actually tracking. Persisted so the same creator isn't
+  /// re-scraped on every stale-check pass, but excluded from the Gallery and
+  /// from a Source's video count/preview — it isn't "content", it's baseline
+  /// data. Cleared (promoted to visible) the moment a real, non-override
+  /// refresh legitimately discovers the same video (src/lib/refresh.ts).
+  isBaselineSample Boolean @default(false)
+
+  // --- stored media (docs/media-storage-plan.md) ---
+  /// Object key in the public `thumbs` bucket. Null = not stored; the feed
+  /// falls back to thumbnailUrl above, which stays as provenance and is the
+  /// only way to re-ingest.
+  thumbKey            String?
+  /// none | stored | expired | failed. 'none' means nothing was attempted
+  /// (storage off, or a non-TikTok platform); 'failed' means it was tried.
+  thumbStatus         String    @default("none")
+  thumbStoredAt       DateTime?
+  /// Object key in the private `media` bucket. Reached via signed URL only.
+  mediaKey            String?
+  mediaStatus         String    @default("none")
+  mediaBytes          Int?
+  mediaStoredAt       DateTime?
+  /// Gemini Files API handle for this video's MP4 (docs/media-storage-plan.md
+  /// §2.2). The API keeps an upload ~48h; inside that window a re-analysis
+  /// needs no upload at all, which is the slowest leg after the Apify download.
+  /// Kept on Video rather than Analysis (as §2.2 sketched) because it describes
+  /// the video, not a run — exactly like mediaKey above, and queried the same way.
+  geminiFileUri       String?
+  geminiFileName      String?
+  geminiFileExpiresAt DateTime?
+
+  /// TikTok sound / original audio, when the scrape included musicMeta.
+  soundId     String?
+  soundTitle  String?
+  soundAuthor String?
+
+  source       Source       @relation(fields: [sourceId], references: [id])
+  score        Score?
+  analyses     Analysis[]
+  hooks        Hook[]
+  swipeEntries SwipeEntry[]
+  ideas        Idea[]
+  hookTests    HookTest[]
+
+  /// Fan-out from a shared multi-tenant scrape can be applied twice — by two
+  /// worker containers racing, or (Phase B) by replaying a cached result.
+  /// The constraint is what makes that idempotent instead of duplicating rows;
+  /// src/lib/refresh.ts catches the violation and updates stats instead.
+  @@unique([sourceId, platform, externalId])
+  @@index([sourceId])
+  @@index([platform])
+  @@index([creatorHandle])
+  @@index([postedAt])
+  @@index([views])
+  // Covers posts.ts + benchmark.ts + sources-service filters on
+  // (sourceId, isBaselineSample) with orderBy postedAt. D1 is
+  // single-threaded; without this the gallery/benchmark path degrades from
+  // ~20ms toward 100ms+ per query.
+  @@index([sourceId, isBaselineSample, postedAt])
+  // Retention sweeper scans by stored-at within status; both are covered.
+  @@index([thumbStatus, thumbStoredAt])
+  @@index([mediaStatus, mediaStoredAt])
+  @@index([soundId])
+}
+
+/// One Apify run per canonical query across worker containers. A TTL row
+/// rather than pg_advisory_lock: the workers talk to the Supabase pooler in
+/// transaction pooling mode, where a session-level lock can be released on a
+/// different backend and leak. See src/lib/jobs.ts acquireCanonicalLock.
+model CanonicalScrapeLock {
+  /// canonicalKey(platform, sourceType, normalizedQuery)
+  key       String   @id
+  lockedBy  String
+  lockedAt  DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([expiresAt])
+}
+
+model Baseline {
+  id            String   @id @default(uuid())
+  creatorHandle String
+  platform      String
+  medianViews   Float
+  sampleSize    Int
+  computedAt    DateTime @default(now())
+
+  @@unique([creatorHandle, platform])
+  @@index([creatorHandle])
+}
+
+model Score {
+  videoId      String   @id
+  outlierScore Float
+  scoreType    String   @default("actual") // actual | estimated
+  explanation  String
+  scoredAt     DateTime @default(now())
+
+  video Video @relation(fields: [videoId], references: [id])
+
+  @@index([outlierScore])
+  // Backs both rescoreStaleTooFresh's own query and the pg_cron wake check
+  // (supabase/migrations/20260803130000_pgcron_wake_for_stale_too_fresh.sql).
+  @@index([scoreType])
+}
+
+model Analysis {
+  id            String   @id @default(uuid())
+  videoId       String
+  schemaVersion String   @default("v3")
+  analysisJson  String // JSON string of the analysis
+  analysisBasis String // video | video+transcript | frames+transcript | frames+caption | transcript+thumbnail | transcript-only | thumbnail+caption | caption+metadata-only
+  backend       String   @default("gemini-native") // gemini-native | frames | hybrid
+  model         String   @default("gemini-3.5-flash")
+  costCents     Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  video   Video    @relation(fields: [videoId], references: [id])
+  hooks   Hook[]
+  ideas   Idea[]
+  briefs  Brief[]
+  scripts Script[]
+
+  @@index([videoId])
+}
+
+model Hook {
+  id         String   @id @default(uuid())
+  analysisId String?
+  videoId    String
+  text       String
+  hookType   String // POV | curiosity_gap | bold_claim | pattern_interrupt | question | ...
+  placement  String // spoken | on_screen | visual
+  origin     String   @default("extracted") // extracted | generated
+  nicheTag   String?
+  createdAt  DateTime @default(now())
+
+  analysis Analysis? @relation(fields: [analysisId], references: [id])
+  video    Video     @relation(fields: [videoId], references: [id])
+
+  @@index([hookType])
+  @@index([nicheTag])
+  @@index([origin])
+  // Backs cascade deletes by video (sources-service deleteSourceForWorkspace:
+  // Hook/Idea rows are removed per source via their video relation).
+  @@index([videoId])
+}
+
+model Board {
+  id          String   @id @default(uuid())
+  workspaceId String
+  name        String
+  createdAt   DateTime @default(now())
+
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id])
+  swipeEntries SwipeEntry[]
+
+  @@index([workspaceId])
+}
+
+model SwipeEntry {
+  id                   String   @id @default(uuid())
+  boardId              String
+  videoId              String
+  analysisSnapshotJson String   @default("{}")
+  notes                String   @default("")
+  savedAt              DateTime @default(now())
+
+  board Board @relation(fields: [boardId], references: [id])
+  video Video @relation(fields: [videoId], references: [id])
+
+  @@unique([boardId, videoId])
+  @@index([boardId])
+}
+
+model Idea {
+  id                  String    @id @default(uuid())
+  videoId             String
+  analysisId          String?
+  transferablePattern String
+  whyItWorked         String
+  adaptation          String
+  status              String    @default("new") // new | briefed | tested | archived
+  dueAt               DateTime? // planned post date — the posting queue (get_idea_queue)
+  createdAt           DateTime  @default(now())
+
+  video    Video     @relation(fields: [videoId], references: [id])
+  analysis Analysis? @relation(fields: [analysisId], references: [id])
+  briefs   Brief[]
+
+  @@index([status])
+  // Backs cascade deletes by video (sources-service deleteSourceForWorkspace).
+  @@index([videoId])
+}
+
+model Script {
+  id         String   @id @default(uuid())
+  analysisId String
+  format     String // pov_demo | problem_solution | apps_that_feel_illegal | build_in_public | listicle
+  scriptJson String // JSON string of the script
+  createdAt  DateTime @default(now())
+
+  analysis Analysis @relation(fields: [analysisId], references: [id])
+
+  @@index([analysisId])
+  @@index([format])
+}
+
+model Brief {
+  id         String    @id @default(uuid())
+  ideaId     String?
+  analysisId String
+  briefJson  String
+  exportedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  analysis Analysis? @relation(fields: [analysisId], references: [id])
+  idea     Idea?     @relation(fields: [ideaId], references: [id])
+}
+
+model UsageLog {
+  id          String   @id @default(uuid())
+  workspaceId String
+  kind        String // scrape | ai
+  provider    String
+  units       Int      @default(1)
+  costCents   Int      @default(0)
+  refId       String?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@index([workspaceId])
+  @@index([kind])
+  @@index([createdAt])
+}
+
+/// One AI hook test (docs/product-plan.md, feature #7): a proven outlier video
+/// reduced to one transferable insight plus several generated openings that
+/// inherit everything else about the video — same subject, same beats; only
+/// the first seconds change. V1 is text-only: a version's life ends at a shot
+/// list entry until the render pipeline lands (Phase 3).
+///
+/// At most one open test per video, enforced in src/lib/hook-tests.ts rather
+/// than by a unique index — closing a test must free the video again without
+/// touching its history.
+model HookTest {
+  id          String   @id @default(uuid())
+  workspaceId String
+  /// The proven video the insight is mined from.
+  videoId     String
+  /// The one-sentence "why this grabbed attention" every version inherits.
+  /// Editable on purpose: it is the lock that keeps re-rolls on-strategy.
+  insight     String
+  /// JSON array of strings — the frozen chips shared by every version
+  /// ("face to camera", "same kitchen", ...).
+  sameInJson  String   @default("[]")
+  /// What varies between versions. Only 'hook' in v1; the column exists so
+  /// later levers (first frame, sound) don't need a migration.
+  lever       String   @default("hook")
+  /// The storytelling-beat skeleton copied into every version
+  /// ([{type, timestampSec?, description}, ...]).
+  beatsJson   String   @default("[]")
+  /// Plain-language stop rule surfaced beside the versions ("stop when one
+  /// version clears 3× your median"). Advisory in v1.
+  stopRule    String?
+  /// setup → picking → posted → won | closed. Transitions past 'picking'
+  /// arrive with the render/post integrations (Phase 3); v1 moves
+  /// setup→picking via pick_hook_versions, and anything can be closed.
+  status      String   @default("setup")
+  /// Which opening won when the test closed as 'won' ("C"). Manual in v1 —
+  /// Phase 4 replaces it with auto-scoring against the owner baseline; the
+  /// column exists so surfaces can say "C won" from day one.
+  winnerLabel String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id])
+  video     Video         @relation(fields: [videoId], references: [id])
+  versions  HookVersion[]
+
+  @@index([workspaceId, status])
+  @@index([videoId])
+}
+
+/// One generated opening inside a hook test. Labels run A–D within a
+/// generation round; re-rolling marks the previous round discarded rather
+/// than deleting it, so the trial-and-error trail stays readable.
+model HookVersion {
+  id         String   @id @default(uuid())
+  testId     String
+  /// A | B | C | D — meaningful within a round; round disambiguates.
+  label      String
+  round      Int      @default(1)
+  hookText   String
+  /// What the very first frame shows. An opening is audiovisual, not just a
+  /// sentence — the spec pins both fields together.
+  firstFrame String?
+  /// recognition | specific_number | contrarian | demo_first
+  hookType   String
+  mechanism  String?
+  /// proposed → picked → rendered → posted → scored. 'discarded' covers both
+  /// superseded re-roll generations and proposals passed over at pick time.
+  status     String   @default("proposed")
+  /// Phase 3: the rendered MP4 (vault path /content/tests/<testId>/<label>.mp4).
+  assetUrl   String?
+  /// Phase 3: matched against the isSelf feed once a version goes live.
+  ownPostId  String?
+  createdAt  DateTime @default(now())
+
+  test HookTest @relation(fields: [testId], references: [id])
+
+  @@unique([testId, round, label])
+  @@index([testId])
+}
+
+model RefreshRun {
+  id          String   @id @default(uuid())
+  sourceId    String
+  itemsPulled Int      @default(0)
+  newVideos   Int      @default(0)
+  errorsJson  String   @default("[]")
+  costCents   Int      @default(0)
+  ranAt       DateTime @default(now())
+
+  source Source @relation(fields: [sourceId], references: [id])
+
+  @@index([sourceId])
+  @@index([ranAt])
+}
+
+model AutoAnalyzeRun {
+  id             String   @id @default(uuid())
+  workspaceId    String
+  candidateCount Int      @default(0)
+  analyzedCount  Int      @default(0)
+  skippedCount   Int      @default(0)
+  failedCount    Int      @default(0)
+  totalCostCents Int      @default(0)
+  batchMode      Boolean  @default(true)
+  resultsJson    String   @default("[]")
+  ranAt          DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@index([workspaceId])
+  @@index([ranAt])
+}
+
+/// Work that cannot finish inside one request. See docs/media-storage-plan.md §3.3.
+///
+/// gemini-native has to download the MP4, upload it, wait for Gemini to process
+/// it and then generate — which does not fit the 60s function ceiling, and that
+/// ceiling is not raisable on the current Vercel plan. So analyze_video records
+/// the intent here and a worker invocation does the work on its own budget.
+///
+/// Claim protocol: the worker flips queued -> running with startedAt in a single
+/// conditional UPDATE, so two workers racing the same row cannot both win. A
+/// worker killed mid-flight leaves the row in `running` forever, so the daily
+/// sweeper returns rows stuck past a threshold to `queued`. attempts guards the
+/// resulting retry loop.
+model MediaJob {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  /// Null for source-scoped kinds (refresh) and for discover probes (no
+  /// source exists yet). For every kind except discover, exactly one of
+  /// videoId/sourceId is set — enforced by MediaJob_one_target in
+  /// supabase/migrations, since Prisma cannot express that CHECK.
+  videoId        String?
+  /// Set for source-scoped kinds. A refresh targets a Source, not a Video.
+  sourceId       String?
+  /// analyze | fetch | refresh | rescore | thumb | discover. Named rather than
+  /// implied so work like this shares the queue instead of growing a second one.
+  kind           String    @default("analyze")
+  /// Hard wall clock for callers waiting on this job. await_job refuses to
+  /// report shouldKeepPolling once past it, so a waiter terminates even if the
+  /// worker never reports back. Null means no deadline.
+  deadlineAt     DateTime?
+  /// Credits debited at enqueue. reclaimStuckJobs refunds THIS amount rather
+  /// than assuming the analyze price — a refresh pre-auth scales with
+  /// videoLimit, so a fixed refund would be wrong in both directions.
+  preAuthCredits Int?
+  /// queued | running | done | failed
+  status         String    @default("queued")
+  attempts       Int       @default(0)
+  lastError      String?
+  /// Call options captured at enqueue time (e.g. forceBackend), applied by the
+  /// worker. The request that chose them is long gone by the time it runs.
+  payloadJson    String    @default("{}")
+  /// Credit pre-authorisation reference. The caller is debited at enqueue, so
+  /// the worker owns the refund when a job fails terminally.
+  opId           String?
+  /// Set on success, so get_video can point at the result without a join.
+  analysisId     String?
+  createdAt      DateTime  @default(now())
+  startedAt      DateTime?
+  finishedAt     DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  // The worker's claim query: oldest queued row first.
+  @@index([status, createdAt])
+  // The stuck-claim sweep: running rows older than the cutoff. Without this
+  // the sweep is a full MediaJob scan over the D1 HTTP API (observed: request
+  // timeouts on every worker, every loop).
+  @@index([status, startedAt])
+  // get_video asks "is there a job for this video right now?"
+  @@index([videoId, status])
+  @@index([workspaceId])
+  // Covers outstandingJobForSource (jobs.ts) + sources-service lookups:
+  // WHERE sourceId + status + kind (queued/running refresh). Without this the
+  // /api/workspaces fan-out does full MediaJob scans over the D1 HTTP API.
+  @@index([sourceId, status, kind])
+}
+
+/// One-row incident marker for the scraping-failure email alert
+/// (src/lib/scrape-alert.ts). Written only via raw SQL so the
+/// notifiedAt NULL -> set flip is atomic across the two worker containers:
+/// notifiedAt NULL = armed (next scrape outage sends exactly one email), set =
+/// incident open (repeat failures stay silent). The first successful scrape
+/// re-arms it. Never touched through the Prisma client — no relation, no
+/// queries; the model exists so schema.prisma stays the schema's source of
+/// truth (see README "Schema changes").
+model ScrapeAlertState {
+  id         String    @id @default("scrape")
+  notifiedAt DateTime?
+  lastError  String?
+  updatedAt  DateTime  @default(now())
+}

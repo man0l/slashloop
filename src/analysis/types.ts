@@ -34,6 +34,12 @@ export interface AnalysisContext {
    */
   thumbImageUrl?: string | null;
   /**
+   * Public URLs of stored photo-carousel slides, in display order. gemini-text
+   * attaches every one so a slideshow is analysed slide-by-slide, not as a
+   * single cover thumbnail.
+   */
+  slideImageUrls?: string[];
+  /**
    * A live Gemini Files API handle for this video's MP4, if one is still valid
    * (Phase 2.2). Present = gemini-native can skip the upload entirely.
    */
@@ -207,6 +213,7 @@ export function basisToConfidence(basis: string): 'high' | 'medium' | 'low' {
     case 'frames+transcript':
     case 'transcript+thumbnail':
     case 'transcript-only':
+    case 'slideshow+caption':
       return 'high';
     case 'frames+caption':
     case 'thumbnail+caption':

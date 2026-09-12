@@ -48,7 +48,7 @@ const dry = (n: number) =>
   Array.from({ length: n }, () => ({ newVideos: 0, itemsPulled: 5 }));
 
 beforeEach(() => {
-  videoCount = 40;
+  videoCount = 80;
   recentRuns = productive(REFRESH_DRY_RUN_LOOKBACK);
   newestPostedAt = null;
 });
@@ -61,7 +61,7 @@ describe('refresh-policy constants', () => {
 
   test('bootstrap cap is larger than incremental but still bounded', () => {
     expect(REFRESH_BOOTSTRAP_CAP).toBeGreaterThan(REFRESH_INCREMENTAL_DEFAULT);
-    expect(REFRESH_BOOTSTRAP_CAP).toBeLessThanOrEqual(30);
+    expect(REFRESH_BOOTSTRAP_CAP).toBeLessThanOrEqual(100);
   });
 
   test('incremental cap does not exceed bootstrap', () => {
@@ -76,12 +76,15 @@ describe('refresh-policy constants', () => {
 });
 
 describe('resolveRefreshPlan — page size', () => {
-  test('an empty source bootstraps, capped well below its legacy videoLimit', async () => {
+  test('an empty source bootstraps at its videoLimit, capped at REFRESH_BOOTSTRAP_CAP', async () => {
     videoCount = 0;
     const plan = await resolveRefreshPlan(source({ videoLimit: 50 }));
     expect(plan.mode).toBe('bootstrap');
-    expect(plan.limit).toBe(REFRESH_BOOTSTRAP_CAP);
+    expect(plan.limit).toBe(50);
     expect(plan.dry).toBe(false);
+
+    const capped = await resolveRefreshPlan(source({ videoLimit: 200 }));
+    expect(capped.limit).toBe(REFRESH_BOOTSTRAP_CAP);
   });
 
   test('an established source pulls a small incremental page, not its videoLimit', async () => {
@@ -141,7 +144,7 @@ describe('resolveRefreshPlan — dry-source backoff', () => {
     recentRuns = dry(REFRESH_DRY_RUN_LOOKBACK);
     const plan = await resolveRefreshPlan(source());
     expect(plan.dry).toBe(false);
-    expect(plan.limit).toBe(REFRESH_BOOTSTRAP_CAP);
+    expect(plan.limit).toBe(50);
   });
 
   test('the queue passing the policy limit back in does not defeat the backoff', async () => {
