@@ -14,6 +14,33 @@
 import { db } from '../../src/db.js';
 import { dbDialect, rawBatch, type RawStatement } from '../../src/store.js';
 import { deleteObjects, isStorageEnabled, thumbBucket, mediaBucket } from '../../src/lib/storage.js';
+import {
+  streamConfig, listStreamVideos, deleteStreamVideo, orphanedStreamVideos,
+  type StreamListedVideo,
+} from '../../src/lib/stream-frames.js';
+
+/**
+ * Stream copies are billed per stored MINUTE forever, so a leaked copy is a
+ * standing cost. Normal lifetime is minutes (the stepper deletes on success
+ * AND on failure); anything older than 12h is a leak from a crash between
+ * copy-success and payload-save — delete it purely on age + tag, no DB lookup.
+ */
+const STREAM_ORPHAN_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+/** Delete tagged Stream copies older than the orphan age. Best-effort per video. */
+async function sweepStreamOrphans(): Promise<{ listed: number; deleted: number }> {
+  const config = streamConfig();
+  if (!config) return { listed: 0, deleted: 0 };
+  const videos = await listStreamVideos(config);
+  const orphans = orphanedStreamVideos(videos as StreamListedVideo[], Date.now(), STREAM_ORPHAN_MAX_AGE_MS);
+  let deleted = 0;
+  for (const orphan of orphans) {
+    await deleteStreamVideo(config, orphan.uid)
+      .then(() => { deleted++; })
+      .catch((err: unknown) => console.warn(`[retention] stream orphan ${orphan.uid}: ${(err as Error).message}`));
+  }
+  return { listed: videos.length, deleted };
+}
 
 /** Max rows handled per bucket per run. A backlog drains over several days. */
 const BATCH_LIMIT = 1000;
@@ -262,6 +289,7 @@ export async function GET(request: Request): Promise<Response> {
   let thumbs = { scanned: 0, deleted: 0 };
   let media = { scanned: 0, deleted: 0 };
   let listings = { scanned: 0, deleted: 0 };
+  let stream = { listed: 0, deleted: 0 };
 
   // Independent sweeps: a bucket-level (or table-level) failure on one must
   // not stop the others.
@@ -283,11 +311,17 @@ export async function GET(request: Request): Promise<Response> {
   } catch (err) {
     errors.push(`listings: ${(err as Error).message}`);
   }
+  try {
+    stream = await sweepStreamOrphans();
+  } catch (err) {
+    errors.push(`stream: ${(err as Error).message}`);
+  }
 
   const body = {
     thumbs,
     media,
     listings,
+    stream,
     errors,
     // A full batch means there is more to do — the next run picks it up.
     moreToSweep: thumbs.scanned >= BATCH_LIMIT || media.scanned >= BATCH_LIMIT || listings.scanned >= BATCH_LIMIT,

@@ -37,7 +37,8 @@ import {
 } from './recreate-slideshow.js';
 import {
   streamConfig, streamCopyFromUrl, streamVideoStatus,
-  fetchStreamThumbnail, deleteStreamVideo, type StreamVideoStatus,
+  fetchStreamThumbnail, deleteStreamVideo, STREAM_RECREATE_NAME_PREFIX,
+  type StreamVideoStatus,
 } from './stream-frames.js';
 
 export type VideoRecreatePhase = 'plan' | 'copy' | 'wait' | 'slides' | 'done';
@@ -78,7 +79,7 @@ export interface RecreateVideoDeps {
   loadVideo(videoId: string): Promise<(VideoCore & { workspaceId: string }) | null>;
   signMediaUrl(mediaKey: string): Promise<string | null>;
   planSlides(video: VideoCore): Promise<VideoSlidePlanResult>;
-  streamCopy(signedUrl: string): Promise<string>;
+  streamCopy(signedUrl: string, videoId: string): Promise<string>;
   streamStatus(uid: string): Promise<StreamVideoStatus>;
   streamThumbnail(uid: string, tSec: number, baseThumbnailUrl: string): Promise<Uint8Array>;
   streamDelete(uid: string): Promise<void>;
@@ -139,7 +140,7 @@ export function defaultRecreateVideoDeps(): RecreateVideoDeps {
         geminiFile: liveGeminiFile(video),
       });
     },
-    streamCopy: (url) => streamCopyFromUrl(config, url),
+    streamCopy: (url, videoId) => streamCopyFromUrl(config, url, { name: `${STREAM_RECREATE_NAME_PREFIX}${videoId}` }),
     streamStatus: (uid) => streamVideoStatus(config, uid),
     streamThumbnail: (uid, tSec, base) => fetchStreamThumbnail(config, uid, tSec, base),
     streamDelete: (uid) => deleteStreamVideo(config, uid),
@@ -261,7 +262,7 @@ export async function advanceRecreateVideoJob(
     if (!video.mediaKey) throw new Error('Store the video first (Download video), then recreate it as a slideshow.');
     const signedUrl = await deps.signMediaUrl(video.mediaKey);
     if (!signedUrl) throw new Error('Could not sign the stored MP4 for Stream.');
-    const uid = await deps.streamCopy(signedUrl);
+    const uid = await deps.streamCopy(signedUrl, video.id);
     payload.streamUid = uid;
     payload.phase = 'wait';
     await deps.savePayload(job.id, payload);

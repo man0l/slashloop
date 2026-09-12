@@ -56,22 +56,91 @@ async function unwrap(res: Response, what: string): Promise<Record<string, unkno
  * Have Stream ingest a video by URL (our signed R2 link) — no bytes through
  * the Worker. Resolves with the Stream UID once the copy is ACCEPTED; the
  * video is usually still processing at that point.
+ *
+ * `name` (when given) tags the copy so the daily retention sweep can find and
+ * delete orphans — a Worker crash between copy-success and payload-save would
+ * otherwise leave an untracked, forever-billed video behind.
  */
 export async function streamCopyFromUrl(
   config: StreamConfig,
   url: string,
+  opts: { name?: string; maxDurationSec?: number } = {},
   fetchImpl: FetchLike = fetch,
 ): Promise<string> {
   const res = await fetchImpl(`${STREAM_API}/${config.accountId}/stream/copy`, {
     method: 'POST',
     headers: authHeaders(config),
     signal: AbortSignal.timeout(30_000),
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({
+      url,
+      // Bounded ingest: TikTok clips are seconds long — anything bigger means
+      // something is wrong upstream, and Stream bills by stored minutes.
+      maxDurationSec: opts.maxDurationSec ?? 600,
+      ...(opts.name ? { meta: { name: opts.name } } : {}),
+    }),
   });
   const result = await unwrap(res, 'copy');
   const uid = result.uid as string | undefined;
   if (!uid) throw new Error('Stream copy returned no uid');
   return uid;
+}
+
+export interface StreamListedVideo {
+  uid: string;
+  /** ISO timestamp of when Stream accepted the upload. */
+  created: string | null;
+  /** meta.name, when the upload carried one. */
+  name?: string;
+}
+
+/** List account videos, a bounded number of pages' worth. */
+export async function listStreamVideos(
+  config: StreamConfig,
+  opts: { pages?: number; perPage?: number } = {},
+  fetchImpl: FetchLike = fetch,
+): Promise<StreamListedVideo[]> {
+  const pages = Math.min(Math.max(opts.pages ?? 3, 1), 10);
+  const perPage = Math.min(Math.max(opts.perPage ?? 100, 1), 100);
+  const out: StreamListedVideo[] = [];
+  for (let page = 1; page <= pages; page++) {
+    const res = await fetchImpl(`${STREAM_API}/${config.accountId}/stream?per_page=${perPage}&page=${page}`, {
+      headers: { Authorization: `Bearer ${config.token}` },
+      signal: AbortSignal.timeout(30_000),
+    });
+    const result = await unwrap(res, 'list');
+    const rows = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : [];
+    for (const row of rows) {
+      out.push({
+        uid: row.uid as string,
+        created: typeof row.created === 'string' ? row.created : null,
+        name: (row.meta as { name?: string } | undefined)?.name,
+      });
+    }
+    if (rows.length < perPage) break;
+  }
+  return out;
+}
+
+export const STREAM_RECREATE_NAME_PREFIX = 'slashloop-recreate:';
+
+/**
+ * Orphan guard: recreations tag their Stream copies with
+ * `slashloop-recreate:<videoId>` and are deleted as soon as the frames are
+ * extracted (normally < 1h). Anything still here after `maxAgeMs` is a leak —
+ * delete it regardless of what went wrong upstream.
+ */
+export function orphanedStreamVideos(
+  videos: StreamListedVideo[],
+  nowMs: number,
+  maxAgeMs: number,
+): StreamListedVideo[] {
+  return videos.filter(v => {
+    if (!v.uid || !v.name || !v.name.startsWith(STREAM_RECREATE_NAME_PREFIX)) return false;
+    if (!v.created) return false;
+    const created = Date.parse(v.created);
+    if (!Number.isFinite(created)) return false;
+    return nowMs - created > maxAgeMs;
+  });
 }
 
 export interface StreamVideoStatus {

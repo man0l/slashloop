@@ -64,7 +64,7 @@ function makeWorld(overrides: Partial<RecreateVideoDeps> = {}) {
     loadVideo: async () => ({ ...VIDEO }),
     signMediaUrl: async () => 'https://r2.signed/v-1.mp4',
     planSlides: async () => PLAN,
-    streamCopy: async (url) => { calls.streamCopy.push(url); return 'uid-9'; },
+    streamCopy: async (url, videoId) => { calls.streamCopy.push(`${url}|${videoId}`); return 'uid-9'; },
     streamStatus: async () => ({ ready: true, state: 'ready', thumbnailUrl: 'https://customer-abc.cloudflarestream.com/uid-9/thumbnails/thumbnail.jpg' }),
     streamThumbnail: async (_uid, tSec) => { calls.streamThumbnails.push(tSec); return new Uint8Array(2048).fill(2); },
     streamDelete: async (uid) => { calls.streamDeleted.push(uid); },
@@ -102,7 +102,7 @@ describe('advanceRecreateVideoJob', () => {
     await w.tick(); // copy
     expect(w.payload.phase).toBe('wait');
     expect(w.payload.streamUid).toBe('uid-9');
-    expect(w.calls.streamCopy[0]).toBe('https://r2.signed/v-1.mp4');
+    expect(w.calls.streamCopy[0]).toBe('https://r2.signed/v-1.mp4|v-1'); // url|videoId — the tag the retention sweep keys on
 
     await w.tick(); // wait → ready
     expect(w.payload.phase).toBe('slides');
