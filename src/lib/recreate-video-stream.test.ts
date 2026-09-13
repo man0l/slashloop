@@ -108,16 +108,12 @@ describe('advanceRecreateVideoJob', () => {
     expect(w.payload.phase).toBe('slides');
     expect(w.payload.thumbBase).toContain('/uid-9/thumbnails/thumbnail.jpg');
 
-    await w.tick(); // slide 1
-    await w.tick(); // slide 2
-    expect(w.payload.phase).toBe('slides');
-    expect(w.payload.slideIndex).toBe(2);
-    expect(w.payload.keys).toHaveLength(2);
-
-    await w.tick(); // slide 3 → finalize inside the same tick
+    // one 'slides' advance generates ALL remaining slides in parallel and
+    // finalizes in the same call
+    await w.tick();
     expect(w.calls.completed).toBe(1);
     expect(w.calls.stamped).toHaveLength(3);
-    expect(w.calls.streamThumbnails).toEqual([0.5, 4.5, 10]);
+    expect([...w.calls.streamThumbnails].sort((a, b) => a - b)).toEqual([0.5, 4.5, 10]);
     expect(w.calls.generate).toHaveLength(3);
     // finalize completes the job with the full payload — it never savePayloads
     expect(w.calls.completedPayload!.costUsd).toBeCloseTo(0.03);
