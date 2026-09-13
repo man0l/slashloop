@@ -287,15 +287,27 @@ export async function recreateSlideshowForWorkspace(
   });
   // Instant start on the Worker: drive the whole pipeline in this request's
   // background instead of waiting for the next */2 tick (the cron remains the
-  // resume net). No-op off the Worker (keepAlive returns false on Node) and
-  // without Stream credentials — the drive throws, the job stays queued, and
-  // failAbandonedQueuedJobs eventually fails + refunds it.
+  // resume net). The claim marks the row running AND seeds the stepAt lease —
+  // otherwise the cron's resume path sees a stale-lease running row and a
+  // second drive races this one (double plan calls, duplicated keys). No-op
+  // off the Worker (keepAlive returns false on Node).
   keepAlive(
-    driveVideoRecreateJob(
-      job as unknown as Parameters<typeof driveVideoRecreateJob>[0],
-      defaultRecreateVideoDeps(),
-      Date.now() + 600_000,
-    ).catch((err: unknown) => console.warn(`[recreate] enqueue drive failed for ${videoId} (cron resumes): ${(err as Error).message}`)),
+    (async () => {
+      const claimed = await db.mediaJob.update({
+        where: { id: job.id },
+        data: {
+          status: 'running',
+          startedAt: new Date(),
+          attempts: { increment: 1 },
+          payloadJson: JSON.stringify({ mode: 'video', stepAt: Date.now() }),
+        },
+      });
+      await driveVideoRecreateJob(
+        claimed as unknown as Parameters<typeof driveVideoRecreateJob>[0],
+        defaultRecreateVideoDeps(),
+        Date.now() + 600_000,
+      );
+    })().catch((err: unknown) => console.warn(`[recreate] enqueue drive failed for ${videoId} (cron resumes): ${(err as Error).message}`)),
   );
   const dispatch = await dispatchWorker();
   const balance = await creditBalance(workspace.id);
