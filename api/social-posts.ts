@@ -150,22 +150,27 @@ export async function POST(request: Request): Promise<Response> {
   const selected = integrations.filter((i) => integrationIds.includes(i.id));
   if (!selected.length) return json(400, { error: 'no_valid_integrations' }, request);
 
-  // Early per-provider validation so the composer can show the reason before
-  // the post is even queued.
+  // Per-provider validation. Invalid platforms are SKIPPED with their reason
+  // (the gallery pushes one deck to many platforms and TikTok's 35-photo
+  // rules differ from Instagram's 10) — the post still schedules for the
+  // platforms that accept it. 422 only when nothing is schedulable.
   const registry = createRegistry({});
   const settingsByIntegration = body.settings ?? {};
+  const valid: typeof selected = [];
+  const skipped: Array<{ provider: string; message: string }> = [];
   for (const integration of selected) {
     const settings = settingsByIntegration[integration.id] ?? {};
-    const providerMedia = media.length ? media : [];
-    const validity = getProvider(registry, integration.provider).checkValidity({ message: body.content, settings, media: providerMedia });
-    if (validity !== true) {
-      return json(422, { error: 'invalid_for_provider', provider: integration.provider, message: validity }, request);
-    }
+    const validity = getProvider(registry, integration.provider).checkValidity({ message: body.content, settings, media });
+    if (validity === true) valid.push(integration);
+    else skipped.push({ provider: integration.provider, message: validity });
+  }
+  if (!valid.length) {
+    return json(422, { error: 'invalid_for_provider', skipped }, request);
   }
 
   const groupId = crypto.randomUUID();
   await socialStore.createPostGroup(
-    selected.map((integration) => ({
+    valid.map((integration) => ({
       id: crypto.randomUUID(),
       groupId,
       ownerId: claims.sub,
@@ -177,7 +182,7 @@ export async function POST(request: Request): Promise<Response> {
     })),
   );
 
-  return json(201, { groupId, posts: selected.length, publishDate }, request);
+  return json(201, { groupId, posts: valid.length, publishDate, skipped }, request);
 }
 
 // ── reschedule / delete ─────────────────────────────────────────────────────
