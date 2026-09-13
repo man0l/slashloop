@@ -26,6 +26,7 @@ import {
 import { ingestThumbnails, type ThumbIngestTarget } from '../lib/media.js';
 import { CREDIT_COSTS, refundCredits } from '../lib/credits.js';
 import { tagJobFailure } from '../lib/gemini-errors.js';
+import { isVideoCeilingError } from '../lib/scrapers/proxy-adapter.js';
 import { failureLines } from '../lib/refresh-notes.js';
 import { db } from '../db.js';
 
@@ -454,7 +455,12 @@ export async function processClaimedJob(
       return { ok: true };
     } catch (err) {
       const message = (err as Error).message;
-      const { terminal } = await failJob(job.id, message);
+      // The proxy's video-size refusal is deterministic — the same video reads
+      // above the ceiling on every attempt — so fail terminally instead of
+      // requeuing, and surface it at error level (it means a video we want
+      // cannot be fetched under the current spend cap).
+      const videoTooLarge = isVideoCeilingError(message);
+      const { terminal } = await failJob(job.id, message, videoTooLarge ? { terminal: true } : undefined);
 
       // If the fetch had a pending analysis, refund the pre-debited credits
       // since the analysis will never run. Only refund on terminal failure
@@ -472,7 +478,8 @@ export async function processClaimedJob(
         }
       }
 
-      console.warn(`[worker] fetch job ${job.id} failed (terminal=${terminal}): ${message}`);
+      if (videoTooLarge) console.error(`[worker] fetch job ${job.id} failed (terminal=${terminal}): ${message}`);
+      else console.warn(`[worker] fetch job ${job.id} failed (terminal=${terminal}): ${message}`);
       return { ok: false, error: message };
     }
   }

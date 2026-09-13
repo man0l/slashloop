@@ -51,6 +51,13 @@ import {
 
 export const PROXY_PROVIDER_NAME = 'proxy';
 
+/** True when a failure is the deterministic video-size refusal (both the
+ *  declared-size variant and the mid-download abort). Such a failure reads
+ *  identically on every retry, so callers must not requeue the job. */
+export function isVideoCeilingError(message: string): boolean {
+  return message.includes('SCRAPER_PROXY_MAX_VIDEO_MB ceiling');
+}
+
 /** Hard ceiling on one video download. Above this we would rather have no
  *  video than a surprise gigabyte. */
 function maxVideoBytes(): number {
