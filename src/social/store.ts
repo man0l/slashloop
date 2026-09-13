@@ -165,21 +165,25 @@ export interface CreatePostInput {
   content: string;
   settings: Record<string, unknown>;
   media: Array<{ type: 'image' | 'video'; url: string; alt?: string; thumbnail?: string }>;
+  /** 'DRAFT' rows carry publishDate 0 until scheduled. */
+  state?: 'QUEUE' | 'DRAFT';
 }
 
 export async function createPostGroup(inputs: CreatePostInput[]): Promise<void> {
   if (!inputs.length) return;
   const now = nowSeconds();
+  const state = inputs[0]?.state === 'DRAFT' ? 'DRAFT' : 'QUEUE';
   const statements: RawStatement[] = inputs.map((input) => ({
     sql: `INSERT INTO social_posts
             (id, group_id, owner_id, integration_id, provider, state, publish_date, content, settings, media, attempts, created_at, updated_at)
-          VALUES (?1, ?2, ?3, ?4, ?5, 'QUEUE', ?6, ?7, ?8, ?9, 0, ?10, ?10)`,
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?11)`,
     params: [
       input.id,
       input.groupId,
       input.ownerId,
       input.integration.id,
       input.integration.provider,
+      state,
       input.publishDate,
       input.content,
       JSON.stringify(input.settings),
@@ -204,13 +208,29 @@ export async function listPostsInRange(ownerId: string, from: number, to: number
   );
 }
 
+/** Every draft group (dated or not), newest first — the calendar's drafts
+ *  strip. Undated drafts carry publish_date 0 and never appear in ranges. */
+export async function listDrafts(ownerId: string, limit = 50): Promise<SocialPostRow[]> {
+  return rows<SocialPostRow>(
+    await rawBatch([
+      {
+        sql: `SELECT * FROM social_posts WHERE owner_id = ?1 AND state = 'DRAFT'
+              ORDER BY updated_at DESC LIMIT ?2`,
+        params: [ownerId, limit],
+      },
+    ]),
+  );
+}
+
 export async function getPost(id: string): Promise<SocialPostRow | undefined> {
   return rows<SocialPostRow>(await rawBatch([{ sql: 'SELECT * FROM social_posts WHERE id = ?1', params: [id] }]))[0];
 }
 
 /** Reschedule a whole group. PROCESSING rows are rejected (409 upstream):
- *  they are mid-upload and moving them would desync the engine. The change
- *  count comes from SELECT changes() — rawBatch's executor drops D1's meta. */
+ *  they are mid-upload and moving them would desync the engine. DRAFT groups
+ *  reschedule too (they keep their DRAFT state until explicitly scheduled).
+ *  The change count comes from SELECT changes() — rawBatch's executor drops
+ *  D1's meta. */
 export async function rescheduleGroup(ownerId: string, groupId: string, publishDate: number): Promise<{ rescheduled: number; processing: number }> {
   const results = await rawBatch([
     {
@@ -219,7 +239,7 @@ export async function rescheduleGroup(ownerId: string, groupId: string, publishD
     },
     {
       sql: `UPDATE social_posts SET publish_date = ?3, updated_at = ?4
-            WHERE group_id = ?1 AND owner_id = ?2 AND state IN ('QUEUE', 'ERROR')`,
+            WHERE group_id = ?1 AND owner_id = ?2 AND state IN ('QUEUE', 'ERROR', 'DRAFT')`,
       params: [groupId, ownerId, publishDate, nowSeconds()],
     },
     { sql: 'SELECT changes() AS n', params: [] },
@@ -227,6 +247,51 @@ export async function rescheduleGroup(ownerId: string, groupId: string, publishD
   const processing = Number((results[0]?.[0] as { n?: number } | undefined)?.n ?? 0);
   const rescheduled = Number((results[2]?.[0] as { n?: number } | undefined)?.n ?? 0);
   return { rescheduled, processing };
+}
+
+/** Update a draft/queued group's caption and media. PROCESSING/PUBLISHED
+ *  groups are rejected upstream with 409 — only not-yet-published rows. */
+export async function updateGroupContent(
+  ownerId: string,
+  groupId: string,
+  content: string,
+  media: Array<{ type: 'image' | 'video'; url: string; alt?: string; thumbnail?: string }>,
+): Promise<{ updated: number; processing: number }> {
+  const results = await rawBatch([
+    {
+      sql: "SELECT COUNT(*) AS n FROM social_posts WHERE group_id = ?1 AND owner_id = ?2 AND state = 'PROCESSING'",
+      params: [groupId, ownerId],
+    },
+    {
+      sql: `UPDATE social_posts SET content = ?3, media = ?4, updated_at = ?5
+            WHERE group_id = ?1 AND owner_id = ?2 AND state IN ('QUEUE', 'ERROR', 'DRAFT')`,
+      params: [groupId, ownerId, content, JSON.stringify(media), nowSeconds()],
+    },
+    { sql: 'SELECT changes() AS n', params: [] },
+  ]);
+  const processing = Number((results[0]?.[0] as { n?: number } | undefined)?.n ?? 0);
+  const updated = Number((results[2]?.[0] as { n?: number } | undefined)?.n ?? 0);
+  return { updated, processing };
+}
+
+/** Schedule a draft: DRAFT → QUEUE with a publish date. The engine then
+ *  treats it like any scheduled post. */
+export async function scheduleGroup(ownerId: string, groupId: string, publishDate: number): Promise<{ scheduled: number; processing: number }> {
+  const results = await rawBatch([
+    {
+      sql: "SELECT COUNT(*) AS n FROM social_posts WHERE group_id = ?1 AND owner_id = ?2 AND state = 'PROCESSING'",
+      params: [groupId, ownerId],
+    },
+    {
+      sql: `UPDATE social_posts SET state = 'QUEUE', publish_date = ?3, updated_at = ?4
+            WHERE group_id = ?1 AND owner_id = ?2 AND state = 'DRAFT'`,
+      params: [groupId, ownerId, publishDate, nowSeconds()],
+    },
+    { sql: 'SELECT changes() AS n', params: [] },
+  ]);
+  const processing = Number((results[0]?.[0] as { n?: number } | undefined)?.n ?? 0);
+  const scheduled = Number((results[2]?.[0] as { n?: number } | undefined)?.n ?? 0);
+  return { scheduled, processing };
 }
 
 export async function deleteGroup(ownerId: string, groupId: string): Promise<{ deleted: number; processing: number }> {

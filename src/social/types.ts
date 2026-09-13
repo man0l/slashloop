@@ -112,7 +112,7 @@ export interface SocialPostRow {
   owner_id: string;
   integration_id: string;
   provider: ProviderId;
-  state: 'QUEUE' | 'PROCESSING' | 'PUBLISHED' | 'ERROR';
+  state: 'QUEUE' | 'PROCESSING' | 'PUBLISHED' | 'ERROR' | 'DRAFT';
   publish_date: number;
   content: string;
   settings: string | null;

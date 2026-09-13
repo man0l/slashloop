@@ -44,7 +44,8 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   const rows = await socialStore.listPostsInRange(claims.sub, from, to);
-  return json(200, { groups: groupRows(rows) }, request);
+  const drafts = await socialStore.listDrafts(claims.sub);
+  return json(200, { groups: groupRows(rows), drafts: groupRows(drafts) }, request);
 }
 
 export interface CalendarGroup {
@@ -53,8 +54,8 @@ export interface CalendarGroup {
   content: string;
   media: MediaContent[];
   /** Aggregate state for chip coloring: any PROCESSING wins, then ERROR,
-   *  then queued-until, then fully PUBLISHED. */
-  state: 'queued' | 'processing' | 'published' | 'error';
+   *  then queued-until, then fully PUBLISHED; DRAFT groups report 'draft'. */
+  state: 'queued' | 'processing' | 'published' | 'error' | 'draft';
   posts: Array<{
     id: string;
     provider: ProviderId;
@@ -91,7 +92,8 @@ function groupRows(rows: SocialPostRow[]): CalendarGroup[] {
   }
 
   for (const group of byGroup.values()) {
-    if (group.posts.some((p) => p.state === 'PROCESSING')) group.state = 'processing';
+    if (group.posts.every((p) => p.state === 'DRAFT')) group.state = 'draft';
+    else if (group.posts.some((p) => p.state === 'PROCESSING')) group.state = 'processing';
     else if (group.posts.some((p) => p.state === 'ERROR')) group.state = 'error';
     else if (group.posts.every((p) => p.state === 'PUBLISHED')) group.state = 'published';
   }
@@ -113,7 +115,10 @@ interface CreateBody {
   integrationIds?: string[];
   content?: string;
   media?: Array<{ type?: string; url?: string; alt?: string; thumbnail?: string }>;
+  /** Epoch seconds. Optional when draft: true (undated drafts carry 0). */
   publishDate?: number;
+  /** Save as a draft instead of scheduling. */
+  draft?: boolean;
   settings?: Record<string, Record<string, unknown>>;
 }
 
@@ -131,7 +136,8 @@ export async function POST(request: Request): Promise<Response> {
   const integrationIds = (body.integrationIds ?? []).filter((id) => typeof id === 'string' && id);
   if (!integrationIds.length) return json(400, { error: 'no_integrations' }, request);
   if (typeof body.content !== 'string' || !body.content.trim()) return json(400, { error: 'missing_content' }, request);
-  const publishDate = Math.floor(Number(body.publishDate));
+  const asDraft = Boolean(body.draft);
+  const publishDate = asDraft && !Number.isFinite(Number(body.publishDate)) ? 0 : Math.floor(Number(body.publishDate));
   if (!Number.isFinite(publishDate)) return json(400, { error: 'invalid_publish_date' }, request);
 
   const media: MediaContent[] = [];
@@ -179,10 +185,11 @@ export async function POST(request: Request): Promise<Response> {
       content: body.content!.trim(),
       settings: settingsByIntegration[integration.id] ?? {},
       media,
+      state: asDraft ? ('DRAFT' as const) : ('QUEUE' as const),
     })),
   );
 
-  return json(201, { groupId, posts: valid.length, publishDate, skipped }, request);
+  return json(201, { groupId, posts: valid.length, publishDate, draft: asDraft, skipped }, request);
 }
 
 // ── reschedule / delete ─────────────────────────────────────────────────────
@@ -194,19 +201,54 @@ export async function PATCH(request: Request): Promise<Response> {
   const id = new URL(request.url).searchParams.get('id');
   if (!id) return json(400, { error: 'missing_id' }, request);
 
-  let body: { publishDate?: number };
+  let body: {
+    publishDate?: number;
+    /** 'QUEUE' schedules a DRAFT group; absent = plain reschedule. */
+    state?: string;
+    /** Update caption + media (drafts and queued groups only). */
+    content?: string;
+    media?: Array<{ type?: string; url?: string; alt?: string; thumbnail?: string }>;
+  };
   try {
-    body = (await request.json()) as { publishDate?: number };
+    body = (await request.json()) as typeof body;
   } catch {
     return json(400, { error: 'invalid_json' }, request);
   }
-  if (!Number.isFinite(body.publishDate)) return json(400, { error: 'invalid_publish_date' }, request);
 
-  const result = await socialStore.rescheduleGroup(claims.sub, id, Math.floor(body.publishDate!));
-  if (result.processing > 0) {
-    return json(409, { error: 'processing', message: 'A post in this group is publishing right now — try again in a moment.' }, request);
+  const processingGuard = (result: { processing: number }, payload: Record<string, unknown>) =>
+    result.processing > 0
+      ? json(409, { error: 'processing', message: 'A post in this group is publishing right now — try again in a moment.' }, request)
+      : json(200, payload, request);
+
+  // Caption + media update (drafts/queued only — the guard rejects PROCESSING).
+  const hasContent = typeof body.content === 'string';
+  const hasMedia = Array.isArray(body.media);
+  if (hasContent || hasMedia) {
+    const media: MediaContent[] = hasMedia
+      ? body.media!.filter((m) => m?.url && typeof m.url === 'string' && /^https?:\/\//i.test(m.url)).map((m) => ({
+          type: m.type === 'video' ? ('video' as const) : ('image' as const),
+          url: m.url!,
+          ...(m.alt ? { alt: m.alt } : {}),
+          ...(m.thumbnail ? { thumbnail: m.thumbnail } : {}),
+        }))
+      : [];
+    const result = await socialStore.updateGroupContent(claims.sub, id, hasContent ? body.content!.trim() : '', media);
+    return processingGuard(result, { updated: result.updated });
   }
-  return json(200, { rescheduled: result.rescheduled }, request);
+
+  // Schedule a draft (DRAFT → QUEUE with a date).
+  if (body.state === 'QUEUE') {
+    const publishDate = Math.floor(Number(body.publishDate));
+    if (!Number.isFinite(publishDate)) return json(400, { error: 'invalid_publish_date' }, request);
+    const result = await socialStore.scheduleGroup(claims.sub, id, publishDate);
+    return processingGuard(result, { scheduled: result.scheduled, publishDate });
+  }
+
+  // Plain reschedule.
+  const publishDate = Math.floor(Number(body.publishDate));
+  if (!Number.isFinite(publishDate)) return json(400, { error: 'invalid_publish_date' }, request);
+  const result = await socialStore.rescheduleGroup(claims.sub, id, publishDate);
+  return processingGuard(result, { rescheduled: result.rescheduled });
 }
 
 export async function DELETE(request: Request): Promise<Response> {

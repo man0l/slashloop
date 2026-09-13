@@ -25,6 +25,7 @@ import * as cronSocial from '../../api/cron/social.js';
 import * as socialIntegrations from '../../api/social.js';
 import * as socialCallback from '../../api/social-callback.js';
 import * as socialPosts from '../../api/social-posts.js';
+import * as socialUpload from '../../api/social-upload.js';
 import * as internalRawBatch from './internal.js';
 import * as mediaRoutes from './media-routes.js';
 import { loginPage, consentPage } from '../../remote/pages.js';
@@ -134,6 +135,7 @@ const ROUTES: Route[] = [
   // a query param) because the registered redirect URL is
   // /api/social/callback/<provider> while the module dispatches by method.
   { re: /^\/api\/social\/integrations$/, mod: socialIntegrations },
+  { re: /^\/api\/social\/upload$/, mod: socialUpload },
   { re: /^\/api\/social\/callback\/([^/]+?)$/, mod: socialCallback, inject: { callback: '$1' } },
   { re: /^\/api\/social\/posts$/, mod: socialPosts },
   { re: /^\/api\/digest-settings$/, mod: digestSettings },

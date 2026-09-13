@@ -74,14 +74,17 @@ export async function GET(request: Request): Promise<Response> {
   const bucket = isMedia ? bindings.media : bindings.thumbs;
 
   // Size probe so malformed/overlong ranges can fall back to a plain 200 —
-  // and so Content-Range can carry the FULL object size.
+  // and so Content-Range can carry the FULL object size. Ranges apply to
+  // /media always, and to /thumbs for social/ uploads (scheduler media is
+  // fetched with ranged GETs by the engine and pulled by the platforms).
   let fullSize: number | null = null;
   let range: { start: number; end: number } | null = null;
-  if (isMedia && request.headers.get('range')) {
+  const rangeHeader = request.headers.get('range');
+  if (rangeHeader && (isMedia || key.startsWith('social/'))) {
     const head = await bucket.head(key);
     if (!head) return notFound();
     fullSize = head.size;
-    range = parseRange(request.headers.get('range'), head.size);
+    range = parseRange(rangeHeader, head.size);
   }
 
   const obj = await bucket.get(key, range ? { range: { offset: range.start, length: range.end - range.start + 1 } } : undefined);
@@ -90,13 +93,20 @@ export async function GET(request: Request): Promise<Response> {
   const headers = new Headers();
   headers.set('Content-Type', contentTypeFor(key));
   headers.set('Accept-Ranges', 'bytes');
+  if (range && fullSize !== null) {
+    headers.set('Content-Range', `bytes ${range.start}-${range.end}/${fullSize}`);
+    if (isMedia) {
+      // Private: the token IS the capability — never cache on shared proxies.
+      headers.set('Cache-Control', 'private, max-age=3600');
+    } else {
+      headers.set('Cache-Control', IMMUTABLE);
+    }
+    return new Response(obj.body, { status: 206, headers });
+  }
+
   if (isMedia) {
     // Private: the token IS the capability — never cache on shared proxies.
     headers.set('Cache-Control', 'private, max-age=3600');
-    if (range && fullSize !== null) {
-      headers.set('Content-Range', `bytes ${range.start}-${range.end}/${fullSize}`);
-      return new Response(obj.body, { status: 206, headers });
-    }
   } else {
     headers.set('Cache-Control', IMMUTABLE);
   }
