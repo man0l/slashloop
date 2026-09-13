@@ -55,6 +55,9 @@ export interface VideoRecreatePayload {
   thumbBase?: string;
   slideIndex?: number;
   keys?: string[];
+  /** 0-based plan indices whose generation failed (e.g. OpenAI safety
+   *  rejection) — skipped so one bad frame cannot kill the whole deck. */
+  skipped?: number[];
   costUsd?: number;
 }
 
@@ -304,15 +307,34 @@ export async function advanceRecreateVideoJob(
   }
 
   const meta = slides[index];
-  const frame = await deps.streamThumbnail(payload.streamUid, meta.tSec, payload.thumbBase ?? '');
-  const prompt = buildVideoSlidePrompt({
-    slideIndex: index,
-    slideCount: slides.length,
-    caption: video.caption,
-    description: meta.description,
-  });
-  const img = await deps.generateSlide(prompt, `data:image/jpeg;base64,${Buffer.from(frame).toString('base64')}`);
-  if (img.bytes.length < 512) throw new Error(`recreated slide ${index + 1} too small`);
+  let img: { bytes: Uint8Array; contentType: string; costUsd: number };
+  try {
+    const frame = await deps.streamThumbnail(payload.streamUid, meta.tSec, payload.thumbBase ?? '');
+    const prompt = buildVideoSlidePrompt({
+      slideIndex: index,
+      slideCount: slides.length,
+      caption: video.caption,
+      description: meta.description,
+    });
+    img = await deps.generateSlide(prompt, `data:image/jpeg;base64,${Buffer.from(frame).toString('base64')}`);
+    if (img.bytes.length < 512) throw new Error(`recreated slide ${index + 1} too small`);
+  } catch (err) {
+    // The image provider (not the pipeline) rejected THIS frame — the
+    // classic case is OpenAI's safety system on a suggestive keyframe.
+    // Failing the whole job over one frame refunds everything; skipping the
+    // frame ships a smaller deck instead.
+    if (!/safety system|safety_violations/i.test((err as Error).message)) throw err;
+    console.warn(`[recreate-stream] ${video.id}: slide ${index + 1}/${slides.length} rejected by the image provider's safety system — skipping`);
+    payload.skipped = [...(payload.skipped ?? []), index];
+    payload.slideIndex = index + 1;
+    if (payload.slideIndex >= slides.length) {
+      if (!(payload.keys ?? []).length) throw new Error('every slide was rejected by the image provider — nothing to deliver');
+      await finalizeRecreate(job, video, payload, deps);
+      return null;
+    }
+    await deps.savePayload(job.id, payload);
+    return payload;
+  }
   const key = await deps.putSlide(video.workspaceId, video.id, index, img.bytes, img.contentType);
 
   payload.keys = [...(payload.keys ?? []), key];

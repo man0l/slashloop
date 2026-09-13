@@ -188,6 +188,45 @@ describe('driveVideoRecreateJob', () => {
   });
 });
 
+describe('driveVideoRecreateJob', () => {
+  test('runs the whole pipeline in one call — no tick waiting', async () => {
+    const w = makeWorld();
+    await driveVideoRecreateJob(freshJob() as never, w.deps, Date.now() + 30_000, { waitPollMs: 1 });
+    expect(w.calls.completed).toBe(1);
+    expect(w.calls.stamped).toHaveLength(3);
+    expect(w.calls.streamThumbnails).toEqual([0.5, 4.5, 10]);
+    expect(w.calls.streamDeleted).toEqual(['uid-9']);
+  });
+
+  test('a safety-rejected slide is skipped, not fatal', async () => {
+    const w = makeWorld();
+    let rejected = 0;
+    const deps: RecreateVideoDeps = {
+      ...w.deps,
+      generateSlide: async (prompt) => {
+        if (rejected++ === 1) throw new Error('OpenRouter image error 400: safety_violations=[sexual]');
+        return { bytes: new Uint8Array(4096).fill(3), contentType: 'image/jpeg', costUsd: 0.01 };
+      },
+    };
+    await driveVideoRecreateJob(freshJob() as never, deps, Date.now() + 30_000, { waitPollMs: 1 });
+    expect(w.calls.completed).toBe(1);
+    expect(w.calls.stamped).toHaveLength(2); // 2 delivered + 1 skipped
+    expect(w.calls.failed).toHaveLength(0);
+    expect(w.calls.refunded).toBe(0);
+  });
+
+  test('all slides rejected still fails the job', async () => {
+    const w = makeWorld();
+    const deps: RecreateVideoDeps = {
+      ...w.deps,
+      generateSlide: async () => { throw new Error('OpenRouter image error 400: safety_violations'); },
+    };
+    await expect(driveVideoRecreateJob(freshJob() as never, deps, Date.now() + 30_000, { waitPollMs: 1 }))
+      .rejects.toThrow('nothing to deliver');
+    expect(w.calls.completed).toBe(0);
+  });
+});
+
 describe('parseRecreatePayload', () => {
   test('survives garbage payloads', () => {
     expect(parseRecreatePayload('not json')).toEqual({ mode: 'video' });
