@@ -14,6 +14,8 @@ import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, cr
 import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls, resolveRecreationUrls, isPhotoPost, slideshowIsHydrated } from './media.js';
 import { enqueueAnalyzeJob, enqueueFetchJob, enqueueRecreateJob, dispatchWorker, latestReportingJobForVideo, outstandingJobForVideo, latestJobForVideo, type MediaJobRow } from './jobs.js';
 import { classifyGeminiError, errorCodeFor, parseJobLastError, friendlyGeminiMessage, type GeminiErrorCode } from './gemini-errors.js';
+import { keepAlive } from '../cf/wait-until.js';
+import { driveVideoRecreateJob, defaultRecreateVideoDeps } from './recreate-video-stream.js';
 
 export type AnalyzeVideoOutcome =
   | { ok: true; queued: true; job: MediaJobRow; dispatched: boolean; dispatchReason?: string; backend: string; creditsCharged: number; creditsRemaining: number }
@@ -283,6 +285,18 @@ export async function recreateSlideshowForWorkspace(
     preAuthCredits: CREDIT_COSTS.recreateSlideshow,
     payload: { mode: isPhotoPost(video) ? 'photo' : 'video' },
   });
+  // Instant start on the Worker: drive the whole pipeline in this request's
+  // background instead of waiting for the next */2 tick (the cron remains the
+  // resume net). No-op off the Worker (keepAlive returns false on Node) and
+  // without Stream credentials — the drive throws, the job stays queued, and
+  // failAbandonedQueuedJobs eventually fails + refunds it.
+  keepAlive(
+    driveVideoRecreateJob(
+      job as unknown as Parameters<typeof driveVideoRecreateJob>[0],
+      defaultRecreateVideoDeps(),
+      Date.now() + 600_000,
+    ).catch((err: unknown) => console.warn(`[recreate] enqueue drive failed for ${videoId} (cron resumes): ${(err as Error).message}`)),
+  );
   const dispatch = await dispatchWorker();
   const balance = await creditBalance(workspace.id);
   return { ok: true, queued: true, job, dispatched: dispatch.dispatched, creditsCharged: CREDIT_COSTS.recreateSlideshow, creditsRemaining: balance.total };

@@ -12,7 +12,7 @@
 // Without Stream credentials this is a no-op (rows stay queued for the VPS
 // drainer's ffmpeg path).
 
-import { stepRecreateVideoJobs } from '../lib/recreate-video-stream.js';
+import { driveRecreateVideoJobs } from '../lib/recreate-video-stream.js';
 import { streamRecreateConfigured } from '../lib/stream-frames.js';
 
 function json(status: number, body: unknown): Response {
@@ -22,9 +22,10 @@ function json(status: number, body: unknown): Response {
   });
 }
 
-// The slide-gen step is the long pole (~15-25s of OpenRouter wall clock);
-// a 45s budget fits one step per job plus a second job's cheap phase.
-const STEP_BUDGET_MS = 45_000;
+// Whole-pipeline wall budget per invocation (cron handlers get 15 min; leave
+// slack). A deadline mid-drive checkpoints the payload and the next tick
+// resumes the same phase.
+const DRIVE_BUDGET_MS = 600_000;
 
 export async function POST(request: Request): Promise<Response> {
   const secret = process.env.CRON_SECRET;
@@ -35,8 +36,8 @@ export async function POST(request: Request): Promise<Response> {
     return json(200, { skipped: 'stream-not-configured', stepped: 0 });
   }
   const startedAt = Date.now();
-  const result = await stepRecreateVideoJobs(STEP_BUDGET_MS).catch((err: unknown) => ({
-    stepped: 0,
+  const result = await driveRecreateVideoJobs({ wallBudgetMs: DRIVE_BUDGET_MS }).catch((err: unknown) => ({
+    driven: 0,
     error: (err as Error).message,
   }));
   return json(200, { videoRecreate: result, durationMs: Date.now() - startedAt });

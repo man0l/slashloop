@@ -61,6 +61,11 @@ export interface VideoRecreatePayload {
 /** One tick may advance a running job only if the previous step is stale. */
 export const RECREATE_STEP_LEASE_MS = 90_000;
 
+/** Stream-ready polling inside a drive: 4s interval, ~3 min cap before the
+ *  drive yields and the cron resumes the job. */
+export const RECREATE_WAIT_POLL_MS = 4_000;
+export const RECREATE_WAIT_MAX_POLLS = 45;
+
 interface VideoCore {
   id: string;
   caption: string;
@@ -222,7 +227,7 @@ export async function takeVideoRecreateJob(): Promise<MediaJobRow | null> {
 export async function advanceRecreateVideoJob(
   job: Pick<MediaJobRow, 'id' | 'videoId' | 'workspaceId' | 'opId' | 'preAuthCredits' | 'payloadJson'>,
   deps: RecreateVideoDeps,
-): Promise<void> {
+): Promise<VideoRecreatePayload | null> {
   if (!job.videoId) throw new Error('recreate job has no videoId');
   const payload = parseRecreatePayload(job.payloadJson);
 
@@ -255,7 +260,7 @@ export async function advanceRecreateVideoJob(
     payload.planSource = planResult.source;
     payload.phase = 'copy';
     await deps.savePayload(job.id, payload);
-    return;
+    return payload;
   }
 
   if (phase === 'copy') {
@@ -266,7 +271,7 @@ export async function advanceRecreateVideoJob(
     payload.streamUid = uid;
     payload.phase = 'wait';
     await deps.savePayload(job.id, payload);
-    return;
+    return payload;
   }
 
   if (phase === 'wait') {
@@ -274,16 +279,17 @@ export async function advanceRecreateVideoJob(
     const status = await deps.streamStatus(payload.streamUid);
     if (status.state === 'error') throw new Error(`Stream processing failed for ${payload.streamUid}.`);
     if (!status.ready) {
-      // Still processing — write nothing; the next tick asks again.
+      // Still processing — write nothing; the driver polls again after a
+      // short sleep, the tick resumes much later if the driver is gone.
       console.log(`[recreate-stream] ${video.id}: Stream not ready yet (${status.state}), waiting.`);
-      return;
+      return payload;
     }
     if (!status.thumbnailUrl) throw new Error(`Stream video ${payload.streamUid} is ready but returned no thumbnail URL.`);
     payload.thumbBase = status.thumbnailUrl;
     payload.phase = 'slides';
     payload.slideIndex = 0;
     await deps.savePayload(job.id, payload);
-    return;
+    return payload;
   }
 
   // slides — one recreation per tick.
@@ -292,9 +298,9 @@ export async function advanceRecreateVideoJob(
   if (!slides.length) throw new Error('Plan phase never stored slides.');
   const index = payload.slideIndex ?? 0;
   if (index >= slides.length) {
-    // All slides done but not finalized (interrupted between ticks) — finish.
+    // All slides done but not finalized (interrupted mid-drive) — finish.
     await finalizeRecreate(job, video, payload, deps);
-    return;
+    return null;
   }
 
   const meta = slides[index];
@@ -316,9 +322,10 @@ export async function advanceRecreateVideoJob(
 
   if (payload.slideIndex >= slides.length) {
     await finalizeRecreate(job, video, payload, deps);
-    return;
+    return null;
   }
   await deps.savePayload(job.id, payload);
+  return payload;
 }
 
 async function finalizeRecreate(
@@ -347,23 +354,70 @@ export async function failRecreateVideoJob(job: MediaJobRow, deps: RecreateVideo
 }
 
 /**
- * Advance as many video recreations as the drain budget allows — one phase
- * per job per tick. Used by the Cloudflare drain; the VPS worker never calls
- * this (its ffmpeg path claims the same rows through processClaimedJob).
+ * Drive ONE job continuously: phases chain back-to-back inside this call
+ * (plan -> copy -> wait-with-polls -> every slide -> finalize) until it is
+ * done, the wall-clock deadline hits, or Stream keeps us waiting past the
+ * poll cap. The payload checkpoints mean a deadline/kill mid-drive simply
+ * resumes from the same phase on the next trigger — the cron is the safety
+ * net, not the metronome.
  */
-export async function stepRecreateVideoJobs(budgetMs: number): Promise<{ stepped: number }> {
+export async function driveVideoRecreateJob(
+  job: MediaJobRow,
+  deps: RecreateVideoDeps,
+  deadlineMs: number,
+  opts: { waitPollMs?: number } = {},
+): Promise<void> {
+  const waitPollMs = opts.waitPollMs ?? RECREATE_WAIT_POLL_MS;
+  let payload = parseRecreatePayload(job.payloadJson);
+  let waitPolls = 0;
+  let lastPhase = payload.phase ?? 'plan';
+  let lastIndex = payload.slideIndex ?? -1;
+
+  while (Date.now() < deadlineMs) {
+    const advanced = await advanceRecreateVideoJob({ ...job, payloadJson: JSON.stringify(payload) }, deps);
+    if (!advanced) return; // finalized
+    payload = advanced;
+    const phase = payload.phase ?? 'plan';
+    const index = payload.slideIndex ?? -1;
+    if (phase !== lastPhase || index !== lastIndex) {
+      lastPhase = phase;
+      lastIndex = index;
+      waitPolls = 0;
+      continue; // progress — next phase immediately
+    }
+    if (phase === 'wait' && ++waitPolls <= RECREATE_WAIT_MAX_POLLS) {
+      await sleep(waitPollMs);
+      continue; // Stream still processing — poll again
+    }
+    return; // no progress within this drive — a later tick resumes
+  }
+}
+
+/**
+ * Drive as many video recreations as the wall-clock budget allows. The
+ * trigger (cron tick, enqueue poke) starts the drive; the cron is the resume
+ * safety net for anything that outlives its budget.
+ */
+export async function driveRecreateVideoJobs(opts: {
+  wallBudgetMs: number;
+  waitPollMs?: number;
+}): Promise<{ driven: number; error?: string }> {
   const deps = defaultRecreateVideoDeps();
-  let stepped = 0;
   const startedAt = Date.now();
-  while (Date.now() - startedAt < budgetMs) {
+  let driven = 0;
+  while (Date.now() - startedAt < opts.wallBudgetMs) {
     const job = await takeVideoRecreateJob();
     if (!job) break;
     try {
-      await advanceRecreateVideoJob(job, deps);
+      await driveVideoRecreateJob(job, deps, startedAt + opts.wallBudgetMs, {
+        waitPollMs: opts.waitPollMs,
+      });
     } catch (err) {
       await failRecreateVideoJob(job, deps, (err as Error).message);
     }
-    stepped++;
+    driven++;
   }
-  return { stepped };
+  return { driven };
 }
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));

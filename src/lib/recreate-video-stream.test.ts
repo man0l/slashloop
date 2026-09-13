@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   advanceRecreateVideoJob, parseRecreatePayload,
-  failRecreateVideoJob, RECREATE_STEP_LEASE_MS,
+  failRecreateVideoJob, driveVideoRecreateJob, RECREATE_STEP_LEASE_MS,
   type RecreateVideoDeps,
 } from './recreate-video-stream.js';
 
@@ -173,6 +173,17 @@ describe('advanceRecreateVideoJob', () => {
     await failRecreateVideoJob(job, w.deps, 'thumbnail 503');
     expect(w.calls.failed[0]).toContain('thumbnail 503');
     expect(w.calls.refunded).toBe(1);
+    expect(w.calls.streamDeleted).toEqual(['uid-9']);
+  });
+});
+
+describe('driveVideoRecreateJob', () => {
+  test('runs the whole pipeline in one call — no tick waiting', async () => {
+    const w = makeWorld();
+    await driveVideoRecreateJob(freshJob() as never, w.deps, Date.now() + 30_000, { waitPollMs: 1 });
+    expect(w.calls.completed).toBe(1);
+    expect(w.calls.stamped).toHaveLength(3);
+    expect(w.calls.streamThumbnails).toEqual([0.5, 4.5, 10]);
     expect(w.calls.streamDeleted).toEqual(['uid-9']);
   });
 });

@@ -48,7 +48,7 @@
 import { claimNextJob, failAbandonedQueuedJobs, reclaimStuckJobs } from '../../src/lib/jobs.js';
 import { rescoreStaleTooFresh } from '../../src/scoring.js';
 import { processClaimedJob } from '../../src/worker/process-job.js';
-import { stepRecreateVideoJobs } from '../../src/lib/recreate-video-stream.js';
+import { driveRecreateVideoJobs } from '../../src/lib/recreate-video-stream.js';
 import { streamRecreateConfigured } from '../../src/lib/stream-frames.js';
 
 /**
@@ -154,14 +154,14 @@ export async function POST(request: Request): Promise<Response> {
   // (Stream copy → processing wait → Gemini plan → one image-gen per tick),
   // with the state machine in the job's payloadJson. No Stream credentials →
   // the rows stay queued for the VPS drainer's ffmpeg path.
-  let videoRecreate: { stepped: number; error?: string } = { stepped: 0 };
+  let videoRecreate: { driven: number; error?: string } = { driven: 0 };
   if (streamRecreateConfigured()) {
     const remaining = RESERVE_MS - (Date.now() - startedAt);
     if (remaining > 15_000) {
       try {
-        videoRecreate = await stepRecreateVideoJobs(remaining);
+        videoRecreate = await driveRecreateVideoJobs({ wallBudgetMs: remaining });
       } catch (err) {
-        videoRecreate = { stepped: 0, error: (err as Error).message };
+        videoRecreate = { driven: 0, error: (err as Error).message };
       }
     }
   }
