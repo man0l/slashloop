@@ -49,6 +49,12 @@ export default {
         cron === '*/2 * * * *' || cron === '' ? '/api/jobs/video-recreate'
         : cron === '0 3 * * *' ? '/api/cron/media-retention'
         : cron === '0 9 * * 1' ? '/api/cron/digest'
+        // Social post scheduler engine (src/social/): claims due posts and
+        // advances pending ones. Kept deliberately lightweight (indexed,
+        // LIMIT-bounded) — it must not recreate the queue-drain D1 contention
+        // that got the old */1 drain disabled.
+        : cron === '*/1 * * * *' ? '/api/cron/social'
+        : cron === '0 5 * * *' ? '/api/cron/social?refresh=1'
         : null;
       if (!path) {
         console.warn(`[worker] unknown cron: ${cron}`);

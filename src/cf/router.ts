@@ -21,6 +21,10 @@ import * as jobsAnalyze from '../../api/jobs/analyze.js';
 import * as videoRecreateCron from './video-recreate-cron.js';
 import * as cronDigest from '../../api/cron/digest.js';
 import * as cronRetention from '../../api/cron/media-retention.js';
+import * as cronSocial from '../../api/cron/social.js';
+import * as socialIntegrations from '../../api/social.js';
+import * as socialCallback from '../../api/social-callback.js';
+import * as socialPosts from '../../api/social-posts.js';
 import * as internalRawBatch from './internal.js';
 import * as mediaRoutes from './media-routes.js';
 import { loginPage, consentPage } from '../../remote/pages.js';
@@ -124,6 +128,14 @@ const ROUTES: Route[] = [
   // crons / internals.
   { re: /^\/api\/cron\/media-retention$/, mod: cronRetention },
   { re: /^\/api\/cron\/digest$/, mod: cronDigest },
+  { re: /^\/api\/cron\/social$/, mod: cronSocial },
+  // Social post scheduler (src/social/, docs/postiz-reuse-research.md).
+  // The callback keeps the provider in ?callback= (regex capture injected as
+  // a query param) because the registered redirect URL is
+  // /api/social/callback/<provider> while the module dispatches by method.
+  { re: /^\/api\/social\/integrations$/, mod: socialIntegrations },
+  { re: /^\/api\/social\/callback\/([^/]+?)$/, mod: socialCallback, inject: { callback: '$1' } },
+  { re: /^\/api\/social\/posts$/, mod: socialPosts },
   { re: /^\/api\/digest-settings$/, mod: digestSettings },
   { re: /^\/api\/jobs\/analyze$/, mod: jobsAnalyze },
   { re: /^\/api\/jobs\/video-recreate$/, mod: videoRecreateCron },
