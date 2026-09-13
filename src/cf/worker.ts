@@ -49,12 +49,6 @@ export default {
         cron === '*/2 * * * *' || cron === '' ? '/api/jobs/video-recreate'
         : cron === '0 3 * * *' ? '/api/cron/media-retention'
         : cron === '0 9 * * 1' ? '/api/cron/digest'
-        // Social post scheduler engine (src/social/): claims due posts and
-        // advances pending ones. Kept deliberately lightweight (indexed,
-        // LIMIT-bounded) — it must not recreate the queue-drain D1 contention
-        // that got the old */1 drain disabled.
-        : cron === '*/1 * * * *' ? '/api/cron/social'
-        : cron === '0 5 * * *' ? '/api/cron/social?refresh=1'
         : null;
       if (!path) {
         console.warn(`[worker] unknown cron: ${cron}`);
@@ -84,6 +78,28 @@ export default {
         });
       ctx.waitUntil(ran);
       await ran;
+
+      // The social scheduler engine chains onto the */2 tick (separate cron
+      // triggers would exceed the Workers Free account cap of 5). The stepper
+      // above must not be blocked by a slow platform upload, and vice versa —
+      // run the tick after the stepper settles, failures logged, never thrown.
+      if (path === '/api/jobs/video-recreate' && secret) {
+        const socialTick = route(
+          new Request('https://internal/api/cron/social', {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${secret}` },
+          }),
+        )
+          .then(async (res) => {
+            const body = await res.text();
+            console.log(`[worker] cron ${cron} /api/cron/social → ${res.status} ${body.slice(0, 500)}`);
+          })
+          .catch((err) => {
+            console.error(`[worker] cron ${cron} /api/cron/social failed: ${(err as Error).message}`);
+          });
+        ctx.waitUntil(socialTick);
+        await socialTick;
+      }
     });
   },
 } satisfies ExportedHandler<Env>;

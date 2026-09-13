@@ -49,14 +49,15 @@
   //       cheap phase per video-mode recreate job per tick (Stream copy →
   //       ready-wait → one gpt-image slide). No claims, no sweeps — it cannot
   //       re-create the contention that got the */1 drain disabled.
-  // */1 — social scheduler engine tick (api/cron/social.ts → src/social/):
-  //       claims due posts (QUEUE → PROCESSING, LIMIT-bounded) and advances
-  //       the pending flow. Indexed scans only; never sweeps other tables.
+  //       The social scheduler engine tick (api/cron/social.ts → src/social/)
+  //       chains onto this same trigger after the stepper — separate crons
+  //       would blow the Workers Free account cap of 5 triggers (and the
+  //       old */1 drain was disabled for D1 contention anyway; the engine
+  //       tick is indexed + LIMIT-bounded and must stay that way).
   // 0 3  — daily media-retention sweep (Contabo does not run this)
-  // 0 5  — social integration token refresh scan (2-day lookahead)
   // 0 9 * * 1 — weekly digest, Mondays 09:00 UTC (Contabo does not run this)
   "triggers": {
-    "crons": ["*/1 * * * *", "*/2 * * * *", "0 3 * * *", "0 5 * * *", "0 9 * * 1"]
+    "crons": ["*/2 * * * *", "0 3 * * *", "0 9 * * 1"]
   },
   "observability": {
     "enabled": true

@@ -324,10 +324,13 @@ function safeParseArray(raw: string | null): Array<{ type: 'image' | 'video'; ur
 
 // ── daily token refresh scan ────────────────────────────────────────────────
 
-export async function socialRefreshScan(cfg: SocialConfig, options: { nowSeconds?: number } = {}): Promise<RefreshReport> {
+export async function socialRefreshScan(
+  cfg: SocialConfig,
+  options: { nowSeconds?: number; limit?: number } = {},
+): Promise<RefreshReport> {
   const now = options.nowSeconds ?? Math.floor(Date.now() / 1000);
   const registry = createRegistry(cfg);
-  const due = await store.integrationsDueForRefresh();
+  const due = await store.integrationsDueForRefresh(options.limit ?? 25);
 
   const report: RefreshReport = { scanned: due.length, refreshed: 0, failed: 0 };
   for (const integration of due) {
