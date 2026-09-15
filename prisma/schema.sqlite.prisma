@@ -14,16 +14,10 @@ datasource db {
 /// Populated by the Supabase→D1 data migration and refreshed at login. Exists
 /// because the weekly digest resolves the owner's email without joining into
 /// Supabase's `auth` schema (src/lib/digest.ts) — once the app runs on D1 there
-/// is no auth schema to read. Phase 4 (Cloudflare-native auth) turns this into
-/// the identity source of truth.
+/// is no auth schema to read.
 model User {
   id        String   @id
   email     String
-  /// Native Google subject (`google:<sub>`) linked at first Google login.
-  /// Null until then (all migrated Supabase rows start Null). Set together
-  /// with the Workspace.ownerId transfer in src/cf/account-link.ts
-  /// ensureNativeUser() — one Google identity links to at most one User row.
-  googleSub String?  @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

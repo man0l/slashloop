@@ -47,9 +47,15 @@ async function handleStatus(request: Request): Promise<Response> {
   // Read-only: create nothing here. requireWorkspace() (the MCP tool path)
   // creates a workspace on first use; a billing-status check before that
   // happens just means "you're not provisioned yet", not an error to fix
-  // by creating one.
+  // by creating one. The `message` rides along so clients can tell this
+  // apart from a genuinely missing route (both are HTTP 404).
   const workspace = await primaryWorkspaceByOwnerId(claims.sub);
-  if (!workspace) return json(404, { error: 'no_workspace' }, request);
+  if (!workspace) {
+    return json(404, {
+      error: 'no_workspace',
+      message: 'No workspace yet — create one from the Sources page, then retry.',
+    }, request);
+  }
 
   return json(200, {
     planKey: workspace.planKey,
