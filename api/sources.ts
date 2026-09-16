@@ -13,7 +13,7 @@
 // onto this file with `id`/`action` query params — the URLs callers use are
 // unchanged, only the physical function count drops.
 import { corsPreflight } from '../src/lib/cors.js';
-import { requireOwnedWorkspace, jsonResponse } from '../src/lib/authz.js';
+import { requireWorkspaceAccess, jsonResponse } from '../src/lib/authz.js';
 import {
   listSourcesForWorkspace,
   createSourceForWorkspace,
@@ -69,7 +69,7 @@ export async function GET(request: Request): Promise<Response> {
   const sourceId = url.searchParams.get('id');
   const action = url.searchParams.get('action');
 
-  const auth = await requireOwnedWorkspace(request, url.searchParams.get('workspaceId'));
+  const auth = await requireWorkspaceAccess(request, url.searchParams.get('workspaceId'));
   if (!auth.ok) return auth.response;
 
   if (action === 'discover-mine') {
@@ -108,7 +108,7 @@ export async function POST(request: Request): Promise<Response> {
       return jsonResponse(400, { error: 'invalid_json' }, request);
     }
 
-    const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+    const auth = await requireWorkspaceAccess(request, body.workspaceId ?? null);
     if (!auth.ok) return auth.response;
 
     // The web UI never wants to block on an inline scrape — always queue.
@@ -149,7 +149,7 @@ export async function POST(request: Request): Promise<Response> {
       return jsonResponse(400, { error: 'invalid_json' }, request);
     }
 
-    const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+    const auth = await requireWorkspaceAccess(request, body.workspaceId ?? null);
     if (!auth.ok) return auth.response;
 
     // Expansion only — fast (one Gemini call), no scraping yet. The caller
@@ -179,7 +179,7 @@ export async function POST(request: Request): Promise<Response> {
       return jsonResponse(400, { error: 'invalid_json' }, request);
     }
 
-    const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+    const auth = await requireWorkspaceAccess(request, body.workspaceId ?? null);
     if (!auth.ok) return auth.response;
 
     if (!body.sourceType || !SOURCE_TYPES.has(body.sourceType)) {
@@ -207,7 +207,7 @@ export async function POST(request: Request): Promise<Response> {
       return jsonResponse(400, { error: 'invalid_json' }, request);
     }
 
-    const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+    const auth = await requireWorkspaceAccess(request, body.workspaceId ?? null);
     if (!auth.ok) return auth.response;
 
     // Seeding only — fast (one Gemini call), no Apify scrapes yet. The
@@ -234,7 +234,7 @@ export async function POST(request: Request): Promise<Response> {
       return jsonResponse(400, { error: 'invalid_json' }, request);
     }
 
-    const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+    const auth = await requireWorkspaceAccess(request, body.workspaceId ?? null);
     if (!auth.ok) return auth.response;
 
     if (!body.sourceType || !SOURCE_TYPES.has(body.sourceType)) {
@@ -258,7 +258,7 @@ export async function POST(request: Request): Promise<Response> {
       return jsonResponse(400, { error: 'invalid_json' }, request);
     }
 
-    const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+    const auth = await requireWorkspaceAccess(request, body.workspaceId ?? null);
     if (!auth.ok) return auth.response;
 
     if (!body.sourceType || !SOURCE_TYPES.has(body.sourceType)) {
@@ -277,7 +277,7 @@ export async function POST(request: Request): Promise<Response> {
     return jsonResponse(400, { error: 'invalid_json' }, request);
   }
 
-  const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+  const auth = await requireWorkspaceAccess(request, body.workspaceId ?? null);
   if (!auth.ok) return auth.response;
 
   if (!body.platform) return jsonResponse(400, { error: 'platform is required' }, request);
@@ -323,7 +323,7 @@ export async function PATCH(request: Request): Promise<Response> {
     return jsonResponse(400, { error: 'invalid_json' }, request);
   }
 
-  const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+  const auth = await requireWorkspaceAccess(request, body.workspaceId ?? null);
   if (!auth.ok) return auth.response;
 
   if (body.refreshSchedule !== undefined && !REFRESH_SCHEDULES.has(body.refreshSchedule)) {
@@ -351,7 +351,7 @@ export async function DELETE(request: Request): Promise<Response> {
   const sourceId = url.searchParams.get('id');
   if (!sourceId) return jsonResponse(400, { error: 'source id is required' }, request);
 
-  const auth = await requireOwnedWorkspace(request, url.searchParams.get('workspaceId'));
+  const auth = await requireWorkspaceAccess(request, url.searchParams.get('workspaceId'));
   if (!auth.ok) return auth.response;
 
   const deleted = await deleteSourceForWorkspace(auth.workspace, sourceId);

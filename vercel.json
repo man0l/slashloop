@@ -81,6 +81,10 @@
       "dest": "/api/workspaces"
     },
     {
+      "src": "^/api/workspaces(?:/([^/]+?))/members$",
+      "dest": "/api/workspaces?id=$1&resource=members"
+    },
+    {
       "src": "^/api/workspaces(?:/([^/]+?))$",
       "dest": "/api/workspaces?id=$1"
     },

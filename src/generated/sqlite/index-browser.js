@@ -155,6 +155,14 @@ exports.Prisma.WorkspaceScalarFieldEnum = {
   digestJson: 'digestJson'
 };
 
+exports.Prisma.WorkspaceMemberScalarFieldEnum = {
+  id: 'id',
+  workspaceId: 'workspaceId',
+  email: 'email',
+  invitedBy: 'invitedBy',
+  createdAt: 'createdAt'
+};
+
 exports.Prisma.CreditLedgerScalarFieldEnum = {
   id: 'id',
   workspaceId: 'workspaceId',
@@ -433,6 +441,7 @@ exports.Prisma.NullsOrder = {
 exports.Prisma.ModelName = {
   User: 'User',
   Workspace: 'Workspace',
+  WorkspaceMember: 'WorkspaceMember',
   CreditLedger: 'CreditLedger',
   StripeEvent: 'StripeEvent',
   SuggestionDismissal: 'SuggestionDismissal',

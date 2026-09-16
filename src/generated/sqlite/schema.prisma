@@ -106,8 +106,29 @@ model Workspace {
   creditLedger         CreditLedger[]
   mediaJobs            MediaJob[]
   suggestionDismissals SuggestionDismissal[]
+  members              WorkspaceMember[]
 
   @@index([ownerId])
+}
+
+/// Team access (no roles yet — a member is a full peer of the owner): one row
+/// per invited teammate per workspace. Matched on the invitee's LOGIN email —
+/// they keep using their own Google sign-in, and the `email` claim on their
+/// Supabase JWT is what requireWorkspaceAccess (src/lib/authz.ts) matches
+/// here, so the row is live whether or not they've ever signed in. Managed by
+/// src/lib/team.ts; invite/remove routes live in api/workspaces.ts.
+model WorkspaceMember {
+  id          String    @id @default(uuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  /// Lowercased login email of the invited teammate.
+  email       String
+  /// Supabase sub of the owner who sent the invite.
+  invitedBy   String
+  createdAt   DateTime  @default(now())
+
+  @@unique([workspaceId, email])
+  @@index([email])
 }
 
 /// Append-only audit trail for credit grants/debits. The Workspace row holds

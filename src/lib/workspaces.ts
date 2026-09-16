@@ -38,18 +38,47 @@ export async function resolveAccountPlanKey(ownerId: string): Promise<string> {
   return primary?.planKey ?? 'free';
 }
 
-/** Every workspace a user owns, with `planKey` overridden to the account's
- *  real (primary workspace's) plan — see resolveAccountPlanKey. No second
- *  query: rows arrive ordered oldest-first, so row 0 IS the primary. (A
- *  separate findFirst used to re-ask D1 for what was already in hand — one
- *  more REST round trip on every /api/workspaces hit.) */
-export async function listWorkspacesForUser(userId: string): Promise<Workspace[]> {
+/** Every workspace a user can see: the ones they own plus (when `email` is
+ *  given) the ones they're a team member of (src/lib/team.ts). Own rows come
+ *  first; `role` marks which is which. `planKey` is overridden to the
+ *  OWNING account's real plan (primary workspace's planKey) on every row —
+ *  display code reads this instead of a workspace's own field. No second
+ *  query for own rows: they arrive ordered oldest-first, so row 0 IS the
+ *  primary. (A separate findFirst used to re-ask D1 for what was already in
+ *  hand — one more REST round trip on every /api/workspaces hit.) */
+export async function listWorkspacesForUser(
+  userId: string,
+  email?: string | null,
+): Promise<Array<Workspace & { role: 'owner' | 'member' }>> {
   // Cached 60s: ownership barely changes; the switcher polls this constantly.
   return getOrFill(cacheKey(['workspaces', userId]), 60_000, async () => {
-    const workspaces = await db.workspace.findMany({ where: { ownerId: userId }, orderBy: { createdAt: 'asc' } });
-    if (workspaces.length === 0) return workspaces;
-    const planKey = workspaces[0].planKey;
-    return workspaces.map(w => ({ ...w, planKey }));
+    const own = await db.workspace.findMany({ where: { ownerId: userId }, orderBy: { createdAt: 'asc' } });
+    const shared = email
+      ? await db.workspace.findMany({
+          where: { members: { some: { email: email.toLowerCase() } } },
+          orderBy: { createdAt: 'asc' },
+        })
+      : [];
+    if (own.length === 0 && shared.length === 0) return [];
+
+    const accountPlan = own[0]?.planKey ?? 'free';
+    // Shared rows report the plan of the account that owns them — one query
+    // per distinct owner set, not per workspace.
+    const ownerIds = [...new Set(shared.map((w) => w.ownerId).filter((v): v is string => Boolean(v)))];
+    const ownerPrimaries = ownerIds.length
+      ? await db.workspace.findMany({ where: { ownerId: { in: ownerIds } }, orderBy: { createdAt: 'asc' } })
+      : [];
+    const planByOwner = new Map<string, string>();
+    for (const w of ownerPrimaries) if (w.ownerId && !planByOwner.has(w.ownerId)) planByOwner.set(w.ownerId, w.planKey);
+
+    return [
+      ...own.map((w) => ({ ...w, role: 'owner' as const, planKey: accountPlan })),
+      ...shared.map((w) => ({
+        ...w,
+        role: 'member' as const,
+        planKey: (w.ownerId && planByOwner.get(w.ownerId)) || w.planKey,
+      })),
+    ];
   });
 }
 
@@ -98,6 +127,10 @@ export class WorkspaceLimitError extends Error {
 /**
  * Create a new workspace for a user, gated by WORKSPACE_LIMITS.
  *
+ * Deliberately counts ONLY owned workspaces (no email passed to
+ * listWorkspacesForUser): being a team member of someone else's workspace
+ * must never change your own creation limits.
+ *
  * Billing is per-account (src/lib/credits.ts resolveBillingWorkspaceId),
  * anchored on a user's PRIMARY (earliest-created) workspace — the same one
  * Stripe already exclusively bills. Only that first workspace ever gets a
@@ -126,13 +159,23 @@ export async function createWorkspaceForUser(userId: string, name: string): Prom
   return created;
 }
 
+/** Rename a workspace the user owns OR is a team member of (no roles yet —
+ *  members are full peers, see requireWorkspaceAccess in src/lib/authz.ts). */
 export async function renameWorkspaceForUser(
   userId: string,
+  email: string | null | undefined,
   workspaceId: string,
   name: string,
 ): Promise<Workspace> {
-  const owned = await db.workspace.findFirst({ where: { id: workspaceId, ownerId: userId } });
-  if (!owned) throw new Error('Workspace not found.');
+  const workspace = await db.workspace.findFirst({
+    where: {
+      id: workspaceId,
+      ...(email
+        ? { OR: [{ ownerId: userId }, { members: { some: { email: email.toLowerCase() } } }] }
+        : { ownerId: userId }),
+    },
+  });
+  if (!workspace) throw new Error('Workspace not found.');
   const updated = await db.workspace.update({ where: { id: workspaceId }, data: { name } });
   invalidateWorkspaceList(userId);
   return updated;

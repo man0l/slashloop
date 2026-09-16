@@ -21,7 +21,7 @@
 // shapes HTTP.
 import { randomUUID } from 'node:crypto';
 import { corsPreflight } from '../src/lib/cors.js';
-import { requireOwnedWorkspace, jsonResponse } from '../src/lib/authz.js';
+import { requireWorkspaceAccess, jsonResponse } from '../src/lib/authz.js';
 import { getVideoDetailForWorkspace, analyzeVideoForWorkspace, fetchVideoForWorkspace, recreateSlideshowForWorkspace, mapAnalyzeOutcomeToHttp } from '../src/lib/video-service.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../src/lib/credits.js';
 import { costBlock } from '../src/lib/next-steps.js';
@@ -104,7 +104,7 @@ export async function GET(request: Request): Promise<Response> {
   if (!videoId) return jsonResponse(400, { error: 'video id is required' }, request);
   const action = url.searchParams.get('action');
 
-  const auth = await requireOwnedWorkspace(request, url.searchParams.get('workspaceId'));
+  const auth = await requireWorkspaceAccess(request, url.searchParams.get('workspaceId'));
   if (!auth.ok) return auth.response;
 
   if (action === 'hook-test') {
@@ -156,7 +156,7 @@ export async function POST(request: Request): Promise<Response> {
     return jsonResponse(400, { error: 'invalid_json' }, request);
   }
 
-  const auth = await requireOwnedWorkspace(request, (body.workspaceId as string) ?? null);
+  const auth = await requireWorkspaceAccess(request, (body.workspaceId as string) ?? null);
   if (!auth.ok) return auth.response;
   const wsId = auth.workspace.id;
 
@@ -273,7 +273,7 @@ export async function PATCH(request: Request): Promise<Response> {
     return jsonResponse(400, { error: 'invalid_json' }, request);
   }
 
-  const auth = await requireOwnedWorkspace(request, body.workspaceId ?? null);
+  const auth = await requireWorkspaceAccess(request, body.workspaceId ?? null);
   if (!auth.ok) return auth.response;
 
   try {

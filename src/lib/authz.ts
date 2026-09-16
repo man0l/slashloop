@@ -37,15 +37,19 @@ export async function requireAuth(request: Request): Promise<AuthResult> {
 }
 
 export type WorkspaceAuthResult =
-  | { ok: true; userId: string; workspace: Workspace }
+  | { ok: true; userId: string; email?: string; workspace: Workspace }
   | { ok: false; response: Response };
 
 /**
- * Auth + ownership in one call: verifies the JWT, then confirms `workspaceId`
- * is actually owned by that user. Never resolves a workspace the caller
- * doesn't own — the id in the query string is untrusted input.
+ * Auth + access in one call: verifies the JWT, then confirms `workspaceId`
+ * is one the caller may use — owned by them, or shared with them via a team
+ * invite (WorkspaceMember rows matched on the JWT's email claim, see
+ * src/lib/team.ts; no roles yet, members are full peers). Never resolves a
+ * workspace the caller can't access — the id in the query string is
+ * untrusted input, and a workspace that exists but isn't yours answers 404
+ * (not 403) so ids don't leak existence.
  */
-export async function requireOwnedWorkspace(
+export async function requireWorkspaceAccess(
   request: Request,
   workspaceId: string | null,
 ): Promise<WorkspaceAuthResult> {
@@ -54,8 +58,16 @@ export async function requireOwnedWorkspace(
 
   if (!workspaceId) return { ok: false, response: jsonResponse(400, { error: 'workspaceId is required' }, request) };
 
-  const workspace = await db.workspace.findFirst({ where: { id: workspaceId, ownerId: auth.userId } });
+  const email = auth.email?.toLowerCase() ?? null;
+  const workspace = await db.workspace.findFirst({
+    where: {
+      id: workspaceId,
+      ...(email
+        ? { OR: [{ ownerId: auth.userId }, { members: { some: { email } } }] }
+        : { ownerId: auth.userId }),
+    },
+  });
   if (!workspace) return { ok: false, response: jsonResponse(404, { error: 'workspace_not_found' }, request) };
 
-  return { ok: true, userId: auth.userId, workspace };
+  return { ok: true, userId: auth.userId, email: auth.email, workspace };
 }

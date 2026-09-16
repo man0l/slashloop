@@ -25,7 +25,7 @@
 // widen what is visible.
 //
 // Auth (JSON route): Supabase Bearer JWT + an explicit workspaceId the caller
-// must own (requireOwnedWorkspace) — see src/lib/authz.ts.
+// must own or be a team member of (requireWorkspaceAccess) — see src/lib/authz.ts.
 //
 // The two routes share this one file rather than living in api/gallery.ts and
 // api/gallery-data.ts separately: the Hobby plan caps a deployment at 12
@@ -36,7 +36,7 @@ import { buildGalleryHtml, buildCards } from '../src/tools/gallery.js';
 import { buildCreatorPreview } from '../src/lib/creator-preview.js';
 import { verifyGalleryToken, isGalleryLinkEnabled } from '../src/lib/gallery-link.js';
 import { corsPreflight } from '../src/lib/cors.js';
-import { requireOwnedWorkspace, jsonResponse } from '../src/lib/authz.js';
+import { requireWorkspaceAccess, jsonResponse } from '../src/lib/authz.js';
 import type { GalleryFilters } from '../src/ui/gallery.js';
 
 /**
@@ -115,7 +115,7 @@ export async function OPTIONS(request: Request): Promise<Response> {
 const SORT_VALUES = new Set<GalleryFilters['sortBy']>(['outlier_score', 'views', 'newest']);
 
 async function handleData(request: Request, url: URL): Promise<Response> {
-  const auth = await requireOwnedWorkspace(request, url.searchParams.get('workspaceId'));
+  const auth = await requireWorkspaceAccess(request, url.searchParams.get('workspaceId'));
   if (!auth.ok) return auth.response;
 
   // Hover preview on the site's Gallery — already-scraped outliers + last 5

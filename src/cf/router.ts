@@ -114,6 +114,8 @@ const ROUTES: Route[] = [
   // workspaces / studio.
   { re: /^\/api\/studio\/retro$/, mod: workspaces, inject: { resource: 'retro' } },
   { re: /^\/api\/studio\/benchmark$/, mod: workspaces, inject: { resource: 'benchmark' } },
+  // Team roster before the generic /:id capture.
+  { re: /^\/api\/workspaces(?:\/([^/]+?))\/members$/, mod: workspaces, inject: { id: '$1', resource: 'members' } },
   { re: /^\/api\/workspaces$/, mod: workspaces },
   { re: /^\/api\/workspaces(?:\/([^/]+?))$/, mod: workspaces, inject: { id: '$1' } },
   // videos + hook tests.
