@@ -19,7 +19,7 @@
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { chunked } from '../store.js';
-import { requireWorkspace } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { enqueueFetchJob, outstandingJobForVideo, dispatchWorker } from '../lib/jobs.js';
 import { costBlock } from '../lib/next-steps.js';
 import { selectDownloadAdapter } from '../lib/scrapers/index.js';
@@ -41,6 +41,7 @@ export function registerFetchTool(server: McpServer) {
       + 'matching spend cap — not AI credits. Runs in the background; poll get_video until mediaStatus = stored. '
       + 'Use after refresh_source, when the user wants to SEE/scrub specific outliers rather than only thumbnails.',
     {
+      workspaceId: workspaceIdField,
       minOutlierScore: z
         .number()
         .min(1)
@@ -57,8 +58,8 @@ export function registerFetchTool(server: McpServer) {
         .optional()
         .describe(`Cap on videos queued by minOutlierScore (default ${DEFAULT_FETCH_LIMIT}).`),
     },
-    async ({ minOutlierScore, videoIds, limit }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, minOutlierScore, videoIds, limit }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const cap = limit ?? DEFAULT_FETCH_LIMIT;
 
       // Resolve target ids by mode.

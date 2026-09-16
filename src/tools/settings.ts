@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
-import { requireWorkspace } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { loadAnalysisConfig, updateAnalysisConfig, DEFAULT_CONFIG, COST_ESTIMATES, BATCH_COST_ESTIMATES } from '../analysis/index.js';
 import { analyzeVideoWithDownload } from '../analysis/index.js';
 import { getApifyCapStatus, getApifySpendBreakdown, decodeApifyRefId } from '../lib/spend-cap.js';
@@ -35,10 +35,11 @@ export function registerSettingsTools(server: McpServer) {
   server.tool('get_usage',
     'Get cost and usage dashboard data. Shows scraping + AI costs by provider, monthly totals, and budget status.',
     {
+      workspaceId: workspaceIdField,
       period: z.enum(['this_month', 'last_month', 'all']).default('this_month'),
     },
-    async ({ period }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, period }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const billingWorkspace = await resolveBillingWorkspace(workspace);
 
       // Build date filter
@@ -138,9 +139,9 @@ export function registerSettingsTools(server: McpServer) {
   // ---- get_settings ----
   server.tool('get_settings',
     'Get workspace settings including analysis config, auto-analyze rules, and budget.',
-    {},
-    async () => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField },
+    async ({ workspaceId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const billingWorkspace = await resolveBillingWorkspace(workspace);
 
       const analysisConfig = await loadAnalysisConfig(workspace.id);
@@ -182,6 +183,7 @@ export function registerSettingsTools(server: McpServer) {
   server.tool('update_settings',
     'Update workspace settings. Pass only fields you want to change. Note: credit balance and plan are billing-controlled and cannot be changed here — see get_billing status via get_apify_spend_status, or upgrade/buy credits at the billing URL.',
     {
+      workspaceId: workspaceIdField,
       name: z.string().optional(),
       autoAnalyzeRules: z.object({
         minOutlierScore: z.number().default(5.0),
@@ -204,8 +206,8 @@ export function registerSettingsTools(server: McpServer) {
       digestEmail: z.string().regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/).nullable().optional()
         .describe('Where the weekly digest is sent. Null = your account email. Also editable on the site\'s Email settings page.'),
     },
-    async (params) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, ...params }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const billingWorkspace = await resolveBillingWorkspace(workspace);
 
       // Update workspace fields. Credits/plan/billing fields are deliberately
@@ -286,11 +288,12 @@ export function registerSettingsTools(server: McpServer) {
   server.tool('get_refresh_logs',
     'Get refresh run logs showing scraping history, costs, and errors.',
     {
+      workspaceId: workspaceIdField,
       sourceId: z.string().optional(),
       limit: z.number().min(1).max(100).default(20),
     },
-    async ({ sourceId, limit }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, sourceId, limit }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const logs = await db.refreshRun.findMany({
         where: {
           sourceId: sourceId ?? undefined,
@@ -334,11 +337,12 @@ export function registerSettingsTools(server: McpServer) {
   server.tool('run_auto_analyze',
     'Run a batch AI-analysis pass over outlier videos that have not yet been analyzed. Reads Workspace.autoAnalyzeRulesJson (minOutlierScore, minViews, minEngagementRate, dailyLimit) and applies the 50% Gemini batch discount. Each video is analyzed sequentially with the workspace default backend. Returns a summary including cost — also persists an AutoAnalyzeRun row for audit. Safe to call repeatedly; already-analyzed videos are skipped.',
     {
+      workspaceId: workspaceIdField,
       dryRun: z.boolean().default(false).describe('If true, list candidates and estimated cost without actually analyzing.'),
       limitOverride: z.number().min(1).max(100).optional().describe('Override dailyLimit for this run (e.g. to catch up after downtime).'),
     },
-    async ({ dryRun, limitOverride }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, dryRun, limitOverride }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
 
       // Parse rules with defaults
       const rawRules = JSON.parse(workspace.autoAnalyzeRulesJson || '{}');
@@ -504,9 +508,9 @@ export function registerSettingsTools(server: McpServer) {
     'The weekly digest: new outliers since the last digest (actual scores first), posting-queue stats, credits. '
       + 'Serves the stored digest when fresh; recomputes on demand (free) when stale. The cron emails this '
       + 'weekly unless workspace digestEnabled=false.',
-    {},
-    async () => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField },
+    async ({ workspaceId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const billingWorkspace = await resolveBillingWorkspace(workspace);
 
       // Serve the stored copy when fresh (<8 days); otherwise recompute on
@@ -556,9 +560,9 @@ export function registerSettingsTools(server: McpServer) {
   // confirm you're still under the $5 testing cap.
   server.tool('get_apify_spend_status',
     'Check scraper spend against the active provider cap (Apify dollars by default, or proxy GB when SCRAPER_PROVIDER=proxy), plus this workspace\'s credit balance. Shows current monthly spend, cap, percent used, breach state, and recent cap_breach audit events.',
-    {},
-    async () => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField },
+    async ({ workspaceId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const billingWorkspace = await resolveBillingWorkspace(workspace);
 
       const scraper = {

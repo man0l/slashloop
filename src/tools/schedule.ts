@@ -22,7 +22,7 @@
 
 import { z } from 'zod/v4';
 import { db } from '../db.js';
-import { requireWorkspace } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { CREDIT_COSTS, creditBalance } from '../lib/credits.js';
 import { enqueueRefreshJob, outstandingJobForSource, dispatchWorker } from '../lib/jobs.js';
 import { resolveRefreshPlan } from '../lib/refresh-policy.js';
@@ -161,14 +161,15 @@ export function registerScheduleTools(server: McpServer) {
     + 'for each. FREE — reads only, spends nothing, enqueues nothing. Use this from a scheduled task to decide '
     + 'what to refresh, or any time to see what has gone stale.',
     {
+      workspaceId: workspaceIdField,
       includeManual: z.boolean().default(false)
         .describe('Also include manual sources that have NEVER been refreshed (they hold no videos at all).'),
       force: z.boolean().default(false)
         .describe('Ignore the schedule interval and list every active scheduled source as due — for a manual '
           + '"run it now". Still free, still shows costs.'),
     },
-    async ({ includeManual, force }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, includeManual, force }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const due = await collectDue(workspace.id, includeManual, force);
       const balance = await creditBalance(workspace.id);
 
@@ -250,6 +251,7 @@ export function registerScheduleTools(server: McpServer) {
     + 'exceed it are skipped rather than partially run. Sources with a job already queued are never '
     + 'double-enqueued. Credits are charged by the worker as each job runs, not up front.',
     {
+      workspaceId: workspaceIdField,
       maxCredits: z.number().min(1)
         .describe('REQUIRED hard ceiling on total credits this run may commit. No default — an unattended '
           + 'run must state its budget. A 50-video source costs 75 credits.'),
@@ -262,8 +264,8 @@ export function registerScheduleTools(server: McpServer) {
           + 'human explicitly asked for an immediate run — never from an unattended schedule, where the interval '
           + 'is the thing preventing repeat spend. maxCredits still applies.'),
     },
-    async ({ maxCredits, includeManual, dryRun, force }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, maxCredits, includeManual, dryRun, force }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const balance = await creditBalance(workspace.id);
 
       // The ceiling can never exceed what the workspace actually holds. A

@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
-import { requireWorkspace } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { generateHookVariations } from '../analysis/hooks.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../lib/credits.js';
 import { costBlock } from '../lib/next-steps.js';
@@ -17,6 +17,7 @@ export function registerHookTools(server: McpServer) {
   server.tool('list_hooks',
     'Browse the Hook Vault. Filter by hook type, niche, origin, or search text.',
     {
+      workspaceId: workspaceIdField,
       hookType: z.string().optional(),
       nicheTag: z.string().optional(),
       origin: z.enum(['extracted', 'generated']).optional(),
@@ -24,8 +25,9 @@ export function registerHookTools(server: McpServer) {
       search: z.string().max(50).optional(),
       limit: z.number().min(1).max(100).default(30),
     },
-    async ({ hookType, nicheTag, origin, search, limit }) => {
-      const where: any = {};
+    async ({ workspaceId, hookType, nicheTag, origin, search, limit }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const where: any = { video: { source: { workspaceId: workspace.id } } };
       if (hookType) where.hookType = hookType;
       if (nicheTag) where.nicheTag = nicheTag;
       if (origin) where.origin = origin;
@@ -64,11 +66,13 @@ export function registerHookTools(server: McpServer) {
   server.tool('extract_hook',
     'Extract a hook from an AI-analyzed video into the Hook Vault. HARD RULE: caption-only analyses cannot produce vault entries.',
     {
+      workspaceId: workspaceIdField,
       analysisId: z.string().describe('Analysis ID (must be from a video+transcript or frames+transcript analysis)'),
     },
-    async ({ analysisId }) => {
-      const analysis = await db.analysis.findUnique({
-        where: { id: analysisId },
+    async ({ workspaceId, analysisId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const analysis = await db.analysis.findFirst({
+        where: { id: analysisId, video: { source: { workspaceId: workspace.id } } },
         include: { video: true },
       });
       if (!analysis) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Analysis not found' }) }], isError: true };
@@ -128,11 +132,19 @@ export function registerHookTools(server: McpServer) {
   server.tool('generate_hook_variations',
     'Generate new hook variations from saved vault hooks. Preserves the MECHANISM of the original, not the words. Costs 2 credits.',
     {
+      workspaceId: workspaceIdField,
       hookIds: z.array(z.string()).min(1).max(5).describe('1-5 hook IDs from the vault to vary'),
       productDescription: z.string().describe('Your product/niche/offer description for contextual adaptation'),
     },
-    async ({ hookIds, productDescription }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, hookIds, productDescription }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const ownedHooks = await db.hook.findMany({
+        where: { id: { in: hookIds }, video: { source: { workspaceId: workspace.id } } },
+        select: { id: true },
+      });
+      if (ownedHooks.length !== hookIds.length) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Hook not found' }) }], isError: true };
+      }
       const opId = randomUUID();
       try {
         await debitCredits(workspace.id, CREDIT_COSTS.generateHookVariations, 'generate_hook_variations', `${opId}:preauth`);

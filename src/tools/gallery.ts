@@ -18,6 +18,7 @@ import { db } from '../db.js';
 import { chunked } from '../store.js';
 import { cacheKey, getOrFill } from '../lib/cache.js';
 import { requireWorkspace, currentUserId } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls, resolveRecreationUrls, isPhotoPost } from '../lib/media.js';
 import { latestFetchErrors } from '../lib/jobs.js';
 import { signGalleryUrl, ttlHumanized } from '../lib/gallery-link.js';
@@ -467,6 +468,7 @@ export function registerGalleryApp(server: McpServer) {
         + 'gallery in their browser. '
         + 'get_feed remains the text-only answer.',
       inputSchema: {
+        workspaceId: workspaceIdField,
         sourceId: z
           .string()
           .optional()
@@ -505,8 +507,9 @@ export function registerGalleryApp(server: McpServer) {
       // also set below so hosts that honour call-time overrides can apply sourceId.
       _meta: { ui: { resourceUri: GALLERY_URI } },
     },
-    async ({ sourceId, minOutlierScore, minViews, analyzedBy, hasHookTest, limit, density }) => {
+    async ({ workspaceId, sourceId, minOutlierScore, minViews, analyzedBy, hasHookTest, limit, density }) => {
       const { cards, filters } = await buildCards({
+        workspaceId,
         sourceId,
         limit,
         minOutlier: minOutlierScore,
@@ -554,7 +557,7 @@ export function registerGalleryApp(server: McpServer) {
       // `actual` scores compare a creator to their own baseline; `estimated`
       // compares a video to its source's median, which mostly rewards large
       // accounts posting normally into a tracked hashtag. Suggest the former.
-      const ws = await requireWorkspace();
+      const ws = await resolveToolWorkspace({ workspaceId });
       const candidates = await db.video.findMany({
         where: {
           source: { workspaceId: ws.id },

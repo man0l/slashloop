@@ -4,7 +4,7 @@
 
 import { z } from 'zod/v4';
 import { db } from '../db.js';
-import { requireWorkspace } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { analyzeVideoForWorkspace } from '../lib/video-service.js';
 import { resolveThumbUrl, signedMediaUrl, frameUrlAt } from '../lib/media.js';
 import { outstandingJobForVideo } from '../lib/jobs.js';
@@ -16,9 +16,9 @@ export function registerVideoTools(server: McpServer) {
   // ---- get_video ----
   server.tool('get_video',
     'Get full details of a video including stats, score, analysis, and available actions.',
-    { videoId: z.string() },
-    async ({ videoId }) => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField, videoId: z.string() },
+    async ({ workspaceId, videoId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       // Scoped to the caller's own workspace — a video id is a UUID (not
       // practically guessable), but nothing should ever return another
       // workspace's video regardless.
@@ -147,11 +147,12 @@ export function registerVideoTools(server: McpServer) {
   server.tool('analyze_video',
     'Run AI analysis on a video. Uses the configured backend (default: gemini-native, fallback: gemini-text). gemini-native downloads the video via Apify then uploads it for native understanding (shots, audio, on-screen text); gemini-text does a text-only call on transcript + caption + metadata. Costs 5 credits. gemini-native is QUEUED rather than run inline — it cannot finish inside one request — so the response is a jobId and status, not an analysis. Wait for it with await_job (blocks server-side and returns the moment it finishes) rather than polling get_video in a loop; the analysisJob field on get_video still reports progress for a one-off check. gemini-text returns its analysis directly.',
     {
+      workspaceId: workspaceIdField,
       videoId: z.string().describe('Video ID to analyze'),
       forceBackend: z.enum(['gemini-native', 'gemini-text', 'openrouter-video']).optional().describe('Override the workspace default backend'),
     },
-    async ({ videoId, forceBackend }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, videoId, forceBackend }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const outcome = await analyzeVideoForWorkspace(workspace, videoId, { forceBackend });
 
       if (!outcome.ok) {
@@ -229,10 +230,11 @@ export function registerVideoTools(server: McpServer) {
   // ---- get_video_transcript ----
   server.tool('get_video_transcript',
     'Get the transcript for a video, if available.',
-    { videoId: z.string() },
-    async ({ videoId }) => {
-      const video = await db.video.findUnique({
-        where: { id: videoId },
+    { workspaceId: workspaceIdField, videoId: z.string() },
+    async ({ workspaceId, videoId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const video = await db.video.findFirst({
+        where: { id: videoId, source: { workspaceId: workspace.id } },
         select: { id: true, transcript: true, transcriptSource: true, caption: true, url: true },
       });
       if (!video) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Video not found' }) }], isError: true };

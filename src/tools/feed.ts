@@ -5,7 +5,7 @@
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { chunked } from '../store.js';
-import { requireWorkspace } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { formatNumber } from '../scoring.js';
 import { resolveThumbUrl } from '../lib/media.js';
 import { withNextSteps, analyzeCostLabel } from '../lib/next-steps.js';
@@ -17,6 +17,7 @@ export function registerFeedTools(server: McpServer) {
   server.tool('get_feed',
     'Get the ranked feed of videos from tracked sources. Videos are sorted by outlier score by default.',
     {
+      workspaceId: workspaceIdField,
       platform: z.enum(['tiktok', 'reels', 'shorts']).optional(),
       sourceId: z.string().optional(),
       // D1 50-byte LIKE/GLOB limit: cap user input so `contains` below never exceeds it.
@@ -39,7 +40,7 @@ export function registerFeedTools(server: McpServer) {
         analyzedOnly, unanalyzedOnly, sortBy, limit, offset,
       } = params;
 
-      const workspace = await requireWorkspace();
+      const workspace = await resolveToolWorkspace({ workspaceId: params.workspaceId });
 
       // Build where clause — always scoped to this user's workspace.
       // isBaselineSample rows are internal scoring history (creator-median
@@ -288,14 +289,15 @@ export function registerFeedTools(server: McpServer) {
       + 'matching has been scraped yet, not that nothing exists. To bring in new videos use create_source '
       + 'then refresh_source.',
     schema: {
+      workspaceId: workspaceIdField,
       // D1 50-byte LIKE/GLOB limit: cap user input so `contains` below never exceeds it.
       query: z.string().max(50).describe('Search query (keyword, hashtag, or creator handle)'),
       platform: z.enum(['tiktok', 'reels', 'shorts']).describe('Platform to search'),
     },
   };
 
-  const searchLibraryHandler = async ({ query, platform }: { query: string; platform: 'tiktok' | 'reels' | 'shorts' }) => {
-      const workspace = await requireWorkspace();
+  const searchLibraryHandler = async ({ query, platform, workspaceId }: { query: string; platform: 'tiktok' | 'reels' | 'shorts'; workspaceId?: string }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       // In a full implementation, this would call the scraper APIs directly
       // For now, check if any existing videos match the search
       const existingVideos = await db.video.findMany({
@@ -382,9 +384,9 @@ export function registerFeedTools(server: McpServer) {
   // ---- get_outlier_summary ----
   server.tool('get_outlier_summary',
     'Get a summary of outlier activity across all tracked sources. Useful for weekly reviews.',
-    {},
-    async () => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField },
+    async ({ workspaceId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       // Baseline samples are internal scoring history, not content — same
       // exclusion as get_feed / buildCards / buildDigest, so the summary's
       // counts and top list describe the videos an agent can actually act on.

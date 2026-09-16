@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { chunked } from '../store.js';
-import { requireWorkspace } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { generateBrief } from '../analysis/briefs.js';
 import { generateScript } from '../analysis/scripts.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../lib/credits.js';
@@ -19,9 +19,9 @@ export function registerCreativeTools(server: McpServer) {
 
   server.tool('list_boards',
     'List all swipe file boards.',
-    {},
-    async () => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField },
+    async ({ workspaceId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       // No `_count` include: Prisma's D1 adapter fans those into concurrent
       // prepared statements, which hang the binding. Same JSON shape as before.
       const boards = await db.board.findMany({
@@ -46,10 +46,11 @@ export function registerCreativeTools(server: McpServer) {
 
   server.tool('get_board',
     'Get a swipe board with all its entries.',
-    { boardId: z.string() },
-    async ({ boardId }) => {
-      const board = await db.board.findUnique({
-        where: { id: boardId },
+    { workspaceId: workspaceIdField, boardId: z.string() },
+    async ({ workspaceId, boardId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const board = await db.board.findFirst({
+        where: { id: boardId, workspaceId: workspace.id },
         include: {
           swipeEntries: {
             include: {
@@ -66,9 +67,9 @@ export function registerCreativeTools(server: McpServer) {
 
   server.tool('create_board',
     'Create a new swipe file board.',
-    { name: z.string().describe('Board name') },
-    async ({ name }) => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField, name: z.string().describe('Board name') },
+    async ({ workspaceId, name }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
 
       const board = await db.board.create({ data: { workspaceId: workspace.id, name } });
       return { content: [{ type: 'text' as const, text: JSON.stringify({ message: 'Board created', board }, null, 2) }] };
@@ -77,11 +78,17 @@ export function registerCreativeTools(server: McpServer) {
   server.tool('save_to_board',
     'Save a video (with optional analysis snapshot) to a swipe board.',
     {
+      workspaceId: workspaceIdField,
       boardId: z.string(),
       videoId: z.string(),
       notes: z.string().optional().describe('Free-text notes for this entry'),
     },
-    async ({ boardId, videoId, notes }) => {
+    async ({ workspaceId, boardId, videoId, notes }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const board = await db.board.findFirst({ where: { id: boardId, workspaceId: workspace.id }, select: { id: true } });
+      if (!board) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Board not found' }) }], isError: true };
+      const video = await db.video.findFirst({ where: { id: videoId, source: { workspaceId: workspace.id } }, select: { id: true } });
+      if (!video) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Video not found' }) }], isError: true };
       // Get analysis snapshot if available
       const analysis = await db.analysis.findFirst({ where: { videoId }, select: { analysisJson: true, analysisBasis: true } });
 
@@ -105,10 +112,11 @@ export function registerCreativeTools(server: McpServer) {
 
   server.tool('export_board',
     'Export a swipe board as Markdown for client deliverables.',
-    { boardId: z.string() },
-    async ({ boardId }) => {
-      const board = await db.board.findUnique({
-        where: { id: boardId },
+    { workspaceId: workspaceIdField, boardId: z.string() },
+    async ({ workspaceId, boardId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const board = await db.board.findFirst({
+        where: { id: boardId, workspaceId: workspace.id },
         include: {
           swipeEntries: {
             include: { video: { select: { url: true, creatorHandle: true, caption: true, platform: true, views: true, score: true } } },
@@ -142,14 +150,22 @@ export function registerCreativeTools(server: McpServer) {
       + 'evidence base — the script always promotes the user\'s app. Word-for-word hook, beat-by-beat shots, CTA, '
       + 'caption and hashtags. Costs 2 credits.',
     {
+      workspaceId: workspaceIdField,
       analysisId: z.string().describe('Analysis ID to base the script on (its structure is borrowed, not its content)'),
       format: z.enum(['pov_demo', 'problem_solution', 'apps_that_feel_illegal', 'build_in_public', 'listicle'])
         .describe('App-promo format. When unsure: problem_solution for utility apps, pov_demo for visually striking ones.'),
       appDescription: z.string().describe('The user\'s app — what it does and for whom. This is what the script promotes.'),
       durationSec: z.number().min(10).max(60).optional().describe('Target runtime in seconds (default 20).'),
     },
-    async ({ analysisId, format, appDescription, durationSec }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, analysisId, format, appDescription, durationSec }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const scoped = await db.analysis.findFirst({
+        where: { id: analysisId, video: { source: { workspaceId: workspace.id } } },
+        select: { id: true },
+      });
+      if (!scoped) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Analysis not found' }) }], isError: true };
+      }
       const opId = randomUUID();
       try {
         await debitCredits(workspace.id, CREDIT_COSTS.generateScript, 'generate_script', `${opId}:preauth`);
@@ -190,10 +206,11 @@ export function registerCreativeTools(server: McpServer) {
 
   server.tool('get_script',
     'Get a generated script by ID.',
-    { scriptId: z.string() },
-    async ({ scriptId }) => {
-      const script = await db.script.findUnique({
-        where: { id: scriptId },
+    { workspaceId: workspaceIdField, scriptId: z.string() },
+    async ({ workspaceId, scriptId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const script = await db.script.findFirst({
+        where: { id: scriptId, analysis: { video: { source: { workspaceId: workspace.id } } } },
         include: { analysis: { select: { videoId: true } } },
       });
       if (!script) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Script not found' }) }], isError: true };
@@ -206,11 +223,12 @@ export function registerCreativeTools(server: McpServer) {
   server.tool('list_ideas',
     'List idea cards. Filter by status.',
     {
+      workspaceId: workspaceIdField,
       status: z.enum(['new', 'briefed', 'tested', 'archived']).optional(),
       limit: z.number().min(1).max(100).default(30),
     },
-    async ({ status, limit }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, status, limit }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const ideas = await db.idea.findMany({
         // Scoped like every other read — ideas hang off videos, and videos
         // hang off this workspace's sources. Unscoped, one account's ideas
@@ -230,11 +248,12 @@ export function registerCreativeTools(server: McpServer) {
       + 'unscheduled. This is the "what should I post today" answer — cadence is the #1 growth lever for app-promo '
       + 'accounts. Free.',
     {
+      workspaceId: workspaceIdField,
       horizonDays: z.number().min(1).max(60).default(7)
         .describe('Size of the "next" window in days (default 7).'),
     },
-    async ({ horizonDays }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, horizonDays }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const ideas = await db.idea.findMany({
         where: { status: { not: 'archived' }, video: { source: { workspaceId: workspace.id } } },
         include: {
@@ -296,14 +315,18 @@ export function registerCreativeTools(server: McpServer) {
   server.tool('create_idea',
     'Create an idea card from an analyzed video. Ideas bridge research and production.',
     {
+      workspaceId: workspaceIdField,
       analysisId: z.string(),
       transferablePattern: z.string().describe('The transferable concept stated generically'),
       whyItWorked: z.string().describe('Why it worked, from the analysis'),
       adaptation: z.string().describe('How to adapt for your brand context'),
       dueAt: z.string().optional().describe('ISO date — when the user plans to POST this. Turns the idea into a posting commitment.'),
     },
-    async ({ analysisId, transferablePattern, whyItWorked, adaptation, dueAt }) => {
-      const analysis = await db.analysis.findUnique({ where: { id: analysisId } });
+    async ({ workspaceId, analysisId, transferablePattern, whyItWorked, adaptation, dueAt }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const analysis = await db.analysis.findFirst({
+        where: { id: analysisId, video: { source: { workspaceId: workspace.id } } },
+      });
       if (!analysis) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Analysis not found' }) }], isError: true };
 
       const idea = await db.idea.create({
@@ -319,12 +342,19 @@ export function registerCreativeTools(server: McpServer) {
   server.tool('update_idea_status',
     'Update an idea card status (new → briefed → tested → archived), and/or reschedule its planned post date.',
     {
+      workspaceId: workspaceIdField,
       ideaId: z.string(),
       status: z.enum(['new', 'briefed', 'tested', 'archived']).optional(),
       dueAt: z.string().nullable().optional()
         .describe('New planned post date (ISO), or null to unschedule.'),
     },
-    async ({ ideaId, status, dueAt }) => {
+    async ({ workspaceId, ideaId, status, dueAt }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const owned = await db.idea.findFirst({
+        where: { id: ideaId, video: { source: { workspaceId: workspace.id } } },
+        select: { id: true },
+      });
+      if (!owned) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Idea not found' }) }], isError: true };
       const idea = await db.idea.update({
         where: { id: ideaId },
         data: {
@@ -341,11 +371,19 @@ export function registerCreativeTools(server: McpServer) {
   server.tool('create_brief',
     'Generate a UGC/ad brief from an analysis. Includes concept, hook, talking points, visual beats, and deliverable specs. Costs 2 credits.',
     {
+      workspaceId: workspaceIdField,
       analysisId: z.string(),
       brandContext: z.string().optional().describe('Brand/product context for adaptation'),
     },
-    async ({ analysisId, brandContext }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, analysisId, brandContext }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const scopedBrief = await db.analysis.findFirst({
+        where: { id: analysisId, video: { source: { workspaceId: workspace.id } } },
+        select: { id: true },
+      });
+      if (!scopedBrief) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Analysis not found' }) }], isError: true };
+      }
       const opId = randomUUID();
       try {
         await debitCredits(workspace.id, CREDIT_COSTS.createBrief, 'create_brief', `${opId}:preauth`);
@@ -386,10 +424,11 @@ export function registerCreativeTools(server: McpServer) {
 
   server.tool('get_brief',
     'Get a brief by ID.',
-    { briefId: z.string() },
-    async ({ briefId }) => {
-      const brief = await db.brief.findUnique({
-        where: { id: briefId },
+    { workspaceId: workspaceIdField, briefId: z.string() },
+    async ({ workspaceId, briefId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const brief = await db.brief.findFirst({
+        where: { id: briefId, analysis: { video: { source: { workspaceId: workspace.id } } } },
         include: { analysis: { select: { videoId: true } }, idea: { select: { id: true } } },
       });
       if (!brief) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Brief not found' }) }], isError: true };
@@ -399,9 +438,12 @@ export function registerCreativeTools(server: McpServer) {
 
   server.tool('export_brief',
     'Export a brief as Markdown.',
-    { briefId: z.string() },
-    async ({ briefId }) => {
-      const brief = await db.brief.findUnique({ where: { id: briefId } });
+    { workspaceId: workspaceIdField, briefId: z.string() },
+    async ({ workspaceId, briefId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const brief = await db.brief.findFirst({
+        where: { id: briefId, analysis: { video: { source: { workspaceId: workspace.id } } } },
+      });
       if (!brief) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Brief not found' }) }], isError: true };
 
       const b = JSON.parse(brief.briefJson);

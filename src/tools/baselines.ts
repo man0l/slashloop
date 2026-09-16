@@ -26,7 +26,7 @@
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { chunked } from '../store.js';
-import { requireWorkspace } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { CREATOR_BASELINE_MIN_SAMPLE, batchScoreVideos } from '../scoring.js';
 import { withNextSteps, refreshCreditLabel, scraperCostLabel } from '../lib/next-steps.js';
 import { enqueueRescoreJob, dispatchWorker } from '../lib/jobs.js';
@@ -52,6 +52,7 @@ export function registerBaselineTools(server: McpServer) {
     + 'Defaults to a dry run: it reports the candidates and exact cost and changes nothing. '
     + 'Call again with dryRun=false to create the creator sources, then refresh each one.',
     {
+      workspaceId: workspaceIdField,
       minOutlierScore: z.number().min(0).default(25)
         .describe('Only consider estimated outliers at or above this score (default 25).'),
       limit: z.number().min(1).max(20).default(5)
@@ -64,8 +65,8 @@ export function registerBaselineTools(server: McpServer) {
         .describe('Free triage: score EVERY estimated outlier for suspicion and report, ignoring `limit`. '
           + 'Spends nothing and creates nothing. Use first when there are more candidates than credits.'),
     },
-    async ({ minOutlierScore, limit, videosPerCreator, dryRun, screenOnly }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, minOutlierScore, limit, videosPerCreator, dryRun, screenOnly }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const wsFilter = { source: { workspaceId: workspace.id } };
 
       // Biggest estimated outliers first — these are the ones whose score is
@@ -355,13 +356,14 @@ export function registerBaselineTools(server: McpServer) {
     + 'Pass creatorHandle to rescore only the sources holding that creator\'s videos, sourceIds for specific '
     + 'ones, or neither to rescore every source in the workspace.',
     {
+      workspaceId: workspaceIdField,
       creatorHandle: z.string().optional()
         .describe('Rescore only sources containing this creator\'s videos. Cheapest targeted option.'),
       sourceIds: z.array(z.string()).optional()
         .describe('Explicit source ids to rescore.'),
     },
-    async ({ creatorHandle, sourceIds }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, creatorHandle, sourceIds }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
 
       let targets: string[];
       if (sourceIds?.length) {

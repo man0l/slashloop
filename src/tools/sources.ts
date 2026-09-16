@@ -8,7 +8,7 @@
 // ---------------------------------------------------------------------------
 
 import { z } from 'zod/v4';
-import { requireWorkspace } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { insufficientCreditsPayload, CREDIT_COSTS } from '../lib/credits.js';
 import { withNextSteps, analyzeCostLabel, refreshCreditLabel, costBlock, listScrapeCostCents, scraperCostLabel } from '../lib/next-steps.js';
 import {
@@ -29,13 +29,14 @@ export function registerSourceTools(server: McpServer) {
   server.tool('list_sources',
     'List all tracked sources. Optional filters: platform, sourceType, isActive.',
     {
+      workspaceId: workspaceIdField,
       platform: z.enum(['tiktok', 'reels', 'shorts']).optional(),
       sourceType: z.enum(['creator', 'keyword', 'hashtag', 'collection']).optional(),
       isActive: z.boolean().optional(),
       nicheTag: z.string().optional(),
     },
-    async ({ platform, sourceType, isActive, nicheTag }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, platform, sourceType, isActive, nicheTag }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const sources = await listSourcesForWorkspace(workspace, { platform, sourceType, isActive, nicheTag });
 
       return {
@@ -46,9 +47,9 @@ export function registerSourceTools(server: McpServer) {
   // ---- get_source ----
   server.tool('get_source',
     'Get details of a single tracked source by ID.',
-    { sourceId: z.string().describe('Source ID') },
-    async ({ sourceId }) => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField, sourceId: z.string().describe('Source ID') },
+    async ({ workspaceId, sourceId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const source = await getSourceForWorkspace(workspace, sourceId);
       if (!source) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Source not found' }) }], isError: true };
 
@@ -59,6 +60,7 @@ export function registerSourceTools(server: McpServer) {
   server.tool('create_source',
     'Add a new tracked source (creator, keyword, hashtag, or collection) to monitor.',
     {
+      workspaceId: workspaceIdField,
       platform: z.enum(['tiktok', 'reels', 'shorts']).describe('Platform to track'),
       sourceType: z.enum(['creator', 'keyword', 'hashtag', 'collection']).describe('Type of source'),
       query: z.string().describe('Handle, keyword phrase, hashtag (with #), or collection share URL / numeric id'),
@@ -80,8 +82,8 @@ export function registerSourceTools(server: McpServer) {
       isSelf: z.boolean().optional()
         .describe('True when this creator is the user\'s own TikTok. Creator sources only. Several accounts can be flagged per workspace (e.g. a faceless page and a personal one).'),
     },
-    async ({ platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const result = await createSourceForWorkspace(workspace, {
         platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag, isSelf,
       });
@@ -121,6 +123,7 @@ export function registerSourceTools(server: McpServer) {
   server.tool('update_source',
     'Update a tracked source. Pass only the fields you want to change.',
     {
+      workspaceId: workspaceIdField,
       sourceId: z.string(),
       query: z.string().optional(),
       videoLimit: z.number().min(1).max(200).optional(),
@@ -131,8 +134,8 @@ export function registerSourceTools(server: McpServer) {
       isSelf: z.boolean().optional()
         .describe('Mark (or unmark) this creator as the user\'s own TikTok. Ignored on hashtag/keyword sources.'),
     },
-    async ({ sourceId, ...updates }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, sourceId, ...updates }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const source = await updateSourceForWorkspace(workspace, sourceId, updates);
       if (!source) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Source not found' }) }], isError: true };
 
@@ -142,9 +145,9 @@ export function registerSourceTools(server: McpServer) {
   // ---- delete_source ----
   server.tool('delete_source',
     'Delete a tracked source and all its videos, scores, and analyses.',
-    { sourceId: z.string() },
-    async ({ sourceId }) => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField, sourceId: z.string() },
+    async ({ workspaceId, sourceId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const deleted = await deleteSourceForWorkspace(workspace, sourceId);
       if (!deleted) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Source not found' }) }], isError: true };
 
@@ -160,14 +163,15 @@ export function registerSourceTools(server: McpServer) {
       + 'Costs 1.5 credits per video the scraper returns. '
       + 'Subject to the active spend cap (APIFY_SPEND_CAP_CENTS default $5, or PROXY_TRAFFIC_CAP_GB).',
     {
+      workspaceId: workspaceIdField,
       sourceId: z.string(),
       videoLimit: z.number().min(1).max(200).optional()
         .describe('Hard cap for THIS run only. Default: bootstrap ≤20, incremental ≤5 (new outliers).'),
       async: z.boolean().optional()
         .describe('Force inline (false) or queued (true). Default: queued — a scrape does not fit inside a tool call. Only pass false for debugging.'),
     },
-    async ({ sourceId, videoLimit, async: asyncMode }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, sourceId, videoLimit, async: asyncMode }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const result = await refreshSourceForWorkspace(workspace, sourceId, { videoLimit, async: asyncMode });
 
       switch (result.kind) {
@@ -299,9 +303,9 @@ export function registerSourceTools(server: McpServer) {
     + `(~5 videos at ${CREDIT_COSTS.refreshSourcePerVideo} credits/video) — a candidate is only ever shown if that scrape `
     + `actually found real videos, so no hallucinated hashtag/handle gets suggested. Needs at least one scored outlier to `
     + `seed from — refresh a source first if this is a brand new workspace.`,
-    {},
-    async () => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField },
+    async ({ workspaceId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const seed = await seedSourceCandidates(workspace);
 
       if (!seed.ok) {
@@ -360,11 +364,12 @@ export function registerSourceTools(server: McpServer) {
     `Marks an AI-suggested hashtag/keyword/creator (from suggest_sources) as "no thanks" — future suggest_sources `
     + `calls for this workspace won't propose it again.`,
     {
+      workspaceId: workspaceIdField,
       sourceType: z.enum(['hashtag', 'keyword', 'creator']),
       query: z.string().min(1).describe('The suggested query exactly as returned by suggest_sources, no # or @ prefix.'),
     },
-    async ({ sourceType, query }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, sourceType, query }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       await dismissSuggestion(workspace, { sourceType, query });
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({

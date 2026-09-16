@@ -10,7 +10,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
-import { requireWorkspace } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../lib/credits.js';
 import { costBlock, withNextSteps } from '../lib/next-steps.js';
 import {
@@ -42,12 +42,13 @@ export function registerHookTestTools(server: McpServer) {
   server.tool('start_hook_test',
     'Turn one analyzed outlier video into an AI hook test: distill why its opening grabbed attention, then generate 4 alternative openings that keep everything else the same (recognition / specific number / contrarian / demo-first). Costs 2 credits.',
     {
+      workspaceId: workspaceIdField,
       videoId: z.string(),
       brandContext: z.string().optional().describe('Your product/angle, so openings fit your context'),
       insight: z.string().optional().describe('Override the distilled insight with your own one-liner — it becomes the lock every re-roll obeys'),
     },
-    async ({ videoId, brandContext, insight }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, videoId, brandContext, insight }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
 
       // Free pre-check BEFORE metering: an open test already existing is the
       // common case on a second attempt, and double-charging for guidance
@@ -99,9 +100,9 @@ export function registerHookTestTools(server: McpServer) {
 
   server.tool('get_hook_test',
     'Get a hook test with all versions. Pass either testId or videoId (videoId resolves the open test). Free.',
-    { testId: z.string().optional(), videoId: z.string().optional() },
-    async ({ testId, videoId }) => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField, testId: z.string().optional(), videoId: z.string().optional() },
+    async ({ workspaceId, testId, videoId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       if (!testId && !videoId) {
         return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Pass testId or videoId' }) }], isError: true };
       }
@@ -122,9 +123,9 @@ export function registerHookTestTools(server: McpServer) {
 
   server.tool('reroll_hooks',
     'Discard a hook test\'s live proposals and generate 4 fresh ones under the same locked insight. Previously picked versions count as discarded too. Costs 2 credits.',
-    { testId: z.string() },
-    async ({ testId }) => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField, testId: z.string() },
+    async ({ workspaceId, testId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const opId = randomUUID();
       try {
         await debitCredits(workspace.id, CREDIT_COSTS.rerollHooks, 'reroll_hooks', `${opId}:preauth`);
@@ -159,11 +160,12 @@ export function registerHookTestTools(server: McpServer) {
   server.tool('pick_hook_versions',
     'Mark hook-test versions as picked (e.g. ["A","C"] by label, or by ID). Picked ones feed the shot list; unpicked proposals stay on the table. Free.',
     {
+      workspaceId: workspaceIdField,
       testId: z.string(),
       picks: z.array(z.string()).min(1).describe('Version labels ("A".."D") or version IDs'),
     },
-    async ({ testId, picks }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, testId, picks }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       try {
         const test = await getHookTest(testId, workspace.id);
         const byLabel = new Map(test.versions.filter((v) => v.status === 'proposed').map((v) => [v.label, v]));
@@ -185,12 +187,13 @@ export function registerHookTestTools(server: McpServer) {
   server.tool('update_hook_test',
     'Edit a hook test\'s lock: sharpen the insight and/or the same-in-every-version chips. Every future re-roll obeys the edit. Free.',
     {
+      workspaceId: workspaceIdField,
       testId: z.string(),
       insight: z.string().optional().describe('Replacement one-liner — why this video\'s opening grabbed attention'),
       sameIn: z.array(z.string()).max(8).optional().describe('Replacement constant chips ("face to camera", ...); pass [] to clear'),
     },
-    async ({ testId, insight, sameIn }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, testId, insight, sameIn }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       if (insight === undefined && sameIn === undefined) {
         return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Pass insight and/or sameIn' }) }], isError: true };
       }
@@ -209,9 +212,9 @@ export function registerHookTestTools(server: McpServer) {
 
   server.tool('export_shotlist',
     'Export a hook test as a markdown shot list — one section per picked opening (or every live proposal if nothing is picked). Free.',
-    { testId: z.string() },
-    async ({ testId }) => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField, testId: z.string() },
+    async ({ workspaceId, testId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       try {
         const md = await exportShotlist(testId, workspace.id);
         return { content: [{ type: 'text' as const, text: md }] };
@@ -223,12 +226,13 @@ export function registerHookTestTools(server: McpServer) {
   server.tool('close_hook_test',
     'Close a hook test (status won | closed). Closed tests stop appearing as the video\'s open test, freeing it for a fresh one later. Free.',
     {
+      workspaceId: workspaceIdField,
       testId: z.string(),
       outcome: z.enum(['won', 'closed']).optional().describe("'won' records that an opening beat the original"),
       winner: z.string().optional().describe("Which opening won, by label ('A'–'D') — stored so surfaces can say \"C won\""),
     },
-    async ({ testId, outcome, winner }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, testId, outcome, winner }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       try {
         const result = await closeHookTest(testId, workspace.id, outcome, winner);
         return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };

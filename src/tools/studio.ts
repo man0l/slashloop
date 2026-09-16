@@ -6,7 +6,7 @@
 // never to manual entry.
 
 import { z } from 'zod/v4';
-import { requireWorkspace } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { withNextSteps, scraperCostLabel, refreshCreditLabel } from '../lib/next-steps.js';
 import { buildWeeklyRetro } from '../lib/posts.js';
 import { buildBenchmark } from '../lib/benchmark.js';
@@ -15,9 +15,9 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 export function registerStudioTools(server: McpServer) {
   server.tool('get_weekly_retro',
     'This week\'s posts from the workspace\'s isSelf creator sources (several accounts can be flagged), each scored against its own account\'s median. Free. No manual log — refresh a self source if it is empty.',
-    {},
-    async () => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField },
+    async ({ workspaceId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const retro = await buildWeeklyRetro(workspace);
       // The only two empty states, and the single move each one needs:
       // no account yet → track it; a flagged account holding no videos → one
@@ -45,9 +45,9 @@ export function registerStudioTools(server: McpServer) {
 
   server.tool('get_benchmark',
     'Compare the isSelf account(s) to every other creator the workspace tracks: median views, posts this week / 30 days, outlier mix. Several accounts can be flagged as yours — each reports role "you". Free. Uses already-scraped videos — no flags or extra setup.',
-    {},
-    async () => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField },
+    async ({ workspaceId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const bench = await buildBenchmark(workspace);
       return { content: [{ type: 'text' as const, text: JSON.stringify(bench, null, 2) }] };
     });

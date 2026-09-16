@@ -14,7 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { z } from 'zod/v4';
-import { requireWorkspace } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { CREDIT_COSTS } from '../lib/credits.js';
 import { withNextSteps, costBlock } from '../lib/next-steps.js';
 import {
@@ -77,11 +77,12 @@ export function registerDiscoverTools(server: McpServer) {
     + `credits per probed video (up to ~${MAX_PROBE_COST} worst case; empty or failed probes are refunded). `
     + `Nothing is tracked automatically — the user picks from the suggestions.`,
     {
+      workspaceId: workspaceIdField,
       keywords: z.array(z.string()).min(1).max(MAX_INPUT_KEYWORDS)
         .describe('Niche keywords, hashtags (#tag) and/or creator handles (@handle) describing the area to research.'),
     },
-    async ({ keywords }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, keywords }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
 
       const expanded = await expandDiscoverySeeds(workspace, keywords);
       if (!expanded.ok) {

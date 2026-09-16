@@ -21,7 +21,7 @@
 
 import { z } from 'zod/v4';
 import { db } from '../db.js';
-import { requireWorkspace } from '../context.js';
+import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { withNextSteps } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -58,12 +58,13 @@ export function registerJobTools(server: McpServer) {
     + 'stop immediately when it is false, which also happens once the job passes its deadline. '
     + `Never call it more than ${MAX_POLLS_HINT} times for one job.`,
     {
+      workspaceId: workspaceIdField,
       jobId: z.string().describe('Job id returned by refresh_source (async) or analyze_video.'),
       maxWaitMs: z.number().min(1000).max(MAX_WAIT_MS).default(DEFAULT_WAIT_MS)
         .describe(`How long to block server-side this call (default ${DEFAULT_WAIT_MS}ms, max ${MAX_WAIT_MS}ms).`),
     },
-    async ({ jobId, maxWaitMs }) => {
-      const workspace = await requireWorkspace();
+    async ({ workspaceId, jobId, maxWaitMs }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const started = Date.now();
 
       let job = await db.mediaJob.findFirst({ where: { id: jobId, workspaceId: workspace.id } });
@@ -150,9 +151,9 @@ export function registerJobTools(server: McpServer) {
   server.tool('get_job_status',
     'Read a job\'s current state without waiting. Free. Use for a one-off check; use await_job when you '
     + 'actually intend to wait for the result.',
-    { jobId: z.string() },
-    async ({ jobId }) => {
-      const workspace = await requireWorkspace();
+    { workspaceId: workspaceIdField, jobId: z.string() },
+    async ({ workspaceId, jobId }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
       const job = await db.mediaJob.findFirst({ where: { id: jobId, workspaceId: workspace.id } });
       if (!job) {
         return {

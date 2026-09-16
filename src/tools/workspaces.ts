@@ -17,7 +17,7 @@ export function registerWorkspaceTools(server: McpServer) {
   server.tool(
     'list_workspaces',
     'List all workspaces owned by the authenticated user (id, name, plan, source count). '
-      + 'Conversational tools always operate on the primary (oldest) workspace — use isPrimary to tell which one that is. '
+      + 'Every other tool accepts an optional workspaceId and defaults to the primary (oldest) workspace — use isPrimary to tell which one that is. '
       + 'Free; no credits charged.',
     {},
     async () => {
@@ -77,7 +77,7 @@ export function registerWorkspaceTools(server: McpServer) {
               createdAt: w.createdAt.toISOString(),
             })),
             primaryWorkspaceId: primaryId,
-            note: 'Conversational tools operate on the primary workspace. To work in another workspace, use the site switcher or the /api/workspaces REST routes.',
+            note: 'Tools default to the primary workspace. Pass workspaceId to any other tool to work in a different workspace.',
           }, null, 2),
         }],
       };
