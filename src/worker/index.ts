@@ -8,7 +8,7 @@
 // jobTimeoutMs(kind) so a hung TikTok fetch cannot occupy a concurrency slot
 // until reclaimStuckJobs (15 min).
 //
-// Concurrency: claimNextJob's SKIP LOCKED makes this safe to run ALONGSIDE the
+// Concurrency: claimNextJobs's atomic claim makes this safe to run ALONGSIDE the
 // Vercel worker and the pg_cron drain — jobs are never double-claimed, whoever
 // gets there first wins. WORKER_CONCURRENCY (default 2) also lets THIS process
 // drain several claimed jobs at once. Each job runs inside withMeterScope()
@@ -27,6 +27,9 @@
 //       WORKER_IDLE_MS controls the poll interval when idle: default 3000 in
 //       Postgres mode, 10000 in D1 mode (D1 is single-writer with no cheap
 //       per-3s polling — see docs/cloudflare-migration.md cutover §5).
+//       WORKER_MAX_IDLE_MS caps the exponential idle backoff (empty queue
+//       doubles the wait up to this, jittered; default 60000 in D1 mode,
+//       15000 in Postgres). A claim resets the backoff to IDLE_MS.
 //       WORKER_CONCURRENCY (default 2) is jobs drained in parallel. Raise
 //       DB_CONNECTION_LIMIT with it (Postgres mode only; D1 serializes).
 //       WORKER_RECLAIM_INTERVAL_MS (default 300000) throttles BOTH whole-queue
@@ -37,8 +40,8 @@
 // ---------------------------------------------------------------------------
 
 import {
-  claimNextJob, reclaimStuckJobs, failAbandonedQueuedJobs, expandWorkerKinds,
-  failJob, jobTimeoutMs, jobCreditTool, type MediaJobRow,
+  claimNextJobs, reclaimStuckJobs, failAbandonedQueuedJobs, expandWorkerKinds,
+  failJob, jobTimeoutMs, jobCreditTool,
 } from '../lib/jobs.js';
 import { processClaimedJob } from './process-job.js';
 import { rescoreStaleTooFresh } from '../scoring.js';
@@ -51,7 +54,21 @@ import { initLogShipping } from './ship-logs.js';
 // idle default is 10000 — an explicit WORKER_IDLE_MS still wins in both modes.
 const isD1Mode = (process.env.DB_DIALECT ?? 'postgres') === 'sqlite';
 const IDLE_MS = Number(process.env.WORKER_IDLE_MS ?? (isD1Mode ? 10000 : 3000));
+// Idle backoff ceiling. ~97% of claim polls in production found an empty
+// queue (64,446 polls → 1,880 claims on 2026-09-16), so an empty round backs
+// off exponentially from IDLE_MS to here (jittered); any claim resets it.
+// WORKER_MAX_IDLE_MS overrides; floor is IDLE_MS.
+const MAX_IDLE_MS = (() => {
+  const n = Number(process.env.WORKER_MAX_IDLE_MS ?? (isD1Mode ? 60_000 : 15_000));
+  const fallback = isD1Mode ? 60_000 : 15_000;
+  return Number.isFinite(n) && n >= IDLE_MS ? Math.floor(n) : fallback;
+})();
 const RESCORE_EVERY = Number(process.env.WORKER_RESCORE_EVERY ?? 60);
+// Wall-clock cadence of rescoreStaleTooFresh. Historical meaning was "every
+// RESCORE_EVERY claim rounds" — with idle backoff a round can now sit out
+// 60s, which would silently stretch a 10-minute rescore to an hour. Same
+// default as before (60 × 10s idle = 10 min), computed once from IDLE_MS.
+const RESCORE_INTERVAL_MS = Math.max(60_000, RESCORE_EVERY * IDLE_MS);
 const CONCURRENCY = Math.max(1, Math.floor(Number(process.env.WORKER_CONCURRENCY ?? 2)));
 // Stuck-claim sweep cadence. Both recovery sweeps (reclaimStuckJobs and
 // failAbandonedQueuedJobs) are whole-queue scans over the D1 HTTP API —
@@ -154,12 +171,13 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   });
 }
 
-console.log(`[worker] started — dialect=${isD1Mode ? 'sqlite(D1)' : 'postgres'} kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms, concurrency ${CONCURRENCY}, rescore every ${RESCORE_EVERY} iterations`);
+console.log(`[worker] started — dialect=${isD1Mode ? 'sqlite(D1)' : 'postgres'} kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms → max ${MAX_IDLE_MS}ms, concurrency ${CONCURRENCY}, rescore every ${Math.round(RESCORE_INTERVAL_MS / 1000)}s`);
 
-let iteration = 0;
 // Staggered start so containers restarted together (deploy/watchtower) don't
 // fire the first sweep in lockstep against D1's single writer.
 let lastReclaimAt = Date.now() - Math.floor(Math.random() * RECLAIM_INTERVAL_MS);
+let lastRescoreAt = Date.now() - Math.floor(Math.random() * RESCORE_INTERVAL_MS);
+let idleRounds = 0;
 
 while (!shuttingDown) {
   try {
@@ -198,37 +216,32 @@ while (!shuttingDown) {
     }
 
     // Same idea as the Vercel worker's per-invocation rescoreStaleTooFresh:
-    // scores stuck at 'too_fresh' usually clear by the next check. Runs every
-    // N iterations (a few minutes at the default idle) instead of per minute —
-    // only on the maintenance worker.
-    if (doesMaintenance && RESCORE_EVERY > 0 && ++iteration % RESCORE_EVERY === 0) {
+    // scores stuck at 'too_fresh' usually clear by the next check. Time-based
+    // (was every N claim rounds — backoff would otherwise stretch it) and
+    // staggered across containers like the reclaim sweep; only on the
+    // maintenance worker.
+    if (doesMaintenance && RESCORE_EVERY > 0 && Date.now() - lastRescoreAt >= RESCORE_INTERVAL_MS) {
+      lastRescoreAt = Date.now();
       await rescoreStaleTooFresh().catch((err) => {
         console.warn(`[worker] rescoreStaleTooFresh failed: ${(err as Error).message}`);
       });
     }
 
-    // Claim in priority order, restricted to WORKER_KINDS, up to CONCURRENCY
-    // jobs per round. Each pass takes one job of each kind before looping,
-    // so a burst of analyze jobs cannot starve the cheap thumb/rescore kinds.
-    const jobs: MediaJobRow[] = [];
-    while (jobs.length < CONCURRENCY) {
-      let claimedAny = false;
-      for (const kind of ALL_KINDS) {
-        if (!KINDS.includes(kind)) continue;
-        const j = await claimNextJob(kind);
-        if (j) {
-          jobs.push(j);
-          claimedAny = true;
-          if (jobs.length >= CONCURRENCY) break;
-        }
-      }
-      if (!claimedAny) break;
-    }
+    // Claim up to CONCURRENCY jobs across ALL kinds in ONE statement, priority
+    // following the ALL_KINDS order — the old per-kind loop fired one claim
+    // query per kind per round (7 queries just to find an empty queue).
+    const jobs = await claimNextJobs(KINDS, CONCURRENCY);
 
     if (jobs.length === 0) {
-      await idleSleep(IDLE_MS);
+      // Exponential backoff on an empty queue — the common case (~97% of
+      // polls). Jitter ±15% so sibling containers don't re-sync their polls.
+      idleRounds++;
+      const backoff = Math.min(IDLE_MS * 2 ** idleRounds, MAX_IDLE_MS);
+      const jittered = Math.round(backoff * (0.85 + Math.random() * 0.3));
+      await idleSleep(jittered);
       continue;
     }
+    idleRounds = 0;
 
     await Promise.all(jobs.map(async (job) => {
       const t = Date.now();

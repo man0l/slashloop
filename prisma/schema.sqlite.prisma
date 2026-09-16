@@ -472,6 +472,9 @@ model UsageLog {
   @@index([workspaceId])
   @@index([kind])
   @@index([createdAt])
+  // Monthly cap checks (bandwidth.ts, spend-cap.ts) filter on all four —
+  // without this they table-scanned ~650x/day (2.7M of 4.1M rows read/day).
+  @@index([workspaceId, kind, provider, createdAt])
 }
 
 /// One AI hook test (docs/product-plan.md, feature #7): a proven outlier video

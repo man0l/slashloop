@@ -109,20 +109,47 @@ export function resetProcessMeter(): void {
 }
 
 // --- Monthly ledger ---------------------------------------------------------
+//
+// D1 read-budget: the cap checks below run before every scrape/refresh
+// (~650x/day). With only single-column indexes each one table-scanned all
+// ~4.6k UsageLog rows — 2.7M of the 4.1M rows read against the Workers Free
+// daily cap. Two fixes: the composite index (d1-migrations 0007) makes the
+// aggregate a bounded range scan, and a 60s in-process TTL cache collapses
+// repeat checks (loop callers check several times a minute; the number only
+// changes when a scrape logs usage). The cache never hides a breach:
+// recordTrafficBytes adds its delta to any live cached value, and 60s of
+// staleness on an advisory monthly cap is fine cross-process.
 
-export async function monthlyProxyBytes(workspaceId: string): Promise<number> {
+const LEDGER_CACHE_TTL_MS = 60_000;
+const monthlyKbCache = new Map<string, { kb: number; expiresAt: number }>();
+
+async function monthlyProxyKbUncached(workspaceId: string): Promise<number> {
   const now = new Date();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const rows = await db.usageLog.findMany({
+  const agg = await db.usageLog.aggregate({
+    _sum: { units: true },
     where: {
       workspaceId,
       kind: 'scrape',
       provider: PROXY_PROVIDER,
       createdAt: { gte: startOfMonth },
     },
-    select: { units: true },
   });
-  return rows.reduce((sum, r) => sum + r.units, 0) * 1024;
+  return agg._sum.units ?? 0;
+}
+
+/** Test seam — drop all cached monthly-ledger values. */
+export function resetLedgerCache(): void {
+  monthlyKbCache.clear();
+}
+
+export async function monthlyProxyBytes(workspaceId: string): Promise<number> {
+  const now = Date.now();
+  const cached = monthlyKbCache.get(workspaceId);
+  if (cached && cached.expiresAt > now) return cached.kb * 1024;
+  const kb = await monthlyProxyKbUncached(workspaceId);
+  monthlyKbCache.set(workspaceId, { kb, expiresAt: now + LEDGER_CACHE_TTL_MS });
+  return kb * 1024;
 }
 
 export interface TrafficStatus {
@@ -190,5 +217,9 @@ export async function recordTrafficBytes(
   await db.usageLog.create({
     data: { workspaceId, kind: 'scrape', provider: PROXY_PROVIDER, units: kb, costCents, refId },
   });
+  // Keep a live cached total exact — the next pre-call cap check must see
+  // what this scrape just spent without waiting out the TTL.
+  const cached = monthlyKbCache.get(workspaceId);
+  if (cached && cached.expiresAt > Date.now()) cached.kb += kb;
   return costCents;
 }

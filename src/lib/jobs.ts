@@ -18,7 +18,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
-import { chunked, coerceRowDates, dbDialect } from '../store.js';
+import { chunked, coerceRowDates, dbDialect, rawBatch, type RawStatement } from '../store.js';
 import { CREDIT_COSTS, refundCredits } from './credits.js';
 import { classifyFetchError } from './fetch-errors.js';
 import { notifyScrapeFailure, markScrapeSuccess } from './scrape-alert.js';
@@ -615,6 +615,71 @@ export async function claimNextJob(kind = 'analyze'): Promise<MediaJobRow | null
     RETURNING *
   `;
   return rows[0] ?? null;
+}
+
+/**
+ * Multi-kind batch claim — the idle-poll amortizer.
+ *
+ * An idle VPS round used to fire ONE claim query per WORKER_KIND; a
+ * 7-kind maintenance worker at the 10s D1 idle was ~60k queries/day against
+ * D1's read budget, ~97% of them returning nothing (`wrangler d1 insights`,
+ * 2026-09-16: 64,446 claim polls, 1,880 claims). This claims up to `limit`
+ * jobs across ALL kinds in a single atomic statement — same contract as
+ * claimNextJob: oldest-first within a priority that follows the `kinds`
+ * array order, the refresh coalescing hold, and the recreate video-mode
+ * exclusion (those rows are stepped by the Worker's video-recreate cron).
+ *
+ * SQLite/D1 gets one UPDATE..IN(subquery)..RETURNING; Postgres falls back to
+ * the per-kind claimNextJob loop (SKIP LOCKED is per-row there, and PG is the
+ * pre-cutover legacy runtime).
+ */
+export async function claimNextJobs(kinds: string[], limit: number): Promise<MediaJobRow[]> {
+  if (limit <= 0 || kinds.length === 0) return [];
+  const kindList = [...new Set(kinds.filter(k => /^[a-z][a-z_]*$/.test(k)))];
+  if (kindList.length === 0) return [];
+
+  if (dbDialect() !== 'sqlite') {
+    const out: MediaJobRow[] = [];
+    while (out.length < limit) {
+      let claimedAny = false;
+      for (const kind of kindList) {
+        const j = await claimNextJob(kind);
+        if (j) {
+          out.push(j);
+          claimedAny = true;
+          if (out.length >= limit) break;
+        }
+      }
+      if (!claimedAny) break;
+    }
+    return out;
+  }
+
+  // Kinds are internal enum-ish strings validated by the regex above, so they
+  // can inline into the priority CASE; everything user-shaped stays bound.
+  const kindPlaceholders = kindList.map(() => '?').join(', ');
+  const priorityCase = kindList.map((k, i) => `WHEN '${k}' THEN ${i}`).join(' ');
+  const startedAt = new Date();
+  const refreshBefore = new Date(Date.now() - refreshCoalesceMs());
+  const stmt: RawStatement = {
+    sql: `UPDATE "MediaJob"
+             SET "status" = 'running',
+                 "startedAt" = ?,
+                 "attempts" = "attempts" + 1
+           WHERE "id" IN (
+             SELECT "id" FROM "MediaJob"
+              WHERE "status" = 'queued'
+                AND "kind" IN (${kindPlaceholders})
+                AND "createdAt" <= CASE "kind" WHEN 'refresh' THEN ? ELSE ? END
+                AND ("kind" <> 'recreate' OR "payloadJson" NOT LIKE '%"mode":"video"%')
+              ORDER BY CASE "kind" ${priorityCase} ELSE 99 END, "createdAt" ASC
+              LIMIT ?
+           )
+           RETURNING *`,
+    params: [startedAt, ...kindList, refreshBefore, startedAt, limit],
+  };
+  const results = await rawBatch([stmt]);
+  return (results[0] ?? []).map((row) => toMediaJobRow(row as Record<string, unknown>));
 }
 
 /**

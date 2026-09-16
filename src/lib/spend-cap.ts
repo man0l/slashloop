@@ -46,21 +46,44 @@ function getNotificationHook(): string | undefined {
 
 // ---------------------------------------------------------------------------
 // Monthly Apify spend so far
+//
+// Same D1 read-budget fix as bandwidth.ts: aggregate over the composite index
+// (d1-migrations 0007) instead of findMany + reduce over the whole table, plus
+// a 60s TTL cache — getApifyCapStatus runs before every Apify call. Like the
+// traffic ledger, the cache never hides a breach: recordApifySpend adds its
+// delta to any live cached value.
 // ---------------------------------------------------------------------------
 
-export async function getMonthlyApifySpendCents(workspaceId: string): Promise<number> {
+const SPEND_CACHE_TTL_MS = 60_000;
+const monthlyCentsCache = new Map<string, { cents: number; expiresAt: number }>();
+
+async function monthlyApifyCentsUncached(workspaceId: string): Promise<number> {
   const now = new Date();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const logs = await db.usageLog.findMany({
+  const agg = await db.usageLog.aggregate({
+    _sum: { costCents: true },
     where: {
       workspaceId,
       kind: 'scrape',
       provider: 'apify',
       createdAt: { gte: startOfMonth },
     },
-    select: { costCents: true },
   });
-  return logs.reduce((sum, l) => sum + l.costCents, 0);
+  return agg._sum.costCents ?? 0;
+}
+
+/** Test seam — drop all cached monthly-spend values. */
+export function resetSpendCache(): void {
+  monthlyCentsCache.clear();
+}
+
+export async function getMonthlyApifySpendCents(workspaceId: string): Promise<number> {
+  const now = Date.now();
+  const cached = monthlyCentsCache.get(workspaceId);
+  if (cached && cached.expiresAt > now) return cached.cents;
+  const cents = await monthlyApifyCentsUncached(workspaceId);
+  monthlyCentsCache.set(workspaceId, { cents, expiresAt: now + SPEND_CACHE_TTL_MS });
+  return cents;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +222,10 @@ export async function recordApifySpend(
       refId: encodeApifyRefId(activity, refId),
     },
   });
+  // Keep a live cached total exact — the next pre-call assertApifyCap must
+  // see this charge without waiting out the TTL.
+  const cached = monthlyCentsCache.get(workspaceId);
+  if (cached && cached.expiresAt > Date.now()) cached.cents += costCents;
 }
 
 // ---------------------------------------------------------------------------

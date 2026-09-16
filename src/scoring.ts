@@ -124,6 +124,50 @@ async function upsertBaselinesSqlite(
 }
 
 // ---------------------------------------------------------------------------
+// Skip-unchanged score writes
+//
+// D1 write budget: re-scoring a source re-stamped EVERY Score row even when
+// nothing had changed (scoredAt always moves, so ON CONFLICT always rewrites).
+// Measured 2026-09-16: Score upserts were 40.7k of 75.3k rows written that
+// day — 54% of the Workers Free daily cap — mostly repeat rescores of
+// unchanged sources. Diffing against the stored triple first turns those
+// into no-ops; scoredAt then keeps its meaning "when the score last CHANGED",
+// which is also the right semantics for anything judging score freshness.
+// ---------------------------------------------------------------------------
+
+/** The subset of a Score row that determines whether a rewrite is needed. */
+export type StoredScore = Pick<ScoreResult, 'videoId' | 'outlierScore' | 'scoreType' | 'explanation'>;
+
+/** Rows whose (score, type, explanation) differ from what is already stored. */
+export function pickChangedScores(
+  results: ScoreResult[],
+  stored: StoredScore[],
+): ScoreResult[] {
+  const byVideo = new Map(stored.map((s) => [s.videoId, s]));
+  return results.filter((r) => {
+    const prev = byVideo.get(r.videoId);
+    return !prev
+      || prev.outlierScore !== r.outlierScore
+      || prev.scoreType !== r.scoreType
+      || prev.explanation !== r.explanation;
+  });
+}
+
+/** Current scores for these videos (chunked — D1 caps bound parameters). */
+async function loadStoredScores(videoIds: string[]): Promise<StoredScore[]> {
+  const rows: StoredScore[] = [];
+  await chunked(videoIds, async (chunk) => {
+    const part = await db.score.findMany({
+      where: { videoId: { in: chunk } },
+      select: { videoId: true, outlierScore: true, scoreType: true, explanation: true },
+    });
+    // scoreType is a plain column; only the three literals below are written.
+    rows.push(...part.map((r) => ({ ...r, scoreType: r.scoreType as ScoreResult['scoreType'] })));
+  });
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
 // computeCreatorBaseline
 // ---------------------------------------------------------------------------
 
@@ -577,9 +621,19 @@ export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: numbe
 }
 
 export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]> {
+  // Only the fields scoring reads — this used to pull every full Video row
+  // (transcript, rawJson, ...) per source per rescore.
   const videos = await db.video.findMany({
     where: { sourceId },
     orderBy: { postedAt: 'desc' },
+    select: {
+      id: true,
+      creatorHandle: true,
+      platform: true,
+      views: true,
+      postedAt: true,
+      creatorFollowers: true,
+    },
   });
 
   const source = await db.source.findUnique({ where: { id: sourceId } });
@@ -644,14 +698,21 @@ export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]>
     results.push(scored);
   }
 
+  // Persist ONLY rows that actually changed (see pickChangedScores above) —
+  // repeat rescores of an unchanged source used to be half of all D1 writes.
+  const changed = await loadStoredScores(results.map((r) => r.videoId))
+    .then((stored) => pickChangedScores(results, stored))
+    .catch(() => results); // if the diff read fails, fall through to full upsert
+  if (changed.length === 0) return results;
+
   if (dbDialect() === 'sqlite') {
     // D1 bulk upsert (rawBatch throws on Postgres — the branch above is the
     // line in the sand). Same upsert semantics as the Prisma per-row call:
     // create when the Score row is missing, overwrite + stamp scoredAt when it
     // exists, identical columns in both branches.
-    await upsertScoresSqlite(results);
+    await upsertScoresSqlite(changed);
   } else {
-    for (const result of results) {
+    for (const result of changed) {
       await db.score.upsert({
         where: { videoId: result.videoId },
         create: {
