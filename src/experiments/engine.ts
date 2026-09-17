@@ -48,6 +48,9 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
       await deps.save(e);return false;
     }
     t.status='failed';t.error=err instanceof SafeFailure?err.message:'preparation_failed';
+    // workerd hides stack traces from container logs; record the actual cause
+    // or every non-SafeFailure reads as the generic preparation_failed.
+    if(!(err instanceof SafeFailure))console.error(`[experiments] prepare ${t.kind}${t.index!==undefined?`#${t.index}`:''} for ${e.id} failed`,err);
     const input=e.inputs.find(i=>i.videoId===t.target);if(input){input.status='failed';input.error=t.error;}
     if(t.kind!=='analysis'||!e.allowPartial){e.status='failed';e.error=t.error;}
     await deps.save(e);return e.status==='planning';
