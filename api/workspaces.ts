@@ -17,7 +17,7 @@
 import { corsPreflight } from '../src/lib/cors.js';
 import { requireAuth, requireWorkspaceAccess, jsonResponse } from '../src/lib/authz.js';
 import { listWorkspacesForUser, createWorkspaceForUser, renameWorkspaceForUser, resolveAccountPlanKey, WorkspaceLimitError } from '../src/lib/workspaces.js';
-import { listMembers, inviteMember, inviteMemberToAllWorkspaces, removeMember, TeamError } from '../src/lib/team.js';
+import { listMembers, inviteMember, inviteMemberToAllWorkspaces, listTeamRoster, removeMember, removeMemberFromAllWorkspaces, TeamError } from '../src/lib/team.js';
 import { db } from '../src/db.js';
 import { buildWeeklyRetro } from '../src/lib/posts.js';
 import { buildBenchmark } from '../src/lib/benchmark.js';
@@ -82,6 +82,14 @@ export async function GET(request: Request): Promise<Response> {
   // Teammates of one workspace.
   if (resource === 'members') {
     return handleMembers('GET', request, url.searchParams.get('id'));
+  }
+
+  // Global team roster: every owned workspace with its members. Backs the
+  // Team panel, which is deliberately not scoped to any active workspace.
+  if (url.searchParams.get('action') === 'team') {
+    const auth = await requireAuth(request);
+    if (!auth.ok) return auth.response;
+    return jsonResponse(200, { workspaces: await listTeamRoster(auth.userId) }, request);
   }
 
   // Studio reads back over already-scraped data; there is no POST posts log.
@@ -201,6 +209,21 @@ export async function DELETE(request: Request): Promise<Response> {
   const url = new URL(request.url);
   if (url.searchParams.get('resource') === 'members') {
     return handleMembers('DELETE', request, url.searchParams.get('id'));
+  }
+
+  // Remove a teammate from every owned workspace at once.
+  if (url.searchParams.get('action') === 'team') {
+    const auth = await requireAuth(request);
+    if (!auth.ok) return auth.response;
+    const email = url.searchParams.get('email') ?? '';
+    if (!email.trim()) return jsonResponse(400, { error: 'email is required' }, request);
+    try {
+      const result = await removeMemberFromAllWorkspaces({ ownerId: auth.userId, rawEmail: email });
+      return jsonResponse(200, { ok: true, ...result }, request);
+    } catch (err) {
+      if (err instanceof TeamError) return jsonResponse(404, { error: err.code, message: err.message }, request);
+      throw err;
+    }
   }
   return jsonResponse(405, { error: 'method_not_allowed' }, request);
 }

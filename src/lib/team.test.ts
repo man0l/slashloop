@@ -34,7 +34,8 @@ mock.module('../db.js', () => ({
         members = members.filter((m) => !(m.workspaceId === where.workspaceId && m.email === where.email));
         return { count: before - members.length };
       },
-      findMany: async () => members,
+      findMany: async ({ where }: { where?: { workspaceId?: string } } = {}) =>
+        where?.workspaceId ? members.filter((m) => m.workspaceId === where.workspaceId) : members,
     },
   },
 }));
@@ -53,7 +54,7 @@ mock.module('./cache.js', () => ({
   getOrFill: async (_key: string, _ttl: number, fill: () => unknown) => fill(),
 }));
 
-const { inviteMember, inviteMemberToAllWorkspaces, removeMember, listMembers, MAX_MEMBERS_PER_WORKSPACE, TeamError } = await import('./team.js');
+const { inviteMember, inviteMemberToAllWorkspaces, listTeamRoster, removeMember, removeMemberFromAllWorkspaces, listMembers, MAX_MEMBERS_PER_WORKSPACE, TeamError } = await import('./team.js');
 
 // TeamError.code, not .message — toThrow() matches message text.
 const errorCode = (p: Promise<unknown>): Promise<string> =>
@@ -116,6 +117,35 @@ describe('removeMember', () => {
     await removeMember('ws-1', 'A@B.CO');
     expect(await listMembers('ws-1')).toHaveLength(0);
     expect(await errorCode(removeMember('ws-1', 'a@b.co'))).toBe('not_a_member');
+  });
+});
+
+describe('listTeamRoster', () => {
+  test('groups members under each owned workspace', async () => {
+    await inviteMember({ id: 'ws-1', name: 'Acme' }, undefined, 'a@b.co', 'user-1', { sendEmail: false });
+    await inviteMember({ id: 'ws-2', name: 'Side' }, undefined, 'b@b.co', 'user-1', { sendEmail: false });
+    const roster = await listTeamRoster('user-1');
+    expect(roster).toHaveLength(2);
+    expect(roster[0].members.map((m) => m.email)).toEqual(['a@b.co']);
+    expect(roster[1].members.map((m) => m.email)).toEqual(['b@b.co']);
+  });
+
+  test('empty for owners without workspaces', async () => {
+    ownedWorkspaces = [];
+    expect(await listTeamRoster('user-1')).toEqual([]);
+  });
+});
+
+describe('removeMemberFromAllWorkspaces', () => {
+  test('removes from every owned workspace and reports them', async () => {
+    await inviteMemberToAllWorkspaces({ ownerId: 'user-1', ownerEmail: undefined, rawEmail: 'a@b.co', invitedBy: 'user-1' });
+    const result = await removeMemberFromAllWorkspaces({ ownerId: 'user-1', rawEmail: 'A@B.CO' });
+    expect(result).toEqual({ email: 'a@b.co', removedFrom: ['ws-1', 'ws-2'] });
+    expect(members).toHaveLength(0);
+  });
+
+  test('errors when the email is a member of nothing owned', async () => {
+    expect(await errorCode(removeMemberFromAllWorkspaces({ ownerId: 'user-1', rawEmail: 'ghost@x.co' }))).toBe('not_a_member');
   });
 });
 

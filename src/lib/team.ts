@@ -114,6 +114,41 @@ export type BulkInviteResult = {
   workspaces: Array<{ id: string; name: string; status: 'added' | 'already_member' | 'skipped_limit' }>;
 };
 
+export type TeamRoster = Array<{
+  id: string;
+  name: string;
+  members: WorkspaceMemberView[];
+}>;
+
+/** Every workspace owned by `ownerId` with its roster — the backing query
+ *  for the global Team panel (no active-workspace scoping). */
+export async function listTeamRoster(ownerId: string): Promise<TeamRoster> {
+  const owned = await db.workspace.findMany({
+    where: { ownerId },
+    select: { id: true, name: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  const roster: TeamRoster = [];
+  for (const workspace of owned) {
+    roster.push({ id: workspace.id, name: workspace.name, members: await listMembers(workspace.id) });
+  }
+  return roster;
+}
+
+/** Remove `rawEmail` from EVERY workspace owned by `ownerId`. */
+export async function removeMemberFromAllWorkspaces(input: { ownerId: string; rawEmail: string }): Promise<{ email: string; removedFrom: string[] }> {
+  const email = input.rawEmail.trim().toLowerCase();
+  const owned = await db.workspace.findMany({ where: { ownerId: input.ownerId }, select: { id: true } });
+  const removedFrom: string[] = [];
+  for (const workspace of owned) {
+    const deleted = await db.workspaceMember.deleteMany({ where: { workspaceId: workspace.id, email } });
+    if (deleted.count > 0) removedFrom.push(workspace.id);
+  }
+  if (!removedFrom.length) throw new TeamError('not_a_member', 'That person is not a member of any of your workspaces.');
+  invalidateWorkspaceList(input.ownerId);
+  return { email, removedFrom };
+}
+
 /**
  * Invite `rawEmail` to EVERY workspace owned by `ownerId` in one call — the
  * "basic teams" flow: the teammate signs up with that email (Google login)
