@@ -71,6 +71,8 @@ export interface Experiment {
   report: (ReportData & { coverage?: unknown }) | null; inputs: Input[]; variants: Variant[]; error: string | null;
   generationBasis: GenerationBasis; assetPolicy: string; version: number; tasks: Task[];
   commands: Record<string, string>; allowPartial: boolean; createFingerprint: string;
+  /** Classified from the source analyses during planning; constrains briefs and renders. */
+  styleFormula?: { medium: string; density: string } | null;
 }
 export function same(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b); }
 export function assertBrief(e: Experiment, b: BriefData) {
