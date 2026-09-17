@@ -119,7 +119,8 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     let retryTasks: S.Task[];
     if (wantedTaskIds) {
       const wanted = new Set(wantedTaskIds);
-      retryTasks = e.tasks.filter(t=>wanted.has(t.id)&&(t.status==='failed'||t.status==='unknown'));
+      // 'pending' included so an experiment paused by a transient guard can resume named work.
+      retryTasks = e.tasks.filter(t=>wanted.has(t.id)&&(t.status==='failed'||t.status==='unknown'||t.status==='pending'));
       if (!retryTasks.length) throw new S.ExperimentError(409,'nothing_to_retry');
     } else {
       retryTasks = e.tasks.filter(t=>t.status==='failed' && (!ids || (t.kind==='slide' && ids.includes(t.target!))));

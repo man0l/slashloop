@@ -16,6 +16,18 @@ describe('durable experiment steps',()=>{
   await Promise.all([step('w','e',h.deps),step('w','e',h.deps),step('w','e',h.deps),step('w','e',h.deps)]);
   expect(calls).toBe(3);expect(h.charges).toBe(15);
   expect(h.row.inputs.map(i=>i.status)).toEqual(['ready','ready','ready']);});
+ test('briefs never runs while the report is still running',async()=>{let calls=0;let release!:()=>void;const gate=new Promise<void>(r=>{release=r;});
+  const h=harness(async()=>({execute:async()=>{calls++;await gate;return {};}}));
+  h.set({...fixture(),inputs:[{videoId:'v',status:'ready',analysisId:'a',jobId:null,error:null,coverage:{basis:'video',observed:1,total:null,complete:true},evidence:[{location:'second:0',observation:'A cup'}]}],tasks:[
+    {id:'r',kind:'report',status:'pending',attempts:0,charged:0},
+    {id:'b',kind:'briefs',status:'pending',attempts:0,charged:0},
+  ]});
+  const a=step('w','e',h.deps);
+  await new Promise(r=>setTimeout(r,10));
+  const b=await step('w','e',h.deps);
+  expect(b).toBe(false);expect(calls).toBe(1);
+  expect(h.row.tasks.find(t=>t.kind==='briefs')?.status).toBe('pending');
+  release();await a;expect(calls).toBe(1);});
  test('compatible analysis discovered after queueing is free',async()=>{const h=harness(async()=>({free:true,execute:async()=>result}));await step('w','e',h.deps);expect(h.charges).toBe(0);expect(h.row.inputs[0]?.status).toBe('ready');});
  test('hydration parks existing MediaJob id without charging',async()=>{const h=harness(async()=>{throw new HydrationPending('fetch-1');});expect(await step('w','e',h.deps)).toBe(false);expect(h.row.inputs[0]).toMatchObject({status:'hydrating',jobId:'fetch-1'});expect(h.charges).toBe(0);expect(h.row.tasks[0]?.status).toBe('pending');});
  test('unknown paid outcome pauses and never submits again',async()=>{let calls=0;const h=harness(async()=>({execute:async()=>{calls++;throw new Error('socket lost');}}));h.set({...fixture(),tasks:[{id:'t',kind:'analysis',target:'v',status:'pending',attempts:3,charged:0}]});await step('w','e',h.deps);expect(h.row.status).toBe('paused');expect(h.row.tasks[0]?.status).toBe('unknown');expect(h.charges).toBe(5);expect(calls).toBe(1);});

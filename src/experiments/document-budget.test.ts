@@ -39,10 +39,21 @@ test('store rejects oversized create and paid save before touching the database'
 });
 
 test('claim reserves result room before paid work and settlement releases it',()=>{
-  const e=fixture();e.instructions.direction='x'.repeat(700000);
+  const e=fixture();e.instructions.direction='x'.repeat(1_000_000);
   expect(()=>encodeExperiment(e)).not.toThrow();
   e.tasks=[{id:'t',kind:'briefs',status:'running',attempts:1,charged:2}];
   expect(()=>encodeExperiment(e)).toThrow('too large');
   e.tasks[0]!.status='done';
+  expect(()=>encodeExperiment(e)).not.toThrow();
+});
+test('concurrent large-kind receipts never trip the reserve on a healthy document',()=>{
+  // Regression (2026-09-17): parallel slots let report+briefs hold running
+  // receipts at once; their summed reserves exceeded the cap on an 8KB document.
+  const e=fixture();e.instructions.direction='';
+  e.tasks=[
+    {id:'r',kind:'report',status:'running',attempts:1,charged:2},
+    {id:'b',kind:'briefs',status:'running',attempts:1,charged:2},
+    ...['s1','s2','s3'].map(id=>({id,kind:'slide' as const,status:'running' as const,attempts:1,charged:2})),
+  ];
   expect(()=>encodeExperiment(e)).not.toThrow();
 });

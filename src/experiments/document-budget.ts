@@ -19,7 +19,12 @@ export function encodeExperiment(e: Experiment): string {
   }
   // A running receipt reserves room for the bounded provider result before
   // credit is debited; cancellation must preserve that same headroom.
-  const reserve = e.tasks.reduce((total, task) => total + (task.status === 'running' ? resultReserve[task.kind] : 0), 0);
+  // Parallel slots can hold several large-kind receipts at once, so the total
+  // reserve is capped — the raw document size still gates real growth.
+  const reserve = Math.min(
+    e.tasks.reduce((total, task) => total + (task.status === 'running' ? resultReserve[task.kind] : 0), 0),
+    Math.floor(DOCUMENT_BYTES / 2),
+  );
   const json = JSON.stringify(e);
   if (Buffer.byteLength(json, 'utf8') + reserve > DOCUMENT_BYTES) {
     throw new ExperimentError(413, 'experiment_document_limit', 'Experiment is too large to safely save further results. Use fewer references or smaller briefs.');

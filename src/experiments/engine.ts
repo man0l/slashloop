@@ -50,7 +50,12 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
   if(running.length>=PARALLEL_SLIDES)return false;
   for(let pick=0;pick<PARALLEL_SLIDES;pick++){
     if(pick>0){e=await deps.load(workspaceId,id);if(!isActive(e))return false;}
-    const t=e.tasks.find(t=>t.status==='pending'&&(t.nextAttemptAt??0)<=deps.now());if(!t)return false;
+    // Phase gating: parallel steps must never jump the pipeline (briefs before
+    // report, slides before briefs). Analysis tasks are mutually independent.
+    const pendingOrRunning=(kind:Task['kind'])=>e.tasks.some(t=>t.kind===kind&&(t.status==='pending'||t.status==='running'));
+    const phaseDone=(kind:Task['kind'])=>{const ks=e.tasks.filter(t=>t.kind===kind);return ks.length>0&&ks.every(t=>t.status==='done');};
+    const eligible=(t:Task)=>t.kind==='report'?!pendingOrRunning('analysis'):t.kind==='briefs'?phaseDone('report'):t.kind==='slide'?phaseDone('briefs'):true;
+    const t=e.tasks.find(t=>t.status==='pending'&&(t.nextAttemptAt??0)<=deps.now()&&eligible(t));if(!t)return false;
     let prepared:Prepared;
     try{prepared=await deps.prepare(e,t);}catch(err){
       if(err instanceof HydrationPending){
