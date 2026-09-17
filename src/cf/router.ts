@@ -119,15 +119,10 @@ const ROUTES: Route[] = [
   { re: /^\/api\/workspaces$/, mod: workspaces },
   { re: /^\/api\/workspaces(?:\/([^/]+?))$/, mod: workspaces, inject: { id: '$1' } },
   { re: /^\/api\/experiments(?:\/.*)?$/, mod: experiments },
-  // videos + hook tests.
+  // videos.
   { re: /^\/api\/videos(?:\/([^/]+?))\/analyze$/, mod: videos, inject: { id: '$1', action: 'analyze' } },
   { re: /^\/api\/videos(?:\/([^/]+?))\/fetch$/, mod: videos, inject: { id: '$1', action: 'fetch' } },
   { re: /^\/api\/videos(?:\/([^/]+?))\/recreate$/, mod: videos, inject: { id: '$1', action: 'recreate' } },
-  { re: /^\/api\/videos(?:\/([^/]+?))\/hook-test\/pick$/, mod: videos, inject: { id: '$1', action: 'hook-test-pick' } },
-  { re: /^\/api\/videos(?:\/([^/]+?))\/hook-test\/reroll$/, mod: videos, inject: { id: '$1', action: 'hook-test-reroll' } },
-  { re: /^\/api\/videos(?:\/([^/]+?))\/hook-test\/close$/, mod: videos, inject: { id: '$1', action: 'hook-test-close' } },
-  { re: /^\/api\/videos(?:\/([^/]+?))\/hook-test\/shotlist$/, mod: videos, inject: { id: '$1', action: 'hook-test-shotlist' } },
-  { re: /^\/api\/videos(?:\/([^/]+?))\/hook-test$/, mod: videos, inject: { id: '$1', action: 'hook-test' } },
   { re: /^\/api\/videos(?:\/([^/]+?))$/, mod: videos, inject: { id: '$1' } },
   // crons / internals.
   { re: /^\/api\/cron\/media-retention$/, mod: cronRetention },

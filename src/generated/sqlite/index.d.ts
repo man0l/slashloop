@@ -19,8 +19,7 @@ export type PrismaPromise<T> = $Public.PrismaPromise<T>
  * Populated by the Supabase→D1 data migration and refreshed at login. Exists
  * because the weekly digest resolves the owner's email without joining into
  * Supabase's `auth` schema (src/lib/digest.ts) — once the app runs on D1 there
- * is no auth schema to read. Phase 4 (Cloudflare-native auth) turns this into
- * the identity source of truth.
+ * is no auth schema to read.
  */
 export type User = $Result.DefaultSelection<Prisma.$UserPayload>
 /**
@@ -75,11 +74,18 @@ export type Source = $Result.DefaultSelection<Prisma.$SourcePayload>
  */
 export type Video = $Result.DefaultSelection<Prisma.$VideoPayload>
 /**
- * Model CanonicalScrapeLock
+ * Model Experiment
  * One Apify run per canonical query across worker containers. A TTL row
  * rather than pg_advisory_lock: the workers talk to the Supabase pooler in
  * transaction pooling mode, where a session-level lock can be released on a
  * different backend and leak. See src/lib/jobs.ts acquireCanonicalLock.
+ * Experiments own resumable paid-step receipts in dataJson. Version is a CAS fence.
+ * Deck/revision history is retained; no automatic output deletion.
+ */
+export type Experiment = $Result.DefaultSelection<Prisma.$ExperimentPayload>
+/**
+ * Model CanonicalScrapeLock
+ * 
  */
 export type CanonicalScrapeLock = $Result.DefaultSelection<Prisma.$CanonicalScrapeLockPayload>
 /**
@@ -132,26 +138,6 @@ export type Brief = $Result.DefaultSelection<Prisma.$BriefPayload>
  * 
  */
 export type UsageLog = $Result.DefaultSelection<Prisma.$UsageLogPayload>
-/**
- * Model HookTest
- * One AI hook test (docs/product-plan.md, feature #7): a proven outlier video
- * reduced to one transferable insight plus several generated openings that
- * inherit everything else about the video — same subject, same beats; only
- * the first seconds change. V1 is text-only: a version's life ends at a shot
- * list entry until the render pipeline lands (Phase 3).
- * 
- * At most one open test per video, enforced in src/lib/hook-tests.ts rather
- * than by a unique index — closing a test must free the video again without
- * touching its history.
- */
-export type HookTest = $Result.DefaultSelection<Prisma.$HookTestPayload>
-/**
- * Model HookVersion
- * One generated opening inside a hook test. Labels run A–D within a
- * generation round; re-rolling marks the previous round discarded rather
- * than deleting it, so the trial-and-error trail stays readable.
- */
-export type HookVersion = $Result.DefaultSelection<Prisma.$HookVersionPayload>
 /**
  * Model RefreshRun
  * 
@@ -390,6 +376,16 @@ export class PrismaClient<
   get video(): Prisma.VideoDelegate<ExtArgs, ClientOptions>;
 
   /**
+   * `prisma.experiment`: Exposes CRUD operations for the **Experiment** model.
+    * Example usage:
+    * ```ts
+    * // Fetch zero or more Experiments
+    * const experiments = await prisma.experiment.findMany()
+    * ```
+    */
+  get experiment(): Prisma.ExperimentDelegate<ExtArgs, ClientOptions>;
+
+  /**
    * `prisma.canonicalScrapeLock`: Exposes CRUD operations for the **CanonicalScrapeLock** model.
     * Example usage:
     * ```ts
@@ -498,26 +494,6 @@ export class PrismaClient<
     * ```
     */
   get usageLog(): Prisma.UsageLogDelegate<ExtArgs, ClientOptions>;
-
-  /**
-   * `prisma.hookTest`: Exposes CRUD operations for the **HookTest** model.
-    * Example usage:
-    * ```ts
-    * // Fetch zero or more HookTests
-    * const hookTests = await prisma.hookTest.findMany()
-    * ```
-    */
-  get hookTest(): Prisma.HookTestDelegate<ExtArgs, ClientOptions>;
-
-  /**
-   * `prisma.hookVersion`: Exposes CRUD operations for the **HookVersion** model.
-    * Example usage:
-    * ```ts
-    * // Fetch zero or more HookVersions
-    * const hookVersions = await prisma.hookVersion.findMany()
-    * ```
-    */
-  get hookVersion(): Prisma.HookVersionDelegate<ExtArgs, ClientOptions>;
 
   /**
    * `prisma.refreshRun`: Exposes CRUD operations for the **RefreshRun** model.
@@ -1007,6 +983,7 @@ export namespace Prisma {
     SuggestionDismissal: 'SuggestionDismissal',
     Source: 'Source',
     Video: 'Video',
+    Experiment: 'Experiment',
     CanonicalScrapeLock: 'CanonicalScrapeLock',
     Baseline: 'Baseline',
     Score: 'Score',
@@ -1018,8 +995,6 @@ export namespace Prisma {
     Script: 'Script',
     Brief: 'Brief',
     UsageLog: 'UsageLog',
-    HookTest: 'HookTest',
-    HookVersion: 'HookVersion',
     RefreshRun: 'RefreshRun',
     AutoAnalyzeRun: 'AutoAnalyzeRun',
     MediaJob: 'MediaJob',
@@ -1042,7 +1017,7 @@ export namespace Prisma {
       omit: GlobalOmitOptions
     }
     meta: {
-      modelProps: "user" | "workspace" | "workspaceMember" | "creditLedger" | "stripeEvent" | "suggestionDismissal" | "source" | "video" | "canonicalScrapeLock" | "baseline" | "score" | "analysis" | "hook" | "board" | "swipeEntry" | "idea" | "script" | "brief" | "usageLog" | "hookTest" | "hookVersion" | "refreshRun" | "autoAnalyzeRun" | "mediaJob" | "scrapeAlertState"
+      modelProps: "user" | "workspace" | "workspaceMember" | "creditLedger" | "stripeEvent" | "suggestionDismissal" | "source" | "video" | "experiment" | "canonicalScrapeLock" | "baseline" | "score" | "analysis" | "hook" | "board" | "swipeEntry" | "idea" | "script" | "brief" | "usageLog" | "refreshRun" | "autoAnalyzeRun" | "mediaJob" | "scrapeAlertState"
       txIsolationLevel: Prisma.TransactionIsolationLevel
     }
     model: {
@@ -1635,6 +1610,80 @@ export namespace Prisma {
           count: {
             args: Prisma.VideoCountArgs<ExtArgs>
             result: $Utils.Optional<VideoCountAggregateOutputType> | number
+          }
+        }
+      }
+      Experiment: {
+        payload: Prisma.$ExperimentPayload<ExtArgs>
+        fields: Prisma.ExperimentFieldRefs
+        operations: {
+          findUnique: {
+            args: Prisma.ExperimentFindUniqueArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentPayload> | null
+          }
+          findUniqueOrThrow: {
+            args: Prisma.ExperimentFindUniqueOrThrowArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentPayload>
+          }
+          findFirst: {
+            args: Prisma.ExperimentFindFirstArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentPayload> | null
+          }
+          findFirstOrThrow: {
+            args: Prisma.ExperimentFindFirstOrThrowArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentPayload>
+          }
+          findMany: {
+            args: Prisma.ExperimentFindManyArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentPayload>[]
+          }
+          create: {
+            args: Prisma.ExperimentCreateArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentPayload>
+          }
+          createMany: {
+            args: Prisma.ExperimentCreateManyArgs<ExtArgs>
+            result: BatchPayload
+          }
+          createManyAndReturn: {
+            args: Prisma.ExperimentCreateManyAndReturnArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentPayload>[]
+          }
+          delete: {
+            args: Prisma.ExperimentDeleteArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentPayload>
+          }
+          update: {
+            args: Prisma.ExperimentUpdateArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentPayload>
+          }
+          deleteMany: {
+            args: Prisma.ExperimentDeleteManyArgs<ExtArgs>
+            result: BatchPayload
+          }
+          updateMany: {
+            args: Prisma.ExperimentUpdateManyArgs<ExtArgs>
+            result: BatchPayload
+          }
+          updateManyAndReturn: {
+            args: Prisma.ExperimentUpdateManyAndReturnArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentPayload>[]
+          }
+          upsert: {
+            args: Prisma.ExperimentUpsertArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentPayload>
+          }
+          aggregate: {
+            args: Prisma.ExperimentAggregateArgs<ExtArgs>
+            result: $Utils.Optional<AggregateExperiment>
+          }
+          groupBy: {
+            args: Prisma.ExperimentGroupByArgs<ExtArgs>
+            result: $Utils.Optional<ExperimentGroupByOutputType>[]
+          }
+          count: {
+            args: Prisma.ExperimentCountArgs<ExtArgs>
+            result: $Utils.Optional<ExperimentCountAggregateOutputType> | number
           }
         }
       }
@@ -2452,154 +2501,6 @@ export namespace Prisma {
           }
         }
       }
-      HookTest: {
-        payload: Prisma.$HookTestPayload<ExtArgs>
-        fields: Prisma.HookTestFieldRefs
-        operations: {
-          findUnique: {
-            args: Prisma.HookTestFindUniqueArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookTestPayload> | null
-          }
-          findUniqueOrThrow: {
-            args: Prisma.HookTestFindUniqueOrThrowArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookTestPayload>
-          }
-          findFirst: {
-            args: Prisma.HookTestFindFirstArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookTestPayload> | null
-          }
-          findFirstOrThrow: {
-            args: Prisma.HookTestFindFirstOrThrowArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookTestPayload>
-          }
-          findMany: {
-            args: Prisma.HookTestFindManyArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookTestPayload>[]
-          }
-          create: {
-            args: Prisma.HookTestCreateArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookTestPayload>
-          }
-          createMany: {
-            args: Prisma.HookTestCreateManyArgs<ExtArgs>
-            result: BatchPayload
-          }
-          createManyAndReturn: {
-            args: Prisma.HookTestCreateManyAndReturnArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookTestPayload>[]
-          }
-          delete: {
-            args: Prisma.HookTestDeleteArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookTestPayload>
-          }
-          update: {
-            args: Prisma.HookTestUpdateArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookTestPayload>
-          }
-          deleteMany: {
-            args: Prisma.HookTestDeleteManyArgs<ExtArgs>
-            result: BatchPayload
-          }
-          updateMany: {
-            args: Prisma.HookTestUpdateManyArgs<ExtArgs>
-            result: BatchPayload
-          }
-          updateManyAndReturn: {
-            args: Prisma.HookTestUpdateManyAndReturnArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookTestPayload>[]
-          }
-          upsert: {
-            args: Prisma.HookTestUpsertArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookTestPayload>
-          }
-          aggregate: {
-            args: Prisma.HookTestAggregateArgs<ExtArgs>
-            result: $Utils.Optional<AggregateHookTest>
-          }
-          groupBy: {
-            args: Prisma.HookTestGroupByArgs<ExtArgs>
-            result: $Utils.Optional<HookTestGroupByOutputType>[]
-          }
-          count: {
-            args: Prisma.HookTestCountArgs<ExtArgs>
-            result: $Utils.Optional<HookTestCountAggregateOutputType> | number
-          }
-        }
-      }
-      HookVersion: {
-        payload: Prisma.$HookVersionPayload<ExtArgs>
-        fields: Prisma.HookVersionFieldRefs
-        operations: {
-          findUnique: {
-            args: Prisma.HookVersionFindUniqueArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookVersionPayload> | null
-          }
-          findUniqueOrThrow: {
-            args: Prisma.HookVersionFindUniqueOrThrowArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookVersionPayload>
-          }
-          findFirst: {
-            args: Prisma.HookVersionFindFirstArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookVersionPayload> | null
-          }
-          findFirstOrThrow: {
-            args: Prisma.HookVersionFindFirstOrThrowArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookVersionPayload>
-          }
-          findMany: {
-            args: Prisma.HookVersionFindManyArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookVersionPayload>[]
-          }
-          create: {
-            args: Prisma.HookVersionCreateArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookVersionPayload>
-          }
-          createMany: {
-            args: Prisma.HookVersionCreateManyArgs<ExtArgs>
-            result: BatchPayload
-          }
-          createManyAndReturn: {
-            args: Prisma.HookVersionCreateManyAndReturnArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookVersionPayload>[]
-          }
-          delete: {
-            args: Prisma.HookVersionDeleteArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookVersionPayload>
-          }
-          update: {
-            args: Prisma.HookVersionUpdateArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookVersionPayload>
-          }
-          deleteMany: {
-            args: Prisma.HookVersionDeleteManyArgs<ExtArgs>
-            result: BatchPayload
-          }
-          updateMany: {
-            args: Prisma.HookVersionUpdateManyArgs<ExtArgs>
-            result: BatchPayload
-          }
-          updateManyAndReturn: {
-            args: Prisma.HookVersionUpdateManyAndReturnArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookVersionPayload>[]
-          }
-          upsert: {
-            args: Prisma.HookVersionUpsertArgs<ExtArgs>
-            result: $Utils.PayloadToResult<Prisma.$HookVersionPayload>
-          }
-          aggregate: {
-            args: Prisma.HookVersionAggregateArgs<ExtArgs>
-            result: $Utils.Optional<AggregateHookVersion>
-          }
-          groupBy: {
-            args: Prisma.HookVersionGroupByArgs<ExtArgs>
-            result: $Utils.Optional<HookVersionGroupByOutputType>[]
-          }
-          count: {
-            args: Prisma.HookVersionCountArgs<ExtArgs>
-            result: $Utils.Optional<HookVersionCountAggregateOutputType> | number
-          }
-        }
-      }
       RefreshRun: {
         payload: Prisma.$RefreshRunPayload<ExtArgs>
         fields: Prisma.RefreshRunFieldRefs
@@ -3000,6 +2901,7 @@ export namespace Prisma {
     suggestionDismissal?: SuggestionDismissalOmit
     source?: SourceOmit
     video?: VideoOmit
+    experiment?: ExperimentOmit
     canonicalScrapeLock?: CanonicalScrapeLockOmit
     baseline?: BaselineOmit
     score?: ScoreOmit
@@ -3011,8 +2913,6 @@ export namespace Prisma {
     script?: ScriptOmit
     brief?: BriefOmit
     usageLog?: UsageLogOmit
-    hookTest?: HookTestOmit
-    hookVersion?: HookVersionOmit
     refreshRun?: RefreshRunOmit
     autoAnalyzeRun?: AutoAnalyzeRunOmit
     mediaJob?: MediaJobOmit
@@ -3099,7 +2999,6 @@ export namespace Prisma {
   export type WorkspaceCountOutputType = {
     sources: number
     boards: number
-    hookTests: number
     usageLogs: number
     autoAnalyzeRuns: number
     creditLedger: number
@@ -3111,7 +3010,6 @@ export namespace Prisma {
   export type WorkspaceCountOutputTypeSelect<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
     sources?: boolean | WorkspaceCountOutputTypeCountSourcesArgs
     boards?: boolean | WorkspaceCountOutputTypeCountBoardsArgs
-    hookTests?: boolean | WorkspaceCountOutputTypeCountHookTestsArgs
     usageLogs?: boolean | WorkspaceCountOutputTypeCountUsageLogsArgs
     autoAnalyzeRuns?: boolean | WorkspaceCountOutputTypeCountAutoAnalyzeRunsArgs
     creditLedger?: boolean | WorkspaceCountOutputTypeCountCreditLedgerArgs
@@ -3143,13 +3041,6 @@ export namespace Prisma {
    */
   export type WorkspaceCountOutputTypeCountBoardsArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
     where?: BoardWhereInput
-  }
-
-  /**
-   * WorkspaceCountOutputType without action
-   */
-  export type WorkspaceCountOutputTypeCountHookTestsArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    where?: HookTestWhereInput
   }
 
   /**
@@ -3244,7 +3135,6 @@ export namespace Prisma {
     hooks: number
     swipeEntries: number
     ideas: number
-    hookTests: number
   }
 
   export type VideoCountOutputTypeSelect<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
@@ -3252,7 +3142,6 @@ export namespace Prisma {
     hooks?: boolean | VideoCountOutputTypeCountHooksArgs
     swipeEntries?: boolean | VideoCountOutputTypeCountSwipeEntriesArgs
     ideas?: boolean | VideoCountOutputTypeCountIdeasArgs
-    hookTests?: boolean | VideoCountOutputTypeCountHookTestsArgs
   }
 
   // Custom InputTypes
@@ -3292,13 +3181,6 @@ export namespace Prisma {
    */
   export type VideoCountOutputTypeCountIdeasArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
     where?: IdeaWhereInput
-  }
-
-  /**
-   * VideoCountOutputType without action
-   */
-  export type VideoCountOutputTypeCountHookTestsArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    where?: HookTestWhereInput
   }
 
 
@@ -3423,37 +3305,6 @@ export namespace Prisma {
 
 
   /**
-   * Count Type HookTestCountOutputType
-   */
-
-  export type HookTestCountOutputType = {
-    versions: number
-  }
-
-  export type HookTestCountOutputTypeSelect<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    versions?: boolean | HookTestCountOutputTypeCountVersionsArgs
-  }
-
-  // Custom InputTypes
-  /**
-   * HookTestCountOutputType without action
-   */
-  export type HookTestCountOutputTypeDefaultArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTestCountOutputType
-     */
-    select?: HookTestCountOutputTypeSelect<ExtArgs> | null
-  }
-
-  /**
-   * HookTestCountOutputType without action
-   */
-  export type HookTestCountOutputTypeCountVersionsArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    where?: HookVersionWhereInput
-  }
-
-
-  /**
    * Models
    */
 
@@ -3470,7 +3321,6 @@ export namespace Prisma {
   export type UserMinAggregateOutputType = {
     id: string | null
     email: string | null
-    googleSub: string | null
     createdAt: Date | null
     updatedAt: Date | null
   }
@@ -3478,7 +3328,6 @@ export namespace Prisma {
   export type UserMaxAggregateOutputType = {
     id: string | null
     email: string | null
-    googleSub: string | null
     createdAt: Date | null
     updatedAt: Date | null
   }
@@ -3486,7 +3335,6 @@ export namespace Prisma {
   export type UserCountAggregateOutputType = {
     id: number
     email: number
-    googleSub: number
     createdAt: number
     updatedAt: number
     _all: number
@@ -3496,7 +3344,6 @@ export namespace Prisma {
   export type UserMinAggregateInputType = {
     id?: true
     email?: true
-    googleSub?: true
     createdAt?: true
     updatedAt?: true
   }
@@ -3504,7 +3351,6 @@ export namespace Prisma {
   export type UserMaxAggregateInputType = {
     id?: true
     email?: true
-    googleSub?: true
     createdAt?: true
     updatedAt?: true
   }
@@ -3512,7 +3358,6 @@ export namespace Prisma {
   export type UserCountAggregateInputType = {
     id?: true
     email?: true
-    googleSub?: true
     createdAt?: true
     updatedAt?: true
     _all?: true
@@ -3593,7 +3438,6 @@ export namespace Prisma {
   export type UserGroupByOutputType = {
     id: string
     email: string
-    googleSub: string | null
     createdAt: Date
     updatedAt: Date
     _count: UserCountAggregateOutputType | null
@@ -3618,7 +3462,6 @@ export namespace Prisma {
   export type UserSelect<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
     id?: boolean
     email?: boolean
-    googleSub?: boolean
     createdAt?: boolean
     updatedAt?: boolean
   }, ExtArgs["result"]["user"]>
@@ -3626,7 +3469,6 @@ export namespace Prisma {
   export type UserSelectCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
     id?: boolean
     email?: boolean
-    googleSub?: boolean
     createdAt?: boolean
     updatedAt?: boolean
   }, ExtArgs["result"]["user"]>
@@ -3634,7 +3476,6 @@ export namespace Prisma {
   export type UserSelectUpdateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
     id?: boolean
     email?: boolean
-    googleSub?: boolean
     createdAt?: boolean
     updatedAt?: boolean
   }, ExtArgs["result"]["user"]>
@@ -3642,12 +3483,11 @@ export namespace Prisma {
   export type UserSelectScalar = {
     id?: boolean
     email?: boolean
-    googleSub?: boolean
     createdAt?: boolean
     updatedAt?: boolean
   }
 
-  export type UserOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "email" | "googleSub" | "createdAt" | "updatedAt", ExtArgs["result"]["user"]>
+  export type UserOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "email" | "createdAt" | "updatedAt", ExtArgs["result"]["user"]>
 
   export type $UserPayload<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
     name: "User"
@@ -3655,13 +3495,6 @@ export namespace Prisma {
     scalars: $Extensions.GetPayloadResult<{
       id: string
       email: string
-      /**
-       * Native Google subject (`google:<sub>`) linked at first Google login.
-       * Null until then (all migrated Supabase rows start Null). Set together
-       * with the Workspace.ownerId transfer in src/cf/account-link.ts
-       * ensureNativeUser() — one Google identity links to at most one User row.
-       */
-      googleSub: string | null
       createdAt: Date
       updatedAt: Date
     }, ExtArgs["result"]["user"]>
@@ -4089,7 +3922,6 @@ export namespace Prisma {
   interface UserFieldRefs {
     readonly id: FieldRef<"User", 'String'>
     readonly email: FieldRef<"User", 'String'>
-    readonly googleSub: FieldRef<"User", 'String'>
     readonly createdAt: FieldRef<"User", 'DateTime'>
     readonly updatedAt: FieldRef<"User", 'DateTime'>
   }
@@ -4840,7 +4672,6 @@ export namespace Prisma {
     digestJson?: boolean
     sources?: boolean | Workspace$sourcesArgs<ExtArgs>
     boards?: boolean | Workspace$boardsArgs<ExtArgs>
-    hookTests?: boolean | Workspace$hookTestsArgs<ExtArgs>
     usageLogs?: boolean | Workspace$usageLogsArgs<ExtArgs>
     autoAnalyzeRuns?: boolean | Workspace$autoAnalyzeRunsArgs<ExtArgs>
     creditLedger?: boolean | Workspace$creditLedgerArgs<ExtArgs>
@@ -4941,7 +4772,6 @@ export namespace Prisma {
   export type WorkspaceInclude<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
     sources?: boolean | Workspace$sourcesArgs<ExtArgs>
     boards?: boolean | Workspace$boardsArgs<ExtArgs>
-    hookTests?: boolean | Workspace$hookTestsArgs<ExtArgs>
     usageLogs?: boolean | Workspace$usageLogsArgs<ExtArgs>
     autoAnalyzeRuns?: boolean | Workspace$autoAnalyzeRunsArgs<ExtArgs>
     creditLedger?: boolean | Workspace$creditLedgerArgs<ExtArgs>
@@ -4958,7 +4788,6 @@ export namespace Prisma {
     objects: {
       sources: Prisma.$SourcePayload<ExtArgs>[]
       boards: Prisma.$BoardPayload<ExtArgs>[]
-      hookTests: Prisma.$HookTestPayload<ExtArgs>[]
       usageLogs: Prisma.$UsageLogPayload<ExtArgs>[]
       autoAnalyzeRuns: Prisma.$AutoAnalyzeRunPayload<ExtArgs>[]
       creditLedger: Prisma.$CreditLedgerPayload<ExtArgs>[]
@@ -5447,7 +5276,6 @@ export namespace Prisma {
     readonly [Symbol.toStringTag]: "PrismaPromise"
     sources<T extends Workspace$sourcesArgs<ExtArgs> = {}>(args?: Subset<T, Workspace$sourcesArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$SourcePayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
     boards<T extends Workspace$boardsArgs<ExtArgs> = {}>(args?: Subset<T, Workspace$boardsArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$BoardPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
-    hookTests<T extends Workspace$hookTestsArgs<ExtArgs> = {}>(args?: Subset<T, Workspace$hookTestsArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
     usageLogs<T extends Workspace$usageLogsArgs<ExtArgs> = {}>(args?: Subset<T, Workspace$usageLogsArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$UsageLogPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
     autoAnalyzeRuns<T extends Workspace$autoAnalyzeRunsArgs<ExtArgs> = {}>(args?: Subset<T, Workspace$autoAnalyzeRunsArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$AutoAnalyzeRunPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
     creditLedger<T extends Workspace$creditLedgerArgs<ExtArgs> = {}>(args?: Subset<T, Workspace$creditLedgerArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$CreditLedgerPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
@@ -5940,30 +5768,6 @@ export namespace Prisma {
     take?: number
     skip?: number
     distinct?: BoardScalarFieldEnum | BoardScalarFieldEnum[]
-  }
-
-  /**
-   * Workspace.hookTests
-   */
-  export type Workspace$hookTestsArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestInclude<ExtArgs> | null
-    where?: HookTestWhereInput
-    orderBy?: HookTestOrderByWithRelationInput | HookTestOrderByWithRelationInput[]
-    cursor?: HookTestWhereUniqueInput
-    take?: number
-    skip?: number
-    distinct?: HookTestScalarFieldEnum | HookTestScalarFieldEnum[]
   }
 
   /**
@@ -12117,7 +11921,6 @@ export namespace Prisma {
     hooks?: boolean | Video$hooksArgs<ExtArgs>
     swipeEntries?: boolean | Video$swipeEntriesArgs<ExtArgs>
     ideas?: boolean | Video$ideasArgs<ExtArgs>
-    hookTests?: boolean | Video$hookTestsArgs<ExtArgs>
     _count?: boolean | VideoCountOutputTypeDefaultArgs<ExtArgs>
   }, ExtArgs["result"]["video"]>
 
@@ -12242,7 +12045,6 @@ export namespace Prisma {
     hooks?: boolean | Video$hooksArgs<ExtArgs>
     swipeEntries?: boolean | Video$swipeEntriesArgs<ExtArgs>
     ideas?: boolean | Video$ideasArgs<ExtArgs>
-    hookTests?: boolean | Video$hookTestsArgs<ExtArgs>
     _count?: boolean | VideoCountOutputTypeDefaultArgs<ExtArgs>
   }
   export type VideoIncludeCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
@@ -12261,7 +12063,6 @@ export namespace Prisma {
       hooks: Prisma.$HookPayload<ExtArgs>[]
       swipeEntries: Prisma.$SwipeEntryPayload<ExtArgs>[]
       ideas: Prisma.$IdeaPayload<ExtArgs>[]
-      hookTests: Prisma.$HookTestPayload<ExtArgs>[]
     }
     scalars: $Extensions.GetPayloadResult<{
       id: string
@@ -12730,7 +12531,6 @@ export namespace Prisma {
     hooks<T extends Video$hooksArgs<ExtArgs> = {}>(args?: Subset<T, Video$hooksArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$HookPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
     swipeEntries<T extends Video$swipeEntriesArgs<ExtArgs> = {}>(args?: Subset<T, Video$swipeEntriesArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$SwipeEntryPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
     ideas<T extends Video$ideasArgs<ExtArgs> = {}>(args?: Subset<T, Video$ideasArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$IdeaPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
-    hookTests<T extends Video$hookTestsArgs<ExtArgs> = {}>(args?: Subset<T, Video$hookTestsArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
     /**
      * Attaches callbacks for the resolution and/or rejection of the Promise.
      * @param onfulfilled The callback to execute when the Promise is resolved.
@@ -13303,30 +13103,6 @@ export namespace Prisma {
   }
 
   /**
-   * Video.hookTests
-   */
-  export type Video$hookTestsArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestInclude<ExtArgs> | null
-    where?: HookTestWhereInput
-    orderBy?: HookTestOrderByWithRelationInput | HookTestOrderByWithRelationInput[]
-    cursor?: HookTestWhereUniqueInput
-    take?: number
-    skip?: number
-    distinct?: HookTestScalarFieldEnum | HookTestScalarFieldEnum[]
-  }
-
-  /**
    * Video without action
    */
   export type VideoDefaultArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
@@ -13342,6 +13118,1072 @@ export namespace Prisma {
      * Choose, which related nodes to fetch as well
      */
     include?: VideoInclude<ExtArgs> | null
+  }
+
+
+  /**
+   * Model Experiment
+   */
+
+  export type AggregateExperiment = {
+    _count: ExperimentCountAggregateOutputType | null
+    _avg: ExperimentAvgAggregateOutputType | null
+    _sum: ExperimentSumAggregateOutputType | null
+    _min: ExperimentMinAggregateOutputType | null
+    _max: ExperimentMaxAggregateOutputType | null
+  }
+
+  export type ExperimentAvgAggregateOutputType = {
+    version: number | null
+  }
+
+  export type ExperimentSumAggregateOutputType = {
+    version: number | null
+  }
+
+  export type ExperimentMinAggregateOutputType = {
+    id: string | null
+    workspaceId: string | null
+    status: string | null
+    version: number | null
+    dataJson: string | null
+    createdAt: Date | null
+    updatedAt: Date | null
+    createKey: string | null
+  }
+
+  export type ExperimentMaxAggregateOutputType = {
+    id: string | null
+    workspaceId: string | null
+    status: string | null
+    version: number | null
+    dataJson: string | null
+    createdAt: Date | null
+    updatedAt: Date | null
+    createKey: string | null
+  }
+
+  export type ExperimentCountAggregateOutputType = {
+    id: number
+    workspaceId: number
+    status: number
+    version: number
+    dataJson: number
+    createdAt: number
+    updatedAt: number
+    createKey: number
+    _all: number
+  }
+
+
+  export type ExperimentAvgAggregateInputType = {
+    version?: true
+  }
+
+  export type ExperimentSumAggregateInputType = {
+    version?: true
+  }
+
+  export type ExperimentMinAggregateInputType = {
+    id?: true
+    workspaceId?: true
+    status?: true
+    version?: true
+    dataJson?: true
+    createdAt?: true
+    updatedAt?: true
+    createKey?: true
+  }
+
+  export type ExperimentMaxAggregateInputType = {
+    id?: true
+    workspaceId?: true
+    status?: true
+    version?: true
+    dataJson?: true
+    createdAt?: true
+    updatedAt?: true
+    createKey?: true
+  }
+
+  export type ExperimentCountAggregateInputType = {
+    id?: true
+    workspaceId?: true
+    status?: true
+    version?: true
+    dataJson?: true
+    createdAt?: true
+    updatedAt?: true
+    createKey?: true
+    _all?: true
+  }
+
+  export type ExperimentAggregateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Filter which Experiment to aggregate.
+     */
+    where?: ExperimentWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of Experiments to fetch.
+     */
+    orderBy?: ExperimentOrderByWithRelationInput | ExperimentOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the start position
+     */
+    cursor?: ExperimentWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` Experiments from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` Experiments.
+     */
+    skip?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Count returned Experiments
+    **/
+    _count?: true | ExperimentCountAggregateInputType
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Select which fields to average
+    **/
+    _avg?: ExperimentAvgAggregateInputType
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Select which fields to sum
+    **/
+    _sum?: ExperimentSumAggregateInputType
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Select which fields to find the minimum value
+    **/
+    _min?: ExperimentMinAggregateInputType
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Select which fields to find the maximum value
+    **/
+    _max?: ExperimentMaxAggregateInputType
+  }
+
+  export type GetExperimentAggregateType<T extends ExperimentAggregateArgs> = {
+        [P in keyof T & keyof AggregateExperiment]: P extends '_count' | 'count'
+      ? T[P] extends true
+        ? number
+        : GetScalarType<T[P], AggregateExperiment[P]>
+      : GetScalarType<T[P], AggregateExperiment[P]>
+  }
+
+
+
+
+  export type ExperimentGroupByArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    where?: ExperimentWhereInput
+    orderBy?: ExperimentOrderByWithAggregationInput | ExperimentOrderByWithAggregationInput[]
+    by: ExperimentScalarFieldEnum[] | ExperimentScalarFieldEnum
+    having?: ExperimentScalarWhereWithAggregatesInput
+    take?: number
+    skip?: number
+    _count?: ExperimentCountAggregateInputType | true
+    _avg?: ExperimentAvgAggregateInputType
+    _sum?: ExperimentSumAggregateInputType
+    _min?: ExperimentMinAggregateInputType
+    _max?: ExperimentMaxAggregateInputType
+  }
+
+  export type ExperimentGroupByOutputType = {
+    id: string
+    workspaceId: string
+    status: string
+    version: number
+    dataJson: string
+    createdAt: Date
+    updatedAt: Date
+    createKey: string
+    _count: ExperimentCountAggregateOutputType | null
+    _avg: ExperimentAvgAggregateOutputType | null
+    _sum: ExperimentSumAggregateOutputType | null
+    _min: ExperimentMinAggregateOutputType | null
+    _max: ExperimentMaxAggregateOutputType | null
+  }
+
+  type GetExperimentGroupByPayload<T extends ExperimentGroupByArgs> = Prisma.PrismaPromise<
+    Array<
+      PickEnumerable<ExperimentGroupByOutputType, T['by']> &
+        {
+          [P in ((keyof T) & (keyof ExperimentGroupByOutputType))]: P extends '_count'
+            ? T[P] extends boolean
+              ? number
+              : GetScalarType<T[P], ExperimentGroupByOutputType[P]>
+            : GetScalarType<T[P], ExperimentGroupByOutputType[P]>
+        }
+      >
+    >
+
+
+  export type ExperimentSelect<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
+    id?: boolean
+    workspaceId?: boolean
+    status?: boolean
+    version?: boolean
+    dataJson?: boolean
+    createdAt?: boolean
+    updatedAt?: boolean
+    createKey?: boolean
+  }, ExtArgs["result"]["experiment"]>
+
+  export type ExperimentSelectCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
+    id?: boolean
+    workspaceId?: boolean
+    status?: boolean
+    version?: boolean
+    dataJson?: boolean
+    createdAt?: boolean
+    updatedAt?: boolean
+    createKey?: boolean
+  }, ExtArgs["result"]["experiment"]>
+
+  export type ExperimentSelectUpdateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
+    id?: boolean
+    workspaceId?: boolean
+    status?: boolean
+    version?: boolean
+    dataJson?: boolean
+    createdAt?: boolean
+    updatedAt?: boolean
+    createKey?: boolean
+  }, ExtArgs["result"]["experiment"]>
+
+  export type ExperimentSelectScalar = {
+    id?: boolean
+    workspaceId?: boolean
+    status?: boolean
+    version?: boolean
+    dataJson?: boolean
+    createdAt?: boolean
+    updatedAt?: boolean
+    createKey?: boolean
+  }
+
+  export type ExperimentOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "status" | "version" | "dataJson" | "createdAt" | "updatedAt" | "createKey", ExtArgs["result"]["experiment"]>
+
+  export type $ExperimentPayload<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    name: "Experiment"
+    objects: {}
+    scalars: $Extensions.GetPayloadResult<{
+      id: string
+      workspaceId: string
+      status: string
+      version: number
+      dataJson: string
+      createdAt: Date
+      updatedAt: Date
+      createKey: string
+    }, ExtArgs["result"]["experiment"]>
+    composites: {}
+  }
+
+  type ExperimentGetPayload<S extends boolean | null | undefined | ExperimentDefaultArgs> = $Result.GetResult<Prisma.$ExperimentPayload, S>
+
+  type ExperimentCountArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> =
+    Omit<ExperimentFindManyArgs, 'select' | 'include' | 'distinct' | 'omit'> & {
+      select?: ExperimentCountAggregateInputType | true
+    }
+
+  export interface ExperimentDelegate<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs, GlobalOmitOptions = {}> {
+    [K: symbol]: { types: Prisma.TypeMap<ExtArgs>['model']['Experiment'], meta: { name: 'Experiment' } }
+    /**
+     * Find zero or one Experiment that matches the filter.
+     * @param {ExperimentFindUniqueArgs} args - Arguments to find a Experiment
+     * @example
+     * // Get one Experiment
+     * const experiment = await prisma.experiment.findUnique({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findUnique<T extends ExperimentFindUniqueArgs>(args: SelectSubset<T, ExperimentFindUniqueArgs<ExtArgs>>): Prisma__ExperimentClient<$Result.GetResult<Prisma.$ExperimentPayload<ExtArgs>, T, "findUnique", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find one Experiment that matches the filter or throw an error with `error.code='P2025'`
+     * if no matches were found.
+     * @param {ExperimentFindUniqueOrThrowArgs} args - Arguments to find a Experiment
+     * @example
+     * // Get one Experiment
+     * const experiment = await prisma.experiment.findUniqueOrThrow({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findUniqueOrThrow<T extends ExperimentFindUniqueOrThrowArgs>(args: SelectSubset<T, ExperimentFindUniqueOrThrowArgs<ExtArgs>>): Prisma__ExperimentClient<$Result.GetResult<Prisma.$ExperimentPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find the first Experiment that matches the filter.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentFindFirstArgs} args - Arguments to find a Experiment
+     * @example
+     * // Get one Experiment
+     * const experiment = await prisma.experiment.findFirst({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findFirst<T extends ExperimentFindFirstArgs>(args?: SelectSubset<T, ExperimentFindFirstArgs<ExtArgs>>): Prisma__ExperimentClient<$Result.GetResult<Prisma.$ExperimentPayload<ExtArgs>, T, "findFirst", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find the first Experiment that matches the filter or
+     * throw `PrismaKnownClientError` with `P2025` code if no matches were found.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentFindFirstOrThrowArgs} args - Arguments to find a Experiment
+     * @example
+     * // Get one Experiment
+     * const experiment = await prisma.experiment.findFirstOrThrow({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findFirstOrThrow<T extends ExperimentFindFirstOrThrowArgs>(args?: SelectSubset<T, ExperimentFindFirstOrThrowArgs<ExtArgs>>): Prisma__ExperimentClient<$Result.GetResult<Prisma.$ExperimentPayload<ExtArgs>, T, "findFirstOrThrow", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find zero or more Experiments that matches the filter.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentFindManyArgs} args - Arguments to filter and select certain fields only.
+     * @example
+     * // Get all Experiments
+     * const experiments = await prisma.experiment.findMany()
+     * 
+     * // Get first 10 Experiments
+     * const experiments = await prisma.experiment.findMany({ take: 10 })
+     * 
+     * // Only select the `id`
+     * const experimentWithIdOnly = await prisma.experiment.findMany({ select: { id: true } })
+     * 
+     */
+    findMany<T extends ExperimentFindManyArgs>(args?: SelectSubset<T, ExperimentFindManyArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$ExperimentPayload<ExtArgs>, T, "findMany", GlobalOmitOptions>>
+
+    /**
+     * Create a Experiment.
+     * @param {ExperimentCreateArgs} args - Arguments to create a Experiment.
+     * @example
+     * // Create one Experiment
+     * const Experiment = await prisma.experiment.create({
+     *   data: {
+     *     // ... data to create a Experiment
+     *   }
+     * })
+     * 
+     */
+    create<T extends ExperimentCreateArgs>(args: SelectSubset<T, ExperimentCreateArgs<ExtArgs>>): Prisma__ExperimentClient<$Result.GetResult<Prisma.$ExperimentPayload<ExtArgs>, T, "create", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Create many Experiments.
+     * @param {ExperimentCreateManyArgs} args - Arguments to create many Experiments.
+     * @example
+     * // Create many Experiments
+     * const experiment = await prisma.experiment.createMany({
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     *     
+     */
+    createMany<T extends ExperimentCreateManyArgs>(args?: SelectSubset<T, ExperimentCreateManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
+
+    /**
+     * Create many Experiments and returns the data saved in the database.
+     * @param {ExperimentCreateManyAndReturnArgs} args - Arguments to create many Experiments.
+     * @example
+     * // Create many Experiments
+     * const experiment = await prisma.experiment.createManyAndReturn({
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * 
+     * // Create many Experiments and only return the `id`
+     * const experimentWithIdOnly = await prisma.experiment.createManyAndReturn({
+     *   select: { id: true },
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * 
+     */
+    createManyAndReturn<T extends ExperimentCreateManyAndReturnArgs>(args?: SelectSubset<T, ExperimentCreateManyAndReturnArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$ExperimentPayload<ExtArgs>, T, "createManyAndReturn", GlobalOmitOptions>>
+
+    /**
+     * Delete a Experiment.
+     * @param {ExperimentDeleteArgs} args - Arguments to delete one Experiment.
+     * @example
+     * // Delete one Experiment
+     * const Experiment = await prisma.experiment.delete({
+     *   where: {
+     *     // ... filter to delete one Experiment
+     *   }
+     * })
+     * 
+     */
+    delete<T extends ExperimentDeleteArgs>(args: SelectSubset<T, ExperimentDeleteArgs<ExtArgs>>): Prisma__ExperimentClient<$Result.GetResult<Prisma.$ExperimentPayload<ExtArgs>, T, "delete", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Update one Experiment.
+     * @param {ExperimentUpdateArgs} args - Arguments to update one Experiment.
+     * @example
+     * // Update one Experiment
+     * const experiment = await prisma.experiment.update({
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: {
+     *     // ... provide data here
+     *   }
+     * })
+     * 
+     */
+    update<T extends ExperimentUpdateArgs>(args: SelectSubset<T, ExperimentUpdateArgs<ExtArgs>>): Prisma__ExperimentClient<$Result.GetResult<Prisma.$ExperimentPayload<ExtArgs>, T, "update", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Delete zero or more Experiments.
+     * @param {ExperimentDeleteManyArgs} args - Arguments to filter Experiments to delete.
+     * @example
+     * // Delete a few Experiments
+     * const { count } = await prisma.experiment.deleteMany({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     * 
+     */
+    deleteMany<T extends ExperimentDeleteManyArgs>(args?: SelectSubset<T, ExperimentDeleteManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
+
+    /**
+     * Update zero or more Experiments.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentUpdateManyArgs} args - Arguments to update one or more rows.
+     * @example
+     * // Update many Experiments
+     * const experiment = await prisma.experiment.updateMany({
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: {
+     *     // ... provide data here
+     *   }
+     * })
+     * 
+     */
+    updateMany<T extends ExperimentUpdateManyArgs>(args: SelectSubset<T, ExperimentUpdateManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
+
+    /**
+     * Update zero or more Experiments and returns the data updated in the database.
+     * @param {ExperimentUpdateManyAndReturnArgs} args - Arguments to update many Experiments.
+     * @example
+     * // Update many Experiments
+     * const experiment = await prisma.experiment.updateManyAndReturn({
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * 
+     * // Update zero or more Experiments and only return the `id`
+     * const experimentWithIdOnly = await prisma.experiment.updateManyAndReturn({
+     *   select: { id: true },
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * 
+     */
+    updateManyAndReturn<T extends ExperimentUpdateManyAndReturnArgs>(args: SelectSubset<T, ExperimentUpdateManyAndReturnArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$ExperimentPayload<ExtArgs>, T, "updateManyAndReturn", GlobalOmitOptions>>
+
+    /**
+     * Create or update one Experiment.
+     * @param {ExperimentUpsertArgs} args - Arguments to update or create a Experiment.
+     * @example
+     * // Update or create a Experiment
+     * const experiment = await prisma.experiment.upsert({
+     *   create: {
+     *     // ... data to create a Experiment
+     *   },
+     *   update: {
+     *     // ... in case it already exists, update
+     *   },
+     *   where: {
+     *     // ... the filter for the Experiment we want to update
+     *   }
+     * })
+     */
+    upsert<T extends ExperimentUpsertArgs>(args: SelectSubset<T, ExperimentUpsertArgs<ExtArgs>>): Prisma__ExperimentClient<$Result.GetResult<Prisma.$ExperimentPayload<ExtArgs>, T, "upsert", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+
+    /**
+     * Count the number of Experiments.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentCountArgs} args - Arguments to filter Experiments to count.
+     * @example
+     * // Count the number of Experiments
+     * const count = await prisma.experiment.count({
+     *   where: {
+     *     // ... the filter for the Experiments we want to count
+     *   }
+     * })
+    **/
+    count<T extends ExperimentCountArgs>(
+      args?: Subset<T, ExperimentCountArgs>,
+    ): Prisma.PrismaPromise<
+      T extends $Utils.Record<'select', any>
+        ? T['select'] extends true
+          ? number
+          : GetScalarType<T['select'], ExperimentCountAggregateOutputType>
+        : number
+    >
+
+    /**
+     * Allows you to perform aggregations operations on a Experiment.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentAggregateArgs} args - Select which aggregations you would like to apply and on what fields.
+     * @example
+     * // Ordered by age ascending
+     * // Where email contains prisma.io
+     * // Limited to the 10 users
+     * const aggregations = await prisma.user.aggregate({
+     *   _avg: {
+     *     age: true,
+     *   },
+     *   where: {
+     *     email: {
+     *       contains: "prisma.io",
+     *     },
+     *   },
+     *   orderBy: {
+     *     age: "asc",
+     *   },
+     *   take: 10,
+     * })
+    **/
+    aggregate<T extends ExperimentAggregateArgs>(args: Subset<T, ExperimentAggregateArgs>): Prisma.PrismaPromise<GetExperimentAggregateType<T>>
+
+    /**
+     * Group by Experiment.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentGroupByArgs} args - Group by arguments.
+     * @example
+     * // Group by city, order by createdAt, get count
+     * const result = await prisma.user.groupBy({
+     *   by: ['city', 'createdAt'],
+     *   orderBy: {
+     *     createdAt: true
+     *   },
+     *   _count: {
+     *     _all: true
+     *   },
+     * })
+     * 
+    **/
+    groupBy<
+      T extends ExperimentGroupByArgs,
+      HasSelectOrTake extends Or<
+        Extends<'skip', Keys<T>>,
+        Extends<'take', Keys<T>>
+      >,
+      OrderByArg extends True extends HasSelectOrTake
+        ? { orderBy: ExperimentGroupByArgs['orderBy'] }
+        : { orderBy?: ExperimentGroupByArgs['orderBy'] },
+      OrderFields extends ExcludeUnderscoreKeys<Keys<MaybeTupleToUnion<T['orderBy']>>>,
+      ByFields extends MaybeTupleToUnion<T['by']>,
+      ByValid extends Has<ByFields, OrderFields>,
+      HavingFields extends GetHavingFields<T['having']>,
+      HavingValid extends Has<ByFields, HavingFields>,
+      ByEmpty extends T['by'] extends never[] ? True : False,
+      InputErrors extends ByEmpty extends True
+      ? `Error: "by" must not be empty.`
+      : HavingValid extends False
+      ? {
+          [P in HavingFields]: P extends ByFields
+            ? never
+            : P extends string
+            ? `Error: Field "${P}" used in "having" needs to be provided in "by".`
+            : [
+                Error,
+                'Field ',
+                P,
+                ` in "having" needs to be provided in "by"`,
+              ]
+        }[HavingFields]
+      : 'take' extends Keys<T>
+      ? 'orderBy' extends Keys<T>
+        ? ByValid extends True
+          ? {}
+          : {
+              [P in OrderFields]: P extends ByFields
+                ? never
+                : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
+            }[OrderFields]
+        : 'Error: If you provide "take", you also need to provide "orderBy"'
+      : 'skip' extends Keys<T>
+      ? 'orderBy' extends Keys<T>
+        ? ByValid extends True
+          ? {}
+          : {
+              [P in OrderFields]: P extends ByFields
+                ? never
+                : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
+            }[OrderFields]
+        : 'Error: If you provide "skip", you also need to provide "orderBy"'
+      : ByValid extends True
+      ? {}
+      : {
+          [P in OrderFields]: P extends ByFields
+            ? never
+            : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
+        }[OrderFields]
+    >(args: SubsetIntersection<T, ExperimentGroupByArgs, OrderByArg> & InputErrors): {} extends InputErrors ? GetExperimentGroupByPayload<T> : Prisma.PrismaPromise<InputErrors>
+  /**
+   * Fields of the Experiment model
+   */
+  readonly fields: ExperimentFieldRefs;
+  }
+
+  /**
+   * The delegate class that acts as a "Promise-like" for Experiment.
+   * Why is this prefixed with `Prisma__`?
+   * Because we want to prevent naming conflicts as mentioned in
+   * https://github.com/prisma/prisma-client-js/issues/707
+   */
+  export interface Prisma__ExperimentClient<T, Null = never, ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs, GlobalOmitOptions = {}> extends Prisma.PrismaPromise<T> {
+    readonly [Symbol.toStringTag]: "PrismaPromise"
+    /**
+     * Attaches callbacks for the resolution and/or rejection of the Promise.
+     * @param onfulfilled The callback to execute when the Promise is resolved.
+     * @param onrejected The callback to execute when the Promise is rejected.
+     * @returns A Promise for the completion of which ever callback is executed.
+     */
+    then<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | undefined | null, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null): $Utils.JsPromise<TResult1 | TResult2>
+    /**
+     * Attaches a callback for only the rejection of the Promise.
+     * @param onrejected The callback to execute when the Promise is rejected.
+     * @returns A Promise for the completion of the callback.
+     */
+    catch<TResult = never>(onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null): $Utils.JsPromise<T | TResult>
+    /**
+     * Attaches a callback that is invoked when the Promise is settled (fulfilled or rejected). The
+     * resolved value cannot be modified from the callback.
+     * @param onfinally The callback to execute when the Promise is settled (fulfilled or rejected).
+     * @returns A Promise for the completion of the callback.
+     */
+    finally(onfinally?: (() => void) | undefined | null): $Utils.JsPromise<T>
+  }
+
+
+
+
+  /**
+   * Fields of the Experiment model
+   */
+  interface ExperimentFieldRefs {
+    readonly id: FieldRef<"Experiment", 'String'>
+    readonly workspaceId: FieldRef<"Experiment", 'String'>
+    readonly status: FieldRef<"Experiment", 'String'>
+    readonly version: FieldRef<"Experiment", 'Int'>
+    readonly dataJson: FieldRef<"Experiment", 'String'>
+    readonly createdAt: FieldRef<"Experiment", 'DateTime'>
+    readonly updatedAt: FieldRef<"Experiment", 'DateTime'>
+    readonly createKey: FieldRef<"Experiment", 'String'>
+  }
+    
+
+  // Custom InputTypes
+  /**
+   * Experiment findUnique
+   */
+  export type ExperimentFindUniqueArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the Experiment
+     */
+    select?: ExperimentSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the Experiment
+     */
+    omit?: ExperimentOmit<ExtArgs> | null
+    /**
+     * Filter, which Experiment to fetch.
+     */
+    where: ExperimentWhereUniqueInput
+  }
+
+  /**
+   * Experiment findUniqueOrThrow
+   */
+  export type ExperimentFindUniqueOrThrowArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the Experiment
+     */
+    select?: ExperimentSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the Experiment
+     */
+    omit?: ExperimentOmit<ExtArgs> | null
+    /**
+     * Filter, which Experiment to fetch.
+     */
+    where: ExperimentWhereUniqueInput
+  }
+
+  /**
+   * Experiment findFirst
+   */
+  export type ExperimentFindFirstArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the Experiment
+     */
+    select?: ExperimentSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the Experiment
+     */
+    omit?: ExperimentOmit<ExtArgs> | null
+    /**
+     * Filter, which Experiment to fetch.
+     */
+    where?: ExperimentWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of Experiments to fetch.
+     */
+    orderBy?: ExperimentOrderByWithRelationInput | ExperimentOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the position for searching for Experiments.
+     */
+    cursor?: ExperimentWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` Experiments from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` Experiments.
+     */
+    skip?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}
+     * 
+     * Filter by unique combinations of Experiments.
+     */
+    distinct?: ExperimentScalarFieldEnum | ExperimentScalarFieldEnum[]
+  }
+
+  /**
+   * Experiment findFirstOrThrow
+   */
+  export type ExperimentFindFirstOrThrowArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the Experiment
+     */
+    select?: ExperimentSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the Experiment
+     */
+    omit?: ExperimentOmit<ExtArgs> | null
+    /**
+     * Filter, which Experiment to fetch.
+     */
+    where?: ExperimentWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of Experiments to fetch.
+     */
+    orderBy?: ExperimentOrderByWithRelationInput | ExperimentOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the position for searching for Experiments.
+     */
+    cursor?: ExperimentWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` Experiments from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` Experiments.
+     */
+    skip?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}
+     * 
+     * Filter by unique combinations of Experiments.
+     */
+    distinct?: ExperimentScalarFieldEnum | ExperimentScalarFieldEnum[]
+  }
+
+  /**
+   * Experiment findMany
+   */
+  export type ExperimentFindManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the Experiment
+     */
+    select?: ExperimentSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the Experiment
+     */
+    omit?: ExperimentOmit<ExtArgs> | null
+    /**
+     * Filter, which Experiments to fetch.
+     */
+    where?: ExperimentWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of Experiments to fetch.
+     */
+    orderBy?: ExperimentOrderByWithRelationInput | ExperimentOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the position for listing Experiments.
+     */
+    cursor?: ExperimentWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` Experiments from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` Experiments.
+     */
+    skip?: number
+    distinct?: ExperimentScalarFieldEnum | ExperimentScalarFieldEnum[]
+  }
+
+  /**
+   * Experiment create
+   */
+  export type ExperimentCreateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the Experiment
+     */
+    select?: ExperimentSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the Experiment
+     */
+    omit?: ExperimentOmit<ExtArgs> | null
+    /**
+     * The data needed to create a Experiment.
+     */
+    data: XOR<ExperimentCreateInput, ExperimentUncheckedCreateInput>
+  }
+
+  /**
+   * Experiment createMany
+   */
+  export type ExperimentCreateManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * The data used to create many Experiments.
+     */
+    data: ExperimentCreateManyInput | ExperimentCreateManyInput[]
+  }
+
+  /**
+   * Experiment createManyAndReturn
+   */
+  export type ExperimentCreateManyAndReturnArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the Experiment
+     */
+    select?: ExperimentSelectCreateManyAndReturn<ExtArgs> | null
+    /**
+     * Omit specific fields from the Experiment
+     */
+    omit?: ExperimentOmit<ExtArgs> | null
+    /**
+     * The data used to create many Experiments.
+     */
+    data: ExperimentCreateManyInput | ExperimentCreateManyInput[]
+  }
+
+  /**
+   * Experiment update
+   */
+  export type ExperimentUpdateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the Experiment
+     */
+    select?: ExperimentSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the Experiment
+     */
+    omit?: ExperimentOmit<ExtArgs> | null
+    /**
+     * The data needed to update a Experiment.
+     */
+    data: XOR<ExperimentUpdateInput, ExperimentUncheckedUpdateInput>
+    /**
+     * Choose, which Experiment to update.
+     */
+    where: ExperimentWhereUniqueInput
+  }
+
+  /**
+   * Experiment updateMany
+   */
+  export type ExperimentUpdateManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * The data used to update Experiments.
+     */
+    data: XOR<ExperimentUpdateManyMutationInput, ExperimentUncheckedUpdateManyInput>
+    /**
+     * Filter which Experiments to update
+     */
+    where?: ExperimentWhereInput
+    /**
+     * Limit how many Experiments to update.
+     */
+    limit?: number
+  }
+
+  /**
+   * Experiment updateManyAndReturn
+   */
+  export type ExperimentUpdateManyAndReturnArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the Experiment
+     */
+    select?: ExperimentSelectUpdateManyAndReturn<ExtArgs> | null
+    /**
+     * Omit specific fields from the Experiment
+     */
+    omit?: ExperimentOmit<ExtArgs> | null
+    /**
+     * The data used to update Experiments.
+     */
+    data: XOR<ExperimentUpdateManyMutationInput, ExperimentUncheckedUpdateManyInput>
+    /**
+     * Filter which Experiments to update
+     */
+    where?: ExperimentWhereInput
+    /**
+     * Limit how many Experiments to update.
+     */
+    limit?: number
+  }
+
+  /**
+   * Experiment upsert
+   */
+  export type ExperimentUpsertArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the Experiment
+     */
+    select?: ExperimentSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the Experiment
+     */
+    omit?: ExperimentOmit<ExtArgs> | null
+    /**
+     * The filter to search for the Experiment to update in case it exists.
+     */
+    where: ExperimentWhereUniqueInput
+    /**
+     * In case the Experiment found by the `where` argument doesn't exist, create a new Experiment with this data.
+     */
+    create: XOR<ExperimentCreateInput, ExperimentUncheckedCreateInput>
+    /**
+     * In case the Experiment was found with the provided `where` argument, update it with this data.
+     */
+    update: XOR<ExperimentUpdateInput, ExperimentUncheckedUpdateInput>
+  }
+
+  /**
+   * Experiment delete
+   */
+  export type ExperimentDeleteArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the Experiment
+     */
+    select?: ExperimentSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the Experiment
+     */
+    omit?: ExperimentOmit<ExtArgs> | null
+    /**
+     * Filter which Experiment to delete.
+     */
+    where: ExperimentWhereUniqueInput
+  }
+
+  /**
+   * Experiment deleteMany
+   */
+  export type ExperimentDeleteManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Filter which Experiments to delete
+     */
+    where?: ExperimentWhereInput
+    /**
+     * Limit how many Experiments to delete.
+     */
+    limit?: number
+  }
+
+  /**
+   * Experiment without action
+   */
+  export type ExperimentDefaultArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the Experiment
+     */
+    select?: ExperimentSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the Experiment
+     */
+    omit?: ExperimentOmit<ExtArgs> | null
   }
 
 
@@ -25473,2425 +26315,6 @@ export namespace Prisma {
 
 
   /**
-   * Model HookTest
-   */
-
-  export type AggregateHookTest = {
-    _count: HookTestCountAggregateOutputType | null
-    _min: HookTestMinAggregateOutputType | null
-    _max: HookTestMaxAggregateOutputType | null
-  }
-
-  export type HookTestMinAggregateOutputType = {
-    id: string | null
-    workspaceId: string | null
-    videoId: string | null
-    insight: string | null
-    sameInJson: string | null
-    lever: string | null
-    beatsJson: string | null
-    stopRule: string | null
-    status: string | null
-    winnerLabel: string | null
-    createdAt: Date | null
-    updatedAt: Date | null
-  }
-
-  export type HookTestMaxAggregateOutputType = {
-    id: string | null
-    workspaceId: string | null
-    videoId: string | null
-    insight: string | null
-    sameInJson: string | null
-    lever: string | null
-    beatsJson: string | null
-    stopRule: string | null
-    status: string | null
-    winnerLabel: string | null
-    createdAt: Date | null
-    updatedAt: Date | null
-  }
-
-  export type HookTestCountAggregateOutputType = {
-    id: number
-    workspaceId: number
-    videoId: number
-    insight: number
-    sameInJson: number
-    lever: number
-    beatsJson: number
-    stopRule: number
-    status: number
-    winnerLabel: number
-    createdAt: number
-    updatedAt: number
-    _all: number
-  }
-
-
-  export type HookTestMinAggregateInputType = {
-    id?: true
-    workspaceId?: true
-    videoId?: true
-    insight?: true
-    sameInJson?: true
-    lever?: true
-    beatsJson?: true
-    stopRule?: true
-    status?: true
-    winnerLabel?: true
-    createdAt?: true
-    updatedAt?: true
-  }
-
-  export type HookTestMaxAggregateInputType = {
-    id?: true
-    workspaceId?: true
-    videoId?: true
-    insight?: true
-    sameInJson?: true
-    lever?: true
-    beatsJson?: true
-    stopRule?: true
-    status?: true
-    winnerLabel?: true
-    createdAt?: true
-    updatedAt?: true
-  }
-
-  export type HookTestCountAggregateInputType = {
-    id?: true
-    workspaceId?: true
-    videoId?: true
-    insight?: true
-    sameInJson?: true
-    lever?: true
-    beatsJson?: true
-    stopRule?: true
-    status?: true
-    winnerLabel?: true
-    createdAt?: true
-    updatedAt?: true
-    _all?: true
-  }
-
-  export type HookTestAggregateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Filter which HookTest to aggregate.
-     */
-    where?: HookTestWhereInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
-     * 
-     * Determine the order of HookTests to fetch.
-     */
-    orderBy?: HookTestOrderByWithRelationInput | HookTestOrderByWithRelationInput[]
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
-     * 
-     * Sets the start position
-     */
-    cursor?: HookTestWhereUniqueInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Take `±n` HookTests from the position of the cursor.
-     */
-    take?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Skip the first `n` HookTests.
-     */
-    skip?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
-     * 
-     * Count returned HookTests
-    **/
-    _count?: true | HookTestCountAggregateInputType
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
-     * 
-     * Select which fields to find the minimum value
-    **/
-    _min?: HookTestMinAggregateInputType
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
-     * 
-     * Select which fields to find the maximum value
-    **/
-    _max?: HookTestMaxAggregateInputType
-  }
-
-  export type GetHookTestAggregateType<T extends HookTestAggregateArgs> = {
-        [P in keyof T & keyof AggregateHookTest]: P extends '_count' | 'count'
-      ? T[P] extends true
-        ? number
-        : GetScalarType<T[P], AggregateHookTest[P]>
-      : GetScalarType<T[P], AggregateHookTest[P]>
-  }
-
-
-
-
-  export type HookTestGroupByArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    where?: HookTestWhereInput
-    orderBy?: HookTestOrderByWithAggregationInput | HookTestOrderByWithAggregationInput[]
-    by: HookTestScalarFieldEnum[] | HookTestScalarFieldEnum
-    having?: HookTestScalarWhereWithAggregatesInput
-    take?: number
-    skip?: number
-    _count?: HookTestCountAggregateInputType | true
-    _min?: HookTestMinAggregateInputType
-    _max?: HookTestMaxAggregateInputType
-  }
-
-  export type HookTestGroupByOutputType = {
-    id: string
-    workspaceId: string
-    videoId: string
-    insight: string
-    sameInJson: string
-    lever: string
-    beatsJson: string
-    stopRule: string | null
-    status: string
-    winnerLabel: string | null
-    createdAt: Date
-    updatedAt: Date
-    _count: HookTestCountAggregateOutputType | null
-    _min: HookTestMinAggregateOutputType | null
-    _max: HookTestMaxAggregateOutputType | null
-  }
-
-  type GetHookTestGroupByPayload<T extends HookTestGroupByArgs> = Prisma.PrismaPromise<
-    Array<
-      PickEnumerable<HookTestGroupByOutputType, T['by']> &
-        {
-          [P in ((keyof T) & (keyof HookTestGroupByOutputType))]: P extends '_count'
-            ? T[P] extends boolean
-              ? number
-              : GetScalarType<T[P], HookTestGroupByOutputType[P]>
-            : GetScalarType<T[P], HookTestGroupByOutputType[P]>
-        }
-      >
-    >
-
-
-  export type HookTestSelect<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
-    id?: boolean
-    workspaceId?: boolean
-    videoId?: boolean
-    insight?: boolean
-    sameInJson?: boolean
-    lever?: boolean
-    beatsJson?: boolean
-    stopRule?: boolean
-    status?: boolean
-    winnerLabel?: boolean
-    createdAt?: boolean
-    updatedAt?: boolean
-    workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
-    video?: boolean | VideoDefaultArgs<ExtArgs>
-    versions?: boolean | HookTest$versionsArgs<ExtArgs>
-    _count?: boolean | HookTestCountOutputTypeDefaultArgs<ExtArgs>
-  }, ExtArgs["result"]["hookTest"]>
-
-  export type HookTestSelectCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
-    id?: boolean
-    workspaceId?: boolean
-    videoId?: boolean
-    insight?: boolean
-    sameInJson?: boolean
-    lever?: boolean
-    beatsJson?: boolean
-    stopRule?: boolean
-    status?: boolean
-    winnerLabel?: boolean
-    createdAt?: boolean
-    updatedAt?: boolean
-    workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
-    video?: boolean | VideoDefaultArgs<ExtArgs>
-  }, ExtArgs["result"]["hookTest"]>
-
-  export type HookTestSelectUpdateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
-    id?: boolean
-    workspaceId?: boolean
-    videoId?: boolean
-    insight?: boolean
-    sameInJson?: boolean
-    lever?: boolean
-    beatsJson?: boolean
-    stopRule?: boolean
-    status?: boolean
-    winnerLabel?: boolean
-    createdAt?: boolean
-    updatedAt?: boolean
-    workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
-    video?: boolean | VideoDefaultArgs<ExtArgs>
-  }, ExtArgs["result"]["hookTest"]>
-
-  export type HookTestSelectScalar = {
-    id?: boolean
-    workspaceId?: boolean
-    videoId?: boolean
-    insight?: boolean
-    sameInJson?: boolean
-    lever?: boolean
-    beatsJson?: boolean
-    stopRule?: boolean
-    status?: boolean
-    winnerLabel?: boolean
-    createdAt?: boolean
-    updatedAt?: boolean
-  }
-
-  export type HookTestOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "videoId" | "insight" | "sameInJson" | "lever" | "beatsJson" | "stopRule" | "status" | "winnerLabel" | "createdAt" | "updatedAt", ExtArgs["result"]["hookTest"]>
-  export type HookTestInclude<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
-    video?: boolean | VideoDefaultArgs<ExtArgs>
-    versions?: boolean | HookTest$versionsArgs<ExtArgs>
-    _count?: boolean | HookTestCountOutputTypeDefaultArgs<ExtArgs>
-  }
-  export type HookTestIncludeCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
-    video?: boolean | VideoDefaultArgs<ExtArgs>
-  }
-  export type HookTestIncludeUpdateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
-    video?: boolean | VideoDefaultArgs<ExtArgs>
-  }
-
-  export type $HookTestPayload<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    name: "HookTest"
-    objects: {
-      workspace: Prisma.$WorkspacePayload<ExtArgs>
-      video: Prisma.$VideoPayload<ExtArgs>
-      versions: Prisma.$HookVersionPayload<ExtArgs>[]
-    }
-    scalars: $Extensions.GetPayloadResult<{
-      id: string
-      workspaceId: string
-      /**
-       * The proven video the insight is mined from.
-       */
-      videoId: string
-      /**
-       * The one-sentence "why this grabbed attention" every version inherits.
-       * Editable on purpose: it is the lock that keeps re-rolls on-strategy.
-       */
-      insight: string
-      /**
-       * JSON array of strings — the frozen chips shared by every version
-       * ("face to camera", "same kitchen", ...).
-       */
-      sameInJson: string
-      /**
-       * What varies between versions. Only 'hook' in v1; the column exists so
-       * later levers (first frame, sound) don't need a migration.
-       */
-      lever: string
-      /**
-       * The storytelling-beat skeleton copied into every version
-       * ([{type, timestampSec?, description}, ...]).
-       */
-      beatsJson: string
-      /**
-       * Plain-language stop rule surfaced beside the versions ("stop when one
-       * version clears 3× your median"). Advisory in v1.
-       */
-      stopRule: string | null
-      /**
-       * setup → picking → posted → won | closed. Transitions past 'picking'
-       * arrive with the render/post integrations (Phase 3); v1 moves
-       * setup→picking via pick_hook_versions, and anything can be closed.
-       */
-      status: string
-      /**
-       * Which opening won when the test closed as 'won' ("C"). Manual in v1 —
-       * Phase 4 replaces it with auto-scoring against the owner baseline; the
-       * column exists so surfaces can say "C won" from day one.
-       */
-      winnerLabel: string | null
-      createdAt: Date
-      updatedAt: Date
-    }, ExtArgs["result"]["hookTest"]>
-    composites: {}
-  }
-
-  type HookTestGetPayload<S extends boolean | null | undefined | HookTestDefaultArgs> = $Result.GetResult<Prisma.$HookTestPayload, S>
-
-  type HookTestCountArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> =
-    Omit<HookTestFindManyArgs, 'select' | 'include' | 'distinct' | 'omit'> & {
-      select?: HookTestCountAggregateInputType | true
-    }
-
-  export interface HookTestDelegate<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs, GlobalOmitOptions = {}> {
-    [K: symbol]: { types: Prisma.TypeMap<ExtArgs>['model']['HookTest'], meta: { name: 'HookTest' } }
-    /**
-     * Find zero or one HookTest that matches the filter.
-     * @param {HookTestFindUniqueArgs} args - Arguments to find a HookTest
-     * @example
-     * // Get one HookTest
-     * const hookTest = await prisma.hookTest.findUnique({
-     *   where: {
-     *     // ... provide filter here
-     *   }
-     * })
-     */
-    findUnique<T extends HookTestFindUniqueArgs>(args: SelectSubset<T, HookTestFindUniqueArgs<ExtArgs>>): Prisma__HookTestClient<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "findUnique", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Find one HookTest that matches the filter or throw an error with `error.code='P2025'`
-     * if no matches were found.
-     * @param {HookTestFindUniqueOrThrowArgs} args - Arguments to find a HookTest
-     * @example
-     * // Get one HookTest
-     * const hookTest = await prisma.hookTest.findUniqueOrThrow({
-     *   where: {
-     *     // ... provide filter here
-     *   }
-     * })
-     */
-    findUniqueOrThrow<T extends HookTestFindUniqueOrThrowArgs>(args: SelectSubset<T, HookTestFindUniqueOrThrowArgs<ExtArgs>>): Prisma__HookTestClient<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Find the first HookTest that matches the filter.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookTestFindFirstArgs} args - Arguments to find a HookTest
-     * @example
-     * // Get one HookTest
-     * const hookTest = await prisma.hookTest.findFirst({
-     *   where: {
-     *     // ... provide filter here
-     *   }
-     * })
-     */
-    findFirst<T extends HookTestFindFirstArgs>(args?: SelectSubset<T, HookTestFindFirstArgs<ExtArgs>>): Prisma__HookTestClient<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "findFirst", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Find the first HookTest that matches the filter or
-     * throw `PrismaKnownClientError` with `P2025` code if no matches were found.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookTestFindFirstOrThrowArgs} args - Arguments to find a HookTest
-     * @example
-     * // Get one HookTest
-     * const hookTest = await prisma.hookTest.findFirstOrThrow({
-     *   where: {
-     *     // ... provide filter here
-     *   }
-     * })
-     */
-    findFirstOrThrow<T extends HookTestFindFirstOrThrowArgs>(args?: SelectSubset<T, HookTestFindFirstOrThrowArgs<ExtArgs>>): Prisma__HookTestClient<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "findFirstOrThrow", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Find zero or more HookTests that matches the filter.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookTestFindManyArgs} args - Arguments to filter and select certain fields only.
-     * @example
-     * // Get all HookTests
-     * const hookTests = await prisma.hookTest.findMany()
-     * 
-     * // Get first 10 HookTests
-     * const hookTests = await prisma.hookTest.findMany({ take: 10 })
-     * 
-     * // Only select the `id`
-     * const hookTestWithIdOnly = await prisma.hookTest.findMany({ select: { id: true } })
-     * 
-     */
-    findMany<T extends HookTestFindManyArgs>(args?: SelectSubset<T, HookTestFindManyArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "findMany", GlobalOmitOptions>>
-
-    /**
-     * Create a HookTest.
-     * @param {HookTestCreateArgs} args - Arguments to create a HookTest.
-     * @example
-     * // Create one HookTest
-     * const HookTest = await prisma.hookTest.create({
-     *   data: {
-     *     // ... data to create a HookTest
-     *   }
-     * })
-     * 
-     */
-    create<T extends HookTestCreateArgs>(args: SelectSubset<T, HookTestCreateArgs<ExtArgs>>): Prisma__HookTestClient<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "create", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Create many HookTests.
-     * @param {HookTestCreateManyArgs} args - Arguments to create many HookTests.
-     * @example
-     * // Create many HookTests
-     * const hookTest = await prisma.hookTest.createMany({
-     *   data: [
-     *     // ... provide data here
-     *   ]
-     * })
-     *     
-     */
-    createMany<T extends HookTestCreateManyArgs>(args?: SelectSubset<T, HookTestCreateManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
-
-    /**
-     * Create many HookTests and returns the data saved in the database.
-     * @param {HookTestCreateManyAndReturnArgs} args - Arguments to create many HookTests.
-     * @example
-     * // Create many HookTests
-     * const hookTest = await prisma.hookTest.createManyAndReturn({
-     *   data: [
-     *     // ... provide data here
-     *   ]
-     * })
-     * 
-     * // Create many HookTests and only return the `id`
-     * const hookTestWithIdOnly = await prisma.hookTest.createManyAndReturn({
-     *   select: { id: true },
-     *   data: [
-     *     // ... provide data here
-     *   ]
-     * })
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * 
-     */
-    createManyAndReturn<T extends HookTestCreateManyAndReturnArgs>(args?: SelectSubset<T, HookTestCreateManyAndReturnArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "createManyAndReturn", GlobalOmitOptions>>
-
-    /**
-     * Delete a HookTest.
-     * @param {HookTestDeleteArgs} args - Arguments to delete one HookTest.
-     * @example
-     * // Delete one HookTest
-     * const HookTest = await prisma.hookTest.delete({
-     *   where: {
-     *     // ... filter to delete one HookTest
-     *   }
-     * })
-     * 
-     */
-    delete<T extends HookTestDeleteArgs>(args: SelectSubset<T, HookTestDeleteArgs<ExtArgs>>): Prisma__HookTestClient<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "delete", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Update one HookTest.
-     * @param {HookTestUpdateArgs} args - Arguments to update one HookTest.
-     * @example
-     * // Update one HookTest
-     * const hookTest = await prisma.hookTest.update({
-     *   where: {
-     *     // ... provide filter here
-     *   },
-     *   data: {
-     *     // ... provide data here
-     *   }
-     * })
-     * 
-     */
-    update<T extends HookTestUpdateArgs>(args: SelectSubset<T, HookTestUpdateArgs<ExtArgs>>): Prisma__HookTestClient<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "update", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Delete zero or more HookTests.
-     * @param {HookTestDeleteManyArgs} args - Arguments to filter HookTests to delete.
-     * @example
-     * // Delete a few HookTests
-     * const { count } = await prisma.hookTest.deleteMany({
-     *   where: {
-     *     // ... provide filter here
-     *   }
-     * })
-     * 
-     */
-    deleteMany<T extends HookTestDeleteManyArgs>(args?: SelectSubset<T, HookTestDeleteManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
-
-    /**
-     * Update zero or more HookTests.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookTestUpdateManyArgs} args - Arguments to update one or more rows.
-     * @example
-     * // Update many HookTests
-     * const hookTest = await prisma.hookTest.updateMany({
-     *   where: {
-     *     // ... provide filter here
-     *   },
-     *   data: {
-     *     // ... provide data here
-     *   }
-     * })
-     * 
-     */
-    updateMany<T extends HookTestUpdateManyArgs>(args: SelectSubset<T, HookTestUpdateManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
-
-    /**
-     * Update zero or more HookTests and returns the data updated in the database.
-     * @param {HookTestUpdateManyAndReturnArgs} args - Arguments to update many HookTests.
-     * @example
-     * // Update many HookTests
-     * const hookTest = await prisma.hookTest.updateManyAndReturn({
-     *   where: {
-     *     // ... provide filter here
-     *   },
-     *   data: [
-     *     // ... provide data here
-     *   ]
-     * })
-     * 
-     * // Update zero or more HookTests and only return the `id`
-     * const hookTestWithIdOnly = await prisma.hookTest.updateManyAndReturn({
-     *   select: { id: true },
-     *   where: {
-     *     // ... provide filter here
-     *   },
-     *   data: [
-     *     // ... provide data here
-     *   ]
-     * })
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * 
-     */
-    updateManyAndReturn<T extends HookTestUpdateManyAndReturnArgs>(args: SelectSubset<T, HookTestUpdateManyAndReturnArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "updateManyAndReturn", GlobalOmitOptions>>
-
-    /**
-     * Create or update one HookTest.
-     * @param {HookTestUpsertArgs} args - Arguments to update or create a HookTest.
-     * @example
-     * // Update or create a HookTest
-     * const hookTest = await prisma.hookTest.upsert({
-     *   create: {
-     *     // ... data to create a HookTest
-     *   },
-     *   update: {
-     *     // ... in case it already exists, update
-     *   },
-     *   where: {
-     *     // ... the filter for the HookTest we want to update
-     *   }
-     * })
-     */
-    upsert<T extends HookTestUpsertArgs>(args: SelectSubset<T, HookTestUpsertArgs<ExtArgs>>): Prisma__HookTestClient<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "upsert", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
-
-
-    /**
-     * Count the number of HookTests.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookTestCountArgs} args - Arguments to filter HookTests to count.
-     * @example
-     * // Count the number of HookTests
-     * const count = await prisma.hookTest.count({
-     *   where: {
-     *     // ... the filter for the HookTests we want to count
-     *   }
-     * })
-    **/
-    count<T extends HookTestCountArgs>(
-      args?: Subset<T, HookTestCountArgs>,
-    ): Prisma.PrismaPromise<
-      T extends $Utils.Record<'select', any>
-        ? T['select'] extends true
-          ? number
-          : GetScalarType<T['select'], HookTestCountAggregateOutputType>
-        : number
-    >
-
-    /**
-     * Allows you to perform aggregations operations on a HookTest.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookTestAggregateArgs} args - Select which aggregations you would like to apply and on what fields.
-     * @example
-     * // Ordered by age ascending
-     * // Where email contains prisma.io
-     * // Limited to the 10 users
-     * const aggregations = await prisma.user.aggregate({
-     *   _avg: {
-     *     age: true,
-     *   },
-     *   where: {
-     *     email: {
-     *       contains: "prisma.io",
-     *     },
-     *   },
-     *   orderBy: {
-     *     age: "asc",
-     *   },
-     *   take: 10,
-     * })
-    **/
-    aggregate<T extends HookTestAggregateArgs>(args: Subset<T, HookTestAggregateArgs>): Prisma.PrismaPromise<GetHookTestAggregateType<T>>
-
-    /**
-     * Group by HookTest.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookTestGroupByArgs} args - Group by arguments.
-     * @example
-     * // Group by city, order by createdAt, get count
-     * const result = await prisma.user.groupBy({
-     *   by: ['city', 'createdAt'],
-     *   orderBy: {
-     *     createdAt: true
-     *   },
-     *   _count: {
-     *     _all: true
-     *   },
-     * })
-     * 
-    **/
-    groupBy<
-      T extends HookTestGroupByArgs,
-      HasSelectOrTake extends Or<
-        Extends<'skip', Keys<T>>,
-        Extends<'take', Keys<T>>
-      >,
-      OrderByArg extends True extends HasSelectOrTake
-        ? { orderBy: HookTestGroupByArgs['orderBy'] }
-        : { orderBy?: HookTestGroupByArgs['orderBy'] },
-      OrderFields extends ExcludeUnderscoreKeys<Keys<MaybeTupleToUnion<T['orderBy']>>>,
-      ByFields extends MaybeTupleToUnion<T['by']>,
-      ByValid extends Has<ByFields, OrderFields>,
-      HavingFields extends GetHavingFields<T['having']>,
-      HavingValid extends Has<ByFields, HavingFields>,
-      ByEmpty extends T['by'] extends never[] ? True : False,
-      InputErrors extends ByEmpty extends True
-      ? `Error: "by" must not be empty.`
-      : HavingValid extends False
-      ? {
-          [P in HavingFields]: P extends ByFields
-            ? never
-            : P extends string
-            ? `Error: Field "${P}" used in "having" needs to be provided in "by".`
-            : [
-                Error,
-                'Field ',
-                P,
-                ` in "having" needs to be provided in "by"`,
-              ]
-        }[HavingFields]
-      : 'take' extends Keys<T>
-      ? 'orderBy' extends Keys<T>
-        ? ByValid extends True
-          ? {}
-          : {
-              [P in OrderFields]: P extends ByFields
-                ? never
-                : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
-            }[OrderFields]
-        : 'Error: If you provide "take", you also need to provide "orderBy"'
-      : 'skip' extends Keys<T>
-      ? 'orderBy' extends Keys<T>
-        ? ByValid extends True
-          ? {}
-          : {
-              [P in OrderFields]: P extends ByFields
-                ? never
-                : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
-            }[OrderFields]
-        : 'Error: If you provide "skip", you also need to provide "orderBy"'
-      : ByValid extends True
-      ? {}
-      : {
-          [P in OrderFields]: P extends ByFields
-            ? never
-            : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
-        }[OrderFields]
-    >(args: SubsetIntersection<T, HookTestGroupByArgs, OrderByArg> & InputErrors): {} extends InputErrors ? GetHookTestGroupByPayload<T> : Prisma.PrismaPromise<InputErrors>
-  /**
-   * Fields of the HookTest model
-   */
-  readonly fields: HookTestFieldRefs;
-  }
-
-  /**
-   * The delegate class that acts as a "Promise-like" for HookTest.
-   * Why is this prefixed with `Prisma__`?
-   * Because we want to prevent naming conflicts as mentioned in
-   * https://github.com/prisma/prisma-client-js/issues/707
-   */
-  export interface Prisma__HookTestClient<T, Null = never, ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs, GlobalOmitOptions = {}> extends Prisma.PrismaPromise<T> {
-    readonly [Symbol.toStringTag]: "PrismaPromise"
-    workspace<T extends WorkspaceDefaultArgs<ExtArgs> = {}>(args?: Subset<T, WorkspaceDefaultArgs<ExtArgs>>): Prisma__WorkspaceClient<$Result.GetResult<Prisma.$WorkspacePayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | Null, Null, ExtArgs, GlobalOmitOptions>
-    video<T extends VideoDefaultArgs<ExtArgs> = {}>(args?: Subset<T, VideoDefaultArgs<ExtArgs>>): Prisma__VideoClient<$Result.GetResult<Prisma.$VideoPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | Null, Null, ExtArgs, GlobalOmitOptions>
-    versions<T extends HookTest$versionsArgs<ExtArgs> = {}>(args?: Subset<T, HookTest$versionsArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$HookVersionPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
-    /**
-     * Attaches callbacks for the resolution and/or rejection of the Promise.
-     * @param onfulfilled The callback to execute when the Promise is resolved.
-     * @param onrejected The callback to execute when the Promise is rejected.
-     * @returns A Promise for the completion of which ever callback is executed.
-     */
-    then<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | undefined | null, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null): $Utils.JsPromise<TResult1 | TResult2>
-    /**
-     * Attaches a callback for only the rejection of the Promise.
-     * @param onrejected The callback to execute when the Promise is rejected.
-     * @returns A Promise for the completion of the callback.
-     */
-    catch<TResult = never>(onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null): $Utils.JsPromise<T | TResult>
-    /**
-     * Attaches a callback that is invoked when the Promise is settled (fulfilled or rejected). The
-     * resolved value cannot be modified from the callback.
-     * @param onfinally The callback to execute when the Promise is settled (fulfilled or rejected).
-     * @returns A Promise for the completion of the callback.
-     */
-    finally(onfinally?: (() => void) | undefined | null): $Utils.JsPromise<T>
-  }
-
-
-
-
-  /**
-   * Fields of the HookTest model
-   */
-  interface HookTestFieldRefs {
-    readonly id: FieldRef<"HookTest", 'String'>
-    readonly workspaceId: FieldRef<"HookTest", 'String'>
-    readonly videoId: FieldRef<"HookTest", 'String'>
-    readonly insight: FieldRef<"HookTest", 'String'>
-    readonly sameInJson: FieldRef<"HookTest", 'String'>
-    readonly lever: FieldRef<"HookTest", 'String'>
-    readonly beatsJson: FieldRef<"HookTest", 'String'>
-    readonly stopRule: FieldRef<"HookTest", 'String'>
-    readonly status: FieldRef<"HookTest", 'String'>
-    readonly winnerLabel: FieldRef<"HookTest", 'String'>
-    readonly createdAt: FieldRef<"HookTest", 'DateTime'>
-    readonly updatedAt: FieldRef<"HookTest", 'DateTime'>
-  }
-    
-
-  // Custom InputTypes
-  /**
-   * HookTest findUnique
-   */
-  export type HookTestFindUniqueArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestInclude<ExtArgs> | null
-    /**
-     * Filter, which HookTest to fetch.
-     */
-    where: HookTestWhereUniqueInput
-  }
-
-  /**
-   * HookTest findUniqueOrThrow
-   */
-  export type HookTestFindUniqueOrThrowArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestInclude<ExtArgs> | null
-    /**
-     * Filter, which HookTest to fetch.
-     */
-    where: HookTestWhereUniqueInput
-  }
-
-  /**
-   * HookTest findFirst
-   */
-  export type HookTestFindFirstArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestInclude<ExtArgs> | null
-    /**
-     * Filter, which HookTest to fetch.
-     */
-    where?: HookTestWhereInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
-     * 
-     * Determine the order of HookTests to fetch.
-     */
-    orderBy?: HookTestOrderByWithRelationInput | HookTestOrderByWithRelationInput[]
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
-     * 
-     * Sets the position for searching for HookTests.
-     */
-    cursor?: HookTestWhereUniqueInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Take `±n` HookTests from the position of the cursor.
-     */
-    take?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Skip the first `n` HookTests.
-     */
-    skip?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}
-     * 
-     * Filter by unique combinations of HookTests.
-     */
-    distinct?: HookTestScalarFieldEnum | HookTestScalarFieldEnum[]
-  }
-
-  /**
-   * HookTest findFirstOrThrow
-   */
-  export type HookTestFindFirstOrThrowArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestInclude<ExtArgs> | null
-    /**
-     * Filter, which HookTest to fetch.
-     */
-    where?: HookTestWhereInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
-     * 
-     * Determine the order of HookTests to fetch.
-     */
-    orderBy?: HookTestOrderByWithRelationInput | HookTestOrderByWithRelationInput[]
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
-     * 
-     * Sets the position for searching for HookTests.
-     */
-    cursor?: HookTestWhereUniqueInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Take `±n` HookTests from the position of the cursor.
-     */
-    take?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Skip the first `n` HookTests.
-     */
-    skip?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}
-     * 
-     * Filter by unique combinations of HookTests.
-     */
-    distinct?: HookTestScalarFieldEnum | HookTestScalarFieldEnum[]
-  }
-
-  /**
-   * HookTest findMany
-   */
-  export type HookTestFindManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestInclude<ExtArgs> | null
-    /**
-     * Filter, which HookTests to fetch.
-     */
-    where?: HookTestWhereInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
-     * 
-     * Determine the order of HookTests to fetch.
-     */
-    orderBy?: HookTestOrderByWithRelationInput | HookTestOrderByWithRelationInput[]
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
-     * 
-     * Sets the position for listing HookTests.
-     */
-    cursor?: HookTestWhereUniqueInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Take `±n` HookTests from the position of the cursor.
-     */
-    take?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Skip the first `n` HookTests.
-     */
-    skip?: number
-    distinct?: HookTestScalarFieldEnum | HookTestScalarFieldEnum[]
-  }
-
-  /**
-   * HookTest create
-   */
-  export type HookTestCreateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestInclude<ExtArgs> | null
-    /**
-     * The data needed to create a HookTest.
-     */
-    data: XOR<HookTestCreateInput, HookTestUncheckedCreateInput>
-  }
-
-  /**
-   * HookTest createMany
-   */
-  export type HookTestCreateManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * The data used to create many HookTests.
-     */
-    data: HookTestCreateManyInput | HookTestCreateManyInput[]
-  }
-
-  /**
-   * HookTest createManyAndReturn
-   */
-  export type HookTestCreateManyAndReturnArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelectCreateManyAndReturn<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * The data used to create many HookTests.
-     */
-    data: HookTestCreateManyInput | HookTestCreateManyInput[]
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestIncludeCreateManyAndReturn<ExtArgs> | null
-  }
-
-  /**
-   * HookTest update
-   */
-  export type HookTestUpdateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestInclude<ExtArgs> | null
-    /**
-     * The data needed to update a HookTest.
-     */
-    data: XOR<HookTestUpdateInput, HookTestUncheckedUpdateInput>
-    /**
-     * Choose, which HookTest to update.
-     */
-    where: HookTestWhereUniqueInput
-  }
-
-  /**
-   * HookTest updateMany
-   */
-  export type HookTestUpdateManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * The data used to update HookTests.
-     */
-    data: XOR<HookTestUpdateManyMutationInput, HookTestUncheckedUpdateManyInput>
-    /**
-     * Filter which HookTests to update
-     */
-    where?: HookTestWhereInput
-    /**
-     * Limit how many HookTests to update.
-     */
-    limit?: number
-  }
-
-  /**
-   * HookTest updateManyAndReturn
-   */
-  export type HookTestUpdateManyAndReturnArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelectUpdateManyAndReturn<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * The data used to update HookTests.
-     */
-    data: XOR<HookTestUpdateManyMutationInput, HookTestUncheckedUpdateManyInput>
-    /**
-     * Filter which HookTests to update
-     */
-    where?: HookTestWhereInput
-    /**
-     * Limit how many HookTests to update.
-     */
-    limit?: number
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestIncludeUpdateManyAndReturn<ExtArgs> | null
-  }
-
-  /**
-   * HookTest upsert
-   */
-  export type HookTestUpsertArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestInclude<ExtArgs> | null
-    /**
-     * The filter to search for the HookTest to update in case it exists.
-     */
-    where: HookTestWhereUniqueInput
-    /**
-     * In case the HookTest found by the `where` argument doesn't exist, create a new HookTest with this data.
-     */
-    create: XOR<HookTestCreateInput, HookTestUncheckedCreateInput>
-    /**
-     * In case the HookTest was found with the provided `where` argument, update it with this data.
-     */
-    update: XOR<HookTestUpdateInput, HookTestUncheckedUpdateInput>
-  }
-
-  /**
-   * HookTest delete
-   */
-  export type HookTestDeleteArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestInclude<ExtArgs> | null
-    /**
-     * Filter which HookTest to delete.
-     */
-    where: HookTestWhereUniqueInput
-  }
-
-  /**
-   * HookTest deleteMany
-   */
-  export type HookTestDeleteManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Filter which HookTests to delete
-     */
-    where?: HookTestWhereInput
-    /**
-     * Limit how many HookTests to delete.
-     */
-    limit?: number
-  }
-
-  /**
-   * HookTest.versions
-   */
-  export type HookTest$versionsArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookVersion
-     */
-    select?: HookVersionSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookVersion
-     */
-    omit?: HookVersionOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookVersionInclude<ExtArgs> | null
-    where?: HookVersionWhereInput
-    orderBy?: HookVersionOrderByWithRelationInput | HookVersionOrderByWithRelationInput[]
-    cursor?: HookVersionWhereUniqueInput
-    take?: number
-    skip?: number
-    distinct?: HookVersionScalarFieldEnum | HookVersionScalarFieldEnum[]
-  }
-
-  /**
-   * HookTest without action
-   */
-  export type HookTestDefaultArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookTest
-     */
-    select?: HookTestSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookTest
-     */
-    omit?: HookTestOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookTestInclude<ExtArgs> | null
-  }
-
-
-  /**
-   * Model HookVersion
-   */
-
-  export type AggregateHookVersion = {
-    _count: HookVersionCountAggregateOutputType | null
-    _avg: HookVersionAvgAggregateOutputType | null
-    _sum: HookVersionSumAggregateOutputType | null
-    _min: HookVersionMinAggregateOutputType | null
-    _max: HookVersionMaxAggregateOutputType | null
-  }
-
-  export type HookVersionAvgAggregateOutputType = {
-    round: number | null
-  }
-
-  export type HookVersionSumAggregateOutputType = {
-    round: number | null
-  }
-
-  export type HookVersionMinAggregateOutputType = {
-    id: string | null
-    testId: string | null
-    label: string | null
-    round: number | null
-    hookText: string | null
-    firstFrame: string | null
-    hookType: string | null
-    mechanism: string | null
-    status: string | null
-    assetUrl: string | null
-    ownPostId: string | null
-    createdAt: Date | null
-  }
-
-  export type HookVersionMaxAggregateOutputType = {
-    id: string | null
-    testId: string | null
-    label: string | null
-    round: number | null
-    hookText: string | null
-    firstFrame: string | null
-    hookType: string | null
-    mechanism: string | null
-    status: string | null
-    assetUrl: string | null
-    ownPostId: string | null
-    createdAt: Date | null
-  }
-
-  export type HookVersionCountAggregateOutputType = {
-    id: number
-    testId: number
-    label: number
-    round: number
-    hookText: number
-    firstFrame: number
-    hookType: number
-    mechanism: number
-    status: number
-    assetUrl: number
-    ownPostId: number
-    createdAt: number
-    _all: number
-  }
-
-
-  export type HookVersionAvgAggregateInputType = {
-    round?: true
-  }
-
-  export type HookVersionSumAggregateInputType = {
-    round?: true
-  }
-
-  export type HookVersionMinAggregateInputType = {
-    id?: true
-    testId?: true
-    label?: true
-    round?: true
-    hookText?: true
-    firstFrame?: true
-    hookType?: true
-    mechanism?: true
-    status?: true
-    assetUrl?: true
-    ownPostId?: true
-    createdAt?: true
-  }
-
-  export type HookVersionMaxAggregateInputType = {
-    id?: true
-    testId?: true
-    label?: true
-    round?: true
-    hookText?: true
-    firstFrame?: true
-    hookType?: true
-    mechanism?: true
-    status?: true
-    assetUrl?: true
-    ownPostId?: true
-    createdAt?: true
-  }
-
-  export type HookVersionCountAggregateInputType = {
-    id?: true
-    testId?: true
-    label?: true
-    round?: true
-    hookText?: true
-    firstFrame?: true
-    hookType?: true
-    mechanism?: true
-    status?: true
-    assetUrl?: true
-    ownPostId?: true
-    createdAt?: true
-    _all?: true
-  }
-
-  export type HookVersionAggregateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Filter which HookVersion to aggregate.
-     */
-    where?: HookVersionWhereInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
-     * 
-     * Determine the order of HookVersions to fetch.
-     */
-    orderBy?: HookVersionOrderByWithRelationInput | HookVersionOrderByWithRelationInput[]
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
-     * 
-     * Sets the start position
-     */
-    cursor?: HookVersionWhereUniqueInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Take `±n` HookVersions from the position of the cursor.
-     */
-    take?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Skip the first `n` HookVersions.
-     */
-    skip?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
-     * 
-     * Count returned HookVersions
-    **/
-    _count?: true | HookVersionCountAggregateInputType
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
-     * 
-     * Select which fields to average
-    **/
-    _avg?: HookVersionAvgAggregateInputType
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
-     * 
-     * Select which fields to sum
-    **/
-    _sum?: HookVersionSumAggregateInputType
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
-     * 
-     * Select which fields to find the minimum value
-    **/
-    _min?: HookVersionMinAggregateInputType
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
-     * 
-     * Select which fields to find the maximum value
-    **/
-    _max?: HookVersionMaxAggregateInputType
-  }
-
-  export type GetHookVersionAggregateType<T extends HookVersionAggregateArgs> = {
-        [P in keyof T & keyof AggregateHookVersion]: P extends '_count' | 'count'
-      ? T[P] extends true
-        ? number
-        : GetScalarType<T[P], AggregateHookVersion[P]>
-      : GetScalarType<T[P], AggregateHookVersion[P]>
-  }
-
-
-
-
-  export type HookVersionGroupByArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    where?: HookVersionWhereInput
-    orderBy?: HookVersionOrderByWithAggregationInput | HookVersionOrderByWithAggregationInput[]
-    by: HookVersionScalarFieldEnum[] | HookVersionScalarFieldEnum
-    having?: HookVersionScalarWhereWithAggregatesInput
-    take?: number
-    skip?: number
-    _count?: HookVersionCountAggregateInputType | true
-    _avg?: HookVersionAvgAggregateInputType
-    _sum?: HookVersionSumAggregateInputType
-    _min?: HookVersionMinAggregateInputType
-    _max?: HookVersionMaxAggregateInputType
-  }
-
-  export type HookVersionGroupByOutputType = {
-    id: string
-    testId: string
-    label: string
-    round: number
-    hookText: string
-    firstFrame: string | null
-    hookType: string
-    mechanism: string | null
-    status: string
-    assetUrl: string | null
-    ownPostId: string | null
-    createdAt: Date
-    _count: HookVersionCountAggregateOutputType | null
-    _avg: HookVersionAvgAggregateOutputType | null
-    _sum: HookVersionSumAggregateOutputType | null
-    _min: HookVersionMinAggregateOutputType | null
-    _max: HookVersionMaxAggregateOutputType | null
-  }
-
-  type GetHookVersionGroupByPayload<T extends HookVersionGroupByArgs> = Prisma.PrismaPromise<
-    Array<
-      PickEnumerable<HookVersionGroupByOutputType, T['by']> &
-        {
-          [P in ((keyof T) & (keyof HookVersionGroupByOutputType))]: P extends '_count'
-            ? T[P] extends boolean
-              ? number
-              : GetScalarType<T[P], HookVersionGroupByOutputType[P]>
-            : GetScalarType<T[P], HookVersionGroupByOutputType[P]>
-        }
-      >
-    >
-
-
-  export type HookVersionSelect<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
-    id?: boolean
-    testId?: boolean
-    label?: boolean
-    round?: boolean
-    hookText?: boolean
-    firstFrame?: boolean
-    hookType?: boolean
-    mechanism?: boolean
-    status?: boolean
-    assetUrl?: boolean
-    ownPostId?: boolean
-    createdAt?: boolean
-    test?: boolean | HookTestDefaultArgs<ExtArgs>
-  }, ExtArgs["result"]["hookVersion"]>
-
-  export type HookVersionSelectCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
-    id?: boolean
-    testId?: boolean
-    label?: boolean
-    round?: boolean
-    hookText?: boolean
-    firstFrame?: boolean
-    hookType?: boolean
-    mechanism?: boolean
-    status?: boolean
-    assetUrl?: boolean
-    ownPostId?: boolean
-    createdAt?: boolean
-    test?: boolean | HookTestDefaultArgs<ExtArgs>
-  }, ExtArgs["result"]["hookVersion"]>
-
-  export type HookVersionSelectUpdateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
-    id?: boolean
-    testId?: boolean
-    label?: boolean
-    round?: boolean
-    hookText?: boolean
-    firstFrame?: boolean
-    hookType?: boolean
-    mechanism?: boolean
-    status?: boolean
-    assetUrl?: boolean
-    ownPostId?: boolean
-    createdAt?: boolean
-    test?: boolean | HookTestDefaultArgs<ExtArgs>
-  }, ExtArgs["result"]["hookVersion"]>
-
-  export type HookVersionSelectScalar = {
-    id?: boolean
-    testId?: boolean
-    label?: boolean
-    round?: boolean
-    hookText?: boolean
-    firstFrame?: boolean
-    hookType?: boolean
-    mechanism?: boolean
-    status?: boolean
-    assetUrl?: boolean
-    ownPostId?: boolean
-    createdAt?: boolean
-  }
-
-  export type HookVersionOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "testId" | "label" | "round" | "hookText" | "firstFrame" | "hookType" | "mechanism" | "status" | "assetUrl" | "ownPostId" | "createdAt", ExtArgs["result"]["hookVersion"]>
-  export type HookVersionInclude<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    test?: boolean | HookTestDefaultArgs<ExtArgs>
-  }
-  export type HookVersionIncludeCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    test?: boolean | HookTestDefaultArgs<ExtArgs>
-  }
-  export type HookVersionIncludeUpdateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    test?: boolean | HookTestDefaultArgs<ExtArgs>
-  }
-
-  export type $HookVersionPayload<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    name: "HookVersion"
-    objects: {
-      test: Prisma.$HookTestPayload<ExtArgs>
-    }
-    scalars: $Extensions.GetPayloadResult<{
-      id: string
-      testId: string
-      /**
-       * A | B | C | D — meaningful within a round; round disambiguates.
-       */
-      label: string
-      round: number
-      hookText: string
-      /**
-       * What the very first frame shows. An opening is audiovisual, not just a
-       * sentence — the spec pins both fields together.
-       */
-      firstFrame: string | null
-      /**
-       * recognition | specific_number | contrarian | demo_first
-       */
-      hookType: string
-      mechanism: string | null
-      /**
-       * proposed → picked → rendered → posted → scored. 'discarded' covers both
-       * superseded re-roll generations and proposals passed over at pick time.
-       */
-      status: string
-      /**
-       * Phase 3: the rendered MP4 (vault path /content/tests/<testId>/<label>.mp4).
-       */
-      assetUrl: string | null
-      /**
-       * Phase 3: matched against the isSelf feed once a version goes live.
-       */
-      ownPostId: string | null
-      createdAt: Date
-    }, ExtArgs["result"]["hookVersion"]>
-    composites: {}
-  }
-
-  type HookVersionGetPayload<S extends boolean | null | undefined | HookVersionDefaultArgs> = $Result.GetResult<Prisma.$HookVersionPayload, S>
-
-  type HookVersionCountArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> =
-    Omit<HookVersionFindManyArgs, 'select' | 'include' | 'distinct' | 'omit'> & {
-      select?: HookVersionCountAggregateInputType | true
-    }
-
-  export interface HookVersionDelegate<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs, GlobalOmitOptions = {}> {
-    [K: symbol]: { types: Prisma.TypeMap<ExtArgs>['model']['HookVersion'], meta: { name: 'HookVersion' } }
-    /**
-     * Find zero or one HookVersion that matches the filter.
-     * @param {HookVersionFindUniqueArgs} args - Arguments to find a HookVersion
-     * @example
-     * // Get one HookVersion
-     * const hookVersion = await prisma.hookVersion.findUnique({
-     *   where: {
-     *     // ... provide filter here
-     *   }
-     * })
-     */
-    findUnique<T extends HookVersionFindUniqueArgs>(args: SelectSubset<T, HookVersionFindUniqueArgs<ExtArgs>>): Prisma__HookVersionClient<$Result.GetResult<Prisma.$HookVersionPayload<ExtArgs>, T, "findUnique", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Find one HookVersion that matches the filter or throw an error with `error.code='P2025'`
-     * if no matches were found.
-     * @param {HookVersionFindUniqueOrThrowArgs} args - Arguments to find a HookVersion
-     * @example
-     * // Get one HookVersion
-     * const hookVersion = await prisma.hookVersion.findUniqueOrThrow({
-     *   where: {
-     *     // ... provide filter here
-     *   }
-     * })
-     */
-    findUniqueOrThrow<T extends HookVersionFindUniqueOrThrowArgs>(args: SelectSubset<T, HookVersionFindUniqueOrThrowArgs<ExtArgs>>): Prisma__HookVersionClient<$Result.GetResult<Prisma.$HookVersionPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Find the first HookVersion that matches the filter.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookVersionFindFirstArgs} args - Arguments to find a HookVersion
-     * @example
-     * // Get one HookVersion
-     * const hookVersion = await prisma.hookVersion.findFirst({
-     *   where: {
-     *     // ... provide filter here
-     *   }
-     * })
-     */
-    findFirst<T extends HookVersionFindFirstArgs>(args?: SelectSubset<T, HookVersionFindFirstArgs<ExtArgs>>): Prisma__HookVersionClient<$Result.GetResult<Prisma.$HookVersionPayload<ExtArgs>, T, "findFirst", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Find the first HookVersion that matches the filter or
-     * throw `PrismaKnownClientError` with `P2025` code if no matches were found.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookVersionFindFirstOrThrowArgs} args - Arguments to find a HookVersion
-     * @example
-     * // Get one HookVersion
-     * const hookVersion = await prisma.hookVersion.findFirstOrThrow({
-     *   where: {
-     *     // ... provide filter here
-     *   }
-     * })
-     */
-    findFirstOrThrow<T extends HookVersionFindFirstOrThrowArgs>(args?: SelectSubset<T, HookVersionFindFirstOrThrowArgs<ExtArgs>>): Prisma__HookVersionClient<$Result.GetResult<Prisma.$HookVersionPayload<ExtArgs>, T, "findFirstOrThrow", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Find zero or more HookVersions that matches the filter.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookVersionFindManyArgs} args - Arguments to filter and select certain fields only.
-     * @example
-     * // Get all HookVersions
-     * const hookVersions = await prisma.hookVersion.findMany()
-     * 
-     * // Get first 10 HookVersions
-     * const hookVersions = await prisma.hookVersion.findMany({ take: 10 })
-     * 
-     * // Only select the `id`
-     * const hookVersionWithIdOnly = await prisma.hookVersion.findMany({ select: { id: true } })
-     * 
-     */
-    findMany<T extends HookVersionFindManyArgs>(args?: SelectSubset<T, HookVersionFindManyArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$HookVersionPayload<ExtArgs>, T, "findMany", GlobalOmitOptions>>
-
-    /**
-     * Create a HookVersion.
-     * @param {HookVersionCreateArgs} args - Arguments to create a HookVersion.
-     * @example
-     * // Create one HookVersion
-     * const HookVersion = await prisma.hookVersion.create({
-     *   data: {
-     *     // ... data to create a HookVersion
-     *   }
-     * })
-     * 
-     */
-    create<T extends HookVersionCreateArgs>(args: SelectSubset<T, HookVersionCreateArgs<ExtArgs>>): Prisma__HookVersionClient<$Result.GetResult<Prisma.$HookVersionPayload<ExtArgs>, T, "create", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Create many HookVersions.
-     * @param {HookVersionCreateManyArgs} args - Arguments to create many HookVersions.
-     * @example
-     * // Create many HookVersions
-     * const hookVersion = await prisma.hookVersion.createMany({
-     *   data: [
-     *     // ... provide data here
-     *   ]
-     * })
-     *     
-     */
-    createMany<T extends HookVersionCreateManyArgs>(args?: SelectSubset<T, HookVersionCreateManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
-
-    /**
-     * Create many HookVersions and returns the data saved in the database.
-     * @param {HookVersionCreateManyAndReturnArgs} args - Arguments to create many HookVersions.
-     * @example
-     * // Create many HookVersions
-     * const hookVersion = await prisma.hookVersion.createManyAndReturn({
-     *   data: [
-     *     // ... provide data here
-     *   ]
-     * })
-     * 
-     * // Create many HookVersions and only return the `id`
-     * const hookVersionWithIdOnly = await prisma.hookVersion.createManyAndReturn({
-     *   select: { id: true },
-     *   data: [
-     *     // ... provide data here
-     *   ]
-     * })
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * 
-     */
-    createManyAndReturn<T extends HookVersionCreateManyAndReturnArgs>(args?: SelectSubset<T, HookVersionCreateManyAndReturnArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$HookVersionPayload<ExtArgs>, T, "createManyAndReturn", GlobalOmitOptions>>
-
-    /**
-     * Delete a HookVersion.
-     * @param {HookVersionDeleteArgs} args - Arguments to delete one HookVersion.
-     * @example
-     * // Delete one HookVersion
-     * const HookVersion = await prisma.hookVersion.delete({
-     *   where: {
-     *     // ... filter to delete one HookVersion
-     *   }
-     * })
-     * 
-     */
-    delete<T extends HookVersionDeleteArgs>(args: SelectSubset<T, HookVersionDeleteArgs<ExtArgs>>): Prisma__HookVersionClient<$Result.GetResult<Prisma.$HookVersionPayload<ExtArgs>, T, "delete", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Update one HookVersion.
-     * @param {HookVersionUpdateArgs} args - Arguments to update one HookVersion.
-     * @example
-     * // Update one HookVersion
-     * const hookVersion = await prisma.hookVersion.update({
-     *   where: {
-     *     // ... provide filter here
-     *   },
-     *   data: {
-     *     // ... provide data here
-     *   }
-     * })
-     * 
-     */
-    update<T extends HookVersionUpdateArgs>(args: SelectSubset<T, HookVersionUpdateArgs<ExtArgs>>): Prisma__HookVersionClient<$Result.GetResult<Prisma.$HookVersionPayload<ExtArgs>, T, "update", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
-
-    /**
-     * Delete zero or more HookVersions.
-     * @param {HookVersionDeleteManyArgs} args - Arguments to filter HookVersions to delete.
-     * @example
-     * // Delete a few HookVersions
-     * const { count } = await prisma.hookVersion.deleteMany({
-     *   where: {
-     *     // ... provide filter here
-     *   }
-     * })
-     * 
-     */
-    deleteMany<T extends HookVersionDeleteManyArgs>(args?: SelectSubset<T, HookVersionDeleteManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
-
-    /**
-     * Update zero or more HookVersions.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookVersionUpdateManyArgs} args - Arguments to update one or more rows.
-     * @example
-     * // Update many HookVersions
-     * const hookVersion = await prisma.hookVersion.updateMany({
-     *   where: {
-     *     // ... provide filter here
-     *   },
-     *   data: {
-     *     // ... provide data here
-     *   }
-     * })
-     * 
-     */
-    updateMany<T extends HookVersionUpdateManyArgs>(args: SelectSubset<T, HookVersionUpdateManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
-
-    /**
-     * Update zero or more HookVersions and returns the data updated in the database.
-     * @param {HookVersionUpdateManyAndReturnArgs} args - Arguments to update many HookVersions.
-     * @example
-     * // Update many HookVersions
-     * const hookVersion = await prisma.hookVersion.updateManyAndReturn({
-     *   where: {
-     *     // ... provide filter here
-     *   },
-     *   data: [
-     *     // ... provide data here
-     *   ]
-     * })
-     * 
-     * // Update zero or more HookVersions and only return the `id`
-     * const hookVersionWithIdOnly = await prisma.hookVersion.updateManyAndReturn({
-     *   select: { id: true },
-     *   where: {
-     *     // ... provide filter here
-     *   },
-     *   data: [
-     *     // ... provide data here
-     *   ]
-     * })
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * 
-     */
-    updateManyAndReturn<T extends HookVersionUpdateManyAndReturnArgs>(args: SelectSubset<T, HookVersionUpdateManyAndReturnArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$HookVersionPayload<ExtArgs>, T, "updateManyAndReturn", GlobalOmitOptions>>
-
-    /**
-     * Create or update one HookVersion.
-     * @param {HookVersionUpsertArgs} args - Arguments to update or create a HookVersion.
-     * @example
-     * // Update or create a HookVersion
-     * const hookVersion = await prisma.hookVersion.upsert({
-     *   create: {
-     *     // ... data to create a HookVersion
-     *   },
-     *   update: {
-     *     // ... in case it already exists, update
-     *   },
-     *   where: {
-     *     // ... the filter for the HookVersion we want to update
-     *   }
-     * })
-     */
-    upsert<T extends HookVersionUpsertArgs>(args: SelectSubset<T, HookVersionUpsertArgs<ExtArgs>>): Prisma__HookVersionClient<$Result.GetResult<Prisma.$HookVersionPayload<ExtArgs>, T, "upsert", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
-
-
-    /**
-     * Count the number of HookVersions.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookVersionCountArgs} args - Arguments to filter HookVersions to count.
-     * @example
-     * // Count the number of HookVersions
-     * const count = await prisma.hookVersion.count({
-     *   where: {
-     *     // ... the filter for the HookVersions we want to count
-     *   }
-     * })
-    **/
-    count<T extends HookVersionCountArgs>(
-      args?: Subset<T, HookVersionCountArgs>,
-    ): Prisma.PrismaPromise<
-      T extends $Utils.Record<'select', any>
-        ? T['select'] extends true
-          ? number
-          : GetScalarType<T['select'], HookVersionCountAggregateOutputType>
-        : number
-    >
-
-    /**
-     * Allows you to perform aggregations operations on a HookVersion.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookVersionAggregateArgs} args - Select which aggregations you would like to apply and on what fields.
-     * @example
-     * // Ordered by age ascending
-     * // Where email contains prisma.io
-     * // Limited to the 10 users
-     * const aggregations = await prisma.user.aggregate({
-     *   _avg: {
-     *     age: true,
-     *   },
-     *   where: {
-     *     email: {
-     *       contains: "prisma.io",
-     *     },
-     *   },
-     *   orderBy: {
-     *     age: "asc",
-     *   },
-     *   take: 10,
-     * })
-    **/
-    aggregate<T extends HookVersionAggregateArgs>(args: Subset<T, HookVersionAggregateArgs>): Prisma.PrismaPromise<GetHookVersionAggregateType<T>>
-
-    /**
-     * Group by HookVersion.
-     * Note, that providing `undefined` is treated as the value not being there.
-     * Read more here: https://pris.ly/d/null-undefined
-     * @param {HookVersionGroupByArgs} args - Group by arguments.
-     * @example
-     * // Group by city, order by createdAt, get count
-     * const result = await prisma.user.groupBy({
-     *   by: ['city', 'createdAt'],
-     *   orderBy: {
-     *     createdAt: true
-     *   },
-     *   _count: {
-     *     _all: true
-     *   },
-     * })
-     * 
-    **/
-    groupBy<
-      T extends HookVersionGroupByArgs,
-      HasSelectOrTake extends Or<
-        Extends<'skip', Keys<T>>,
-        Extends<'take', Keys<T>>
-      >,
-      OrderByArg extends True extends HasSelectOrTake
-        ? { orderBy: HookVersionGroupByArgs['orderBy'] }
-        : { orderBy?: HookVersionGroupByArgs['orderBy'] },
-      OrderFields extends ExcludeUnderscoreKeys<Keys<MaybeTupleToUnion<T['orderBy']>>>,
-      ByFields extends MaybeTupleToUnion<T['by']>,
-      ByValid extends Has<ByFields, OrderFields>,
-      HavingFields extends GetHavingFields<T['having']>,
-      HavingValid extends Has<ByFields, HavingFields>,
-      ByEmpty extends T['by'] extends never[] ? True : False,
-      InputErrors extends ByEmpty extends True
-      ? `Error: "by" must not be empty.`
-      : HavingValid extends False
-      ? {
-          [P in HavingFields]: P extends ByFields
-            ? never
-            : P extends string
-            ? `Error: Field "${P}" used in "having" needs to be provided in "by".`
-            : [
-                Error,
-                'Field ',
-                P,
-                ` in "having" needs to be provided in "by"`,
-              ]
-        }[HavingFields]
-      : 'take' extends Keys<T>
-      ? 'orderBy' extends Keys<T>
-        ? ByValid extends True
-          ? {}
-          : {
-              [P in OrderFields]: P extends ByFields
-                ? never
-                : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
-            }[OrderFields]
-        : 'Error: If you provide "take", you also need to provide "orderBy"'
-      : 'skip' extends Keys<T>
-      ? 'orderBy' extends Keys<T>
-        ? ByValid extends True
-          ? {}
-          : {
-              [P in OrderFields]: P extends ByFields
-                ? never
-                : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
-            }[OrderFields]
-        : 'Error: If you provide "skip", you also need to provide "orderBy"'
-      : ByValid extends True
-      ? {}
-      : {
-          [P in OrderFields]: P extends ByFields
-            ? never
-            : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
-        }[OrderFields]
-    >(args: SubsetIntersection<T, HookVersionGroupByArgs, OrderByArg> & InputErrors): {} extends InputErrors ? GetHookVersionGroupByPayload<T> : Prisma.PrismaPromise<InputErrors>
-  /**
-   * Fields of the HookVersion model
-   */
-  readonly fields: HookVersionFieldRefs;
-  }
-
-  /**
-   * The delegate class that acts as a "Promise-like" for HookVersion.
-   * Why is this prefixed with `Prisma__`?
-   * Because we want to prevent naming conflicts as mentioned in
-   * https://github.com/prisma/prisma-client-js/issues/707
-   */
-  export interface Prisma__HookVersionClient<T, Null = never, ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs, GlobalOmitOptions = {}> extends Prisma.PrismaPromise<T> {
-    readonly [Symbol.toStringTag]: "PrismaPromise"
-    test<T extends HookTestDefaultArgs<ExtArgs> = {}>(args?: Subset<T, HookTestDefaultArgs<ExtArgs>>): Prisma__HookTestClient<$Result.GetResult<Prisma.$HookTestPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | Null, Null, ExtArgs, GlobalOmitOptions>
-    /**
-     * Attaches callbacks for the resolution and/or rejection of the Promise.
-     * @param onfulfilled The callback to execute when the Promise is resolved.
-     * @param onrejected The callback to execute when the Promise is rejected.
-     * @returns A Promise for the completion of which ever callback is executed.
-     */
-    then<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | undefined | null, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null): $Utils.JsPromise<TResult1 | TResult2>
-    /**
-     * Attaches a callback for only the rejection of the Promise.
-     * @param onrejected The callback to execute when the Promise is rejected.
-     * @returns A Promise for the completion of the callback.
-     */
-    catch<TResult = never>(onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null): $Utils.JsPromise<T | TResult>
-    /**
-     * Attaches a callback that is invoked when the Promise is settled (fulfilled or rejected). The
-     * resolved value cannot be modified from the callback.
-     * @param onfinally The callback to execute when the Promise is settled (fulfilled or rejected).
-     * @returns A Promise for the completion of the callback.
-     */
-    finally(onfinally?: (() => void) | undefined | null): $Utils.JsPromise<T>
-  }
-
-
-
-
-  /**
-   * Fields of the HookVersion model
-   */
-  interface HookVersionFieldRefs {
-    readonly id: FieldRef<"HookVersion", 'String'>
-    readonly testId: FieldRef<"HookVersion", 'String'>
-    readonly label: FieldRef<"HookVersion", 'String'>
-    readonly round: FieldRef<"HookVersion", 'Int'>
-    readonly hookText: FieldRef<"HookVersion", 'String'>
-    readonly firstFrame: FieldRef<"HookVersion", 'String'>
-    readonly hookType: FieldRef<"HookVersion", 'String'>
-    readonly mechanism: FieldRef<"HookVersion", 'String'>
-    readonly status: FieldRef<"HookVersion", 'String'>
-    readonly assetUrl: FieldRef<"HookVersion", 'String'>
-    readonly ownPostId: FieldRef<"HookVersion", 'String'>
-    readonly createdAt: FieldRef<"HookVersion", 'DateTime'>
-  }
-    
-
-  // Custom InputTypes
-  /**
-   * HookVersion findUnique
-   */
-  export type HookVersionFindUniqueArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookVersion
-     */
-    select?: HookVersionSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookVersion
-     */
-    omit?: HookVersionOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookVersionInclude<ExtArgs> | null
-    /**
-     * Filter, which HookVersion to fetch.
-     */
-    where: HookVersionWhereUniqueInput
-  }
-
-  /**
-   * HookVersion findUniqueOrThrow
-   */
-  export type HookVersionFindUniqueOrThrowArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookVersion
-     */
-    select?: HookVersionSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookVersion
-     */
-    omit?: HookVersionOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookVersionInclude<ExtArgs> | null
-    /**
-     * Filter, which HookVersion to fetch.
-     */
-    where: HookVersionWhereUniqueInput
-  }
-
-  /**
-   * HookVersion findFirst
-   */
-  export type HookVersionFindFirstArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookVersion
-     */
-    select?: HookVersionSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookVersion
-     */
-    omit?: HookVersionOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookVersionInclude<ExtArgs> | null
-    /**
-     * Filter, which HookVersion to fetch.
-     */
-    where?: HookVersionWhereInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
-     * 
-     * Determine the order of HookVersions to fetch.
-     */
-    orderBy?: HookVersionOrderByWithRelationInput | HookVersionOrderByWithRelationInput[]
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
-     * 
-     * Sets the position for searching for HookVersions.
-     */
-    cursor?: HookVersionWhereUniqueInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Take `±n` HookVersions from the position of the cursor.
-     */
-    take?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Skip the first `n` HookVersions.
-     */
-    skip?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}
-     * 
-     * Filter by unique combinations of HookVersions.
-     */
-    distinct?: HookVersionScalarFieldEnum | HookVersionScalarFieldEnum[]
-  }
-
-  /**
-   * HookVersion findFirstOrThrow
-   */
-  export type HookVersionFindFirstOrThrowArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookVersion
-     */
-    select?: HookVersionSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookVersion
-     */
-    omit?: HookVersionOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookVersionInclude<ExtArgs> | null
-    /**
-     * Filter, which HookVersion to fetch.
-     */
-    where?: HookVersionWhereInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
-     * 
-     * Determine the order of HookVersions to fetch.
-     */
-    orderBy?: HookVersionOrderByWithRelationInput | HookVersionOrderByWithRelationInput[]
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
-     * 
-     * Sets the position for searching for HookVersions.
-     */
-    cursor?: HookVersionWhereUniqueInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Take `±n` HookVersions from the position of the cursor.
-     */
-    take?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Skip the first `n` HookVersions.
-     */
-    skip?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}
-     * 
-     * Filter by unique combinations of HookVersions.
-     */
-    distinct?: HookVersionScalarFieldEnum | HookVersionScalarFieldEnum[]
-  }
-
-  /**
-   * HookVersion findMany
-   */
-  export type HookVersionFindManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookVersion
-     */
-    select?: HookVersionSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookVersion
-     */
-    omit?: HookVersionOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookVersionInclude<ExtArgs> | null
-    /**
-     * Filter, which HookVersions to fetch.
-     */
-    where?: HookVersionWhereInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
-     * 
-     * Determine the order of HookVersions to fetch.
-     */
-    orderBy?: HookVersionOrderByWithRelationInput | HookVersionOrderByWithRelationInput[]
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
-     * 
-     * Sets the position for listing HookVersions.
-     */
-    cursor?: HookVersionWhereUniqueInput
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Take `±n` HookVersions from the position of the cursor.
-     */
-    take?: number
-    /**
-     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
-     * 
-     * Skip the first `n` HookVersions.
-     */
-    skip?: number
-    distinct?: HookVersionScalarFieldEnum | HookVersionScalarFieldEnum[]
-  }
-
-  /**
-   * HookVersion create
-   */
-  export type HookVersionCreateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookVersion
-     */
-    select?: HookVersionSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookVersion
-     */
-    omit?: HookVersionOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookVersionInclude<ExtArgs> | null
-    /**
-     * The data needed to create a HookVersion.
-     */
-    data: XOR<HookVersionCreateInput, HookVersionUncheckedCreateInput>
-  }
-
-  /**
-   * HookVersion createMany
-   */
-  export type HookVersionCreateManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * The data used to create many HookVersions.
-     */
-    data: HookVersionCreateManyInput | HookVersionCreateManyInput[]
-  }
-
-  /**
-   * HookVersion createManyAndReturn
-   */
-  export type HookVersionCreateManyAndReturnArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookVersion
-     */
-    select?: HookVersionSelectCreateManyAndReturn<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookVersion
-     */
-    omit?: HookVersionOmit<ExtArgs> | null
-    /**
-     * The data used to create many HookVersions.
-     */
-    data: HookVersionCreateManyInput | HookVersionCreateManyInput[]
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookVersionIncludeCreateManyAndReturn<ExtArgs> | null
-  }
-
-  /**
-   * HookVersion update
-   */
-  export type HookVersionUpdateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookVersion
-     */
-    select?: HookVersionSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookVersion
-     */
-    omit?: HookVersionOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookVersionInclude<ExtArgs> | null
-    /**
-     * The data needed to update a HookVersion.
-     */
-    data: XOR<HookVersionUpdateInput, HookVersionUncheckedUpdateInput>
-    /**
-     * Choose, which HookVersion to update.
-     */
-    where: HookVersionWhereUniqueInput
-  }
-
-  /**
-   * HookVersion updateMany
-   */
-  export type HookVersionUpdateManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * The data used to update HookVersions.
-     */
-    data: XOR<HookVersionUpdateManyMutationInput, HookVersionUncheckedUpdateManyInput>
-    /**
-     * Filter which HookVersions to update
-     */
-    where?: HookVersionWhereInput
-    /**
-     * Limit how many HookVersions to update.
-     */
-    limit?: number
-  }
-
-  /**
-   * HookVersion updateManyAndReturn
-   */
-  export type HookVersionUpdateManyAndReturnArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookVersion
-     */
-    select?: HookVersionSelectUpdateManyAndReturn<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookVersion
-     */
-    omit?: HookVersionOmit<ExtArgs> | null
-    /**
-     * The data used to update HookVersions.
-     */
-    data: XOR<HookVersionUpdateManyMutationInput, HookVersionUncheckedUpdateManyInput>
-    /**
-     * Filter which HookVersions to update
-     */
-    where?: HookVersionWhereInput
-    /**
-     * Limit how many HookVersions to update.
-     */
-    limit?: number
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookVersionIncludeUpdateManyAndReturn<ExtArgs> | null
-  }
-
-  /**
-   * HookVersion upsert
-   */
-  export type HookVersionUpsertArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookVersion
-     */
-    select?: HookVersionSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookVersion
-     */
-    omit?: HookVersionOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookVersionInclude<ExtArgs> | null
-    /**
-     * The filter to search for the HookVersion to update in case it exists.
-     */
-    where: HookVersionWhereUniqueInput
-    /**
-     * In case the HookVersion found by the `where` argument doesn't exist, create a new HookVersion with this data.
-     */
-    create: XOR<HookVersionCreateInput, HookVersionUncheckedCreateInput>
-    /**
-     * In case the HookVersion was found with the provided `where` argument, update it with this data.
-     */
-    update: XOR<HookVersionUpdateInput, HookVersionUncheckedUpdateInput>
-  }
-
-  /**
-   * HookVersion delete
-   */
-  export type HookVersionDeleteArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookVersion
-     */
-    select?: HookVersionSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookVersion
-     */
-    omit?: HookVersionOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookVersionInclude<ExtArgs> | null
-    /**
-     * Filter which HookVersion to delete.
-     */
-    where: HookVersionWhereUniqueInput
-  }
-
-  /**
-   * HookVersion deleteMany
-   */
-  export type HookVersionDeleteManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Filter which HookVersions to delete
-     */
-    where?: HookVersionWhereInput
-    /**
-     * Limit how many HookVersions to delete.
-     */
-    limit?: number
-  }
-
-  /**
-   * HookVersion without action
-   */
-  export type HookVersionDefaultArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
-    /**
-     * Select specific fields to fetch from the HookVersion
-     */
-    select?: HookVersionSelect<ExtArgs> | null
-    /**
-     * Omit specific fields from the HookVersion
-     */
-    omit?: HookVersionOmit<ExtArgs> | null
-    /**
-     * Choose, which related nodes to fetch as well
-     */
-    include?: HookVersionInclude<ExtArgs> | null
-  }
-
-
-  /**
    * Model RefreshRun
    */
 
@@ -32454,7 +30877,6 @@ export namespace Prisma {
   export const UserScalarFieldEnum: {
     id: 'id',
     email: 'email',
-    googleSub: 'googleSub',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt'
   };
@@ -32601,6 +31023,20 @@ export namespace Prisma {
   export type VideoScalarFieldEnum = (typeof VideoScalarFieldEnum)[keyof typeof VideoScalarFieldEnum]
 
 
+  export const ExperimentScalarFieldEnum: {
+    id: 'id',
+    workspaceId: 'workspaceId',
+    status: 'status',
+    version: 'version',
+    dataJson: 'dataJson',
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt',
+    createKey: 'createKey'
+  };
+
+  export type ExperimentScalarFieldEnum = (typeof ExperimentScalarFieldEnum)[keyof typeof ExperimentScalarFieldEnum]
+
+
   export const CanonicalScrapeLockScalarFieldEnum: {
     key: 'key',
     lockedBy: 'lockedBy',
@@ -32738,42 +31174,6 @@ export namespace Prisma {
   export type UsageLogScalarFieldEnum = (typeof UsageLogScalarFieldEnum)[keyof typeof UsageLogScalarFieldEnum]
 
 
-  export const HookTestScalarFieldEnum: {
-    id: 'id',
-    workspaceId: 'workspaceId',
-    videoId: 'videoId',
-    insight: 'insight',
-    sameInJson: 'sameInJson',
-    lever: 'lever',
-    beatsJson: 'beatsJson',
-    stopRule: 'stopRule',
-    status: 'status',
-    winnerLabel: 'winnerLabel',
-    createdAt: 'createdAt',
-    updatedAt: 'updatedAt'
-  };
-
-  export type HookTestScalarFieldEnum = (typeof HookTestScalarFieldEnum)[keyof typeof HookTestScalarFieldEnum]
-
-
-  export const HookVersionScalarFieldEnum: {
-    id: 'id',
-    testId: 'testId',
-    label: 'label',
-    round: 'round',
-    hookText: 'hookText',
-    firstFrame: 'firstFrame',
-    hookType: 'hookType',
-    mechanism: 'mechanism',
-    status: 'status',
-    assetUrl: 'assetUrl',
-    ownPostId: 'ownPostId',
-    createdAt: 'createdAt'
-  };
-
-  export type HookVersionScalarFieldEnum = (typeof HookVersionScalarFieldEnum)[keyof typeof HookVersionScalarFieldEnum]
-
-
   export const RefreshRunScalarFieldEnum: {
     id: 'id',
     sourceId: 'sourceId',
@@ -32900,7 +31300,6 @@ export namespace Prisma {
     NOT?: UserWhereInput | UserWhereInput[]
     id?: StringFilter<"User"> | string
     email?: StringFilter<"User"> | string
-    googleSub?: StringNullableFilter<"User"> | string | null
     createdAt?: DateTimeFilter<"User"> | Date | string
     updatedAt?: DateTimeFilter<"User"> | Date | string
   }
@@ -32908,26 +31307,23 @@ export namespace Prisma {
   export type UserOrderByWithRelationInput = {
     id?: SortOrder
     email?: SortOrder
-    googleSub?: SortOrderInput | SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
   }
 
   export type UserWhereUniqueInput = Prisma.AtLeast<{
     id?: string
-    googleSub?: string
     AND?: UserWhereInput | UserWhereInput[]
     OR?: UserWhereInput[]
     NOT?: UserWhereInput | UserWhereInput[]
     email?: StringFilter<"User"> | string
     createdAt?: DateTimeFilter<"User"> | Date | string
     updatedAt?: DateTimeFilter<"User"> | Date | string
-  }, "id" | "googleSub">
+  }, "id">
 
   export type UserOrderByWithAggregationInput = {
     id?: SortOrder
     email?: SortOrder
-    googleSub?: SortOrderInput | SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
     _count?: UserCountOrderByAggregateInput
@@ -32941,7 +31337,6 @@ export namespace Prisma {
     NOT?: UserScalarWhereWithAggregatesInput | UserScalarWhereWithAggregatesInput[]
     id?: StringWithAggregatesFilter<"User"> | string
     email?: StringWithAggregatesFilter<"User"> | string
-    googleSub?: StringNullableWithAggregatesFilter<"User"> | string | null
     createdAt?: DateTimeWithAggregatesFilter<"User"> | Date | string
     updatedAt?: DateTimeWithAggregatesFilter<"User"> | Date | string
   }
@@ -32978,7 +31373,6 @@ export namespace Prisma {
     digestJson?: StringNullableFilter<"Workspace"> | string | null
     sources?: SourceListRelationFilter
     boards?: BoardListRelationFilter
-    hookTests?: HookTestListRelationFilter
     usageLogs?: UsageLogListRelationFilter
     autoAnalyzeRuns?: AutoAnalyzeRunListRelationFilter
     creditLedger?: CreditLedgerListRelationFilter
@@ -33016,7 +31410,6 @@ export namespace Prisma {
     digestJson?: SortOrderInput | SortOrder
     sources?: SourceOrderByRelationAggregateInput
     boards?: BoardOrderByRelationAggregateInput
-    hookTests?: HookTestOrderByRelationAggregateInput
     usageLogs?: UsageLogOrderByRelationAggregateInput
     autoAnalyzeRuns?: AutoAnalyzeRunOrderByRelationAggregateInput
     creditLedger?: CreditLedgerOrderByRelationAggregateInput
@@ -33057,7 +31450,6 @@ export namespace Prisma {
     digestJson?: StringNullableFilter<"Workspace"> | string | null
     sources?: SourceListRelationFilter
     boards?: BoardListRelationFilter
-    hookTests?: HookTestListRelationFilter
     usageLogs?: UsageLogListRelationFilter
     autoAnalyzeRuns?: AutoAnalyzeRunListRelationFilter
     creditLedger?: CreditLedgerListRelationFilter
@@ -33521,7 +31913,6 @@ export namespace Prisma {
     hooks?: HookListRelationFilter
     swipeEntries?: SwipeEntryListRelationFilter
     ideas?: IdeaListRelationFilter
-    hookTests?: HookTestListRelationFilter
   }
 
   export type VideoOrderByWithRelationInput = {
@@ -33565,7 +31956,6 @@ export namespace Prisma {
     hooks?: HookOrderByRelationAggregateInput
     swipeEntries?: SwipeEntryOrderByRelationAggregateInput
     ideas?: IdeaOrderByRelationAggregateInput
-    hookTests?: HookTestOrderByRelationAggregateInput
   }
 
   export type VideoWhereUniqueInput = Prisma.AtLeast<{
@@ -33613,7 +32003,6 @@ export namespace Prisma {
     hooks?: HookListRelationFilter
     swipeEntries?: SwipeEntryListRelationFilter
     ideas?: IdeaListRelationFilter
-    hookTests?: HookTestListRelationFilter
   }, "id" | "sourceId_platform_externalId">
 
   export type VideoOrderByWithAggregationInput = {
@@ -33696,6 +32085,76 @@ export namespace Prisma {
     soundId?: StringNullableWithAggregatesFilter<"Video"> | string | null
     soundTitle?: StringNullableWithAggregatesFilter<"Video"> | string | null
     soundAuthor?: StringNullableWithAggregatesFilter<"Video"> | string | null
+  }
+
+  export type ExperimentWhereInput = {
+    AND?: ExperimentWhereInput | ExperimentWhereInput[]
+    OR?: ExperimentWhereInput[]
+    NOT?: ExperimentWhereInput | ExperimentWhereInput[]
+    id?: StringFilter<"Experiment"> | string
+    workspaceId?: StringFilter<"Experiment"> | string
+    status?: StringFilter<"Experiment"> | string
+    version?: IntFilter<"Experiment"> | number
+    dataJson?: StringFilter<"Experiment"> | string
+    createdAt?: DateTimeFilter<"Experiment"> | Date | string
+    updatedAt?: DateTimeFilter<"Experiment"> | Date | string
+    createKey?: StringFilter<"Experiment"> | string
+  }
+
+  export type ExperimentOrderByWithRelationInput = {
+    id?: SortOrder
+    workspaceId?: SortOrder
+    status?: SortOrder
+    version?: SortOrder
+    dataJson?: SortOrder
+    createdAt?: SortOrder
+    updatedAt?: SortOrder
+    createKey?: SortOrder
+  }
+
+  export type ExperimentWhereUniqueInput = Prisma.AtLeast<{
+    id?: string
+    workspaceId_createKey?: ExperimentWorkspaceIdCreateKeyCompoundUniqueInput
+    AND?: ExperimentWhereInput | ExperimentWhereInput[]
+    OR?: ExperimentWhereInput[]
+    NOT?: ExperimentWhereInput | ExperimentWhereInput[]
+    workspaceId?: StringFilter<"Experiment"> | string
+    status?: StringFilter<"Experiment"> | string
+    version?: IntFilter<"Experiment"> | number
+    dataJson?: StringFilter<"Experiment"> | string
+    createdAt?: DateTimeFilter<"Experiment"> | Date | string
+    updatedAt?: DateTimeFilter<"Experiment"> | Date | string
+    createKey?: StringFilter<"Experiment"> | string
+  }, "id" | "workspaceId_createKey">
+
+  export type ExperimentOrderByWithAggregationInput = {
+    id?: SortOrder
+    workspaceId?: SortOrder
+    status?: SortOrder
+    version?: SortOrder
+    dataJson?: SortOrder
+    createdAt?: SortOrder
+    updatedAt?: SortOrder
+    createKey?: SortOrder
+    _count?: ExperimentCountOrderByAggregateInput
+    _avg?: ExperimentAvgOrderByAggregateInput
+    _max?: ExperimentMaxOrderByAggregateInput
+    _min?: ExperimentMinOrderByAggregateInput
+    _sum?: ExperimentSumOrderByAggregateInput
+  }
+
+  export type ExperimentScalarWhereWithAggregatesInput = {
+    AND?: ExperimentScalarWhereWithAggregatesInput | ExperimentScalarWhereWithAggregatesInput[]
+    OR?: ExperimentScalarWhereWithAggregatesInput[]
+    NOT?: ExperimentScalarWhereWithAggregatesInput | ExperimentScalarWhereWithAggregatesInput[]
+    id?: StringWithAggregatesFilter<"Experiment"> | string
+    workspaceId?: StringWithAggregatesFilter<"Experiment"> | string
+    status?: StringWithAggregatesFilter<"Experiment"> | string
+    version?: IntWithAggregatesFilter<"Experiment"> | number
+    dataJson?: StringWithAggregatesFilter<"Experiment"> | string
+    createdAt?: DateTimeWithAggregatesFilter<"Experiment"> | Date | string
+    updatedAt?: DateTimeWithAggregatesFilter<"Experiment"> | Date | string
+    createKey?: StringWithAggregatesFilter<"Experiment"> | string
   }
 
   export type CanonicalScrapeLockWhereInput = {
@@ -34417,195 +32876,6 @@ export namespace Prisma {
     createdAt?: DateTimeWithAggregatesFilter<"UsageLog"> | Date | string
   }
 
-  export type HookTestWhereInput = {
-    AND?: HookTestWhereInput | HookTestWhereInput[]
-    OR?: HookTestWhereInput[]
-    NOT?: HookTestWhereInput | HookTestWhereInput[]
-    id?: StringFilter<"HookTest"> | string
-    workspaceId?: StringFilter<"HookTest"> | string
-    videoId?: StringFilter<"HookTest"> | string
-    insight?: StringFilter<"HookTest"> | string
-    sameInJson?: StringFilter<"HookTest"> | string
-    lever?: StringFilter<"HookTest"> | string
-    beatsJson?: StringFilter<"HookTest"> | string
-    stopRule?: StringNullableFilter<"HookTest"> | string | null
-    status?: StringFilter<"HookTest"> | string
-    winnerLabel?: StringNullableFilter<"HookTest"> | string | null
-    createdAt?: DateTimeFilter<"HookTest"> | Date | string
-    updatedAt?: DateTimeFilter<"HookTest"> | Date | string
-    workspace?: XOR<WorkspaceScalarRelationFilter, WorkspaceWhereInput>
-    video?: XOR<VideoScalarRelationFilter, VideoWhereInput>
-    versions?: HookVersionListRelationFilter
-  }
-
-  export type HookTestOrderByWithRelationInput = {
-    id?: SortOrder
-    workspaceId?: SortOrder
-    videoId?: SortOrder
-    insight?: SortOrder
-    sameInJson?: SortOrder
-    lever?: SortOrder
-    beatsJson?: SortOrder
-    stopRule?: SortOrderInput | SortOrder
-    status?: SortOrder
-    winnerLabel?: SortOrderInput | SortOrder
-    createdAt?: SortOrder
-    updatedAt?: SortOrder
-    workspace?: WorkspaceOrderByWithRelationInput
-    video?: VideoOrderByWithRelationInput
-    versions?: HookVersionOrderByRelationAggregateInput
-  }
-
-  export type HookTestWhereUniqueInput = Prisma.AtLeast<{
-    id?: string
-    AND?: HookTestWhereInput | HookTestWhereInput[]
-    OR?: HookTestWhereInput[]
-    NOT?: HookTestWhereInput | HookTestWhereInput[]
-    workspaceId?: StringFilter<"HookTest"> | string
-    videoId?: StringFilter<"HookTest"> | string
-    insight?: StringFilter<"HookTest"> | string
-    sameInJson?: StringFilter<"HookTest"> | string
-    lever?: StringFilter<"HookTest"> | string
-    beatsJson?: StringFilter<"HookTest"> | string
-    stopRule?: StringNullableFilter<"HookTest"> | string | null
-    status?: StringFilter<"HookTest"> | string
-    winnerLabel?: StringNullableFilter<"HookTest"> | string | null
-    createdAt?: DateTimeFilter<"HookTest"> | Date | string
-    updatedAt?: DateTimeFilter<"HookTest"> | Date | string
-    workspace?: XOR<WorkspaceScalarRelationFilter, WorkspaceWhereInput>
-    video?: XOR<VideoScalarRelationFilter, VideoWhereInput>
-    versions?: HookVersionListRelationFilter
-  }, "id">
-
-  export type HookTestOrderByWithAggregationInput = {
-    id?: SortOrder
-    workspaceId?: SortOrder
-    videoId?: SortOrder
-    insight?: SortOrder
-    sameInJson?: SortOrder
-    lever?: SortOrder
-    beatsJson?: SortOrder
-    stopRule?: SortOrderInput | SortOrder
-    status?: SortOrder
-    winnerLabel?: SortOrderInput | SortOrder
-    createdAt?: SortOrder
-    updatedAt?: SortOrder
-    _count?: HookTestCountOrderByAggregateInput
-    _max?: HookTestMaxOrderByAggregateInput
-    _min?: HookTestMinOrderByAggregateInput
-  }
-
-  export type HookTestScalarWhereWithAggregatesInput = {
-    AND?: HookTestScalarWhereWithAggregatesInput | HookTestScalarWhereWithAggregatesInput[]
-    OR?: HookTestScalarWhereWithAggregatesInput[]
-    NOT?: HookTestScalarWhereWithAggregatesInput | HookTestScalarWhereWithAggregatesInput[]
-    id?: StringWithAggregatesFilter<"HookTest"> | string
-    workspaceId?: StringWithAggregatesFilter<"HookTest"> | string
-    videoId?: StringWithAggregatesFilter<"HookTest"> | string
-    insight?: StringWithAggregatesFilter<"HookTest"> | string
-    sameInJson?: StringWithAggregatesFilter<"HookTest"> | string
-    lever?: StringWithAggregatesFilter<"HookTest"> | string
-    beatsJson?: StringWithAggregatesFilter<"HookTest"> | string
-    stopRule?: StringNullableWithAggregatesFilter<"HookTest"> | string | null
-    status?: StringWithAggregatesFilter<"HookTest"> | string
-    winnerLabel?: StringNullableWithAggregatesFilter<"HookTest"> | string | null
-    createdAt?: DateTimeWithAggregatesFilter<"HookTest"> | Date | string
-    updatedAt?: DateTimeWithAggregatesFilter<"HookTest"> | Date | string
-  }
-
-  export type HookVersionWhereInput = {
-    AND?: HookVersionWhereInput | HookVersionWhereInput[]
-    OR?: HookVersionWhereInput[]
-    NOT?: HookVersionWhereInput | HookVersionWhereInput[]
-    id?: StringFilter<"HookVersion"> | string
-    testId?: StringFilter<"HookVersion"> | string
-    label?: StringFilter<"HookVersion"> | string
-    round?: IntFilter<"HookVersion"> | number
-    hookText?: StringFilter<"HookVersion"> | string
-    firstFrame?: StringNullableFilter<"HookVersion"> | string | null
-    hookType?: StringFilter<"HookVersion"> | string
-    mechanism?: StringNullableFilter<"HookVersion"> | string | null
-    status?: StringFilter<"HookVersion"> | string
-    assetUrl?: StringNullableFilter<"HookVersion"> | string | null
-    ownPostId?: StringNullableFilter<"HookVersion"> | string | null
-    createdAt?: DateTimeFilter<"HookVersion"> | Date | string
-    test?: XOR<HookTestScalarRelationFilter, HookTestWhereInput>
-  }
-
-  export type HookVersionOrderByWithRelationInput = {
-    id?: SortOrder
-    testId?: SortOrder
-    label?: SortOrder
-    round?: SortOrder
-    hookText?: SortOrder
-    firstFrame?: SortOrderInput | SortOrder
-    hookType?: SortOrder
-    mechanism?: SortOrderInput | SortOrder
-    status?: SortOrder
-    assetUrl?: SortOrderInput | SortOrder
-    ownPostId?: SortOrderInput | SortOrder
-    createdAt?: SortOrder
-    test?: HookTestOrderByWithRelationInput
-  }
-
-  export type HookVersionWhereUniqueInput = Prisma.AtLeast<{
-    id?: string
-    testId_round_label?: HookVersionTestIdRoundLabelCompoundUniqueInput
-    AND?: HookVersionWhereInput | HookVersionWhereInput[]
-    OR?: HookVersionWhereInput[]
-    NOT?: HookVersionWhereInput | HookVersionWhereInput[]
-    testId?: StringFilter<"HookVersion"> | string
-    label?: StringFilter<"HookVersion"> | string
-    round?: IntFilter<"HookVersion"> | number
-    hookText?: StringFilter<"HookVersion"> | string
-    firstFrame?: StringNullableFilter<"HookVersion"> | string | null
-    hookType?: StringFilter<"HookVersion"> | string
-    mechanism?: StringNullableFilter<"HookVersion"> | string | null
-    status?: StringFilter<"HookVersion"> | string
-    assetUrl?: StringNullableFilter<"HookVersion"> | string | null
-    ownPostId?: StringNullableFilter<"HookVersion"> | string | null
-    createdAt?: DateTimeFilter<"HookVersion"> | Date | string
-    test?: XOR<HookTestScalarRelationFilter, HookTestWhereInput>
-  }, "id" | "testId_round_label">
-
-  export type HookVersionOrderByWithAggregationInput = {
-    id?: SortOrder
-    testId?: SortOrder
-    label?: SortOrder
-    round?: SortOrder
-    hookText?: SortOrder
-    firstFrame?: SortOrderInput | SortOrder
-    hookType?: SortOrder
-    mechanism?: SortOrderInput | SortOrder
-    status?: SortOrder
-    assetUrl?: SortOrderInput | SortOrder
-    ownPostId?: SortOrderInput | SortOrder
-    createdAt?: SortOrder
-    _count?: HookVersionCountOrderByAggregateInput
-    _avg?: HookVersionAvgOrderByAggregateInput
-    _max?: HookVersionMaxOrderByAggregateInput
-    _min?: HookVersionMinOrderByAggregateInput
-    _sum?: HookVersionSumOrderByAggregateInput
-  }
-
-  export type HookVersionScalarWhereWithAggregatesInput = {
-    AND?: HookVersionScalarWhereWithAggregatesInput | HookVersionScalarWhereWithAggregatesInput[]
-    OR?: HookVersionScalarWhereWithAggregatesInput[]
-    NOT?: HookVersionScalarWhereWithAggregatesInput | HookVersionScalarWhereWithAggregatesInput[]
-    id?: StringWithAggregatesFilter<"HookVersion"> | string
-    testId?: StringWithAggregatesFilter<"HookVersion"> | string
-    label?: StringWithAggregatesFilter<"HookVersion"> | string
-    round?: IntWithAggregatesFilter<"HookVersion"> | number
-    hookText?: StringWithAggregatesFilter<"HookVersion"> | string
-    firstFrame?: StringNullableWithAggregatesFilter<"HookVersion"> | string | null
-    hookType?: StringWithAggregatesFilter<"HookVersion"> | string
-    mechanism?: StringNullableWithAggregatesFilter<"HookVersion"> | string | null
-    status?: StringWithAggregatesFilter<"HookVersion"> | string
-    assetUrl?: StringNullableWithAggregatesFilter<"HookVersion"> | string | null
-    ownPostId?: StringNullableWithAggregatesFilter<"HookVersion"> | string | null
-    createdAt?: DateTimeWithAggregatesFilter<"HookVersion"> | Date | string
-  }
-
   export type RefreshRunWhereInput = {
     AND?: RefreshRunWhereInput | RefreshRunWhereInput[]
     OR?: RefreshRunWhereInput[]
@@ -34917,7 +33187,6 @@ export namespace Prisma {
   export type UserCreateInput = {
     id: string
     email: string
-    googleSub?: string | null
     createdAt?: Date | string
     updatedAt?: Date | string
   }
@@ -34925,7 +33194,6 @@ export namespace Prisma {
   export type UserUncheckedCreateInput = {
     id: string
     email: string
-    googleSub?: string | null
     createdAt?: Date | string
     updatedAt?: Date | string
   }
@@ -34933,7 +33201,6 @@ export namespace Prisma {
   export type UserUpdateInput = {
     id?: StringFieldUpdateOperationsInput | string
     email?: StringFieldUpdateOperationsInput | string
-    googleSub?: NullableStringFieldUpdateOperationsInput | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
@@ -34941,7 +33208,6 @@ export namespace Prisma {
   export type UserUncheckedUpdateInput = {
     id?: StringFieldUpdateOperationsInput | string
     email?: StringFieldUpdateOperationsInput | string
-    googleSub?: NullableStringFieldUpdateOperationsInput | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
@@ -34949,7 +33215,6 @@ export namespace Prisma {
   export type UserCreateManyInput = {
     id: string
     email: string
-    googleSub?: string | null
     createdAt?: Date | string
     updatedAt?: Date | string
   }
@@ -34957,7 +33222,6 @@ export namespace Prisma {
   export type UserUpdateManyMutationInput = {
     id?: StringFieldUpdateOperationsInput | string
     email?: StringFieldUpdateOperationsInput | string
-    googleSub?: NullableStringFieldUpdateOperationsInput | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
@@ -34965,7 +33229,6 @@ export namespace Prisma {
   export type UserUncheckedUpdateManyInput = {
     id?: StringFieldUpdateOperationsInput | string
     email?: StringFieldUpdateOperationsInput | string
-    googleSub?: NullableStringFieldUpdateOperationsInput | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
@@ -34999,7 +33262,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceCreateNestedManyWithoutWorkspaceInput
     boards?: BoardCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerCreateNestedManyWithoutWorkspaceInput
@@ -35037,7 +33299,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceUncheckedCreateNestedManyWithoutWorkspaceInput
     boards?: BoardUncheckedCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogUncheckedCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -35075,7 +33336,6 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUpdateManyWithoutWorkspaceNestedInput
@@ -35113,7 +33373,6 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUncheckedUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUncheckedUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUncheckedUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -35617,7 +33876,6 @@ export namespace Prisma {
     hooks?: HookCreateNestedManyWithoutVideoInput
     swipeEntries?: SwipeEntryCreateNestedManyWithoutVideoInput
     ideas?: IdeaCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestCreateNestedManyWithoutVideoInput
   }
 
   export type VideoUncheckedCreateInput = {
@@ -35660,7 +33918,6 @@ export namespace Prisma {
     hooks?: HookUncheckedCreateNestedManyWithoutVideoInput
     swipeEntries?: SwipeEntryUncheckedCreateNestedManyWithoutVideoInput
     ideas?: IdeaUncheckedCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutVideoInput
   }
 
   export type VideoUpdateInput = {
@@ -35703,7 +33960,6 @@ export namespace Prisma {
     hooks?: HookUpdateManyWithoutVideoNestedInput
     swipeEntries?: SwipeEntryUpdateManyWithoutVideoNestedInput
     ideas?: IdeaUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUpdateManyWithoutVideoNestedInput
   }
 
   export type VideoUncheckedUpdateInput = {
@@ -35746,7 +34002,6 @@ export namespace Prisma {
     hooks?: HookUncheckedUpdateManyWithoutVideoNestedInput
     swipeEntries?: SwipeEntryUncheckedUpdateManyWithoutVideoNestedInput
     ideas?: IdeaUncheckedUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutVideoNestedInput
   }
 
   export type VideoCreateManyInput = {
@@ -35857,6 +34112,83 @@ export namespace Prisma {
     soundId?: NullableStringFieldUpdateOperationsInput | string | null
     soundTitle?: NullableStringFieldUpdateOperationsInput | string | null
     soundAuthor?: NullableStringFieldUpdateOperationsInput | string | null
+  }
+
+  export type ExperimentCreateInput = {
+    id: string
+    workspaceId: string
+    status: string
+    version?: number
+    dataJson: string
+    createdAt?: Date | string
+    updatedAt?: Date | string
+    createKey: string
+  }
+
+  export type ExperimentUncheckedCreateInput = {
+    id: string
+    workspaceId: string
+    status: string
+    version?: number
+    dataJson: string
+    createdAt?: Date | string
+    updatedAt?: Date | string
+    createKey: string
+  }
+
+  export type ExperimentUpdateInput = {
+    id?: StringFieldUpdateOperationsInput | string
+    workspaceId?: StringFieldUpdateOperationsInput | string
+    status?: StringFieldUpdateOperationsInput | string
+    version?: IntFieldUpdateOperationsInput | number
+    dataJson?: StringFieldUpdateOperationsInput | string
+    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    createKey?: StringFieldUpdateOperationsInput | string
+  }
+
+  export type ExperimentUncheckedUpdateInput = {
+    id?: StringFieldUpdateOperationsInput | string
+    workspaceId?: StringFieldUpdateOperationsInput | string
+    status?: StringFieldUpdateOperationsInput | string
+    version?: IntFieldUpdateOperationsInput | number
+    dataJson?: StringFieldUpdateOperationsInput | string
+    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    createKey?: StringFieldUpdateOperationsInput | string
+  }
+
+  export type ExperimentCreateManyInput = {
+    id: string
+    workspaceId: string
+    status: string
+    version?: number
+    dataJson: string
+    createdAt?: Date | string
+    updatedAt?: Date | string
+    createKey: string
+  }
+
+  export type ExperimentUpdateManyMutationInput = {
+    id?: StringFieldUpdateOperationsInput | string
+    workspaceId?: StringFieldUpdateOperationsInput | string
+    status?: StringFieldUpdateOperationsInput | string
+    version?: IntFieldUpdateOperationsInput | number
+    dataJson?: StringFieldUpdateOperationsInput | string
+    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    createKey?: StringFieldUpdateOperationsInput | string
+  }
+
+  export type ExperimentUncheckedUpdateManyInput = {
+    id?: StringFieldUpdateOperationsInput | string
+    workspaceId?: StringFieldUpdateOperationsInput | string
+    status?: StringFieldUpdateOperationsInput | string
+    version?: IntFieldUpdateOperationsInput | number
+    dataJson?: StringFieldUpdateOperationsInput | string
+    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    createKey?: StringFieldUpdateOperationsInput | string
   }
 
   export type CanonicalScrapeLockCreateInput = {
@@ -36598,217 +34930,6 @@ export namespace Prisma {
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
-  export type HookTestCreateInput = {
-    id?: string
-    insight: string
-    sameInJson?: string
-    lever?: string
-    beatsJson?: string
-    stopRule?: string | null
-    status?: string
-    winnerLabel?: string | null
-    createdAt?: Date | string
-    updatedAt?: Date | string
-    workspace: WorkspaceCreateNestedOneWithoutHookTestsInput
-    video: VideoCreateNestedOneWithoutHookTestsInput
-    versions?: HookVersionCreateNestedManyWithoutTestInput
-  }
-
-  export type HookTestUncheckedCreateInput = {
-    id?: string
-    workspaceId: string
-    videoId: string
-    insight: string
-    sameInJson?: string
-    lever?: string
-    beatsJson?: string
-    stopRule?: string | null
-    status?: string
-    winnerLabel?: string | null
-    createdAt?: Date | string
-    updatedAt?: Date | string
-    versions?: HookVersionUncheckedCreateNestedManyWithoutTestInput
-  }
-
-  export type HookTestUpdateInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    insight?: StringFieldUpdateOperationsInput | string
-    sameInJson?: StringFieldUpdateOperationsInput | string
-    lever?: StringFieldUpdateOperationsInput | string
-    beatsJson?: StringFieldUpdateOperationsInput | string
-    stopRule?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    winnerLabel?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    workspace?: WorkspaceUpdateOneRequiredWithoutHookTestsNestedInput
-    video?: VideoUpdateOneRequiredWithoutHookTestsNestedInput
-    versions?: HookVersionUpdateManyWithoutTestNestedInput
-  }
-
-  export type HookTestUncheckedUpdateInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    workspaceId?: StringFieldUpdateOperationsInput | string
-    videoId?: StringFieldUpdateOperationsInput | string
-    insight?: StringFieldUpdateOperationsInput | string
-    sameInJson?: StringFieldUpdateOperationsInput | string
-    lever?: StringFieldUpdateOperationsInput | string
-    beatsJson?: StringFieldUpdateOperationsInput | string
-    stopRule?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    winnerLabel?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    versions?: HookVersionUncheckedUpdateManyWithoutTestNestedInput
-  }
-
-  export type HookTestCreateManyInput = {
-    id?: string
-    workspaceId: string
-    videoId: string
-    insight: string
-    sameInJson?: string
-    lever?: string
-    beatsJson?: string
-    stopRule?: string | null
-    status?: string
-    winnerLabel?: string | null
-    createdAt?: Date | string
-    updatedAt?: Date | string
-  }
-
-  export type HookTestUpdateManyMutationInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    insight?: StringFieldUpdateOperationsInput | string
-    sameInJson?: StringFieldUpdateOperationsInput | string
-    lever?: StringFieldUpdateOperationsInput | string
-    beatsJson?: StringFieldUpdateOperationsInput | string
-    stopRule?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    winnerLabel?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-  }
-
-  export type HookTestUncheckedUpdateManyInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    workspaceId?: StringFieldUpdateOperationsInput | string
-    videoId?: StringFieldUpdateOperationsInput | string
-    insight?: StringFieldUpdateOperationsInput | string
-    sameInJson?: StringFieldUpdateOperationsInput | string
-    lever?: StringFieldUpdateOperationsInput | string
-    beatsJson?: StringFieldUpdateOperationsInput | string
-    stopRule?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    winnerLabel?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-  }
-
-  export type HookVersionCreateInput = {
-    id?: string
-    label: string
-    round?: number
-    hookText: string
-    firstFrame?: string | null
-    hookType: string
-    mechanism?: string | null
-    status?: string
-    assetUrl?: string | null
-    ownPostId?: string | null
-    createdAt?: Date | string
-    test: HookTestCreateNestedOneWithoutVersionsInput
-  }
-
-  export type HookVersionUncheckedCreateInput = {
-    id?: string
-    testId: string
-    label: string
-    round?: number
-    hookText: string
-    firstFrame?: string | null
-    hookType: string
-    mechanism?: string | null
-    status?: string
-    assetUrl?: string | null
-    ownPostId?: string | null
-    createdAt?: Date | string
-  }
-
-  export type HookVersionUpdateInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    label?: StringFieldUpdateOperationsInput | string
-    round?: IntFieldUpdateOperationsInput | number
-    hookText?: StringFieldUpdateOperationsInput | string
-    firstFrame?: NullableStringFieldUpdateOperationsInput | string | null
-    hookType?: StringFieldUpdateOperationsInput | string
-    mechanism?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    assetUrl?: NullableStringFieldUpdateOperationsInput | string | null
-    ownPostId?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    test?: HookTestUpdateOneRequiredWithoutVersionsNestedInput
-  }
-
-  export type HookVersionUncheckedUpdateInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    testId?: StringFieldUpdateOperationsInput | string
-    label?: StringFieldUpdateOperationsInput | string
-    round?: IntFieldUpdateOperationsInput | number
-    hookText?: StringFieldUpdateOperationsInput | string
-    firstFrame?: NullableStringFieldUpdateOperationsInput | string | null
-    hookType?: StringFieldUpdateOperationsInput | string
-    mechanism?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    assetUrl?: NullableStringFieldUpdateOperationsInput | string | null
-    ownPostId?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-  }
-
-  export type HookVersionCreateManyInput = {
-    id?: string
-    testId: string
-    label: string
-    round?: number
-    hookText: string
-    firstFrame?: string | null
-    hookType: string
-    mechanism?: string | null
-    status?: string
-    assetUrl?: string | null
-    ownPostId?: string | null
-    createdAt?: Date | string
-  }
-
-  export type HookVersionUpdateManyMutationInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    label?: StringFieldUpdateOperationsInput | string
-    round?: IntFieldUpdateOperationsInput | number
-    hookText?: StringFieldUpdateOperationsInput | string
-    firstFrame?: NullableStringFieldUpdateOperationsInput | string | null
-    hookType?: StringFieldUpdateOperationsInput | string
-    mechanism?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    assetUrl?: NullableStringFieldUpdateOperationsInput | string | null
-    ownPostId?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-  }
-
-  export type HookVersionUncheckedUpdateManyInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    testId?: StringFieldUpdateOperationsInput | string
-    label?: StringFieldUpdateOperationsInput | string
-    round?: IntFieldUpdateOperationsInput | number
-    hookText?: StringFieldUpdateOperationsInput | string
-    firstFrame?: NullableStringFieldUpdateOperationsInput | string | null
-    hookType?: StringFieldUpdateOperationsInput | string
-    mechanism?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    assetUrl?: NullableStringFieldUpdateOperationsInput | string | null
-    ownPostId?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-  }
-
   export type RefreshRunCreateInput = {
     id?: string
     itemsPulled?: number
@@ -37163,20 +35284,6 @@ export namespace Prisma {
     not?: NestedStringFilter<$PrismaModel> | string
   }
 
-  export type StringNullableFilter<$PrismaModel = never> = {
-    equals?: string | StringFieldRefInput<$PrismaModel> | null
-    in?: string[] | null
-    notIn?: string[] | null
-    lt?: string | StringFieldRefInput<$PrismaModel>
-    lte?: string | StringFieldRefInput<$PrismaModel>
-    gt?: string | StringFieldRefInput<$PrismaModel>
-    gte?: string | StringFieldRefInput<$PrismaModel>
-    contains?: string | StringFieldRefInput<$PrismaModel>
-    startsWith?: string | StringFieldRefInput<$PrismaModel>
-    endsWith?: string | StringFieldRefInput<$PrismaModel>
-    not?: NestedStringNullableFilter<$PrismaModel> | string | null
-  }
-
   export type DateTimeFilter<$PrismaModel = never> = {
     equals?: Date | string | DateTimeFieldRefInput<$PrismaModel>
     in?: Date[] | string[]
@@ -37188,15 +35295,9 @@ export namespace Prisma {
     not?: NestedDateTimeFilter<$PrismaModel> | Date | string
   }
 
-  export type SortOrderInput = {
-    sort: SortOrder
-    nulls?: NullsOrder
-  }
-
   export type UserCountOrderByAggregateInput = {
     id?: SortOrder
     email?: SortOrder
-    googleSub?: SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
   }
@@ -37204,7 +35305,6 @@ export namespace Prisma {
   export type UserMaxOrderByAggregateInput = {
     id?: SortOrder
     email?: SortOrder
-    googleSub?: SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
   }
@@ -37212,7 +35312,6 @@ export namespace Prisma {
   export type UserMinOrderByAggregateInput = {
     id?: SortOrder
     email?: SortOrder
-    googleSub?: SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
   }
@@ -37234,23 +35333,6 @@ export namespace Prisma {
     _max?: NestedStringFilter<$PrismaModel>
   }
 
-  export type StringNullableWithAggregatesFilter<$PrismaModel = never> = {
-    equals?: string | StringFieldRefInput<$PrismaModel> | null
-    in?: string[] | null
-    notIn?: string[] | null
-    lt?: string | StringFieldRefInput<$PrismaModel>
-    lte?: string | StringFieldRefInput<$PrismaModel>
-    gt?: string | StringFieldRefInput<$PrismaModel>
-    gte?: string | StringFieldRefInput<$PrismaModel>
-    contains?: string | StringFieldRefInput<$PrismaModel>
-    startsWith?: string | StringFieldRefInput<$PrismaModel>
-    endsWith?: string | StringFieldRefInput<$PrismaModel>
-    not?: NestedStringNullableWithAggregatesFilter<$PrismaModel> | string | null
-    _count?: NestedIntNullableFilter<$PrismaModel>
-    _min?: NestedStringNullableFilter<$PrismaModel>
-    _max?: NestedStringNullableFilter<$PrismaModel>
-  }
-
   export type DateTimeWithAggregatesFilter<$PrismaModel = never> = {
     equals?: Date | string | DateTimeFieldRefInput<$PrismaModel>
     in?: Date[] | string[]
@@ -37263,6 +35345,20 @@ export namespace Prisma {
     _count?: NestedIntFilter<$PrismaModel>
     _min?: NestedDateTimeFilter<$PrismaModel>
     _max?: NestedDateTimeFilter<$PrismaModel>
+  }
+
+  export type StringNullableFilter<$PrismaModel = never> = {
+    equals?: string | StringFieldRefInput<$PrismaModel> | null
+    in?: string[] | null
+    notIn?: string[] | null
+    lt?: string | StringFieldRefInput<$PrismaModel>
+    lte?: string | StringFieldRefInput<$PrismaModel>
+    gt?: string | StringFieldRefInput<$PrismaModel>
+    gte?: string | StringFieldRefInput<$PrismaModel>
+    contains?: string | StringFieldRefInput<$PrismaModel>
+    startsWith?: string | StringFieldRefInput<$PrismaModel>
+    endsWith?: string | StringFieldRefInput<$PrismaModel>
+    not?: NestedStringNullableFilter<$PrismaModel> | string | null
   }
 
   export type IntFilter<$PrismaModel = never> = {
@@ -37304,12 +35400,6 @@ export namespace Prisma {
     none?: BoardWhereInput
   }
 
-  export type HookTestListRelationFilter = {
-    every?: HookTestWhereInput
-    some?: HookTestWhereInput
-    none?: HookTestWhereInput
-  }
-
   export type UsageLogListRelationFilter = {
     every?: UsageLogWhereInput
     some?: UsageLogWhereInput
@@ -37346,15 +35436,16 @@ export namespace Prisma {
     none?: WorkspaceMemberWhereInput
   }
 
+  export type SortOrderInput = {
+    sort: SortOrder
+    nulls?: NullsOrder
+  }
+
   export type SourceOrderByRelationAggregateInput = {
     _count?: SortOrder
   }
 
   export type BoardOrderByRelationAggregateInput = {
-    _count?: SortOrder
-  }
-
-  export type HookTestOrderByRelationAggregateInput = {
     _count?: SortOrder
   }
 
@@ -37483,6 +35574,23 @@ export namespace Prisma {
     packCredits?: SortOrder
     thumbRetentionDays?: SortOrder
     mediaRetentionDays?: SortOrder
+  }
+
+  export type StringNullableWithAggregatesFilter<$PrismaModel = never> = {
+    equals?: string | StringFieldRefInput<$PrismaModel> | null
+    in?: string[] | null
+    notIn?: string[] | null
+    lt?: string | StringFieldRefInput<$PrismaModel>
+    lte?: string | StringFieldRefInput<$PrismaModel>
+    gt?: string | StringFieldRefInput<$PrismaModel>
+    gte?: string | StringFieldRefInput<$PrismaModel>
+    contains?: string | StringFieldRefInput<$PrismaModel>
+    startsWith?: string | StringFieldRefInput<$PrismaModel>
+    endsWith?: string | StringFieldRefInput<$PrismaModel>
+    not?: NestedStringNullableWithAggregatesFilter<$PrismaModel> | string | null
+    _count?: NestedIntNullableFilter<$PrismaModel>
+    _min?: NestedStringNullableFilter<$PrismaModel>
+    _max?: NestedStringNullableFilter<$PrismaModel>
   }
 
   export type IntWithAggregatesFilter<$PrismaModel = never> = {
@@ -37956,6 +36064,52 @@ export namespace Prisma {
     _max?: NestedIntNullableFilter<$PrismaModel>
   }
 
+  export type ExperimentWorkspaceIdCreateKeyCompoundUniqueInput = {
+    workspaceId: string
+    createKey: string
+  }
+
+  export type ExperimentCountOrderByAggregateInput = {
+    id?: SortOrder
+    workspaceId?: SortOrder
+    status?: SortOrder
+    version?: SortOrder
+    dataJson?: SortOrder
+    createdAt?: SortOrder
+    updatedAt?: SortOrder
+    createKey?: SortOrder
+  }
+
+  export type ExperimentAvgOrderByAggregateInput = {
+    version?: SortOrder
+  }
+
+  export type ExperimentMaxOrderByAggregateInput = {
+    id?: SortOrder
+    workspaceId?: SortOrder
+    status?: SortOrder
+    version?: SortOrder
+    dataJson?: SortOrder
+    createdAt?: SortOrder
+    updatedAt?: SortOrder
+    createKey?: SortOrder
+  }
+
+  export type ExperimentMinOrderByAggregateInput = {
+    id?: SortOrder
+    workspaceId?: SortOrder
+    status?: SortOrder
+    version?: SortOrder
+    dataJson?: SortOrder
+    createdAt?: SortOrder
+    updatedAt?: SortOrder
+    createKey?: SortOrder
+  }
+
+  export type ExperimentSumOrderByAggregateInput = {
+    version?: SortOrder
+  }
+
   export type CanonicalScrapeLockCountOrderByAggregateInput = {
     key?: SortOrder
     lockedBy?: SortOrder
@@ -38386,125 +36540,6 @@ export namespace Prisma {
     costCents?: SortOrder
   }
 
-  export type HookVersionListRelationFilter = {
-    every?: HookVersionWhereInput
-    some?: HookVersionWhereInput
-    none?: HookVersionWhereInput
-  }
-
-  export type HookVersionOrderByRelationAggregateInput = {
-    _count?: SortOrder
-  }
-
-  export type HookTestCountOrderByAggregateInput = {
-    id?: SortOrder
-    workspaceId?: SortOrder
-    videoId?: SortOrder
-    insight?: SortOrder
-    sameInJson?: SortOrder
-    lever?: SortOrder
-    beatsJson?: SortOrder
-    stopRule?: SortOrder
-    status?: SortOrder
-    winnerLabel?: SortOrder
-    createdAt?: SortOrder
-    updatedAt?: SortOrder
-  }
-
-  export type HookTestMaxOrderByAggregateInput = {
-    id?: SortOrder
-    workspaceId?: SortOrder
-    videoId?: SortOrder
-    insight?: SortOrder
-    sameInJson?: SortOrder
-    lever?: SortOrder
-    beatsJson?: SortOrder
-    stopRule?: SortOrder
-    status?: SortOrder
-    winnerLabel?: SortOrder
-    createdAt?: SortOrder
-    updatedAt?: SortOrder
-  }
-
-  export type HookTestMinOrderByAggregateInput = {
-    id?: SortOrder
-    workspaceId?: SortOrder
-    videoId?: SortOrder
-    insight?: SortOrder
-    sameInJson?: SortOrder
-    lever?: SortOrder
-    beatsJson?: SortOrder
-    stopRule?: SortOrder
-    status?: SortOrder
-    winnerLabel?: SortOrder
-    createdAt?: SortOrder
-    updatedAt?: SortOrder
-  }
-
-  export type HookTestScalarRelationFilter = {
-    is?: HookTestWhereInput
-    isNot?: HookTestWhereInput
-  }
-
-  export type HookVersionTestIdRoundLabelCompoundUniqueInput = {
-    testId: string
-    round: number
-    label: string
-  }
-
-  export type HookVersionCountOrderByAggregateInput = {
-    id?: SortOrder
-    testId?: SortOrder
-    label?: SortOrder
-    round?: SortOrder
-    hookText?: SortOrder
-    firstFrame?: SortOrder
-    hookType?: SortOrder
-    mechanism?: SortOrder
-    status?: SortOrder
-    assetUrl?: SortOrder
-    ownPostId?: SortOrder
-    createdAt?: SortOrder
-  }
-
-  export type HookVersionAvgOrderByAggregateInput = {
-    round?: SortOrder
-  }
-
-  export type HookVersionMaxOrderByAggregateInput = {
-    id?: SortOrder
-    testId?: SortOrder
-    label?: SortOrder
-    round?: SortOrder
-    hookText?: SortOrder
-    firstFrame?: SortOrder
-    hookType?: SortOrder
-    mechanism?: SortOrder
-    status?: SortOrder
-    assetUrl?: SortOrder
-    ownPostId?: SortOrder
-    createdAt?: SortOrder
-  }
-
-  export type HookVersionMinOrderByAggregateInput = {
-    id?: SortOrder
-    testId?: SortOrder
-    label?: SortOrder
-    round?: SortOrder
-    hookText?: SortOrder
-    firstFrame?: SortOrder
-    hookType?: SortOrder
-    mechanism?: SortOrder
-    status?: SortOrder
-    assetUrl?: SortOrder
-    ownPostId?: SortOrder
-    createdAt?: SortOrder
-  }
-
-  export type HookVersionSumOrderByAggregateInput = {
-    round?: SortOrder
-  }
-
   export type RefreshRunCountOrderByAggregateInput = {
     id?: SortOrder
     sourceId?: SortOrder
@@ -38694,10 +36729,6 @@ export namespace Prisma {
     set?: string
   }
 
-  export type NullableStringFieldUpdateOperationsInput = {
-    set?: string | null
-  }
-
   export type DateTimeFieldUpdateOperationsInput = {
     set?: Date | string
   }
@@ -38714,13 +36745,6 @@ export namespace Prisma {
     connectOrCreate?: BoardCreateOrConnectWithoutWorkspaceInput | BoardCreateOrConnectWithoutWorkspaceInput[]
     createMany?: BoardCreateManyWorkspaceInputEnvelope
     connect?: BoardWhereUniqueInput | BoardWhereUniqueInput[]
-  }
-
-  export type HookTestCreateNestedManyWithoutWorkspaceInput = {
-    create?: XOR<HookTestCreateWithoutWorkspaceInput, HookTestUncheckedCreateWithoutWorkspaceInput> | HookTestCreateWithoutWorkspaceInput[] | HookTestUncheckedCreateWithoutWorkspaceInput[]
-    connectOrCreate?: HookTestCreateOrConnectWithoutWorkspaceInput | HookTestCreateOrConnectWithoutWorkspaceInput[]
-    createMany?: HookTestCreateManyWorkspaceInputEnvelope
-    connect?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
   }
 
   export type UsageLogCreateNestedManyWithoutWorkspaceInput = {
@@ -38779,13 +36803,6 @@ export namespace Prisma {
     connect?: BoardWhereUniqueInput | BoardWhereUniqueInput[]
   }
 
-  export type HookTestUncheckedCreateNestedManyWithoutWorkspaceInput = {
-    create?: XOR<HookTestCreateWithoutWorkspaceInput, HookTestUncheckedCreateWithoutWorkspaceInput> | HookTestCreateWithoutWorkspaceInput[] | HookTestUncheckedCreateWithoutWorkspaceInput[]
-    connectOrCreate?: HookTestCreateOrConnectWithoutWorkspaceInput | HookTestCreateOrConnectWithoutWorkspaceInput[]
-    createMany?: HookTestCreateManyWorkspaceInputEnvelope
-    connect?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-  }
-
   export type UsageLogUncheckedCreateNestedManyWithoutWorkspaceInput = {
     create?: XOR<UsageLogCreateWithoutWorkspaceInput, UsageLogUncheckedCreateWithoutWorkspaceInput> | UsageLogCreateWithoutWorkspaceInput[] | UsageLogUncheckedCreateWithoutWorkspaceInput[]
     connectOrCreate?: UsageLogCreateOrConnectWithoutWorkspaceInput | UsageLogCreateOrConnectWithoutWorkspaceInput[]
@@ -38826,6 +36843,10 @@ export namespace Prisma {
     connectOrCreate?: WorkspaceMemberCreateOrConnectWithoutWorkspaceInput | WorkspaceMemberCreateOrConnectWithoutWorkspaceInput[]
     createMany?: WorkspaceMemberCreateManyWorkspaceInputEnvelope
     connect?: WorkspaceMemberWhereUniqueInput | WorkspaceMemberWhereUniqueInput[]
+  }
+
+  export type NullableStringFieldUpdateOperationsInput = {
+    set?: string | null
   }
 
   export type IntFieldUpdateOperationsInput = {
@@ -38870,20 +36891,6 @@ export namespace Prisma {
     update?: BoardUpdateWithWhereUniqueWithoutWorkspaceInput | BoardUpdateWithWhereUniqueWithoutWorkspaceInput[]
     updateMany?: BoardUpdateManyWithWhereWithoutWorkspaceInput | BoardUpdateManyWithWhereWithoutWorkspaceInput[]
     deleteMany?: BoardScalarWhereInput | BoardScalarWhereInput[]
-  }
-
-  export type HookTestUpdateManyWithoutWorkspaceNestedInput = {
-    create?: XOR<HookTestCreateWithoutWorkspaceInput, HookTestUncheckedCreateWithoutWorkspaceInput> | HookTestCreateWithoutWorkspaceInput[] | HookTestUncheckedCreateWithoutWorkspaceInput[]
-    connectOrCreate?: HookTestCreateOrConnectWithoutWorkspaceInput | HookTestCreateOrConnectWithoutWorkspaceInput[]
-    upsert?: HookTestUpsertWithWhereUniqueWithoutWorkspaceInput | HookTestUpsertWithWhereUniqueWithoutWorkspaceInput[]
-    createMany?: HookTestCreateManyWorkspaceInputEnvelope
-    set?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    disconnect?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    delete?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    connect?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    update?: HookTestUpdateWithWhereUniqueWithoutWorkspaceInput | HookTestUpdateWithWhereUniqueWithoutWorkspaceInput[]
-    updateMany?: HookTestUpdateManyWithWhereWithoutWorkspaceInput | HookTestUpdateManyWithWhereWithoutWorkspaceInput[]
-    deleteMany?: HookTestScalarWhereInput | HookTestScalarWhereInput[]
   }
 
   export type UsageLogUpdateManyWithoutWorkspaceNestedInput = {
@@ -38996,20 +37003,6 @@ export namespace Prisma {
     update?: BoardUpdateWithWhereUniqueWithoutWorkspaceInput | BoardUpdateWithWhereUniqueWithoutWorkspaceInput[]
     updateMany?: BoardUpdateManyWithWhereWithoutWorkspaceInput | BoardUpdateManyWithWhereWithoutWorkspaceInput[]
     deleteMany?: BoardScalarWhereInput | BoardScalarWhereInput[]
-  }
-
-  export type HookTestUncheckedUpdateManyWithoutWorkspaceNestedInput = {
-    create?: XOR<HookTestCreateWithoutWorkspaceInput, HookTestUncheckedCreateWithoutWorkspaceInput> | HookTestCreateWithoutWorkspaceInput[] | HookTestUncheckedCreateWithoutWorkspaceInput[]
-    connectOrCreate?: HookTestCreateOrConnectWithoutWorkspaceInput | HookTestCreateOrConnectWithoutWorkspaceInput[]
-    upsert?: HookTestUpsertWithWhereUniqueWithoutWorkspaceInput | HookTestUpsertWithWhereUniqueWithoutWorkspaceInput[]
-    createMany?: HookTestCreateManyWorkspaceInputEnvelope
-    set?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    disconnect?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    delete?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    connect?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    update?: HookTestUpdateWithWhereUniqueWithoutWorkspaceInput | HookTestUpdateWithWhereUniqueWithoutWorkspaceInput[]
-    updateMany?: HookTestUpdateManyWithWhereWithoutWorkspaceInput | HookTestUpdateManyWithWhereWithoutWorkspaceInput[]
-    deleteMany?: HookTestScalarWhereInput | HookTestScalarWhereInput[]
   }
 
   export type UsageLogUncheckedUpdateManyWithoutWorkspaceNestedInput = {
@@ -39276,13 +37269,6 @@ export namespace Prisma {
     connect?: IdeaWhereUniqueInput | IdeaWhereUniqueInput[]
   }
 
-  export type HookTestCreateNestedManyWithoutVideoInput = {
-    create?: XOR<HookTestCreateWithoutVideoInput, HookTestUncheckedCreateWithoutVideoInput> | HookTestCreateWithoutVideoInput[] | HookTestUncheckedCreateWithoutVideoInput[]
-    connectOrCreate?: HookTestCreateOrConnectWithoutVideoInput | HookTestCreateOrConnectWithoutVideoInput[]
-    createMany?: HookTestCreateManyVideoInputEnvelope
-    connect?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-  }
-
   export type ScoreUncheckedCreateNestedOneWithoutVideoInput = {
     create?: XOR<ScoreCreateWithoutVideoInput, ScoreUncheckedCreateWithoutVideoInput>
     connectOrCreate?: ScoreCreateOrConnectWithoutVideoInput
@@ -39315,13 +37301,6 @@ export namespace Prisma {
     connectOrCreate?: IdeaCreateOrConnectWithoutVideoInput | IdeaCreateOrConnectWithoutVideoInput[]
     createMany?: IdeaCreateManyVideoInputEnvelope
     connect?: IdeaWhereUniqueInput | IdeaWhereUniqueInput[]
-  }
-
-  export type HookTestUncheckedCreateNestedManyWithoutVideoInput = {
-    create?: XOR<HookTestCreateWithoutVideoInput, HookTestUncheckedCreateWithoutVideoInput> | HookTestCreateWithoutVideoInput[] | HookTestUncheckedCreateWithoutVideoInput[]
-    connectOrCreate?: HookTestCreateOrConnectWithoutVideoInput | HookTestCreateOrConnectWithoutVideoInput[]
-    createMany?: HookTestCreateManyVideoInputEnvelope
-    connect?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
   }
 
   export type NullableIntFieldUpdateOperationsInput = {
@@ -39406,20 +37385,6 @@ export namespace Prisma {
     deleteMany?: IdeaScalarWhereInput | IdeaScalarWhereInput[]
   }
 
-  export type HookTestUpdateManyWithoutVideoNestedInput = {
-    create?: XOR<HookTestCreateWithoutVideoInput, HookTestUncheckedCreateWithoutVideoInput> | HookTestCreateWithoutVideoInput[] | HookTestUncheckedCreateWithoutVideoInput[]
-    connectOrCreate?: HookTestCreateOrConnectWithoutVideoInput | HookTestCreateOrConnectWithoutVideoInput[]
-    upsert?: HookTestUpsertWithWhereUniqueWithoutVideoInput | HookTestUpsertWithWhereUniqueWithoutVideoInput[]
-    createMany?: HookTestCreateManyVideoInputEnvelope
-    set?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    disconnect?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    delete?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    connect?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    update?: HookTestUpdateWithWhereUniqueWithoutVideoInput | HookTestUpdateWithWhereUniqueWithoutVideoInput[]
-    updateMany?: HookTestUpdateManyWithWhereWithoutVideoInput | HookTestUpdateManyWithWhereWithoutVideoInput[]
-    deleteMany?: HookTestScalarWhereInput | HookTestScalarWhereInput[]
-  }
-
   export type ScoreUncheckedUpdateOneWithoutVideoNestedInput = {
     create?: XOR<ScoreCreateWithoutVideoInput, ScoreUncheckedCreateWithoutVideoInput>
     connectOrCreate?: ScoreCreateOrConnectWithoutVideoInput
@@ -39484,20 +37449,6 @@ export namespace Prisma {
     update?: IdeaUpdateWithWhereUniqueWithoutVideoInput | IdeaUpdateWithWhereUniqueWithoutVideoInput[]
     updateMany?: IdeaUpdateManyWithWhereWithoutVideoInput | IdeaUpdateManyWithWhereWithoutVideoInput[]
     deleteMany?: IdeaScalarWhereInput | IdeaScalarWhereInput[]
-  }
-
-  export type HookTestUncheckedUpdateManyWithoutVideoNestedInput = {
-    create?: XOR<HookTestCreateWithoutVideoInput, HookTestUncheckedCreateWithoutVideoInput> | HookTestCreateWithoutVideoInput[] | HookTestUncheckedCreateWithoutVideoInput[]
-    connectOrCreate?: HookTestCreateOrConnectWithoutVideoInput | HookTestCreateOrConnectWithoutVideoInput[]
-    upsert?: HookTestUpsertWithWhereUniqueWithoutVideoInput | HookTestUpsertWithWhereUniqueWithoutVideoInput[]
-    createMany?: HookTestCreateManyVideoInputEnvelope
-    set?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    disconnect?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    delete?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    connect?: HookTestWhereUniqueInput | HookTestWhereUniqueInput[]
-    update?: HookTestUpdateWithWhereUniqueWithoutVideoInput | HookTestUpdateWithWhereUniqueWithoutVideoInput[]
-    updateMany?: HookTestUpdateManyWithWhereWithoutVideoInput | HookTestUpdateManyWithWhereWithoutVideoInput[]
-    deleteMany?: HookTestScalarWhereInput | HookTestScalarWhereInput[]
   }
 
   export type FloatFieldUpdateOperationsInput = {
@@ -39950,90 +37901,6 @@ export namespace Prisma {
     update?: XOR<XOR<WorkspaceUpdateToOneWithWhereWithoutUsageLogsInput, WorkspaceUpdateWithoutUsageLogsInput>, WorkspaceUncheckedUpdateWithoutUsageLogsInput>
   }
 
-  export type WorkspaceCreateNestedOneWithoutHookTestsInput = {
-    create?: XOR<WorkspaceCreateWithoutHookTestsInput, WorkspaceUncheckedCreateWithoutHookTestsInput>
-    connectOrCreate?: WorkspaceCreateOrConnectWithoutHookTestsInput
-    connect?: WorkspaceWhereUniqueInput
-  }
-
-  export type VideoCreateNestedOneWithoutHookTestsInput = {
-    create?: XOR<VideoCreateWithoutHookTestsInput, VideoUncheckedCreateWithoutHookTestsInput>
-    connectOrCreate?: VideoCreateOrConnectWithoutHookTestsInput
-    connect?: VideoWhereUniqueInput
-  }
-
-  export type HookVersionCreateNestedManyWithoutTestInput = {
-    create?: XOR<HookVersionCreateWithoutTestInput, HookVersionUncheckedCreateWithoutTestInput> | HookVersionCreateWithoutTestInput[] | HookVersionUncheckedCreateWithoutTestInput[]
-    connectOrCreate?: HookVersionCreateOrConnectWithoutTestInput | HookVersionCreateOrConnectWithoutTestInput[]
-    createMany?: HookVersionCreateManyTestInputEnvelope
-    connect?: HookVersionWhereUniqueInput | HookVersionWhereUniqueInput[]
-  }
-
-  export type HookVersionUncheckedCreateNestedManyWithoutTestInput = {
-    create?: XOR<HookVersionCreateWithoutTestInput, HookVersionUncheckedCreateWithoutTestInput> | HookVersionCreateWithoutTestInput[] | HookVersionUncheckedCreateWithoutTestInput[]
-    connectOrCreate?: HookVersionCreateOrConnectWithoutTestInput | HookVersionCreateOrConnectWithoutTestInput[]
-    createMany?: HookVersionCreateManyTestInputEnvelope
-    connect?: HookVersionWhereUniqueInput | HookVersionWhereUniqueInput[]
-  }
-
-  export type WorkspaceUpdateOneRequiredWithoutHookTestsNestedInput = {
-    create?: XOR<WorkspaceCreateWithoutHookTestsInput, WorkspaceUncheckedCreateWithoutHookTestsInput>
-    connectOrCreate?: WorkspaceCreateOrConnectWithoutHookTestsInput
-    upsert?: WorkspaceUpsertWithoutHookTestsInput
-    connect?: WorkspaceWhereUniqueInput
-    update?: XOR<XOR<WorkspaceUpdateToOneWithWhereWithoutHookTestsInput, WorkspaceUpdateWithoutHookTestsInput>, WorkspaceUncheckedUpdateWithoutHookTestsInput>
-  }
-
-  export type VideoUpdateOneRequiredWithoutHookTestsNestedInput = {
-    create?: XOR<VideoCreateWithoutHookTestsInput, VideoUncheckedCreateWithoutHookTestsInput>
-    connectOrCreate?: VideoCreateOrConnectWithoutHookTestsInput
-    upsert?: VideoUpsertWithoutHookTestsInput
-    connect?: VideoWhereUniqueInput
-    update?: XOR<XOR<VideoUpdateToOneWithWhereWithoutHookTestsInput, VideoUpdateWithoutHookTestsInput>, VideoUncheckedUpdateWithoutHookTestsInput>
-  }
-
-  export type HookVersionUpdateManyWithoutTestNestedInput = {
-    create?: XOR<HookVersionCreateWithoutTestInput, HookVersionUncheckedCreateWithoutTestInput> | HookVersionCreateWithoutTestInput[] | HookVersionUncheckedCreateWithoutTestInput[]
-    connectOrCreate?: HookVersionCreateOrConnectWithoutTestInput | HookVersionCreateOrConnectWithoutTestInput[]
-    upsert?: HookVersionUpsertWithWhereUniqueWithoutTestInput | HookVersionUpsertWithWhereUniqueWithoutTestInput[]
-    createMany?: HookVersionCreateManyTestInputEnvelope
-    set?: HookVersionWhereUniqueInput | HookVersionWhereUniqueInput[]
-    disconnect?: HookVersionWhereUniqueInput | HookVersionWhereUniqueInput[]
-    delete?: HookVersionWhereUniqueInput | HookVersionWhereUniqueInput[]
-    connect?: HookVersionWhereUniqueInput | HookVersionWhereUniqueInput[]
-    update?: HookVersionUpdateWithWhereUniqueWithoutTestInput | HookVersionUpdateWithWhereUniqueWithoutTestInput[]
-    updateMany?: HookVersionUpdateManyWithWhereWithoutTestInput | HookVersionUpdateManyWithWhereWithoutTestInput[]
-    deleteMany?: HookVersionScalarWhereInput | HookVersionScalarWhereInput[]
-  }
-
-  export type HookVersionUncheckedUpdateManyWithoutTestNestedInput = {
-    create?: XOR<HookVersionCreateWithoutTestInput, HookVersionUncheckedCreateWithoutTestInput> | HookVersionCreateWithoutTestInput[] | HookVersionUncheckedCreateWithoutTestInput[]
-    connectOrCreate?: HookVersionCreateOrConnectWithoutTestInput | HookVersionCreateOrConnectWithoutTestInput[]
-    upsert?: HookVersionUpsertWithWhereUniqueWithoutTestInput | HookVersionUpsertWithWhereUniqueWithoutTestInput[]
-    createMany?: HookVersionCreateManyTestInputEnvelope
-    set?: HookVersionWhereUniqueInput | HookVersionWhereUniqueInput[]
-    disconnect?: HookVersionWhereUniqueInput | HookVersionWhereUniqueInput[]
-    delete?: HookVersionWhereUniqueInput | HookVersionWhereUniqueInput[]
-    connect?: HookVersionWhereUniqueInput | HookVersionWhereUniqueInput[]
-    update?: HookVersionUpdateWithWhereUniqueWithoutTestInput | HookVersionUpdateWithWhereUniqueWithoutTestInput[]
-    updateMany?: HookVersionUpdateManyWithWhereWithoutTestInput | HookVersionUpdateManyWithWhereWithoutTestInput[]
-    deleteMany?: HookVersionScalarWhereInput | HookVersionScalarWhereInput[]
-  }
-
-  export type HookTestCreateNestedOneWithoutVersionsInput = {
-    create?: XOR<HookTestCreateWithoutVersionsInput, HookTestUncheckedCreateWithoutVersionsInput>
-    connectOrCreate?: HookTestCreateOrConnectWithoutVersionsInput
-    connect?: HookTestWhereUniqueInput
-  }
-
-  export type HookTestUpdateOneRequiredWithoutVersionsNestedInput = {
-    create?: XOR<HookTestCreateWithoutVersionsInput, HookTestUncheckedCreateWithoutVersionsInput>
-    connectOrCreate?: HookTestCreateOrConnectWithoutVersionsInput
-    upsert?: HookTestUpsertWithoutVersionsInput
-    connect?: HookTestWhereUniqueInput
-    update?: XOR<XOR<HookTestUpdateToOneWithWhereWithoutVersionsInput, HookTestUpdateWithoutVersionsInput>, HookTestUncheckedUpdateWithoutVersionsInput>
-  }
-
   export type SourceCreateNestedOneWithoutRefreshRunsInput = {
     create?: XOR<SourceCreateWithoutRefreshRunsInput, SourceUncheckedCreateWithoutRefreshRunsInput>
     connectOrCreate?: SourceCreateOrConnectWithoutRefreshRunsInput
@@ -40090,20 +37957,6 @@ export namespace Prisma {
     not?: NestedStringFilter<$PrismaModel> | string
   }
 
-  export type NestedStringNullableFilter<$PrismaModel = never> = {
-    equals?: string | StringFieldRefInput<$PrismaModel> | null
-    in?: string[] | null
-    notIn?: string[] | null
-    lt?: string | StringFieldRefInput<$PrismaModel>
-    lte?: string | StringFieldRefInput<$PrismaModel>
-    gt?: string | StringFieldRefInput<$PrismaModel>
-    gte?: string | StringFieldRefInput<$PrismaModel>
-    contains?: string | StringFieldRefInput<$PrismaModel>
-    startsWith?: string | StringFieldRefInput<$PrismaModel>
-    endsWith?: string | StringFieldRefInput<$PrismaModel>
-    not?: NestedStringNullableFilter<$PrismaModel> | string | null
-  }
-
   export type NestedDateTimeFilter<$PrismaModel = never> = {
     equals?: Date | string | DateTimeFieldRefInput<$PrismaModel>
     in?: Date[] | string[]
@@ -40143,6 +37996,50 @@ export namespace Prisma {
     not?: NestedIntFilter<$PrismaModel> | number
   }
 
+  export type NestedDateTimeWithAggregatesFilter<$PrismaModel = never> = {
+    equals?: Date | string | DateTimeFieldRefInput<$PrismaModel>
+    in?: Date[] | string[]
+    notIn?: Date[] | string[]
+    lt?: Date | string | DateTimeFieldRefInput<$PrismaModel>
+    lte?: Date | string | DateTimeFieldRefInput<$PrismaModel>
+    gt?: Date | string | DateTimeFieldRefInput<$PrismaModel>
+    gte?: Date | string | DateTimeFieldRefInput<$PrismaModel>
+    not?: NestedDateTimeWithAggregatesFilter<$PrismaModel> | Date | string
+    _count?: NestedIntFilter<$PrismaModel>
+    _min?: NestedDateTimeFilter<$PrismaModel>
+    _max?: NestedDateTimeFilter<$PrismaModel>
+  }
+
+  export type NestedStringNullableFilter<$PrismaModel = never> = {
+    equals?: string | StringFieldRefInput<$PrismaModel> | null
+    in?: string[] | null
+    notIn?: string[] | null
+    lt?: string | StringFieldRefInput<$PrismaModel>
+    lte?: string | StringFieldRefInput<$PrismaModel>
+    gt?: string | StringFieldRefInput<$PrismaModel>
+    gte?: string | StringFieldRefInput<$PrismaModel>
+    contains?: string | StringFieldRefInput<$PrismaModel>
+    startsWith?: string | StringFieldRefInput<$PrismaModel>
+    endsWith?: string | StringFieldRefInput<$PrismaModel>
+    not?: NestedStringNullableFilter<$PrismaModel> | string | null
+  }
+
+  export type NestedDateTimeNullableFilter<$PrismaModel = never> = {
+    equals?: Date | string | DateTimeFieldRefInput<$PrismaModel> | null
+    in?: Date[] | string[] | null
+    notIn?: Date[] | string[] | null
+    lt?: Date | string | DateTimeFieldRefInput<$PrismaModel>
+    lte?: Date | string | DateTimeFieldRefInput<$PrismaModel>
+    gt?: Date | string | DateTimeFieldRefInput<$PrismaModel>
+    gte?: Date | string | DateTimeFieldRefInput<$PrismaModel>
+    not?: NestedDateTimeNullableFilter<$PrismaModel> | Date | string | null
+  }
+
+  export type NestedBoolFilter<$PrismaModel = never> = {
+    equals?: boolean | BooleanFieldRefInput<$PrismaModel>
+    not?: NestedBoolFilter<$PrismaModel> | boolean
+  }
+
   export type NestedStringNullableWithAggregatesFilter<$PrismaModel = never> = {
     equals?: string | StringFieldRefInput<$PrismaModel> | null
     in?: string[] | null
@@ -40169,36 +38066,6 @@ export namespace Prisma {
     gt?: number | IntFieldRefInput<$PrismaModel>
     gte?: number | IntFieldRefInput<$PrismaModel>
     not?: NestedIntNullableFilter<$PrismaModel> | number | null
-  }
-
-  export type NestedDateTimeWithAggregatesFilter<$PrismaModel = never> = {
-    equals?: Date | string | DateTimeFieldRefInput<$PrismaModel>
-    in?: Date[] | string[]
-    notIn?: Date[] | string[]
-    lt?: Date | string | DateTimeFieldRefInput<$PrismaModel>
-    lte?: Date | string | DateTimeFieldRefInput<$PrismaModel>
-    gt?: Date | string | DateTimeFieldRefInput<$PrismaModel>
-    gte?: Date | string | DateTimeFieldRefInput<$PrismaModel>
-    not?: NestedDateTimeWithAggregatesFilter<$PrismaModel> | Date | string
-    _count?: NestedIntFilter<$PrismaModel>
-    _min?: NestedDateTimeFilter<$PrismaModel>
-    _max?: NestedDateTimeFilter<$PrismaModel>
-  }
-
-  export type NestedDateTimeNullableFilter<$PrismaModel = never> = {
-    equals?: Date | string | DateTimeFieldRefInput<$PrismaModel> | null
-    in?: Date[] | string[] | null
-    notIn?: Date[] | string[] | null
-    lt?: Date | string | DateTimeFieldRefInput<$PrismaModel>
-    lte?: Date | string | DateTimeFieldRefInput<$PrismaModel>
-    gt?: Date | string | DateTimeFieldRefInput<$PrismaModel>
-    gte?: Date | string | DateTimeFieldRefInput<$PrismaModel>
-    not?: NestedDateTimeNullableFilter<$PrismaModel> | Date | string | null
-  }
-
-  export type NestedBoolFilter<$PrismaModel = never> = {
-    equals?: boolean | BooleanFieldRefInput<$PrismaModel>
-    not?: NestedBoolFilter<$PrismaModel> | boolean
   }
 
   export type NestedIntWithAggregatesFilter<$PrismaModel = never> = {
@@ -40359,45 +38226,6 @@ export namespace Prisma {
 
   export type BoardCreateManyWorkspaceInputEnvelope = {
     data: BoardCreateManyWorkspaceInput | BoardCreateManyWorkspaceInput[]
-  }
-
-  export type HookTestCreateWithoutWorkspaceInput = {
-    id?: string
-    insight: string
-    sameInJson?: string
-    lever?: string
-    beatsJson?: string
-    stopRule?: string | null
-    status?: string
-    winnerLabel?: string | null
-    createdAt?: Date | string
-    updatedAt?: Date | string
-    video: VideoCreateNestedOneWithoutHookTestsInput
-    versions?: HookVersionCreateNestedManyWithoutTestInput
-  }
-
-  export type HookTestUncheckedCreateWithoutWorkspaceInput = {
-    id?: string
-    videoId: string
-    insight: string
-    sameInJson?: string
-    lever?: string
-    beatsJson?: string
-    stopRule?: string | null
-    status?: string
-    winnerLabel?: string | null
-    createdAt?: Date | string
-    updatedAt?: Date | string
-    versions?: HookVersionUncheckedCreateNestedManyWithoutTestInput
-  }
-
-  export type HookTestCreateOrConnectWithoutWorkspaceInput = {
-    where: HookTestWhereUniqueInput
-    create: XOR<HookTestCreateWithoutWorkspaceInput, HookTestUncheckedCreateWithoutWorkspaceInput>
-  }
-
-  export type HookTestCreateManyWorkspaceInputEnvelope = {
-    data: HookTestCreateManyWorkspaceInput | HookTestCreateManyWorkspaceInput[]
   }
 
   export type UsageLogCreateWithoutWorkspaceInput = {
@@ -40646,40 +38474,6 @@ export namespace Prisma {
     createdAt?: DateTimeFilter<"Board"> | Date | string
   }
 
-  export type HookTestUpsertWithWhereUniqueWithoutWorkspaceInput = {
-    where: HookTestWhereUniqueInput
-    update: XOR<HookTestUpdateWithoutWorkspaceInput, HookTestUncheckedUpdateWithoutWorkspaceInput>
-    create: XOR<HookTestCreateWithoutWorkspaceInput, HookTestUncheckedCreateWithoutWorkspaceInput>
-  }
-
-  export type HookTestUpdateWithWhereUniqueWithoutWorkspaceInput = {
-    where: HookTestWhereUniqueInput
-    data: XOR<HookTestUpdateWithoutWorkspaceInput, HookTestUncheckedUpdateWithoutWorkspaceInput>
-  }
-
-  export type HookTestUpdateManyWithWhereWithoutWorkspaceInput = {
-    where: HookTestScalarWhereInput
-    data: XOR<HookTestUpdateManyMutationInput, HookTestUncheckedUpdateManyWithoutWorkspaceInput>
-  }
-
-  export type HookTestScalarWhereInput = {
-    AND?: HookTestScalarWhereInput | HookTestScalarWhereInput[]
-    OR?: HookTestScalarWhereInput[]
-    NOT?: HookTestScalarWhereInput | HookTestScalarWhereInput[]
-    id?: StringFilter<"HookTest"> | string
-    workspaceId?: StringFilter<"HookTest"> | string
-    videoId?: StringFilter<"HookTest"> | string
-    insight?: StringFilter<"HookTest"> | string
-    sameInJson?: StringFilter<"HookTest"> | string
-    lever?: StringFilter<"HookTest"> | string
-    beatsJson?: StringFilter<"HookTest"> | string
-    stopRule?: StringNullableFilter<"HookTest"> | string | null
-    status?: StringFilter<"HookTest"> | string
-    winnerLabel?: StringNullableFilter<"HookTest"> | string | null
-    createdAt?: DateTimeFilter<"HookTest"> | Date | string
-    updatedAt?: DateTimeFilter<"HookTest"> | Date | string
-  }
-
   export type UsageLogUpsertWithWhereUniqueWithoutWorkspaceInput = {
     where: UsageLogWhereUniqueInput
     update: XOR<UsageLogUpdateWithoutWorkspaceInput, UsageLogUncheckedUpdateWithoutWorkspaceInput>
@@ -40894,7 +38688,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceCreateNestedManyWithoutWorkspaceInput
     boards?: BoardCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerCreateNestedManyWithoutWorkspaceInput
@@ -40931,7 +38724,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceUncheckedCreateNestedManyWithoutWorkspaceInput
     boards?: BoardUncheckedCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogUncheckedCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -40984,7 +38776,6 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUpdateManyWithoutWorkspaceNestedInput
@@ -41021,7 +38812,6 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUncheckedUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUncheckedUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUncheckedUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -41058,7 +38848,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceCreateNestedManyWithoutWorkspaceInput
     boards?: BoardCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunCreateNestedManyWithoutWorkspaceInput
     mediaJobs?: MediaJobCreateNestedManyWithoutWorkspaceInput
@@ -41095,7 +38884,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceUncheckedCreateNestedManyWithoutWorkspaceInput
     boards?: BoardUncheckedCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogUncheckedCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedCreateNestedManyWithoutWorkspaceInput
     mediaJobs?: MediaJobUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -41148,7 +38936,6 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUpdateManyWithoutWorkspaceNestedInput
     mediaJobs?: MediaJobUpdateManyWithoutWorkspaceNestedInput
@@ -41185,7 +38972,6 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUncheckedUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUncheckedUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUncheckedUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedUpdateManyWithoutWorkspaceNestedInput
     mediaJobs?: MediaJobUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -41222,7 +39008,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceCreateNestedManyWithoutWorkspaceInput
     boards?: BoardCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerCreateNestedManyWithoutWorkspaceInput
@@ -41259,7 +39044,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceUncheckedCreateNestedManyWithoutWorkspaceInput
     boards?: BoardUncheckedCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogUncheckedCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -41312,7 +39096,6 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUpdateManyWithoutWorkspaceNestedInput
@@ -41349,7 +39132,6 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUncheckedUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUncheckedUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUncheckedUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -41385,7 +39167,6 @@ export namespace Prisma {
     lastDigestAt?: Date | string | null
     digestJson?: string | null
     boards?: BoardCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerCreateNestedManyWithoutWorkspaceInput
@@ -41422,7 +39203,6 @@ export namespace Prisma {
     lastDigestAt?: Date | string | null
     digestJson?: string | null
     boards?: BoardUncheckedCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogUncheckedCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -41475,7 +39255,6 @@ export namespace Prisma {
     hooks?: HookCreateNestedManyWithoutVideoInput
     swipeEntries?: SwipeEntryCreateNestedManyWithoutVideoInput
     ideas?: IdeaCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestCreateNestedManyWithoutVideoInput
   }
 
   export type VideoUncheckedCreateWithoutSourceInput = {
@@ -41517,7 +39296,6 @@ export namespace Prisma {
     hooks?: HookUncheckedCreateNestedManyWithoutVideoInput
     swipeEntries?: SwipeEntryUncheckedCreateNestedManyWithoutVideoInput
     ideas?: IdeaUncheckedCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutVideoInput
   }
 
   export type VideoCreateOrConnectWithoutSourceInput = {
@@ -41595,7 +39373,6 @@ export namespace Prisma {
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     boards?: BoardUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUpdateManyWithoutWorkspaceNestedInput
@@ -41632,7 +39409,6 @@ export namespace Prisma {
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     boards?: BoardUncheckedUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUncheckedUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -41914,45 +39690,6 @@ export namespace Prisma {
     data: IdeaCreateManyVideoInput | IdeaCreateManyVideoInput[]
   }
 
-  export type HookTestCreateWithoutVideoInput = {
-    id?: string
-    insight: string
-    sameInJson?: string
-    lever?: string
-    beatsJson?: string
-    stopRule?: string | null
-    status?: string
-    winnerLabel?: string | null
-    createdAt?: Date | string
-    updatedAt?: Date | string
-    workspace: WorkspaceCreateNestedOneWithoutHookTestsInput
-    versions?: HookVersionCreateNestedManyWithoutTestInput
-  }
-
-  export type HookTestUncheckedCreateWithoutVideoInput = {
-    id?: string
-    workspaceId: string
-    insight: string
-    sameInJson?: string
-    lever?: string
-    beatsJson?: string
-    stopRule?: string | null
-    status?: string
-    winnerLabel?: string | null
-    createdAt?: Date | string
-    updatedAt?: Date | string
-    versions?: HookVersionUncheckedCreateNestedManyWithoutTestInput
-  }
-
-  export type HookTestCreateOrConnectWithoutVideoInput = {
-    where: HookTestWhereUniqueInput
-    create: XOR<HookTestCreateWithoutVideoInput, HookTestUncheckedCreateWithoutVideoInput>
-  }
-
-  export type HookTestCreateManyVideoInputEnvelope = {
-    data: HookTestCreateManyVideoInput | HookTestCreateManyVideoInput[]
-  }
-
   export type SourceUpsertWithoutVideosInput = {
     update: XOR<SourceUpdateWithoutVideosInput, SourceUncheckedUpdateWithoutVideosInput>
     create: XOR<SourceCreateWithoutVideosInput, SourceUncheckedCreateWithoutVideosInput>
@@ -42146,22 +39883,6 @@ export namespace Prisma {
     createdAt?: DateTimeFilter<"Idea"> | Date | string
   }
 
-  export type HookTestUpsertWithWhereUniqueWithoutVideoInput = {
-    where: HookTestWhereUniqueInput
-    update: XOR<HookTestUpdateWithoutVideoInput, HookTestUncheckedUpdateWithoutVideoInput>
-    create: XOR<HookTestCreateWithoutVideoInput, HookTestUncheckedCreateWithoutVideoInput>
-  }
-
-  export type HookTestUpdateWithWhereUniqueWithoutVideoInput = {
-    where: HookTestWhereUniqueInput
-    data: XOR<HookTestUpdateWithoutVideoInput, HookTestUncheckedUpdateWithoutVideoInput>
-  }
-
-  export type HookTestUpdateManyWithWhereWithoutVideoInput = {
-    where: HookTestScalarWhereInput
-    data: XOR<HookTestUpdateManyMutationInput, HookTestUncheckedUpdateManyWithoutVideoInput>
-  }
-
   export type VideoCreateWithoutScoreInput = {
     id?: string
     platform: string
@@ -42201,7 +39922,6 @@ export namespace Prisma {
     hooks?: HookCreateNestedManyWithoutVideoInput
     swipeEntries?: SwipeEntryCreateNestedManyWithoutVideoInput
     ideas?: IdeaCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestCreateNestedManyWithoutVideoInput
   }
 
   export type VideoUncheckedCreateWithoutScoreInput = {
@@ -42243,7 +39963,6 @@ export namespace Prisma {
     hooks?: HookUncheckedCreateNestedManyWithoutVideoInput
     swipeEntries?: SwipeEntryUncheckedCreateNestedManyWithoutVideoInput
     ideas?: IdeaUncheckedCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutVideoInput
   }
 
   export type VideoCreateOrConnectWithoutScoreInput = {
@@ -42301,7 +40020,6 @@ export namespace Prisma {
     hooks?: HookUpdateManyWithoutVideoNestedInput
     swipeEntries?: SwipeEntryUpdateManyWithoutVideoNestedInput
     ideas?: IdeaUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUpdateManyWithoutVideoNestedInput
   }
 
   export type VideoUncheckedUpdateWithoutScoreInput = {
@@ -42343,7 +40061,6 @@ export namespace Prisma {
     hooks?: HookUncheckedUpdateManyWithoutVideoNestedInput
     swipeEntries?: SwipeEntryUncheckedUpdateManyWithoutVideoNestedInput
     ideas?: IdeaUncheckedUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutVideoNestedInput
   }
 
   export type VideoCreateWithoutAnalysesInput = {
@@ -42385,7 +40102,6 @@ export namespace Prisma {
     hooks?: HookCreateNestedManyWithoutVideoInput
     swipeEntries?: SwipeEntryCreateNestedManyWithoutVideoInput
     ideas?: IdeaCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestCreateNestedManyWithoutVideoInput
   }
 
   export type VideoUncheckedCreateWithoutAnalysesInput = {
@@ -42427,7 +40143,6 @@ export namespace Prisma {
     hooks?: HookUncheckedCreateNestedManyWithoutVideoInput
     swipeEntries?: SwipeEntryUncheckedCreateNestedManyWithoutVideoInput
     ideas?: IdeaUncheckedCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutVideoInput
   }
 
   export type VideoCreateOrConnectWithoutAnalysesInput = {
@@ -42597,7 +40312,6 @@ export namespace Prisma {
     hooks?: HookUpdateManyWithoutVideoNestedInput
     swipeEntries?: SwipeEntryUpdateManyWithoutVideoNestedInput
     ideas?: IdeaUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUpdateManyWithoutVideoNestedInput
   }
 
   export type VideoUncheckedUpdateWithoutAnalysesInput = {
@@ -42639,7 +40353,6 @@ export namespace Prisma {
     hooks?: HookUncheckedUpdateManyWithoutVideoNestedInput
     swipeEntries?: SwipeEntryUncheckedUpdateManyWithoutVideoNestedInput
     ideas?: IdeaUncheckedUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutVideoNestedInput
   }
 
   export type HookUpsertWithWhereUniqueWithoutAnalysisInput = {
@@ -42803,7 +40516,6 @@ export namespace Prisma {
     analyses?: AnalysisCreateNestedManyWithoutVideoInput
     swipeEntries?: SwipeEntryCreateNestedManyWithoutVideoInput
     ideas?: IdeaCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestCreateNestedManyWithoutVideoInput
   }
 
   export type VideoUncheckedCreateWithoutHooksInput = {
@@ -42845,7 +40557,6 @@ export namespace Prisma {
     analyses?: AnalysisUncheckedCreateNestedManyWithoutVideoInput
     swipeEntries?: SwipeEntryUncheckedCreateNestedManyWithoutVideoInput
     ideas?: IdeaUncheckedCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutVideoInput
   }
 
   export type VideoCreateOrConnectWithoutHooksInput = {
@@ -42944,7 +40655,6 @@ export namespace Prisma {
     analyses?: AnalysisUpdateManyWithoutVideoNestedInput
     swipeEntries?: SwipeEntryUpdateManyWithoutVideoNestedInput
     ideas?: IdeaUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUpdateManyWithoutVideoNestedInput
   }
 
   export type VideoUncheckedUpdateWithoutHooksInput = {
@@ -42986,7 +40696,6 @@ export namespace Prisma {
     analyses?: AnalysisUncheckedUpdateManyWithoutVideoNestedInput
     swipeEntries?: SwipeEntryUncheckedUpdateManyWithoutVideoNestedInput
     ideas?: IdeaUncheckedUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutVideoNestedInput
   }
 
   export type WorkspaceCreateWithoutBoardsInput = {
@@ -43017,7 +40726,6 @@ export namespace Prisma {
     lastDigestAt?: Date | string | null
     digestJson?: string | null
     sources?: SourceCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerCreateNestedManyWithoutWorkspaceInput
@@ -43054,7 +40762,6 @@ export namespace Prisma {
     lastDigestAt?: Date | string | null
     digestJson?: string | null
     sources?: SourceUncheckedCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogUncheckedCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -43132,7 +40839,6 @@ export namespace Prisma {
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUpdateManyWithoutWorkspaceNestedInput
@@ -43169,7 +40875,6 @@ export namespace Prisma {
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUncheckedUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUncheckedUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -43252,7 +40957,6 @@ export namespace Prisma {
     analyses?: AnalysisCreateNestedManyWithoutVideoInput
     hooks?: HookCreateNestedManyWithoutVideoInput
     ideas?: IdeaCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestCreateNestedManyWithoutVideoInput
   }
 
   export type VideoUncheckedCreateWithoutSwipeEntriesInput = {
@@ -43294,7 +40998,6 @@ export namespace Prisma {
     analyses?: AnalysisUncheckedCreateNestedManyWithoutVideoInput
     hooks?: HookUncheckedCreateNestedManyWithoutVideoInput
     ideas?: IdeaUncheckedCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutVideoInput
   }
 
   export type VideoCreateOrConnectWithoutSwipeEntriesInput = {
@@ -43377,7 +41080,6 @@ export namespace Prisma {
     analyses?: AnalysisUpdateManyWithoutVideoNestedInput
     hooks?: HookUpdateManyWithoutVideoNestedInput
     ideas?: IdeaUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUpdateManyWithoutVideoNestedInput
   }
 
   export type VideoUncheckedUpdateWithoutSwipeEntriesInput = {
@@ -43419,7 +41121,6 @@ export namespace Prisma {
     analyses?: AnalysisUncheckedUpdateManyWithoutVideoNestedInput
     hooks?: HookUncheckedUpdateManyWithoutVideoNestedInput
     ideas?: IdeaUncheckedUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutVideoNestedInput
   }
 
   export type VideoCreateWithoutIdeasInput = {
@@ -43461,7 +41162,6 @@ export namespace Prisma {
     analyses?: AnalysisCreateNestedManyWithoutVideoInput
     hooks?: HookCreateNestedManyWithoutVideoInput
     swipeEntries?: SwipeEntryCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestCreateNestedManyWithoutVideoInput
   }
 
   export type VideoUncheckedCreateWithoutIdeasInput = {
@@ -43503,7 +41203,6 @@ export namespace Prisma {
     analyses?: AnalysisUncheckedCreateNestedManyWithoutVideoInput
     hooks?: HookUncheckedCreateNestedManyWithoutVideoInput
     swipeEntries?: SwipeEntryUncheckedCreateNestedManyWithoutVideoInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutVideoInput
   }
 
   export type VideoCreateOrConnectWithoutIdeasInput = {
@@ -43621,7 +41320,6 @@ export namespace Prisma {
     analyses?: AnalysisUpdateManyWithoutVideoNestedInput
     hooks?: HookUpdateManyWithoutVideoNestedInput
     swipeEntries?: SwipeEntryUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUpdateManyWithoutVideoNestedInput
   }
 
   export type VideoUncheckedUpdateWithoutIdeasInput = {
@@ -43663,7 +41361,6 @@ export namespace Prisma {
     analyses?: AnalysisUncheckedUpdateManyWithoutVideoNestedInput
     hooks?: HookUncheckedUpdateManyWithoutVideoNestedInput
     swipeEntries?: SwipeEntryUncheckedUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutVideoNestedInput
   }
 
   export type AnalysisUpsertWithoutIdeasInput = {
@@ -43968,7 +41665,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceCreateNestedManyWithoutWorkspaceInput
     boards?: BoardCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerCreateNestedManyWithoutWorkspaceInput
     mediaJobs?: MediaJobCreateNestedManyWithoutWorkspaceInput
@@ -44005,7 +41701,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceUncheckedCreateNestedManyWithoutWorkspaceInput
     boards?: BoardUncheckedCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
     mediaJobs?: MediaJobUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -44058,7 +41753,6 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUpdateManyWithoutWorkspaceNestedInput
     mediaJobs?: MediaJobUpdateManyWithoutWorkspaceNestedInput
@@ -44095,507 +41789,11 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUncheckedUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUncheckedUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
     mediaJobs?: MediaJobUncheckedUpdateManyWithoutWorkspaceNestedInput
     suggestionDismissals?: SuggestionDismissalUncheckedUpdateManyWithoutWorkspaceNestedInput
     members?: WorkspaceMemberUncheckedUpdateManyWithoutWorkspaceNestedInput
-  }
-
-  export type WorkspaceCreateWithoutHookTestsInput = {
-    id?: string
-    ownerId?: string | null
-    name?: string
-    monthlyBudgetCents?: number
-    autoAnalyzeRulesJson?: string
-    analysisConfigJson?: string
-    failureCountsJson?: string
-    createdAt?: Date | string
-    updatedAt?: Date | string
-    planKey?: string
-    planCredits?: number
-    packCredits?: number
-    billingStatus?: string
-    periodStart?: Date | string | null
-    periodEnd?: Date | string | null
-    autoTopUp?: boolean
-    stripeCustomerId?: string | null
-    stripeSubscriptionId?: string | null
-    stripeTestCustomerId?: string | null
-    stripeTestSubscriptionId?: string | null
-    thumbRetentionDays?: number
-    mediaRetentionDays?: number
-    digestEnabled?: boolean
-    digestEmail?: string | null
-    lastDigestAt?: Date | string | null
-    digestJson?: string | null
-    sources?: SourceCreateNestedManyWithoutWorkspaceInput
-    boards?: BoardCreateNestedManyWithoutWorkspaceInput
-    usageLogs?: UsageLogCreateNestedManyWithoutWorkspaceInput
-    autoAnalyzeRuns?: AutoAnalyzeRunCreateNestedManyWithoutWorkspaceInput
-    creditLedger?: CreditLedgerCreateNestedManyWithoutWorkspaceInput
-    mediaJobs?: MediaJobCreateNestedManyWithoutWorkspaceInput
-    suggestionDismissals?: SuggestionDismissalCreateNestedManyWithoutWorkspaceInput
-    members?: WorkspaceMemberCreateNestedManyWithoutWorkspaceInput
-  }
-
-  export type WorkspaceUncheckedCreateWithoutHookTestsInput = {
-    id?: string
-    ownerId?: string | null
-    name?: string
-    monthlyBudgetCents?: number
-    autoAnalyzeRulesJson?: string
-    analysisConfigJson?: string
-    failureCountsJson?: string
-    createdAt?: Date | string
-    updatedAt?: Date | string
-    planKey?: string
-    planCredits?: number
-    packCredits?: number
-    billingStatus?: string
-    periodStart?: Date | string | null
-    periodEnd?: Date | string | null
-    autoTopUp?: boolean
-    stripeCustomerId?: string | null
-    stripeSubscriptionId?: string | null
-    stripeTestCustomerId?: string | null
-    stripeTestSubscriptionId?: string | null
-    thumbRetentionDays?: number
-    mediaRetentionDays?: number
-    digestEnabled?: boolean
-    digestEmail?: string | null
-    lastDigestAt?: Date | string | null
-    digestJson?: string | null
-    sources?: SourceUncheckedCreateNestedManyWithoutWorkspaceInput
-    boards?: BoardUncheckedCreateNestedManyWithoutWorkspaceInput
-    usageLogs?: UsageLogUncheckedCreateNestedManyWithoutWorkspaceInput
-    autoAnalyzeRuns?: AutoAnalyzeRunUncheckedCreateNestedManyWithoutWorkspaceInput
-    creditLedger?: CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
-    mediaJobs?: MediaJobUncheckedCreateNestedManyWithoutWorkspaceInput
-    suggestionDismissals?: SuggestionDismissalUncheckedCreateNestedManyWithoutWorkspaceInput
-    members?: WorkspaceMemberUncheckedCreateNestedManyWithoutWorkspaceInput
-  }
-
-  export type WorkspaceCreateOrConnectWithoutHookTestsInput = {
-    where: WorkspaceWhereUniqueInput
-    create: XOR<WorkspaceCreateWithoutHookTestsInput, WorkspaceUncheckedCreateWithoutHookTestsInput>
-  }
-
-  export type VideoCreateWithoutHookTestsInput = {
-    id?: string
-    platform: string
-    externalId: string
-    url: string
-    thumbnailUrl?: string
-    creatorHandle: string
-    creatorFollowers?: number | null
-    caption?: string
-    postedAt: Date | string
-    views?: number
-    likes?: number
-    comments?: number
-    shares?: number | null
-    saves?: number | null
-    durationSec?: number | null
-    transcript?: string | null
-    transcriptSource?: string
-    rawJson?: string
-    scrapedAt?: Date | string
-    isBaselineSample?: boolean
-    thumbKey?: string | null
-    thumbStatus?: string
-    thumbStoredAt?: Date | string | null
-    mediaKey?: string | null
-    mediaStatus?: string
-    mediaBytes?: number | null
-    mediaStoredAt?: Date | string | null
-    geminiFileUri?: string | null
-    geminiFileName?: string | null
-    geminiFileExpiresAt?: Date | string | null
-    soundId?: string | null
-    soundTitle?: string | null
-    soundAuthor?: string | null
-    source: SourceCreateNestedOneWithoutVideosInput
-    score?: ScoreCreateNestedOneWithoutVideoInput
-    analyses?: AnalysisCreateNestedManyWithoutVideoInput
-    hooks?: HookCreateNestedManyWithoutVideoInput
-    swipeEntries?: SwipeEntryCreateNestedManyWithoutVideoInput
-    ideas?: IdeaCreateNestedManyWithoutVideoInput
-  }
-
-  export type VideoUncheckedCreateWithoutHookTestsInput = {
-    id?: string
-    sourceId: string
-    platform: string
-    externalId: string
-    url: string
-    thumbnailUrl?: string
-    creatorHandle: string
-    creatorFollowers?: number | null
-    caption?: string
-    postedAt: Date | string
-    views?: number
-    likes?: number
-    comments?: number
-    shares?: number | null
-    saves?: number | null
-    durationSec?: number | null
-    transcript?: string | null
-    transcriptSource?: string
-    rawJson?: string
-    scrapedAt?: Date | string
-    isBaselineSample?: boolean
-    thumbKey?: string | null
-    thumbStatus?: string
-    thumbStoredAt?: Date | string | null
-    mediaKey?: string | null
-    mediaStatus?: string
-    mediaBytes?: number | null
-    mediaStoredAt?: Date | string | null
-    geminiFileUri?: string | null
-    geminiFileName?: string | null
-    geminiFileExpiresAt?: Date | string | null
-    soundId?: string | null
-    soundTitle?: string | null
-    soundAuthor?: string | null
-    score?: ScoreUncheckedCreateNestedOneWithoutVideoInput
-    analyses?: AnalysisUncheckedCreateNestedManyWithoutVideoInput
-    hooks?: HookUncheckedCreateNestedManyWithoutVideoInput
-    swipeEntries?: SwipeEntryUncheckedCreateNestedManyWithoutVideoInput
-    ideas?: IdeaUncheckedCreateNestedManyWithoutVideoInput
-  }
-
-  export type VideoCreateOrConnectWithoutHookTestsInput = {
-    where: VideoWhereUniqueInput
-    create: XOR<VideoCreateWithoutHookTestsInput, VideoUncheckedCreateWithoutHookTestsInput>
-  }
-
-  export type HookVersionCreateWithoutTestInput = {
-    id?: string
-    label: string
-    round?: number
-    hookText: string
-    firstFrame?: string | null
-    hookType: string
-    mechanism?: string | null
-    status?: string
-    assetUrl?: string | null
-    ownPostId?: string | null
-    createdAt?: Date | string
-  }
-
-  export type HookVersionUncheckedCreateWithoutTestInput = {
-    id?: string
-    label: string
-    round?: number
-    hookText: string
-    firstFrame?: string | null
-    hookType: string
-    mechanism?: string | null
-    status?: string
-    assetUrl?: string | null
-    ownPostId?: string | null
-    createdAt?: Date | string
-  }
-
-  export type HookVersionCreateOrConnectWithoutTestInput = {
-    where: HookVersionWhereUniqueInput
-    create: XOR<HookVersionCreateWithoutTestInput, HookVersionUncheckedCreateWithoutTestInput>
-  }
-
-  export type HookVersionCreateManyTestInputEnvelope = {
-    data: HookVersionCreateManyTestInput | HookVersionCreateManyTestInput[]
-  }
-
-  export type WorkspaceUpsertWithoutHookTestsInput = {
-    update: XOR<WorkspaceUpdateWithoutHookTestsInput, WorkspaceUncheckedUpdateWithoutHookTestsInput>
-    create: XOR<WorkspaceCreateWithoutHookTestsInput, WorkspaceUncheckedCreateWithoutHookTestsInput>
-    where?: WorkspaceWhereInput
-  }
-
-  export type WorkspaceUpdateToOneWithWhereWithoutHookTestsInput = {
-    where?: WorkspaceWhereInput
-    data: XOR<WorkspaceUpdateWithoutHookTestsInput, WorkspaceUncheckedUpdateWithoutHookTestsInput>
-  }
-
-  export type WorkspaceUpdateWithoutHookTestsInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    ownerId?: NullableStringFieldUpdateOperationsInput | string | null
-    name?: StringFieldUpdateOperationsInput | string
-    monthlyBudgetCents?: IntFieldUpdateOperationsInput | number
-    autoAnalyzeRulesJson?: StringFieldUpdateOperationsInput | string
-    analysisConfigJson?: StringFieldUpdateOperationsInput | string
-    failureCountsJson?: StringFieldUpdateOperationsInput | string
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    planKey?: StringFieldUpdateOperationsInput | string
-    planCredits?: IntFieldUpdateOperationsInput | number
-    packCredits?: IntFieldUpdateOperationsInput | number
-    billingStatus?: StringFieldUpdateOperationsInput | string
-    periodStart?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-    periodEnd?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-    autoTopUp?: BoolFieldUpdateOperationsInput | boolean
-    stripeCustomerId?: NullableStringFieldUpdateOperationsInput | string | null
-    stripeSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
-    stripeTestCustomerId?: NullableStringFieldUpdateOperationsInput | string | null
-    stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
-    thumbRetentionDays?: IntFieldUpdateOperationsInput | number
-    mediaRetentionDays?: IntFieldUpdateOperationsInput | number
-    digestEnabled?: BoolFieldUpdateOperationsInput | boolean
-    digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
-    lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-    digestJson?: NullableStringFieldUpdateOperationsInput | string | null
-    sources?: SourceUpdateManyWithoutWorkspaceNestedInput
-    boards?: BoardUpdateManyWithoutWorkspaceNestedInput
-    usageLogs?: UsageLogUpdateManyWithoutWorkspaceNestedInput
-    autoAnalyzeRuns?: AutoAnalyzeRunUpdateManyWithoutWorkspaceNestedInput
-    creditLedger?: CreditLedgerUpdateManyWithoutWorkspaceNestedInput
-    mediaJobs?: MediaJobUpdateManyWithoutWorkspaceNestedInput
-    suggestionDismissals?: SuggestionDismissalUpdateManyWithoutWorkspaceNestedInput
-    members?: WorkspaceMemberUpdateManyWithoutWorkspaceNestedInput
-  }
-
-  export type WorkspaceUncheckedUpdateWithoutHookTestsInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    ownerId?: NullableStringFieldUpdateOperationsInput | string | null
-    name?: StringFieldUpdateOperationsInput | string
-    monthlyBudgetCents?: IntFieldUpdateOperationsInput | number
-    autoAnalyzeRulesJson?: StringFieldUpdateOperationsInput | string
-    analysisConfigJson?: StringFieldUpdateOperationsInput | string
-    failureCountsJson?: StringFieldUpdateOperationsInput | string
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    planKey?: StringFieldUpdateOperationsInput | string
-    planCredits?: IntFieldUpdateOperationsInput | number
-    packCredits?: IntFieldUpdateOperationsInput | number
-    billingStatus?: StringFieldUpdateOperationsInput | string
-    periodStart?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-    periodEnd?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-    autoTopUp?: BoolFieldUpdateOperationsInput | boolean
-    stripeCustomerId?: NullableStringFieldUpdateOperationsInput | string | null
-    stripeSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
-    stripeTestCustomerId?: NullableStringFieldUpdateOperationsInput | string | null
-    stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
-    thumbRetentionDays?: IntFieldUpdateOperationsInput | number
-    mediaRetentionDays?: IntFieldUpdateOperationsInput | number
-    digestEnabled?: BoolFieldUpdateOperationsInput | boolean
-    digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
-    lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-    digestJson?: NullableStringFieldUpdateOperationsInput | string | null
-    sources?: SourceUncheckedUpdateManyWithoutWorkspaceNestedInput
-    boards?: BoardUncheckedUpdateManyWithoutWorkspaceNestedInput
-    usageLogs?: UsageLogUncheckedUpdateManyWithoutWorkspaceNestedInput
-    autoAnalyzeRuns?: AutoAnalyzeRunUncheckedUpdateManyWithoutWorkspaceNestedInput
-    creditLedger?: CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
-    mediaJobs?: MediaJobUncheckedUpdateManyWithoutWorkspaceNestedInput
-    suggestionDismissals?: SuggestionDismissalUncheckedUpdateManyWithoutWorkspaceNestedInput
-    members?: WorkspaceMemberUncheckedUpdateManyWithoutWorkspaceNestedInput
-  }
-
-  export type VideoUpsertWithoutHookTestsInput = {
-    update: XOR<VideoUpdateWithoutHookTestsInput, VideoUncheckedUpdateWithoutHookTestsInput>
-    create: XOR<VideoCreateWithoutHookTestsInput, VideoUncheckedCreateWithoutHookTestsInput>
-    where?: VideoWhereInput
-  }
-
-  export type VideoUpdateToOneWithWhereWithoutHookTestsInput = {
-    where?: VideoWhereInput
-    data: XOR<VideoUpdateWithoutHookTestsInput, VideoUncheckedUpdateWithoutHookTestsInput>
-  }
-
-  export type VideoUpdateWithoutHookTestsInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    platform?: StringFieldUpdateOperationsInput | string
-    externalId?: StringFieldUpdateOperationsInput | string
-    url?: StringFieldUpdateOperationsInput | string
-    thumbnailUrl?: StringFieldUpdateOperationsInput | string
-    creatorHandle?: StringFieldUpdateOperationsInput | string
-    creatorFollowers?: NullableIntFieldUpdateOperationsInput | number | null
-    caption?: StringFieldUpdateOperationsInput | string
-    postedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    views?: IntFieldUpdateOperationsInput | number
-    likes?: IntFieldUpdateOperationsInput | number
-    comments?: IntFieldUpdateOperationsInput | number
-    shares?: NullableIntFieldUpdateOperationsInput | number | null
-    saves?: NullableIntFieldUpdateOperationsInput | number | null
-    durationSec?: NullableIntFieldUpdateOperationsInput | number | null
-    transcript?: NullableStringFieldUpdateOperationsInput | string | null
-    transcriptSource?: StringFieldUpdateOperationsInput | string
-    rawJson?: StringFieldUpdateOperationsInput | string
-    scrapedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    isBaselineSample?: BoolFieldUpdateOperationsInput | boolean
-    thumbKey?: NullableStringFieldUpdateOperationsInput | string | null
-    thumbStatus?: StringFieldUpdateOperationsInput | string
-    thumbStoredAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-    mediaKey?: NullableStringFieldUpdateOperationsInput | string | null
-    mediaStatus?: StringFieldUpdateOperationsInput | string
-    mediaBytes?: NullableIntFieldUpdateOperationsInput | number | null
-    mediaStoredAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-    geminiFileUri?: NullableStringFieldUpdateOperationsInput | string | null
-    geminiFileName?: NullableStringFieldUpdateOperationsInput | string | null
-    geminiFileExpiresAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-    soundId?: NullableStringFieldUpdateOperationsInput | string | null
-    soundTitle?: NullableStringFieldUpdateOperationsInput | string | null
-    soundAuthor?: NullableStringFieldUpdateOperationsInput | string | null
-    source?: SourceUpdateOneRequiredWithoutVideosNestedInput
-    score?: ScoreUpdateOneWithoutVideoNestedInput
-    analyses?: AnalysisUpdateManyWithoutVideoNestedInput
-    hooks?: HookUpdateManyWithoutVideoNestedInput
-    swipeEntries?: SwipeEntryUpdateManyWithoutVideoNestedInput
-    ideas?: IdeaUpdateManyWithoutVideoNestedInput
-  }
-
-  export type VideoUncheckedUpdateWithoutHookTestsInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    sourceId?: StringFieldUpdateOperationsInput | string
-    platform?: StringFieldUpdateOperationsInput | string
-    externalId?: StringFieldUpdateOperationsInput | string
-    url?: StringFieldUpdateOperationsInput | string
-    thumbnailUrl?: StringFieldUpdateOperationsInput | string
-    creatorHandle?: StringFieldUpdateOperationsInput | string
-    creatorFollowers?: NullableIntFieldUpdateOperationsInput | number | null
-    caption?: StringFieldUpdateOperationsInput | string
-    postedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    views?: IntFieldUpdateOperationsInput | number
-    likes?: IntFieldUpdateOperationsInput | number
-    comments?: IntFieldUpdateOperationsInput | number
-    shares?: NullableIntFieldUpdateOperationsInput | number | null
-    saves?: NullableIntFieldUpdateOperationsInput | number | null
-    durationSec?: NullableIntFieldUpdateOperationsInput | number | null
-    transcript?: NullableStringFieldUpdateOperationsInput | string | null
-    transcriptSource?: StringFieldUpdateOperationsInput | string
-    rawJson?: StringFieldUpdateOperationsInput | string
-    scrapedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    isBaselineSample?: BoolFieldUpdateOperationsInput | boolean
-    thumbKey?: NullableStringFieldUpdateOperationsInput | string | null
-    thumbStatus?: StringFieldUpdateOperationsInput | string
-    thumbStoredAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-    mediaKey?: NullableStringFieldUpdateOperationsInput | string | null
-    mediaStatus?: StringFieldUpdateOperationsInput | string
-    mediaBytes?: NullableIntFieldUpdateOperationsInput | number | null
-    mediaStoredAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-    geminiFileUri?: NullableStringFieldUpdateOperationsInput | string | null
-    geminiFileName?: NullableStringFieldUpdateOperationsInput | string | null
-    geminiFileExpiresAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-    soundId?: NullableStringFieldUpdateOperationsInput | string | null
-    soundTitle?: NullableStringFieldUpdateOperationsInput | string | null
-    soundAuthor?: NullableStringFieldUpdateOperationsInput | string | null
-    score?: ScoreUncheckedUpdateOneWithoutVideoNestedInput
-    analyses?: AnalysisUncheckedUpdateManyWithoutVideoNestedInput
-    hooks?: HookUncheckedUpdateManyWithoutVideoNestedInput
-    swipeEntries?: SwipeEntryUncheckedUpdateManyWithoutVideoNestedInput
-    ideas?: IdeaUncheckedUpdateManyWithoutVideoNestedInput
-  }
-
-  export type HookVersionUpsertWithWhereUniqueWithoutTestInput = {
-    where: HookVersionWhereUniqueInput
-    update: XOR<HookVersionUpdateWithoutTestInput, HookVersionUncheckedUpdateWithoutTestInput>
-    create: XOR<HookVersionCreateWithoutTestInput, HookVersionUncheckedCreateWithoutTestInput>
-  }
-
-  export type HookVersionUpdateWithWhereUniqueWithoutTestInput = {
-    where: HookVersionWhereUniqueInput
-    data: XOR<HookVersionUpdateWithoutTestInput, HookVersionUncheckedUpdateWithoutTestInput>
-  }
-
-  export type HookVersionUpdateManyWithWhereWithoutTestInput = {
-    where: HookVersionScalarWhereInput
-    data: XOR<HookVersionUpdateManyMutationInput, HookVersionUncheckedUpdateManyWithoutTestInput>
-  }
-
-  export type HookVersionScalarWhereInput = {
-    AND?: HookVersionScalarWhereInput | HookVersionScalarWhereInput[]
-    OR?: HookVersionScalarWhereInput[]
-    NOT?: HookVersionScalarWhereInput | HookVersionScalarWhereInput[]
-    id?: StringFilter<"HookVersion"> | string
-    testId?: StringFilter<"HookVersion"> | string
-    label?: StringFilter<"HookVersion"> | string
-    round?: IntFilter<"HookVersion"> | number
-    hookText?: StringFilter<"HookVersion"> | string
-    firstFrame?: StringNullableFilter<"HookVersion"> | string | null
-    hookType?: StringFilter<"HookVersion"> | string
-    mechanism?: StringNullableFilter<"HookVersion"> | string | null
-    status?: StringFilter<"HookVersion"> | string
-    assetUrl?: StringNullableFilter<"HookVersion"> | string | null
-    ownPostId?: StringNullableFilter<"HookVersion"> | string | null
-    createdAt?: DateTimeFilter<"HookVersion"> | Date | string
-  }
-
-  export type HookTestCreateWithoutVersionsInput = {
-    id?: string
-    insight: string
-    sameInJson?: string
-    lever?: string
-    beatsJson?: string
-    stopRule?: string | null
-    status?: string
-    winnerLabel?: string | null
-    createdAt?: Date | string
-    updatedAt?: Date | string
-    workspace: WorkspaceCreateNestedOneWithoutHookTestsInput
-    video: VideoCreateNestedOneWithoutHookTestsInput
-  }
-
-  export type HookTestUncheckedCreateWithoutVersionsInput = {
-    id?: string
-    workspaceId: string
-    videoId: string
-    insight: string
-    sameInJson?: string
-    lever?: string
-    beatsJson?: string
-    stopRule?: string | null
-    status?: string
-    winnerLabel?: string | null
-    createdAt?: Date | string
-    updatedAt?: Date | string
-  }
-
-  export type HookTestCreateOrConnectWithoutVersionsInput = {
-    where: HookTestWhereUniqueInput
-    create: XOR<HookTestCreateWithoutVersionsInput, HookTestUncheckedCreateWithoutVersionsInput>
-  }
-
-  export type HookTestUpsertWithoutVersionsInput = {
-    update: XOR<HookTestUpdateWithoutVersionsInput, HookTestUncheckedUpdateWithoutVersionsInput>
-    create: XOR<HookTestCreateWithoutVersionsInput, HookTestUncheckedCreateWithoutVersionsInput>
-    where?: HookTestWhereInput
-  }
-
-  export type HookTestUpdateToOneWithWhereWithoutVersionsInput = {
-    where?: HookTestWhereInput
-    data: XOR<HookTestUpdateWithoutVersionsInput, HookTestUncheckedUpdateWithoutVersionsInput>
-  }
-
-  export type HookTestUpdateWithoutVersionsInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    insight?: StringFieldUpdateOperationsInput | string
-    sameInJson?: StringFieldUpdateOperationsInput | string
-    lever?: StringFieldUpdateOperationsInput | string
-    beatsJson?: StringFieldUpdateOperationsInput | string
-    stopRule?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    winnerLabel?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    workspace?: WorkspaceUpdateOneRequiredWithoutHookTestsNestedInput
-    video?: VideoUpdateOneRequiredWithoutHookTestsNestedInput
-  }
-
-  export type HookTestUncheckedUpdateWithoutVersionsInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    workspaceId?: StringFieldUpdateOperationsInput | string
-    videoId?: StringFieldUpdateOperationsInput | string
-    insight?: StringFieldUpdateOperationsInput | string
-    sameInJson?: StringFieldUpdateOperationsInput | string
-    lever?: StringFieldUpdateOperationsInput | string
-    beatsJson?: StringFieldUpdateOperationsInput | string
-    stopRule?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    winnerLabel?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type SourceCreateWithoutRefreshRunsInput = {
@@ -44715,7 +41913,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceCreateNestedManyWithoutWorkspaceInput
     boards?: BoardCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerCreateNestedManyWithoutWorkspaceInput
     mediaJobs?: MediaJobCreateNestedManyWithoutWorkspaceInput
@@ -44752,7 +41949,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceUncheckedCreateNestedManyWithoutWorkspaceInput
     boards?: BoardUncheckedCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogUncheckedCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
     mediaJobs?: MediaJobUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -44805,7 +42001,6 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUpdateManyWithoutWorkspaceNestedInput
     mediaJobs?: MediaJobUpdateManyWithoutWorkspaceNestedInput
@@ -44842,7 +42037,6 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUncheckedUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUncheckedUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUncheckedUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
     mediaJobs?: MediaJobUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -44879,7 +42073,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceCreateNestedManyWithoutWorkspaceInput
     boards?: BoardCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerCreateNestedManyWithoutWorkspaceInput
@@ -44916,7 +42109,6 @@ export namespace Prisma {
     digestJson?: string | null
     sources?: SourceUncheckedCreateNestedManyWithoutWorkspaceInput
     boards?: BoardUncheckedCreateNestedManyWithoutWorkspaceInput
-    hookTests?: HookTestUncheckedCreateNestedManyWithoutWorkspaceInput
     usageLogs?: UsageLogUncheckedCreateNestedManyWithoutWorkspaceInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedCreateNestedManyWithoutWorkspaceInput
     creditLedger?: CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -44969,7 +42161,6 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUpdateManyWithoutWorkspaceNestedInput
@@ -45006,7 +42197,6 @@ export namespace Prisma {
     digestJson?: NullableStringFieldUpdateOperationsInput | string | null
     sources?: SourceUncheckedUpdateManyWithoutWorkspaceNestedInput
     boards?: BoardUncheckedUpdateManyWithoutWorkspaceNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutWorkspaceNestedInput
     usageLogs?: UsageLogUncheckedUpdateManyWithoutWorkspaceNestedInput
     autoAnalyzeRuns?: AutoAnalyzeRunUncheckedUpdateManyWithoutWorkspaceNestedInput
     creditLedger?: CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -45034,20 +42224,6 @@ export namespace Prisma {
     id?: string
     name: string
     createdAt?: Date | string
-  }
-
-  export type HookTestCreateManyWorkspaceInput = {
-    id?: string
-    videoId: string
-    insight: string
-    sameInJson?: string
-    lever?: string
-    beatsJson?: string
-    stopRule?: string | null
-    status?: string
-    winnerLabel?: string | null
-    createdAt?: Date | string
-    updatedAt?: Date | string
   }
 
   export type UsageLogCreateManyWorkspaceInput = {
@@ -45185,50 +42361,6 @@ export namespace Prisma {
     id?: StringFieldUpdateOperationsInput | string
     name?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-  }
-
-  export type HookTestUpdateWithoutWorkspaceInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    insight?: StringFieldUpdateOperationsInput | string
-    sameInJson?: StringFieldUpdateOperationsInput | string
-    lever?: StringFieldUpdateOperationsInput | string
-    beatsJson?: StringFieldUpdateOperationsInput | string
-    stopRule?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    winnerLabel?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    video?: VideoUpdateOneRequiredWithoutHookTestsNestedInput
-    versions?: HookVersionUpdateManyWithoutTestNestedInput
-  }
-
-  export type HookTestUncheckedUpdateWithoutWorkspaceInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    videoId?: StringFieldUpdateOperationsInput | string
-    insight?: StringFieldUpdateOperationsInput | string
-    sameInJson?: StringFieldUpdateOperationsInput | string
-    lever?: StringFieldUpdateOperationsInput | string
-    beatsJson?: StringFieldUpdateOperationsInput | string
-    stopRule?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    winnerLabel?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    versions?: HookVersionUncheckedUpdateManyWithoutTestNestedInput
-  }
-
-  export type HookTestUncheckedUpdateManyWithoutWorkspaceInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    videoId?: StringFieldUpdateOperationsInput | string
-    insight?: StringFieldUpdateOperationsInput | string
-    sameInJson?: StringFieldUpdateOperationsInput | string
-    lever?: StringFieldUpdateOperationsInput | string
-    beatsJson?: StringFieldUpdateOperationsInput | string
-    stopRule?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    winnerLabel?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type UsageLogUpdateWithoutWorkspaceInput = {
@@ -45510,7 +42642,6 @@ export namespace Prisma {
     hooks?: HookUpdateManyWithoutVideoNestedInput
     swipeEntries?: SwipeEntryUpdateManyWithoutVideoNestedInput
     ideas?: IdeaUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUpdateManyWithoutVideoNestedInput
   }
 
   export type VideoUncheckedUpdateWithoutSourceInput = {
@@ -45552,7 +42683,6 @@ export namespace Prisma {
     hooks?: HookUncheckedUpdateManyWithoutVideoNestedInput
     swipeEntries?: SwipeEntryUncheckedUpdateManyWithoutVideoNestedInput
     ideas?: IdeaUncheckedUpdateManyWithoutVideoNestedInput
-    hookTests?: HookTestUncheckedUpdateManyWithoutVideoNestedInput
   }
 
   export type VideoUncheckedUpdateManyWithoutSourceInput = {
@@ -45657,20 +42787,6 @@ export namespace Prisma {
     status?: string
     dueAt?: Date | string | null
     createdAt?: Date | string
-  }
-
-  export type HookTestCreateManyVideoInput = {
-    id?: string
-    workspaceId: string
-    insight: string
-    sameInJson?: string
-    lever?: string
-    beatsJson?: string
-    stopRule?: string | null
-    status?: string
-    winnerLabel?: string | null
-    createdAt?: Date | string
-    updatedAt?: Date | string
   }
 
   export type AnalysisUpdateWithoutVideoInput = {
@@ -45804,50 +42920,6 @@ export namespace Prisma {
     status?: StringFieldUpdateOperationsInput | string
     dueAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-  }
-
-  export type HookTestUpdateWithoutVideoInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    insight?: StringFieldUpdateOperationsInput | string
-    sameInJson?: StringFieldUpdateOperationsInput | string
-    lever?: StringFieldUpdateOperationsInput | string
-    beatsJson?: StringFieldUpdateOperationsInput | string
-    stopRule?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    winnerLabel?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    workspace?: WorkspaceUpdateOneRequiredWithoutHookTestsNestedInput
-    versions?: HookVersionUpdateManyWithoutTestNestedInput
-  }
-
-  export type HookTestUncheckedUpdateWithoutVideoInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    workspaceId?: StringFieldUpdateOperationsInput | string
-    insight?: StringFieldUpdateOperationsInput | string
-    sameInJson?: StringFieldUpdateOperationsInput | string
-    lever?: StringFieldUpdateOperationsInput | string
-    beatsJson?: StringFieldUpdateOperationsInput | string
-    stopRule?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    winnerLabel?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    versions?: HookVersionUncheckedUpdateManyWithoutTestNestedInput
-  }
-
-  export type HookTestUncheckedUpdateManyWithoutVideoInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    workspaceId?: StringFieldUpdateOperationsInput | string
-    insight?: StringFieldUpdateOperationsInput | string
-    sameInJson?: StringFieldUpdateOperationsInput | string
-    lever?: StringFieldUpdateOperationsInput | string
-    beatsJson?: StringFieldUpdateOperationsInput | string
-    stopRule?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    winnerLabel?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type HookCreateManyAnalysisInput = {
@@ -46061,62 +43133,6 @@ export namespace Prisma {
     analysisId?: StringFieldUpdateOperationsInput | string
     briefJson?: StringFieldUpdateOperationsInput | string
     exportedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-  }
-
-  export type HookVersionCreateManyTestInput = {
-    id?: string
-    label: string
-    round?: number
-    hookText: string
-    firstFrame?: string | null
-    hookType: string
-    mechanism?: string | null
-    status?: string
-    assetUrl?: string | null
-    ownPostId?: string | null
-    createdAt?: Date | string
-  }
-
-  export type HookVersionUpdateWithoutTestInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    label?: StringFieldUpdateOperationsInput | string
-    round?: IntFieldUpdateOperationsInput | number
-    hookText?: StringFieldUpdateOperationsInput | string
-    firstFrame?: NullableStringFieldUpdateOperationsInput | string | null
-    hookType?: StringFieldUpdateOperationsInput | string
-    mechanism?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    assetUrl?: NullableStringFieldUpdateOperationsInput | string | null
-    ownPostId?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-  }
-
-  export type HookVersionUncheckedUpdateWithoutTestInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    label?: StringFieldUpdateOperationsInput | string
-    round?: IntFieldUpdateOperationsInput | number
-    hookText?: StringFieldUpdateOperationsInput | string
-    firstFrame?: NullableStringFieldUpdateOperationsInput | string | null
-    hookType?: StringFieldUpdateOperationsInput | string
-    mechanism?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    assetUrl?: NullableStringFieldUpdateOperationsInput | string | null
-    ownPostId?: NullableStringFieldUpdateOperationsInput | string | null
-    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
-  }
-
-  export type HookVersionUncheckedUpdateManyWithoutTestInput = {
-    id?: StringFieldUpdateOperationsInput | string
-    label?: StringFieldUpdateOperationsInput | string
-    round?: IntFieldUpdateOperationsInput | number
-    hookText?: StringFieldUpdateOperationsInput | string
-    firstFrame?: NullableStringFieldUpdateOperationsInput | string | null
-    hookType?: StringFieldUpdateOperationsInput | string
-    mechanism?: NullableStringFieldUpdateOperationsInput | string | null
-    status?: StringFieldUpdateOperationsInput | string
-    assetUrl?: NullableStringFieldUpdateOperationsInput | string | null
-    ownPostId?: NullableStringFieldUpdateOperationsInput | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 

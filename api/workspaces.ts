@@ -21,7 +21,6 @@ import { listMembers, inviteMember, inviteMemberToAllWorkspaces, listTeamRoster,
 import { db } from '../src/db.js';
 import { buildWeeklyRetro } from '../src/lib/posts.js';
 import { buildBenchmark } from '../src/lib/benchmark.js';
-import { listHookTests } from '../src/lib/hook-tests.js';
 
 export async function OPTIONS(request: Request): Promise<Response> {
   return corsPreflight(request);
@@ -93,20 +92,12 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   // Studio reads back over already-scraped data; there is no POST posts log.
-  if (resource === 'retro' || resource === 'benchmark' || resource === 'hook-tests') {
+  if (resource === 'retro' || resource === 'benchmark') {
     const owned = await requireWorkspaceAccess(request, url.searchParams.get('workspaceId'));
     if (!owned.ok) return owned.response;
     if (resource === 'retro') {
       const retro = await buildWeeklyRetro(owned.workspace);
       return jsonResponse(200, retro, request);
-    }
-    if (resource === 'hook-tests') {
-      // The /tests page index. Open tests by default; ?includeClosed=1 adds
-      // the graveyard (won/closed) below the live ones.
-      const tests = await listHookTests(owned.workspace.id, {
-        includeClosed: url.searchParams.get('includeClosed') === '1',
-      });
-      return jsonResponse(200, { tests }, request);
     }
     const bench = await buildBenchmark(owned.workspace);
     return jsonResponse(200, bench, request);

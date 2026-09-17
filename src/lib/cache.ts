@@ -100,9 +100,9 @@ export function invalidateWorkspaceList(userId: string): void {
   invalidateCache(cacheKey(['workspaces', userId]));
 }
 
-/** Drop every workspace-scoped read cache (sources, gallery, studio, tests). */
+/** Drop every workspace-scoped read cache (sources, gallery, studio). */
 export function invalidateWorkspaceReads(workspaceId: string): void {
-  for (const kind of ['sources', 'gallery', 'retro', 'benchmark', 'hook-tests', 'creator-preview']) {
+  for (const kind of ['sources', 'gallery', 'retro', 'benchmark', 'creator-preview']) {
     invalidateCache(cacheKey([kind, workspaceId]));
   }
 }

@@ -10,10 +10,10 @@
 //
 // Trim policy (as approved):
 //   • FULL:   User (derived from auth.users), Workspace, Source, Board,
-//             SwipeEntry, Idea, HookTest, HookVersion, CreditLedger,
+//             SwipeEntry, Idea, CreditLedger,
 //             SuggestionDismissal, Baseline, ScrapeAlertState
 //   • VIDEOS: Video rows with scrapedAt ≥ cutoff OR referenced by a kept
-//             SwipeEntry/Idea/HookTest; Analyses reachable from those videos
+//             SwipeEntry/Idea; Analyses reachable from those videos
 //             (or from kept Idea/Brief/Script rows) pull their videos back in
 //             (3 fixpoint passes). Score/Analysis/Hook follow the kept set.
 //   • TRIM:   UsageLog/RefreshRun/AutoAnalyzeRun ≤ cutoff; finished MediaJob
@@ -193,12 +193,11 @@ async function idChunks(values: string[], size = 5000): Promise<string[][]> {
 
 async function computeKeptSets(): Promise<{ videoIds: Set<string>; analysisIds: Set<string> }> {
   console.log('computing kept video/analysis sets …');
-  // Videos fresh enough, or anchored by a kept SwipeEntry/Idea/HookTest.
+  // Videos fresh enough, or anchored by a kept SwipeEntry/Idea.
   const fresh = (await pgAny.video.findMany({ where: { scrapedAt: { gte: CUTOFF } }, select: { id: true } })).map((r) => r.id as string);
   const anchored = [
     ...(await pgAny.swipeEntry.findMany({ select: { videoId: true } })).map((r) => r.videoId as string),
     ...(await pgAny.idea.findMany({ select: { videoId: true } })).map((r) => r.videoId as string),
-    ...(await pgAny.hookTest.findMany({ select: { videoId: true } })).map((r) => r.videoId as string),
   ].filter((v): v is string => Boolean(v));
 
   // Analyses reachable from kept ideas/briefs/scripts (their ids must survive).
@@ -239,7 +238,7 @@ async function computeKeptSets(): Promise<{ videoIds: Set<string>; analysisIds: 
 
 const COPY_ORDER = [
   'User', 'Workspace', 'Source', 'Video', 'Score', 'Analysis', 'Hook', 'Board',
-  'SwipeEntry', 'Idea', 'HookTest', 'HookVersion', 'Brief', 'Script',
+  'SwipeEntry', 'Idea', 'Brief', 'Script',
   'CreditLedger', 'SuggestionDismissal', 'StripeEvent', 'Baseline',
   'UsageLog', 'RefreshRun', 'AutoAnalyzeRun', 'MediaJob', 'ScrapeAlertState',
 ] as const;

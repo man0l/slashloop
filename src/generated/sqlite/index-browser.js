@@ -121,7 +121,6 @@ exports.Prisma.TransactionIsolationLevel = makeStrictEnum({
 exports.Prisma.UserScalarFieldEnum = {
   id: 'id',
   email: 'email',
-  googleSub: 'googleSub',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
 };
@@ -244,6 +243,17 @@ exports.Prisma.VideoScalarFieldEnum = {
   soundAuthor: 'soundAuthor'
 };
 
+exports.Prisma.ExperimentScalarFieldEnum = {
+  id: 'id',
+  workspaceId: 'workspaceId',
+  status: 'status',
+  version: 'version',
+  dataJson: 'dataJson',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt',
+  createKey: 'createKey'
+};
+
 exports.Prisma.CanonicalScrapeLockScalarFieldEnum = {
   key: 'key',
   lockedBy: 'lockedBy',
@@ -348,36 +358,6 @@ exports.Prisma.UsageLogScalarFieldEnum = {
   createdAt: 'createdAt'
 };
 
-exports.Prisma.HookTestScalarFieldEnum = {
-  id: 'id',
-  workspaceId: 'workspaceId',
-  videoId: 'videoId',
-  insight: 'insight',
-  sameInJson: 'sameInJson',
-  lever: 'lever',
-  beatsJson: 'beatsJson',
-  stopRule: 'stopRule',
-  status: 'status',
-  winnerLabel: 'winnerLabel',
-  createdAt: 'createdAt',
-  updatedAt: 'updatedAt'
-};
-
-exports.Prisma.HookVersionScalarFieldEnum = {
-  id: 'id',
-  testId: 'testId',
-  label: 'label',
-  round: 'round',
-  hookText: 'hookText',
-  firstFrame: 'firstFrame',
-  hookType: 'hookType',
-  mechanism: 'mechanism',
-  status: 'status',
-  assetUrl: 'assetUrl',
-  ownPostId: 'ownPostId',
-  createdAt: 'createdAt'
-};
-
 exports.Prisma.RefreshRunScalarFieldEnum = {
   id: 'id',
   sourceId: 'sourceId',
@@ -447,6 +427,7 @@ exports.Prisma.ModelName = {
   SuggestionDismissal: 'SuggestionDismissal',
   Source: 'Source',
   Video: 'Video',
+  Experiment: 'Experiment',
   CanonicalScrapeLock: 'CanonicalScrapeLock',
   Baseline: 'Baseline',
   Score: 'Score',
@@ -458,8 +439,6 @@ exports.Prisma.ModelName = {
   Script: 'Script',
   Brief: 'Brief',
   UsageLog: 'UsageLog',
-  HookTest: 'HookTest',
-  HookVersion: 'HookVersion',
   RefreshRun: 'RefreshRun',
   AutoAnalyzeRun: 'AutoAnalyzeRun',
   MediaJob: 'MediaJob',

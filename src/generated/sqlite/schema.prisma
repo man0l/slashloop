@@ -14,16 +14,10 @@ datasource db {
 /// Populated by the Supabase→D1 data migration and refreshed at login. Exists
 /// because the weekly digest resolves the owner's email without joining into
 /// Supabase's `auth` schema (src/lib/digest.ts) — once the app runs on D1 there
-/// is no auth schema to read. Phase 4 (Cloudflare-native auth) turns this into
-/// the identity source of truth.
+/// is no auth schema to read.
 model User {
   id        String   @id
   email     String
-  /// Native Google subject (`google:<sub>`) linked at first Google login.
-  /// Null until then (all migrated Supabase rows start Null). Set together
-  /// with the Workspace.ownerId transfer in src/cf/account-link.ts
-  /// ensureNativeUser() — one Google identity links to at most one User row.
-  googleSub String?  @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -100,7 +94,6 @@ model Workspace {
 
   sources              Source[]
   boards               Board[]
-  hookTests            HookTest[]
   usageLogs            UsageLog[]
   autoAnalyzeRuns      AutoAnalyzeRun[]
   creditLedger         CreditLedger[]
@@ -285,7 +278,6 @@ model Video {
   hooks        Hook[]
   swipeEntries SwipeEntry[]
   ideas        Idea[]
-  hookTests    HookTest[]
 
   /// Fan-out from a shared multi-tenant scrape can be applied twice — by two
   /// worker containers racing, or (Phase B) by replaying a cached result.
@@ -312,6 +304,23 @@ model Video {
 /// rather than pg_advisory_lock: the workers talk to the Supabase pooler in
 /// transaction pooling mode, where a session-level lock can be released on a
 /// different backend and leak. See src/lib/jobs.ts acquireCanonicalLock.
+/// Experiments own resumable paid-step receipts in dataJson. Version is a CAS fence.
+/// Deck/revision history is retained; no automatic output deletion.
+model Experiment {
+  id          String   @id
+  workspaceId String
+  status      String
+  version     Int      @default(0)
+  dataJson    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createKey   String
+
+  @@unique([workspaceId, createKey])
+  @@index([workspaceId, createdAt])
+  @@index([status, updatedAt])
+}
+
 model CanonicalScrapeLock {
   /// canonicalKey(platform, sourceType, normalizedQuery)
   key       String   @id
@@ -478,85 +487,9 @@ model UsageLog {
   @@index([workspaceId])
   @@index([kind])
   @@index([createdAt])
-}
-
-/// One AI hook test (docs/product-plan.md, feature #7): a proven outlier video
-/// reduced to one transferable insight plus several generated openings that
-/// inherit everything else about the video — same subject, same beats; only
-/// the first seconds change. V1 is text-only: a version's life ends at a shot
-/// list entry until the render pipeline lands (Phase 3).
-///
-/// At most one open test per video, enforced in src/lib/hook-tests.ts rather
-/// than by a unique index — closing a test must free the video again without
-/// touching its history.
-model HookTest {
-  id          String   @id @default(uuid())
-  workspaceId String
-  /// The proven video the insight is mined from.
-  videoId     String
-  /// The one-sentence "why this grabbed attention" every version inherits.
-  /// Editable on purpose: it is the lock that keeps re-rolls on-strategy.
-  insight     String
-  /// JSON array of strings — the frozen chips shared by every version
-  /// ("face to camera", "same kitchen", ...).
-  sameInJson  String   @default("[]")
-  /// What varies between versions. Only 'hook' in v1; the column exists so
-  /// later levers (first frame, sound) don't need a migration.
-  lever       String   @default("hook")
-  /// The storytelling-beat skeleton copied into every version
-  /// ([{type, timestampSec?, description}, ...]).
-  beatsJson   String   @default("[]")
-  /// Plain-language stop rule surfaced beside the versions ("stop when one
-  /// version clears 3× your median"). Advisory in v1.
-  stopRule    String?
-  /// setup → picking → posted → won | closed. Transitions past 'picking'
-  /// arrive with the render/post integrations (Phase 3); v1 moves
-  /// setup→picking via pick_hook_versions, and anything can be closed.
-  status      String   @default("setup")
-  /// Which opening won when the test closed as 'won' ("C"). Manual in v1 —
-  /// Phase 4 replaces it with auto-scoring against the owner baseline; the
-  /// column exists so surfaces can say "C won" from day one.
-  winnerLabel String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  workspace Workspace     @relation(fields: [workspaceId], references: [id])
-  video     Video         @relation(fields: [videoId], references: [id])
-  versions  HookVersion[]
-
-  @@index([workspaceId, status])
-  @@index([videoId])
-}
-
-/// One generated opening inside a hook test. Labels run A–D within a
-/// generation round; re-rolling marks the previous round discarded rather
-/// than deleting it, so the trial-and-error trail stays readable.
-model HookVersion {
-  id         String   @id @default(uuid())
-  testId     String
-  /// A | B | C | D — meaningful within a round; round disambiguates.
-  label      String
-  round      Int      @default(1)
-  hookText   String
-  /// What the very first frame shows. An opening is audiovisual, not just a
-  /// sentence — the spec pins both fields together.
-  firstFrame String?
-  /// recognition | specific_number | contrarian | demo_first
-  hookType   String
-  mechanism  String?
-  /// proposed → picked → rendered → posted → scored. 'discarded' covers both
-  /// superseded re-roll generations and proposals passed over at pick time.
-  status     String   @default("proposed")
-  /// Phase 3: the rendered MP4 (vault path /content/tests/<testId>/<label>.mp4).
-  assetUrl   String?
-  /// Phase 3: matched against the isSelf feed once a version goes live.
-  ownPostId  String?
-  createdAt  DateTime @default(now())
-
-  test HookTest @relation(fields: [testId], references: [id])
-
-  @@unique([testId, round, label])
-  @@index([testId])
+  // Monthly cap checks (bandwidth.ts, spend-cap.ts) filter on all four —
+  // without this they table-scanned ~650x/day (2.7M of 4.1M rows read/day).
+  @@index([workspaceId, kind, provider, createdAt])
 }
 
 model RefreshRun {
