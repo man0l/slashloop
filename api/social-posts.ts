@@ -5,12 +5,14 @@
 //   PATCH  /api/social/posts?id=<group>  → reschedule a group (409 while PROCESSING)
 //   DELETE /api/social/posts?id=<group>  → delete a group (PROCESSING rows survive)
 //
-// Auth: Supabase access token; every query filters owner_id = JWT sub, so a
-// leaked group id can only ever touch the caller's own posts.
+// Auth: Supabase access token; teams share visibility both ways — every query
+// spans the owner_ids visible to the caller (own rows plus teammates' rows
+// across workspace shares, see visibleOwnerIds), so a leaked group id can
+// only ever touch rows inside the caller's team.
 
 import { verifySupabaseJwt } from '../remote/auth.js';
 import { corsHeaders, corsPreflight } from '../src/lib/cors.js';
-import { BadBodyError, createRegistry, getProvider, socialStore, type MediaContent, type ProviderId, type SocialPostRow } from '../src/social/index.js';
+import { BadBodyError, createRegistry, getProvider, socialStore, visibleOwnerIds, type MediaContent, type ProviderId, type SocialPostRow } from '../src/social/index.js';
 
 function json(status: number, body: unknown, request: Request): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
@@ -43,8 +45,12 @@ export async function GET(request: Request): Promise<Response> {
     return json(400, { error: 'invalid_range' }, request);
   }
 
-  const rows = await socialStore.listPostsInRange(claims.sub, from, to);
-  const drafts = await socialStore.listDrafts(claims.sub);
+  const rows: SocialPostRow[] = (
+    await Promise.all((await visibleOwnerIds(claims.sub, claims.email)).map((ownerId) => socialStore.listPostsInRange(ownerId, from, to)))
+  ).flat();
+  const drafts: SocialPostRow[] = (
+    await Promise.all((await visibleOwnerIds(claims.sub, claims.email)).map((ownerId) => socialStore.listDrafts(ownerId)))
+  ).flat();
   return json(200, { groups: groupRows(rows), drafts: groupRows(drafts) }, request);
 }
 
@@ -159,7 +165,13 @@ export async function POST(request: Request): Promise<Response> {
     });
   }
 
-  const integrations = await socialStore.listIntegrations(claims.sub);
+  const owners = await visibleOwnerIds(claims.sub, claims.email);
+  const seen = new Set<string>();
+  const integrations = (
+    await Promise.all(owners.map((ownerId) => socialStore.listIntegrations(ownerId)))
+  )
+    .flat()
+    .filter((row) => (seen.has(row.id) ? false : (seen.add(row.id), true)));
   const selected = integrations.filter((i) => integrationIds.includes(i.id));
   if (!selected.length) return json(400, { error: 'no_valid_integrations' }, request);
 
@@ -229,6 +241,23 @@ export async function PATCH(request: Request): Promise<Response> {
       ? json(409, { error: 'processing', message: 'A post in this group is publishing right now — try again in a moment.' }, request)
       : json(200, payload, request);
 
+  // Group mutations span every visible owner: group ids are UUIDs so at most
+  // one owner matches; counts sum, and any PROCESSING hit wins as a 409.
+  const owners = await visibleOwnerIds(claims.sub, claims.email);
+  async function applyToVisible<K extends string>(
+    key: K,
+    fn: (ownerId: string) => Promise<{ processing: number } & Record<K, number>>,
+  ): Promise<{ processing: number; count: number }> {
+    let processing = 0;
+    let count = 0;
+    for (const ownerId of owners) {
+      const next = await fn(ownerId);
+      processing += next.processing;
+      count += next[key] ?? 0;
+    }
+    return { processing, count };
+  }
+
   // Caption + media update (drafts/queued only — the guard rejects PROCESSING).
   const hasContent = typeof body.content === 'string';
   const hasMedia = Array.isArray(body.media);
@@ -241,8 +270,10 @@ export async function PATCH(request: Request): Promise<Response> {
           ...(m.thumbnail ? { thumbnail: m.thumbnail } : {}),
         }))
       : [];
-    const result = await socialStore.updateGroupContent(claims.sub, id, hasContent ? body.content!.trim() : '', media);
-    return processingGuard(result, { updated: result.updated });
+    const { processing, count } = await applyToVisible('updated', (ownerId) =>
+      socialStore.updateGroupContent(ownerId, id, hasContent ? body.content!.trim() : '', media),
+    );
+    return processingGuard({ processing }, { updated: count });
   }
 
   // Schedule a draft (DRAFT → QUEUE — or SCRUB when the media still carries
@@ -250,15 +281,17 @@ export async function PATCH(request: Request): Promise<Response> {
   if (body.state === 'QUEUE') {
     const publishDate = Math.floor(Number(body.publishDate));
     if (!Number.isFinite(publishDate)) return json(400, { error: 'invalid_publish_date' }, request);
-    const result = await socialStore.scheduleGroup(claims.sub, id, publishDate, body.stripMetadata ? 'SCRUB' : 'QUEUE');
-    return processingGuard(result, { scheduled: result.scheduled, publishDate });
+    const { processing, count } = await applyToVisible('scheduled', (ownerId) =>
+      socialStore.scheduleGroup(ownerId, id, publishDate, body.stripMetadata ? 'SCRUB' : 'QUEUE'),
+    );
+    return processingGuard({ processing }, { scheduled: count, publishDate });
   }
 
   // Plain reschedule.
   const publishDate = Math.floor(Number(body.publishDate));
   if (!Number.isFinite(publishDate)) return json(400, { error: 'invalid_publish_date' }, request);
-  const result = await socialStore.rescheduleGroup(claims.sub, id, publishDate);
-  return processingGuard(result, { rescheduled: result.rescheduled });
+  const { processing, count } = await applyToVisible('rescheduled', (ownerId) => socialStore.rescheduleGroup(ownerId, id, publishDate));
+  return processingGuard({ processing }, { rescheduled: count });
 }
 
 export async function DELETE(request: Request): Promise<Response> {
@@ -268,9 +301,16 @@ export async function DELETE(request: Request): Promise<Response> {
   const id = new URL(request.url).searchParams.get('id');
   if (!id) return json(400, { error: 'missing_id' }, request);
 
-  const result = await socialStore.deleteGroup(claims.sub, id);
-  if (result.processing > 0) {
-    return json(409, { error: 'processing', message: 'A post in this group is publishing right now and cannot be removed.', deleted: result.deleted }, request);
+  const owners = await visibleOwnerIds(claims.sub, claims.email);
+  let processing = 0;
+  let deleted = 0;
+  for (const ownerId of owners) {
+    const result = await socialStore.deleteGroup(ownerId, id);
+    processing += result.processing;
+    deleted += result.deleted;
   }
-  return json(200, { deleted: result.deleted }, request);
+  if (processing > 0) {
+    return json(409, { error: 'processing', message: 'A post in this group is publishing right now and cannot be removed.', deleted }, request);
+  }
+  return json(200, { deleted }, request);
 }

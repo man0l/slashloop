@@ -6,5 +6,6 @@ export * from './types.js';
 export { BadBodyError, ReconnectError, RefreshTokenError } from './errors.js';
 export { createRegistry, getProvider } from './registry.js';
 export { signOAuthState, verifyOAuthState } from './oauth-state.js';
+export { visibleOwnerIds } from './visibility.js';
 export { socialEngineTick, socialRefreshScan, type TickOptions, type TickReport, type RefreshReport } from './engine.js';
 export * as socialStore from './store.js';
