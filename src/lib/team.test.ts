@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test';
 type MemberRow = { id: string; workspaceId: string; email: string; invitedBy: string; createdAt: Date };
 
 let members: MemberRow[] = [];
-let sentEmails: Array<{ to: string; subject: string }> = [];
+let sentEmails: Array<{ to: string; subject: string; text?: string; html?: string }> = [];
 let failSends = false;
 let ownedWorkspaces: Array<{ id: string; name: string }> = [
   { id: 'ws-1', name: 'Acme' },
@@ -43,9 +43,9 @@ mock.module('../db.js', () => ({
 
 mock.module('./email.js', () => ({
   emailConfigured: () => true,
-  sendEmail: async (input: { to: string; subject: string }) => {
+  sendEmail: async (input: { to: string; subject: string; text?: string; html?: string }) => {
     if (failSends) return { sent: false, reason: 'resend_403: domain not verified' };
-    sentEmails.push({ to: input.to, subject: input.subject });
+    sentEmails.push(input);
     return { sent: true, id: 'x' };
   },
 }));
@@ -185,6 +185,21 @@ describe('inviteMemberToAllWorkspaces', () => {
     const result = await inviteMemberToAllWorkspaces({ ownerId: 'user-1', ownerEmail: undefined, rawEmail: 'a@b.co', invitedBy: 'user-1' });
     expect(result.mail).toEqual({ sent: false, reason: 'resend_403: domain not verified' });
     expect(members).toHaveLength(2);
+  });
+
+  test('invite links point at the site login, never the worker origin', async () => {
+    process.env.PUBLIC_URL = 'https://mcp.slashloop.dev';
+    process.env.SOCIAL_SITE_URL = 'https://slashloop.dev';
+    try {
+      await inviteMember(workspace, undefined, 'a@b.co', 'user-1');
+    } finally {
+      delete process.env.PUBLIC_URL;
+      delete process.env.SOCIAL_SITE_URL;
+    }
+    expect(sentEmails).toHaveLength(1);
+    expect(sentEmails[0].text).toContain('https://slashloop.dev/login');
+    expect(sentEmails[0].text).not.toContain('mcp.slashloop.dev');
+    expect(sentEmails[0].html).toContain('https://slashloop.dev/login');
   });
 
   test('rejects bad emails, self-invites, and ownerless callers', async () => {

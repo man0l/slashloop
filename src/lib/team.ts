@@ -34,6 +34,13 @@ export type WorkspaceMemberView = Pick<WorkspaceMember, 'id' | 'email' | 'create
 
 export type MailStatus = { sent: boolean; reason?: string };
 
+/** Where teammates sign in — the SITE (slashloop.dev/login), never the
+ *  worker's own origin (PUBLIC_URL = mcp.slashloop.dev serves the MCP login,
+ *  not the app). SOCIAL_SITE_URL is the canonical site base. */
+function siteOrigin(): string {
+  return (process.env.SOCIAL_SITE_URL ?? 'https://slashloop.dev').replace(/\/$/, '');
+}
+
 async function sendInviteMail(to: { to: string; subject: string; text: string; html: string }): Promise<MailStatus> {
   // Courtesy, but REPORTED: callers surface failures in the UI instead of
   // failing silently (a missing domain verification otherwise looks like a
@@ -99,7 +106,7 @@ export async function inviteMember(
   // mail setup never looks like a working invite.
   let mail: MailStatus = { sent: false, reason: 'skipped' };
   if (opts.sendEmail !== false) {
-    const origin = process.env.PUBLIC_URL?.replace(/\/$/, '') ?? 'https://slashloop.dev';
+    const origin = siteOrigin();
     mail = await sendInviteMail({
       to: email,
       subject: `${workspace.name} on Slashloop — you've been invited`,
@@ -216,7 +223,7 @@ export async function inviteMemberToAllWorkspaces(input: {
 
   invalidateWorkspaceList(input.invitedBy);
 
-  const origin = process.env.PUBLIC_URL?.replace(/\/$/, '') ?? 'https://slashloop.dev';
+  const origin = siteOrigin();
   const names = workspaces
     .filter((w) => w.status !== 'skipped_limit')
     .map((w) => w.name)
