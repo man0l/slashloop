@@ -77,5 +77,5 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse, origi
     } finally {
       await mcp.close();
     }
-  });
+  }, typeof claims.email === 'string' ? claims.email : undefined);
 }

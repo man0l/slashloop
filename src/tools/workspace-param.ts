@@ -3,7 +3,8 @@
 //
 // Every tool resolves its workspace through requireWorkspace() (src/context.ts):
 // omitted → the caller's primary (earliest-created) workspace; explicit → that
-// exact workspace, but only if the caller owns it (throws otherwise). Follow
+// exact workspace, but only if the caller owns it or is a team member of it
+// (email-keyed invite — members are full peers). Throws otherwise. Follow
 // the gallery precedent (src/tools/gallery.ts): never use the raw input for
 // queries or cache keys — always the resolved `workspace.id`.
 // ---------------------------------------------------------------------------

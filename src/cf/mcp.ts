@@ -118,7 +118,7 @@ export async function handleMcpRequest(request: Request, opts: HandleOptions = {
     } else if (mcp.server.getClientCapabilities() !== undefined) {
       console.log(`mcp-apps host=${JSON.stringify(mcp.server.getClientVersion()?.name ?? '?')} ui=false (no io.modelcontextprotocol/ui at initialize — gallery will not render inline; /gallery link is the path)`);
     }
-  });
+  }, email ?? undefined);
   return response;
 }
 

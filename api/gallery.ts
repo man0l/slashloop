@@ -139,7 +139,9 @@ async function handleData(request: Request, url: URL): Promise<Response> {
   // buildCards() resolves its workspace through requireWorkspace(), which
   // reads the current user id from AsyncLocalStorage (the MCP-tool context
   // primitive, see src/context.ts) — run this REST handler inside that same
-  // context rather than re-deriving workspace resolution here.
+  // context rather than re-deriving workspace resolution here. The email
+  // rides along so team members (email-keyed invites) resolve shared
+  // workspaces instead of throwing.
   const { cards, note, filters } = await runWithUser(auth.userId, () =>
     buildCards({
       workspaceId: auth.workspace.id,
@@ -152,6 +154,7 @@ async function handleData(request: Request, url: URL): Promise<Response> {
       analyzedBy: analyzedByOf(url.searchParams.get('analyzedBy')),
       hasHookTest: url.searchParams.get('hasHookTest') === '1' || url.searchParams.get('hasHookTest') === 'true',
     }),
+    auth.email ?? undefined,
   );
 
   return jsonResponse(200, { cards, note, filters }, request);

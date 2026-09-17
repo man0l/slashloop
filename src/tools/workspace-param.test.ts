@@ -8,12 +8,37 @@ import { z } from 'zod/v4';
 
 const PRIMARY = { id: 'ws-primary', name: 'My workspace' };
 const SECOND = { id: 'ws-second', name: 'faceless maxxing' };
+const SHARED = { id: 'ws-shared', name: 'Shared' };
+
+// ownerId per workspace; invites matched on login email (see src/lib/team.ts).
+const OWNERS: Record<string, string> = {
+  'ws-primary': 'u1',
+  'ws-second': 'u1',
+  'ws-shared': 'u9',
+};
+const MEMBER_EMAILS: Record<string, string[]> = { 'ws-shared': ['mate@x.co'] };
 
 mock.module('../db.js', () => ({
   db: {
     workspace: {
-      findFirst: async ({ where }: { where: { id?: string; ownerId?: string } }) => {
-        if (where.id) return where.id === SECOND.id ? { ...SECOND, ownerId: 'u1' } : null;
+      findFirst: async ({ where }: { where: { id?: string; ownerId?: string; OR?: unknown[] } }) => {
+        if (where.id) {
+          const ownerId = OWNERS[where.id];
+          if (!ownerId) return null;
+          if (where.ownerId && where.ownerId !== ownerId) return null;
+          if (where.OR) {
+            const or = where.OR as Array<{ ownerId?: string; members?: { some: { email: string } } }>;
+            const ok = or.some(
+              (cond) =>
+                (cond.ownerId !== undefined && cond.ownerId === ownerId) ||
+                (cond.members !== undefined && MEMBER_EMAILS[where.id!]?.includes(cond.members.some.email)),
+            );
+            if (!ok) return null;
+          } else if (where.ownerId && where.ownerId !== ownerId) {
+            return null;
+          }
+          return { id: where.id, name: where.id, ownerId };
+        }
         return { ...PRIMARY, ownerId: 'u1' };
       },
     },
@@ -37,6 +62,23 @@ describe('resolveToolWorkspace', () => {
   test('unowned workspaceId throws', async () => {
     await expect(
       runWithUser('u1', () => resolveToolWorkspace({ workspaceId: 'ws-nope' })),
+    ).rejects.toThrow('Workspace not found.');
+  });
+
+  test('team member resolves a shared workspace by login email', async () => {
+    const ws = await runWithUser('u2', () => resolveToolWorkspace({ workspaceId: 'ws-shared' }), 'mate@x.co');
+    expect(ws.id).toBe('ws-shared');
+  });
+
+  test('team member with another login email is denied', async () => {
+    await expect(
+      runWithUser('u2', () => resolveToolWorkspace({ workspaceId: 'ws-shared' }), 'stranger@x.co'),
+    ).rejects.toThrow('Workspace not found.');
+  });
+
+  test('no email in context keeps the owner-only rule', async () => {
+    await expect(
+      runWithUser('u2', () => resolveToolWorkspace({ workspaceId: 'ws-shared' })),
     ).rejects.toThrow('Workspace not found.');
   });
 });

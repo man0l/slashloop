@@ -84,7 +84,7 @@ export async function POST(request: Request): Promise<Response> {
     } else if (mcp.server.getClientCapabilities() !== undefined) {
       console.log(`mcp-apps host=${JSON.stringify(mcp.server.getClientVersion()?.name ?? '?')} ui=false (no io.modelcontextprotocol/ui at initialize — gallery will not render inline; /gallery link is the path)`);
     }
-  });
+  }, typeof claims.email === 'string' ? claims.email : undefined);
   await trackAIBotResponse(request, response, undefined, { websiteId: AIBOT_WEBSITE_ID });
   return response;
 }
