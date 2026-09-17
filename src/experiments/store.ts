@@ -36,7 +36,7 @@ export async function create(e: Experiment, key: string): Promise<Experiment> {
  * experiment CAS. charge > 0 splits the debit across plan/pack buckets by the
  * balance actually available (a zero-delta row keeps the bucket split exact);
  * charge < 0 refunds by mirroring the original charge rows with inverted
- * deltas under ref + ':refund' — the deterministic ids make a duplicate
+ * deltas under each bucket ref + ':refund' — the deterministic ids make a duplicate
  * refund violate the ledger primary key instead of double-crediting.
  */
 export function creditStatements(e: Experiment, next: Experiment & { writeToken: string }, billingId: string, charge: number, ref: string): RawStatement[] {
@@ -48,10 +48,10 @@ export function creditStatements(e: Experiment, next: Experiment & { writeToken:
   if (charge < 0) {
     const amount = -charge;
     return [
-      { sql: `INSERT INTO "CreditLedger" ("id","workspaceId","delta","bucket","reason","tool","balanceAfter","refId","createdAt") SELECT l."id"||':refund',l."workspaceId",-l."delta",l."bucket",'refund','experiment',(SELECT w."planCredits"+w."packCredits" FROM "Workspace" w WHERE w."id"=?)+?,?,? FROM "CreditLedger" l WHERE l."workspaceId"=? AND l."refId"=? AND l."delta"<0 AND ${predicate} RETURNING "id"`,
-        params: [billingId,amount,`${ref}:refund`,new Date(),billingId,ref,...proof] },
+      { sql: `INSERT INTO "CreditLedger" ("id","workspaceId","delta","bucket","reason","tool","balanceAfter","refId","createdAt") SELECT l."id"||':refund',l."workspaceId",-l."delta",l."bucket",'refund','experiment',(SELECT w."planCredits"+w."packCredits" FROM "Workspace" w WHERE w."id"=?)+?,l."refId"||':refund',? FROM "CreditLedger" l WHERE l."workspaceId"=? AND ((l."refId"=? AND l."bucket"='plan') OR (l."refId"=? AND l."bucket"='pack')) AND l."delta"<0 AND ${predicate} RETURNING "id"`,
+        params: [billingId,amount,new Date(),billingId,`${ref}:plan`,`${ref}:pack`,...proof] },
       { sql: `UPDATE "Workspace" SET "planCredits"="planCredits"+COALESCE((SELECT SUM("delta") FROM "CreditLedger" WHERE "refId"=? AND "workspaceId"=? AND "bucket"='plan'),0),"packCredits"="packCredits"+COALESCE((SELECT SUM("delta") FROM "CreditLedger" WHERE "refId"=? AND "workspaceId"=? AND "bucket"='pack'),0) WHERE "id"=? AND ${predicate} RETURNING "id"`,
-        params: [`${ref}:refund`,billingId,`${ref}:refund`,billingId,billingId,...proof] },
+        params: [`${ref}:plan:refund`,billingId,`${ref}:pack:refund`,billingId,billingId,...proof] },
     ];
   }
   return [
@@ -59,7 +59,7 @@ export function creditStatements(e: Experiment, next: Experiment & { writeToken:
       const deltaExpr = bucket === 'plan' ? `${min}("planCredits",?)` : `${max}(0,?-"planCredits")`;
       const balanceExpr = bucket === 'plan' ? `"planCredits"+"packCredits"-${min}("planCredits",?)` : `"planCredits"+"packCredits"-?`;
       return { sql: `INSERT INTO "CreditLedger" ("id","workspaceId","delta","bucket","reason","tool","balanceAfter","refId","createdAt") SELECT ?,?,-${deltaExpr},?,'tool_call','experiment',${balanceExpr},?,? FROM "Workspace" WHERE "id"=? AND ${predicate} RETURNING "id"`,
-        params: [randomUUID(),billingId,charge,bucket,charge,ref,new Date(),billingId,...proof] };
+        params: [randomUUID(),billingId,charge,bucket,charge,`${ref}:${bucket}`,new Date(),billingId,...proof] };
     }),
     { sql: `UPDATE "Workspace" SET "planCredits"="planCredits"-${min}("planCredits",?), "packCredits"="packCredits"-${max}(0,?-"planCredits") WHERE "id"=? AND ${predicate} RETURNING "id"`,
       params: [charge,charge,billingId,...proof] },

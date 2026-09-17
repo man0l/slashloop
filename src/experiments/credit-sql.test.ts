@@ -7,13 +7,14 @@ import type { Experiment } from './schema.js';
 import { step, type EngineDeps } from './engine.js';
 import { SafeFailure } from './providers.js';
 
-test('SQLite refunds restore original credit buckets and reject a duplicate refund', () => {
+test.each([2, 0, 5])('SQLite refunds restore original buckets with %i plan credits and reject duplicates', (planCredits) => {
   process.env.DB_DIALECT = 'sqlite';
   const db = new Database(':memory:');
   db.exec(`CREATE TABLE Workspace(id TEXT PRIMARY KEY, planCredits INTEGER, packCredits INTEGER);
     CREATE TABLE Experiment(id TEXT PRIMARY KEY, dataJson TEXT);
     CREATE TABLE CreditLedger(id TEXT PRIMARY KEY, workspaceId TEXT, delta INTEGER, bucket TEXT, reason TEXT, tool TEXT, balanceAfter INTEGER NOT NULL, refId TEXT, createdAt TEXT);
-    INSERT INTO Workspace VALUES ('w',2,10);`);
+    CREATE UNIQUE INDEX "CreditLedger_workspaceId_refId_key" ON "CreditLedger"("workspaceId", "refId");
+    INSERT INTO Workspace VALUES ('w',${planCredits},10);`);
   const e = { id: 'e' } as Experiment;
   const next = { id: 'e', version: 1, writeToken: 'receipt-1' } as Experiment & { writeToken: string };
   db.run('INSERT INTO Experiment VALUES (?,?)', ['e',JSON.stringify(next)]);
@@ -26,14 +27,14 @@ test('SQLite refunds restore original credit buckets and reject a duplicate refu
   }
   db.run('UPDATE Experiment SET dataJson=?', [JSON.stringify({...next,writeToken:'another-writer'})]);
   apply(5);
-  expect(db.query('SELECT planCredits,packCredits FROM Workspace').get()).toEqual({planCredits:2,packCredits:10});
+  expect(db.query('SELECT planCredits,packCredits FROM Workspace').get()).toEqual({planCredits,packCredits:10});
   db.run('UPDATE Experiment SET dataJson=?', [JSON.stringify(next)]);
   apply(5);
-  expect(db.query('SELECT planCredits,packCredits FROM Workspace').get()).toEqual({planCredits:0,packCredits:7});
+  expect(db.query('SELECT planCredits,packCredits FROM Workspace').get()).toEqual({planCredits:0,packCredits:10-(5-planCredits)});
   apply(-5);
-  expect(db.query('SELECT planCredits,packCredits FROM Workspace').get()).toEqual({planCredits:2,packCredits:10});
+  expect(db.query('SELECT planCredits,packCredits FROM Workspace').get()).toEqual({planCredits,packCredits:10});
   expect(() => apply(-5)).toThrow();
-  expect(db.query('SELECT planCredits,packCredits FROM Workspace').get()).toEqual({planCredits:2,packCredits:10});
+  expect(db.query('SELECT planCredits,packCredits FROM Workspace').get()).toEqual({planCredits,packCredits:10});
   db.close();
 });
 
@@ -44,6 +45,7 @@ test('engine rejection atomically restores SQL balances while unknown outcomes r
     db.exec(`CREATE TABLE Workspace(id TEXT PRIMARY KEY, planCredits INTEGER, packCredits INTEGER);
       CREATE TABLE Experiment(id TEXT PRIMARY KEY, dataJson TEXT);
       CREATE TABLE CreditLedger(id TEXT PRIMARY KEY, workspaceId TEXT, delta INTEGER, bucket TEXT, reason TEXT, tool TEXT, balanceAfter INTEGER NOT NULL, refId TEXT, createdAt TEXT);
+    CREATE UNIQUE INDEX "CreditLedger_workspaceId_refId_key" ON "CreditLedger"("workspaceId", "refId");
       INSERT INTO Workspace VALUES ('w',2,10);`);
     let row: Experiment = { id:'e', workspaceId:'w', version:0, status:'planning', creditsCharged:0, maxCredits:20,
       createdAt:'2026-09-16',updatedAt:'2026-09-16',variantCount:1,slideCount:3,report:null,error:null,
