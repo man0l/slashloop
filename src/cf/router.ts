@@ -13,6 +13,7 @@ import * as mcp from './mcp.js';
 import * as gallery from '../../api/gallery.js';
 import * as sources from '../../api/sources.js';
 import * as videos from '../../api/videos.js';
+import * as experiments from '../../api/experiments.js';
 import * as workspaces from '../../api/workspaces.js';
 import * as billing from '../../api/billing.js';
 import * as digestSettings from '../../api/digest-settings.js';
@@ -118,6 +119,7 @@ const ROUTES: Route[] = [
   { re: /^\/api\/workspaces(?:\/([^/]+?))\/members$/, mod: workspaces, inject: { id: '$1', resource: 'members' } },
   { re: /^\/api\/workspaces$/, mod: workspaces },
   { re: /^\/api\/workspaces(?:\/([^/]+?))$/, mod: workspaces, inject: { id: '$1' } },
+  { re: /^\/api\/experiments(?:\/.*)?$/, mod: experiments },
   // videos + hook tests.
   { re: /^\/api\/videos(?:\/([^/]+?))\/analyze$/, mod: videos, inject: { id: '$1', action: 'analyze' } },
   { re: /^\/api\/videos(?:\/([^/]+?))\/fetch$/, mod: videos, inject: { id: '$1', action: 'fetch' } },

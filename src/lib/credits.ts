@@ -51,6 +51,10 @@ export const CREDIT_COSTS = {
   refreshSourcePerVideo: 1.5,
   /** analyze_video / run_auto_analyze, per video analyzed. */
   analyzeVideo: 5,
+  /** Experiments: one bounded Gemini synthesis/brief request, separately metered. */
+  experimentPlanningCall: 2,
+  /** Experiments: one original low-quality OpenRouter image, not a whole deck. */
+  experimentSlide: 2,
   /** Recreate a photo carousel via OpenRouter gpt-image-2.5-sunburst at low quality. */
   recreateSlideshow: 2,
   /** generate_hook_variations — a real Gemini text call. */

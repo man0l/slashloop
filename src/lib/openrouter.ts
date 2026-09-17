@@ -298,6 +298,8 @@ export const RECREATE_IMAGE_MODEL = 'openai/gpt-image-2.5-sunburst';
 
 export async function generateOpenRouterImage(opts: {
   prompt: string;
+  /** Explicit caller override for controlled image-model tests; production default unchanged. */
+  model?: string;
   referenceUrl?: string;
   quality?: 'low' | 'medium' | 'high';
   aspectRatio?: string;
@@ -306,7 +308,7 @@ export async function generateOpenRouterImage(opts: {
   if (!apiKey) throw new Error('OPENROUTER_API_KEY environment variable is not set');
 
   const body: Record<string, unknown> = {
-    model: RECREATE_IMAGE_MODEL,
+    model: opts.model ?? RECREATE_IMAGE_MODEL,
     prompt: opts.prompt,
     quality: opts.quality ?? 'low',
     aspect_ratio: opts.aspectRatio ?? '9:16',

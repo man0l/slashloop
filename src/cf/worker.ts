@@ -13,6 +13,7 @@ import { ensureStore, type Env } from './env.js';
 import { route } from './router.js';
 import { createOAuthProvider } from './oauth.js';
 import { runWithWaitUntil } from './wait-until.js';
+import { tick as experimentTick } from '../experiments/engine.js';
 
 // OAuthProvider owns fetch: /mcp (apiHandlers) + /authorize, /token,
 // /register and the OAuth metadata endpoints; everything else falls through
@@ -99,6 +100,11 @@ export default {
           });
         ctx.waitUntil(socialTick);
         await socialTick;
+        // Durable experiment checkpoints, after social so paid generation cannot
+        // starve due posts. Same trigger; never depends on an HTTP waitUntil.
+        await experimentTick(120_000).catch((err: unknown) => {
+          console.error('[worker] experiments tick failed', err instanceof Error ? err.name : 'unknown');
+        });
       }
     });
   },

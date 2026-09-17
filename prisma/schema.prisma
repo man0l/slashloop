@@ -305,6 +305,23 @@ model Video {
 /// rather than pg_advisory_lock: the workers talk to the Supabase pooler in
 /// transaction pooling mode, where a session-level lock can be released on a
 /// different backend and leak. See src/lib/jobs.ts acquireCanonicalLock.
+/// Experiments own resumable paid-step receipts in dataJson. Version is a CAS fence.
+/// Deck/revision history is retained; no automatic output deletion.
+model Experiment {
+  id           String @id
+  workspaceId  String
+  status       String
+  version      Int @default(0)
+  dataJson     String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  createKey    String
+
+  @@unique([workspaceId, createKey])
+  @@index([workspaceId, createdAt])
+  @@index([status, updatedAt])
+}
+
 model CanonicalScrapeLock {
   /// canonicalKey(platform, sourceType, normalizedQuery)
   key       String   @id
