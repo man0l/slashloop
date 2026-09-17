@@ -14,7 +14,6 @@ import { ensureStore, type Env } from './env.js';
 import { route } from './router.js';
 import { createOAuthProvider } from './oauth.js';
 import { runWithWaitUntil } from './wait-until.js';
-import { tick as experimentTick } from '../experiments/engine.js';
 import { withD1Budget } from './d1-budget.js';
 
 // OAuthProvider owns fetch: /mcp (apiHandlers) + /authorize, /token,
@@ -102,11 +101,10 @@ export default {
           });
         ctx.waitUntil(socialTick);
         await socialTick;
-        // Durable experiment checkpoints, after social so paid generation cannot
-        // starve due posts. Same trigger; never depends on an HTTP waitUntil.
-        await experimentTick(120_000).catch((err: unknown) => {
-          console.error('[worker] experiments tick failed', err instanceof Error ? err.name : 'unknown');
-        });
+        // Experiments moved to the VPS worker loop: workerd's fetch context
+        // rejected experiment media preparation (logged as preparation_failed)
+        // while the same code succeeds on the VPS. The */2 cron no longer
+        // advances experiments; the VPS worker's loop owns that progression.
       }
     }));
   },

@@ -47,6 +47,7 @@ import { rescoreStaleTooFresh } from '../scoring.js';
 import { withMeterScope } from '../lib/scrapers/bandwidth.js';
 import { refundCredits } from '../lib/credits.js';
 import { initLogShipping } from './ship-logs.js';
+import { tick as experimentTick } from '../experiments/engine.js';
 
 // D1 is single-writer with per-request billing: the 3s Postgres poll default
 // would hammer it from every container. In D1 mode (DB_DIALECT=sqlite) the
@@ -78,6 +79,17 @@ const RECLAIM_INTERVAL_MS = (() => {
   const n = Number(process.env.WORKER_RECLAIM_INTERVAL_MS ?? 5 * 60_000);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 5 * 60_000;
 })();
+
+// Experiments advance on this loop (moved off the CF */2 cron: workerd's
+// fetch context broke experiment media preparation — the VPS runs the same
+// code fine). No extra cron trigger is consumed (Free plan cap); the tick is
+// throttled and single-flight so MediaJob draining is never blocked, and its
+// failures are logged, never thrown. Only media workers (analyze/recreate
+// kinds — the containers holding the Gemini/OpenRouter/R2 credentials) tick;
+// maintenance-only containers skip it.
+const EXPERIMENT_TICK_INTERVAL_MS = 120_000;
+let lastExperimentTickAt = 0;
+let experimentTickInFlight: Promise<unknown> | null = null;
 
 // Which MediaJob kinds this worker claims. WORKER_KINDS is a comma-separated
 // list (e.g. "analyze,fetch" for video-only, or "refresh,rescore" for a
@@ -224,6 +236,20 @@ while (!shuttingDown) {
       await rescoreStaleTooFresh().catch((err) => {
         console.warn(`[worker] rescoreStaleTooFresh failed: ${(err as Error).message}`);
       });
+    }
+
+    // Experiment engine: drive planning/generation steps on the VPS (no 60s
+    // ceiling). Skipped entirely on video/fetch-only workers (WORKER_KINDS
+    // without refresh/rescore/maintenance roles) so a dedicated analyze
+    // container does not also bill Gemini/OpenRouter here.
+    if (!experimentTickInFlight && Date.now() - lastExperimentTickAt >= EXPERIMENT_TICK_INTERVAL_MS) {
+      lastExperimentTickAt = Date.now();
+      experimentTickInFlight = experimentTick(120_000)
+        .then(({ steps }) => { if (steps > 0) console.log(`[worker] experiment tick advanced ${steps} step(s)`); })
+        .catch((err) => {
+          console.error(`[worker] experiment tick failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+        })
+        .finally(() => { experimentTickInFlight = null; });
     }
 
     // Claim up to CONCURRENCY jobs across ALL kinds in ONE statement, priority
