@@ -5,6 +5,7 @@ import { CREDIT_COSTS, creditBalance } from '../lib/credits.js';
 import * as S from './schema.js';
 import * as store from './store.js';
 import { compatibleInput } from './providers.js';
+import { isPhotoPost } from '../lib/media.js';
 import { effectiveOverlayText } from './render-prompt.js';
 
 export const fingerprint = (v: unknown): string => createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -12,14 +13,18 @@ export async function createExperiment(raw: unknown) {
   const b = S.Create.parse(raw);
   const now = new Date().toISOString();
   const inputs: S.Input[] = [];
+  let referenced = false;
   for (const videoId of b.videoIds) {
     const v = await db.video.findFirst({ where: { id: videoId, source: { workspaceId: b.workspaceId } } });
     if (!v) throw new S.ExperimentError(404,'video_not_found');
+    if (isPhotoPost(v)) referenced = true;
     inputs.push(await compatibleInput(v));
   }
   const { idempotencyKey, videoIds, workspaceId, ...fields } = b;
   return store.create({ id: randomUUID(),workspaceId,...fields,status:'draft',createdAt:now,updatedAt:now,
-    creditsCharged:0,report:null,inputs,variants:[],error:null,generationBasis:'text-directed',
+    creditsCharged:0,report:null,inputs,variants:[],error:null,
+    // Slideshow sources are attached as visual references during rendering; video-only stays text-directed.
+    generationBasis:referenced?'source-referenced':'text-directed',
     assetPolicy:'Generated outputs retained until explicit deletion; never swept with source media. No Stream copies. Gemini uploads named experiment-temp expire at provider in approximately 48h; reusable handles expire locally at 40h.',
     version:0,tasks:[],commands:{},allowPartial:false,createFingerprint:fingerprint(b) },idempotencyKey);
 }
@@ -37,7 +42,7 @@ export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: 
   const generationCredits = stage === 'generate' ? variants.reduce((n,v)=>n+(v.slides.length ? v.slides.filter(s=>s.status!=='done').length : e.slideCount)*CREDIT_COSTS.experimentSlide,0) : 0;
   return { analysisCredits,planningCredits,generationCredits,totalCredits:analysisCredits+planningCredits+generationCredits,
     remainingCredits:e.maxCredits-e.creditsCharged, workspaceCredits:(await creditBalance(e.workspaceId)).total,
-    maxCredits:e.maxCredits,generationBasis:'text-directed',exactProviderUsdCap:false,
+    maxCredits:e.maxCredits,generationBasis:e.generationBasis,exactProviderUsdCap:false,
     maxProviderRequests: (stage==='plan' ? analysisCredits/CREDIT_COSTS.analyzeVideo+planningCredits/CREDIT_COSTS.experimentPlanningCall : generationCredits/CREDIT_COSTS.experimentSlide),
     pricing:{analysis:CREDIT_COSTS.analyzeVideo,planningCall:CREDIT_COSTS.experimentPlanningCall,slide:CREDIT_COSTS.experimentSlide} };
 }

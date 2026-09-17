@@ -50,14 +50,15 @@ export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'sl
   status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; }
 export interface Input { videoId: string; status: string; analysisId: string | null; jobId: string | null; error: string | null;
   coverage: { basis: string; observed: number; total: number | null; complete: boolean } | null; evidence: Array<{ location: string; observation: string }>; }
+export type GenerationBasis = 'text-directed' | 'source-referenced';
 export interface Variant extends Proposal { id: string; revision: number; status: string; baselineId: string | null;
-  generationBasis: 'text-directed'; history: Array<{ revision: number; brief: BriefData }>;
+  generationBasis: GenerationBasis; history: Array<{ revision: number; brief: BriefData }>;
   frozenBrief: BriefData | null; slides: Array<{ index: number; status: string; url: string | null; path: string | null; error: string | null; overlayText: string }>; error: string | null; }
 export interface Experiment {
   id: string; workspaceId: string; status: string; createdAt: string; updatedAt: string; instructions: InstructionsData;
   variantCount: number; slideCount: number; maxCredits: number; creditsCharged: number;
   report: (ReportData & { coverage?: unknown }) | null; inputs: Input[]; variants: Variant[]; error: string | null;
-  generationBasis: 'text-directed'; assetPolicy: string; version: number; tasks: Task[];
+  generationBasis: GenerationBasis; assetPolicy: string; version: number; tasks: Task[];
   commands: Record<string, string>; allowPartial: boolean; createFingerprint: string;
 }
 export function same(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b); }

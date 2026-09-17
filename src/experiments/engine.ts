@@ -20,7 +20,7 @@ function settle(e:Experiment,t:Task,result:unknown) {
   } else if(t.kind==='report') e.report={...result as ReportData,coverage:{included:e.inputs.filter(i=>i.status==='ready').map(i=>i.videoId),excluded:e.inputs.filter(i=>i.status!=='ready').map(i=>({videoId:i.videoId,error:i.error})),partial:e.inputs.some(i=>i.status!=='ready')}};
   else if(t.kind==='briefs') {
     const baselineId=randomUUID();
-    e.variants=(result as Proposal[]).map((v,i)=>({...v,id:i===0?baselineId:randomUUID(),baselineId:i===0?null:baselineId,revision:1,status:'draft',generationBasis:'text-directed',history:[],frozenBrief:null,slides:[],error:null}));
+    e.variants=(result as Proposal[]).map((v,i)=>({...v,id:i===0?baselineId:randomUUID(),baselineId:i===0?null:baselineId,revision:1,status:'draft',generationBasis:e.generationBasis,history:[],frozenBrief:null,slides:[],error:null}));
     if(isActive(e))e.status='review';
   } else {
     const v=e.variants.find(v=>v.id===t.target)!;const slide=v.slides[t.index!]!;
