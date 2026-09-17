@@ -40,10 +40,12 @@ test('rejects missing sources, missing originals and foreign/recreated keys', ()
     expect(() => selectSlideReference(e, 0, videos)).toThrow();
   }
 });
-test('video-only sources remain text-directed', () => {
+test('video-only sources anchor style with the source thumbnail', () => {
   const { e, videos } = fixture();
   for (const v of videos) { v.mediaStatus = 'stored'; v.durationSec = 30; v.rawJson = '{}'; }
-  expect(selectSlideReference(e, 0, videos)).toBeNull();
+  const anchor = selectSlideReference(e, 0, videos);
+  expect(anchor).toMatchObject({ kind: 'thumb', videoId: 'a', path: 'w/a.jpg' });
+  expect(anchor?.url).toContain('assets.example.test');
 });
 test('prepare attaches the original image to exactly one render and saves provenance', async () => {
   const { e, videos } = fixture();
@@ -84,7 +86,7 @@ test('Jev picks the winning fan-out candidate and the rest are discarded', async
   const prepared = await prepare(e, { id: 't', kind: 'slide', target: 'v', index: 0 } as Task, deps);
   const result = await prepared.execute() as { fanout: { rendered: number; chosen: number; judge: { choice: string } }; url: string };
   expect(renders).toHaveLength(3);
-  expect(result.fanout).toMatchObject({ rendered: 3, chosen: 1, judge: { choice: 'c1' } });
+  expect(result.fanout).toMatchObject({ rendered: 3, chosen: 1, judge: [{ choice: 'c1' }] });
   expect(uploads).toHaveLength(1);
   expect(uploads[0]).toBe('602');
 });
@@ -105,6 +107,6 @@ test('judge failure falls back to the first candidate instead of losing the rend
   expect(renders).toHaveLength(3);
   expect(result.fanout.rendered).toBe(3);
   expect(result.fanout.chosen).toBe(0);
-  expect(result.fanout.judge.error).toContain('grok down');
+  expect(JSON.stringify(result.fanout.judge)).toContain('grok down');
   expect(uploads).toHaveLength(1);
 });

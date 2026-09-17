@@ -252,7 +252,9 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     let wave=await renderWave(basePrompt+referenceLine);
     let {described,error:describeError}=await describeSafe(wave);
     let pick=await chooseSafe(described);
-    const judgeTrail:unknown[]=[pick.judge];
+    const judgeTrail:unknown[]=[];
+    if(describeError)judgeTrail.push({describeError});
+    judgeTrail.push(pick.judge);
     let styleViolation=!describeError&&described.some(d=>styleViolated(d));
     let finalPrompt=basePrompt+referenceLine;
     // Jev/grok flagged the whole wave as off-style: one bounded re-render with
