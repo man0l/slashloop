@@ -417,7 +417,7 @@ export const CREATOR_BASELINE_MIN_SAMPLE = 5;
  * Cap on distinct (creator, platform, workspace) groups considered per call,
  * and how long this pass may run before ceding the rest of the worker's time
  * budget to the primary fetch/analyze/rescore/refresh queues that run after
- * it (see api/jobs/analyze.ts) — a real scrape can take 10-30s, so both stay
+ * it (see src/worker/index.ts) — a real scrape can take 10-30s, so both stay
  * small. Any groups left over are picked up on the next minute's drain; a
  * video only ever needs this once (its scoreType leaves 'too_fresh' for good
  * the moment it's rescored), so a shallow per-minute pass still clears a

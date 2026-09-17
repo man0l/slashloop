@@ -137,10 +137,6 @@
       "dest": "/api/digest-settings"
     },
     {
-      "src": "^/api/jobs/analyze$",
-      "dest": "/api/jobs/analyze"
-    },
-    {
       "src": "^/api/stripe/webhook$",
       "dest": "/api/stripe/webhook"
     },
@@ -164,9 +160,6 @@
       "maxDuration": 60
     },
     "api/cron/digest.ts": {
-      "maxDuration": 60
-    },
-    "api/jobs/analyze.ts": {
       "maxDuration": 60
     },
     "api/sources.ts": {

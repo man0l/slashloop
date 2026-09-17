@@ -20,7 +20,7 @@ import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { chunked } from '../store.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
-import { enqueueFetchJob, outstandingJobForVideo, dispatchWorker } from '../lib/jobs.js';
+import { enqueueFetchJob, outstandingJobForVideo } from '../lib/jobs.js';
 import { costBlock } from '../lib/next-steps.js';
 import { selectDownloadAdapter } from '../lib/scrapers/index.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -113,7 +113,6 @@ export function registerFetchTool(server: McpServer) {
       for (const t of eligible) {
         await enqueueFetchJob({ workspaceId: workspace.id, videoId: t.id });
       }
-      if (eligible.length) await dispatchWorker();
 
       // Which ledger this spend actually lands in. Downloads prefer the own
       // proxy worker (TikTok's CDN 403s datacenter IPs); Apify is the

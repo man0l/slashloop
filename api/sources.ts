@@ -8,8 +8,7 @@
 // POST   /api/sources/discover/mine { seed }        — probe ONE seed + mine hashtags/creators.
 //
 // One file, not four: the Hobby plan caps a deployment at 12 Serverless
-// Functions (see api/jobs/analyze.ts for the same constraint hitting the job
-// queue). vercel.json rewrites /api/sources/:id and /api/sources/:id/refresh
+// Functions. vercel.json rewrites /api/sources/:id and /api/sources/:id/refresh
 // onto this file with `id`/`action` query params — the URLs callers use are
 // unchanged, only the physical function count drops.
 import { corsPreflight } from '../src/lib/cors.js';
@@ -126,7 +125,6 @@ export async function POST(request: Request): Promise<Response> {
           sourceId: result.sourceId,
           videoLimit: result.videoLimit,
           deadlineAt: result.deadlineAt,
-          workerDispatched: result.workerDispatched,
         });
       case 'cap_breached':
         return jsonResponse(429, { error: 'apify_spend_cap_breached', capStatus: result.capStatus }, request);

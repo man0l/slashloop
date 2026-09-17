@@ -24,7 +24,7 @@ import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { CREDIT_COSTS, creditBalance } from '../lib/credits.js';
-import { enqueueRefreshJob, outstandingJobForSource, dispatchWorker } from '../lib/jobs.js';
+import { enqueueRefreshJob, outstandingJobForSource } from '../lib/jobs.js';
 import { resolveRefreshPlan } from '../lib/refresh-policy.js';
 import { withNextSteps, apifyCostLabel } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -335,7 +335,6 @@ export function registerScheduleTools(server: McpServer) {
         });
         jobs.push({ sourceId: p.sourceId, query: p.query, jobId: job.id });
       }
-      if (jobs.length > 0) await dispatchWorker('refresh');
 
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({

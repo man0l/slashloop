@@ -18,7 +18,6 @@ import * as workspaces from '../../api/workspaces.js';
 import * as billing from '../../api/billing.js';
 import * as digestSettings from '../../api/digest-settings.js';
 import * as stripeWebhook from '../../api/stripe/webhook.js';
-import * as jobsAnalyze from '../../api/jobs/analyze.js';
 import * as videoRecreateCron from './video-recreate-cron.js';
 import * as cronDigest from '../../api/cron/digest.js';
 import * as cronRetention from '../../api/cron/media-retention.js';
@@ -143,7 +142,6 @@ const ROUTES: Route[] = [
   { re: /^\/api\/social\/callback\/([^/]+?)$/, mod: socialCallback, inject: { callback: '$1' } },
   { re: /^\/api\/social\/posts$/, mod: socialPosts },
   { re: /^\/api\/digest-settings$/, mod: digestSettings },
-  { re: /^\/api\/jobs\/analyze$/, mod: jobsAnalyze },
   { re: /^\/api\/jobs\/video-recreate$/, mod: videoRecreateCron },
   { re: /^\/api\/stripe\/webhook$/, mod: stripeWebhook },
   // VPS-side atomic batch bridge (src/cf/internal.ts) — before the catch-all.

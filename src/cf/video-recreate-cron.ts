@@ -1,10 +1,11 @@
 // POST /api/jobs/video-recreate — cron entry for the Workers-native video
 // recreation stepper (src/lib/recreate-video-stream.ts).
 //
-// Deliberately a separate route from /api/jobs/analyze: the every-minute
-// whole-queue drain is OFF on this Worker (its tick raced the Contabo drainer
-// for D1 and stalled HTTP — see wrangler.jsonc triggers). The `*/2` cron hits
-// ONLY this route, which advances video-mode recreate state machines — one
+// Deliberately NOT the old /api/jobs/analyze whole-queue drain: that tick
+// raced the Contabo drainer for D1 and stalled HTTP — see wrangler.jsonc
+// triggers; the drain path is gone entirely now (the VPS worker owns all
+// kinds). The `*/2` cron hits ONLY this route, which advances video-mode
+// recreate state machines — one
 // cheap phase per job (Gemini plan → Stream copy → ready-wait → one
 // gpt-image slide per tick). It claims no other kinds and runs no sweeps, so
 // it cannot re-create the contention that got the drain cron disabled.

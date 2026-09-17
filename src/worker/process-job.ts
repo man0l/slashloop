@@ -2,10 +2,9 @@
 // processClaimedJob — the per-job processing switch, shared by every worker.
 //
 // This is the queue-drain logic that used to live inline inside
-// api/jobs/analyze.ts (the Vercel HTTP worker). Extracted so a long-running
-// VPS/Bun worker (src/worker/index.ts) can call the exact same code with NO
-// time budget, while the Vercel worker keeps its 45s-invocation reserve. The
-// retry/refund policy stays in exactly one place here.
+// api/jobs/analyze.ts (the retired Vercel HTTP worker). Extracted so the
+// long-running VPS/Bun worker (src/worker/index.ts) can run it with NO time
+// budget. The retry/refund policy stays in exactly one place here.
 //
 // Contract: the caller has already CLAIMED the job (status running, attempts+1).
 // This function either completes it, fails it (requeue or terminal), or — for

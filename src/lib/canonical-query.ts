@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------
 // Canonical query keys — de-dupe the same TikTok target across workspaces.
 //
-// Phase A batching (api/jobs/analyze.ts) groups refresh jobs by this key so
+// Phase A batching (src/lib/jobs.ts refresh coalescing + peer claims) groups
+// refresh jobs by this key so
 // ten tenants tracking @foo pay for one Apify run, not ten.
 // Must match create_source / suggestion dismissal normalization so the same
 // handle never appears as two keys.

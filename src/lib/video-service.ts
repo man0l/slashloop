@@ -12,13 +12,13 @@ import type { AnalysisResult } from '../analysis/types.js';
 import { loadAnalysisConfig } from '../analysis/config.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from './credits.js';
 import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls, resolveRecreationUrls, isPhotoPost, slideshowIsHydrated } from './media.js';
-import { enqueueAnalyzeJob, enqueueFetchJob, enqueueRecreateJob, dispatchWorker, latestReportingJobForVideo, outstandingJobForVideo, latestJobForVideo, type MediaJobRow } from './jobs.js';
+import { enqueueAnalyzeJob, enqueueFetchJob, enqueueRecreateJob, latestReportingJobForVideo, outstandingJobForVideo, latestJobForVideo, type MediaJobRow } from './jobs.js';
 import { classifyGeminiError, errorCodeFor, parseJobLastError, friendlyGeminiMessage, type GeminiErrorCode } from './gemini-errors.js';
 import { keepAlive } from '../cf/wait-until.js';
 import { driveVideoRecreateJob, defaultRecreateVideoDeps } from './recreate-video-stream.js';
 
 export type AnalyzeVideoOutcome =
-  | { ok: true; queued: true; job: MediaJobRow; dispatched: boolean; dispatchReason?: string; backend: string; creditsCharged: number; creditsRemaining: number }
+  | { ok: true; queued: true; job: MediaJobRow; backend: string; creditsCharged: number; creditsRemaining: number }
   | { ok: true; queued: false; result: AnalysisResult; creditsCharged: number; creditsRemaining: number }
   | {
       ok: false;
@@ -94,10 +94,9 @@ export async function analyzeVideoForWorkspace(
       });
     }
 
-    const dispatch = await dispatchWorker();
     const balance = await creditBalance(workspace.id);
     return {
-      ok: true, queued: true, job, dispatched: dispatch.dispatched, dispatchReason: dispatch.reason,
+      ok: true, queued: true, job,
       backend: photo ? 'gemini-text' : effectiveBackend, creditsCharged: CREDIT_COSTS.analyzeVideo, creditsRemaining: balance.total,
     };
   }
@@ -117,7 +116,7 @@ export async function analyzeVideoForWorkspace(
 
 export type FetchVideoOutcome =
   | { ok: true; alreadyStored: true }
-  | { ok: true; alreadyStored?: false; queued: true; job: MediaJobRow; dispatched: boolean }
+  | { ok: true; alreadyStored?: false; queued: true; job: MediaJobRow }
   | { ok: false; errorCode: 'not_found'; error: string };
 
 /**
@@ -146,12 +145,11 @@ export async function fetchVideoForWorkspace(
 
   const outstanding = await outstandingJobForVideo(videoId);
   if (outstanding && (outstanding.status === 'queued' || outstanding.status === 'running')) {
-    return { ok: true, queued: true, job: outstanding, dispatched: false };
+    return { ok: true, queued: true, job: outstanding };
   }
 
   const job = await enqueueFetchJob({ workspaceId: workspace.id, videoId, payload: {} });
-  const dispatch = await dispatchWorker();
-  return { ok: true, queued: true, job, dispatched: dispatch.dispatched };
+  return { ok: true, queued: true, job };
 }
 
 export interface VideoDetailForWorkspace {
@@ -240,7 +238,7 @@ export async function getVideoDetailForWorkspace(workspace: Workspace, videoId: 
 
 export type RecreateSlideshowOutcome =
   | { ok: true; alreadyStored: true; recreationImages: string[] }
-  | { ok: true; queued: true; job: MediaJobRow; dispatched: boolean; creditsCharged: number; creditsRemaining: number }
+  | { ok: true; queued: true; job: MediaJobRow; creditsCharged: number; creditsRemaining: number }
   | { ok: false; errorCode: string; error: string; creditsCharged: number; creditsRemaining: number; required?: number };
 
 export async function recreateSlideshowForWorkspace(
@@ -265,7 +263,7 @@ export async function recreateSlideshowForWorkspace(
 
   const outstanding = await latestJobForVideo(videoId, 'recreate');
   if (outstanding && (outstanding.status === 'queued' || outstanding.status === 'running')) {
-    return { ok: true, queued: true, job: outstanding, dispatched: false, creditsCharged: 0, creditsRemaining: (await creditBalance(workspace.id)).total };
+    return { ok: true, queued: true, job: outstanding, creditsCharged: 0, creditsRemaining: (await creditBalance(workspace.id)).total };
   }
 
   const opId = randomUUID();
@@ -309,9 +307,8 @@ export async function recreateSlideshowForWorkspace(
       );
     })().catch((err: unknown) => console.warn(`[recreate] enqueue drive failed for ${videoId} (cron resumes): ${(err as Error).message}`)),
   );
-  const dispatch = await dispatchWorker();
   const balance = await creditBalance(workspace.id);
-  return { ok: true, queued: true, job, dispatched: dispatch.dispatched, creditsCharged: CREDIT_COSTS.recreateSlideshow, creditsRemaining: balance.total };
+  return { ok: true, queued: true, job, creditsCharged: CREDIT_COSTS.recreateSlideshow, creditsRemaining: balance.total };
 }
 
 /**

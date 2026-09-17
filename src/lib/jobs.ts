@@ -11,9 +11,9 @@
 // does the work with a fresh budget of its own.
 //
 // This module owns the state machine only. The worker lives in
-// api/jobs/analyze.ts, which also applies the retry policy defined here; the
-// per-minute schedule that drives it is
-// supabase/migrations/*_pgcron_drain_analyze_jobs.sql.
+// src/worker/index.ts (VPS drainer, WORKER_KINDS-selected containers); the
+// Cloudflare Worker only steps video-mode recreates via the */2 cron
+// (src/cf/video-recreate-cron.ts).
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from 'node:crypto';
@@ -182,7 +182,6 @@ export async function enqueueSlideshowFetches(
     await enqueueFetchJob({ workspaceId, videoId, payload: {} });
     queued++;
   }
-  if (queued) await dispatchWorker();
   return { queued, skipped };
 }
 
@@ -1337,62 +1336,3 @@ export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: nu
   return { requeued, failed, refunded };
 }
 
-// ---------------------------------------------------------------------------
-// Dispatch
-// ---------------------------------------------------------------------------
-
-function baseUrl(): string | null {
-  const explicit = process.env.PUBLIC_URL?.replace(/\/$/, '');
-  if (explicit) return explicit;
-  const vercel = process.env.VERCEL_URL;
-  return vercel ? `https://${vercel}` : null;
-}
-
-/**
- * Ask a worker invocation to pick up the queue. Never throws.
- *
- * Deliberately fire-and-mostly-forget: we want the worker's *invocation*
- * started, not its result. The abort below cuts our side loose after the
- * request is on the wire.
- *
- * This is best-effort by design, and the system does not depend on it. If the
- * dispatch is dropped — the enqueuing instance frozen before the socket
- * flushed, a cold start that outlives the abort — the row simply stays
- * `queued` and the pg_cron drain picks it up within a minute
- * (supabase/migrations/*_pgcron_drain_analyze_jobs.sql). That scheduler runs
- * inside Postgres and is not subject to the Vercel plan's daily cron cap, which
- * is what lets this call be an optimisation rather than the thing correctness
- * rests on.
- */
-/**
- * `kind` is accepted for call-site clarity but every kind drains through the
- * same endpoint. api/jobs/analyze.ts claims fetch, analyze and refresh in turn,
- * because the Hobby plan's 12-function cap leaves no room for a second worker
- * route — see the comment there.
- */
-export async function dispatchWorker(_kind: 'analyze' | 'refresh' | 'rescore' | 'discover' = 'analyze'): Promise<{ dispatched: boolean; reason?: string }> {
-  const base = baseUrl();
-  if (!base) return { dispatched: false, reason: 'no PUBLIC_URL or VERCEL_URL' };
-
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return { dispatched: false, reason: 'CRON_SECRET not set' };
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1500);
-  try {
-    await fetch(`${base}/api/jobs/analyze`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${secret}` },
-      signal: controller.signal,
-    });
-    return { dispatched: true };
-  } catch (err) {
-    // An abort here is the expected path, not a failure: the request was sent.
-    const aborted = (err as Error).name === 'AbortError';
-    if (aborted) return { dispatched: true };
-    console.warn(`[jobs] worker dispatch failed: ${(err as Error).message}`);
-    return { dispatched: false, reason: (err as Error).message };
-  } finally {
-    clearTimeout(timer);
-  }
-}

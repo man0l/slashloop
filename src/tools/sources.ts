@@ -199,7 +199,6 @@ export function registerSourceTools(server: McpServer) {
               note: 'Worst case for the queued scrape — settled down to actual videos returned when the worker runs.',
             }),
             deadlineAt: result.deadlineAt,
-            workerDispatched: result.workerDispatched,
             note: 'Queued rather than run inline because a scrape this size can outlive the request budget, '
               + 'which previously billed the user and then killed the rescore. Wait with await_job.',
           }, [{

@@ -1,8 +1,7 @@
 // ---------------------------------------------------------------------------
 // VPS/Bun worker — the long-running queue drainer with NO 60s ceiling.
 //
-// Same queue, same state machine, same retry policy as the Vercel worker
-// (api/jobs/analyze.ts): claim with FOR UPDATE SKIP LOCKED, process via
+// The only queue drainer: claim with claimNextJobs, process via
 // processClaimedJob, complete/fail. The process has no 60s Vercel ceiling, so
 // OpenRouter video analysis can finish. Each claimed job still has
 // jobTimeoutMs(kind) so a hung TikTok fetch cannot occupy a concurrency slot

@@ -23,7 +23,7 @@ import { batchScoreVideos } from '../scoring.js';
 import { infoNote } from './refresh-notes.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } from './credits.js';
 import { resolveThumbUrl, ingestThumbnails, ingestSlideshows, slideshowTargetFromNormalized, isPhotoPost, type ThumbIngestTarget, type SlideshowIngestTarget } from './media.js';
-import { enqueueRefreshJob, enqueueRescoreJob, outstandingJobForSource, dispatchWorker, enqueueSlideshowFetches } from './jobs.js';
+import { enqueueRefreshJob, enqueueRescoreJob, outstandingJobForSource, enqueueSlideshowFetches } from './jobs.js';
 import { dismissSuggestion } from './suggestions.js';
 import { resolveRefreshPlan } from './refresh-policy.js';
 
@@ -373,7 +373,6 @@ export type RefreshSourceResult =
       query: string;
       videoLimit: number;
       deadlineAt: string;
-      workerDispatched: boolean;
     }
   | { kind: 'cap_breached'; capStatus: Awaited<ReturnType<typeof getApifyCapStatus>> | Awaited<ReturnType<typeof trafficStatus>> }
   | { kind: 'insufficient_credits'; err: InsufficientCreditsError }
@@ -443,8 +442,6 @@ export async function refreshSourceForWorkspace(
       videoLimit: limit,
       deadlineAt,
     });
-    // Best-effort poke; pg_cron drains within a minute regardless.
-    const dispatch = await dispatchWorker('refresh');
 
     invalidateWorkspaceReads(workspace.id);
     return {
@@ -454,7 +451,6 @@ export async function refreshSourceForWorkspace(
       query: source.query,
       videoLimit: limit,
       deadlineAt: deadlineAt.toISOString(),
-      workerDispatched: dispatch.dispatched,
     };
   }
 

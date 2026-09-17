@@ -186,12 +186,6 @@ export function registerVideoTools(server: McpServer) {
             videoId,
             status: outcome.job.status,
             backend: outcome.backend,
-            // Surfaced because it changes what to expect: a dropped dispatch
-            // still runs, just on the next sweep instead of within seconds.
-            dispatched: outcome.dispatched,
-            dispatchNote: outcome.dispatched
-              ? 'Worker invoked. Wait with await_job rather than polling get_video in a loop.'
-              : `Worker not reached (${outcome.dispatchReason}); the job stays queued and the sweeper will run it.`,
             creditsCharged: outcome.creditsCharged,
             creditsRemaining: outcome.creditsRemaining,
             cost: costBlock(outcome.creditsCharged, {

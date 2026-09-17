@@ -80,7 +80,7 @@ describe('mapAnalyzeOutcomeToHttp — failures', () => {
 
 describe('mapAnalyzeOutcomeToHttp — successes', () => {
   test('queued (gemini-native) -> 200 with jobId + status', () => {
-    const o: AnalyzeVideoOutcome = { ok: true, queued: true, job: fakeJob, dispatched: true, backend: 'gemini-native', creditsCharged: 5, creditsRemaining: 25 };
+    const o: AnalyzeVideoOutcome = { ok: true, queued: true, job: fakeJob, backend: 'gemini-native', creditsCharged: 5, creditsRemaining: 25 };
     const r = mapAnalyzeOutcomeToHttp(o);
     expect(r.status).toBe(200);
     expect(r.body).toMatchObject({ queued: true, jobId: 'job-1', status: 'queued', backend: 'gemini-native', creditsCharged: 5, creditsRemaining: 25 });

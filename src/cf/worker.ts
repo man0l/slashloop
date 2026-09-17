@@ -1,10 +1,11 @@
 // Cloudflare Worker entry — fetch (all HTTP routes) + scheduled (crons).
 //
-// Replaces three hosting pieces at once:
+// Replaces these hosting pieces:
 //   • Vercel functions (api/*)        → this fetch handler, via src/cf/router.ts
 //   • Vercel Cron (daily-only)        → the 0 3 / 0 9 triggers below
-//   • Supabase pg_cron + pg_net queue wake (supabase/migrations/*_pgcron_*)
-//     → the */1 trigger poking the same /api/jobs/analyze drain logic
+//   • Supabase pg_cron queue drain + the retired /api/jobs/analyze poke
+//     → nothing: the queue is drained solely by the VPS worker
+//     (src/worker/index.ts), which claims over the D1 HTTP API.
 //
 // Crons authenticate internally with the same CRON_SECRET the HTTP routes
 // expect, by dispatching through the router — one auth path, no shadow logic.

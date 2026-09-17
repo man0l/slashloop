@@ -29,7 +29,7 @@ import { chunked } from '../store.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { CREATOR_BASELINE_MIN_SAMPLE, batchScoreVideos } from '../scoring.js';
 import { withNextSteps, refreshCreditLabel, scraperCostLabel } from '../lib/next-steps.js';
-import { enqueueRescoreJob, dispatchWorker } from '../lib/jobs.js';
+import { enqueueRescoreJob } from '../lib/jobs.js';
 import { invalidateWorkspaceReads } from '../lib/cache.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -418,7 +418,6 @@ export function registerBaselineTools(server: McpServer) {
           });
           queued.push(job.id);
         }
-        await dispatchWorker('rescore');
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
             message: `Queued ${queued.length} rescore job(s) — one per source. Free, no spend.`,
