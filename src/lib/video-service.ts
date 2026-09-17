@@ -291,7 +291,7 @@ export async function recreateSlideshowForWorkspace(
   // otherwise the cron's resume path sees a stale-lease running row and a
   // second drive races this one (double plan calls, duplicated keys). No-op
   // off the Worker (keepAlive returns false on Node).
-  keepAlive(
+  if (!isPhotoPost(video)) keepAlive(
     (async () => {
       const claimed = await db.mediaJob.update({
         where: { id: job.id },
@@ -299,7 +299,7 @@ export async function recreateSlideshowForWorkspace(
           status: 'running',
           startedAt: new Date(),
           attempts: { increment: 1 },
-          payloadJson: JSON.stringify({ mode: 'video', stepAt: Date.now() }),
+          payloadJson: JSON.stringify({ mode: isPhotoPost(video) ? 'photo' : 'video', stepAt: Date.now() }),
         },
       });
       await driveVideoRecreateJob(
