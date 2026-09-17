@@ -21,6 +21,19 @@ export async function visibleOwnerIds(userId: string, email: string | null | und
   const normalized = email?.trim().toLowerCase();
   if (!normalized) return [...ids];
 
+  // Self-healing User mirror: nothing else in the app writes User rows, and
+  // the teammate→sub lookup below depends on them. Upserting here means every
+  // social read keeps the caller's row fresh; failure must not break reads.
+  try {
+    await db.user.upsert({
+      where: { id: userId },
+      update: { email: normalized },
+      create: { id: userId, email: normalized },
+    });
+  } catch (err) {
+    console.warn(`[social] user mirror upsert failed: ${(err as Error).message}`);
+  }
+
   // Owners of workspaces shared with me.
   const sharedWithMe = await db.workspace.findMany({
     where: { members: { some: { email: normalized } } },

@@ -30,6 +30,11 @@ mock.module('../db.js', () => ({
         calls.push('user.findMany');
         return knownUsers;
       },
+      upsert: async ({ create }: { create: { id: string; email: string } }) => {
+        calls.push('user.upsert');
+        knownUsers.push({ id: create.id });
+        return create;
+      },
     },
   },
 }));
@@ -63,5 +68,16 @@ describe('visibleOwnerIds', () => {
 
   test('empty team means just yourself', async () => {
     expect(await visibleOwnerIds('u1', 'solo@x.co')).toEqual(['u1']);
+  });
+
+  test('upserts the caller mirror row so teammates resolve them later', async () => {
+    // The reported bug: spoonjenny's YouTube invisible to the inviter because
+    // no User row existed. After any social read, the row exists.
+    expect(knownUsers).toEqual([]);
+    await visibleOwnerIds('u9', 'mate@x.co');
+    expect(knownUsers).toEqual([{ id: 'u9' }]);
+    // …and the inviter now resolves them as a teammate.
+    teammateEmails = ['mate@x.co'];
+    expect(await visibleOwnerIds('u1', 'owner@acme.io')).toEqual(['u1', 'u9']);
   });
 });
