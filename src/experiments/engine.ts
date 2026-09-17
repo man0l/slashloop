@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { remainingD1Queries } from '../cf/d1-budget.js';
 import { ZodError } from 'zod/v4';
 import { InsufficientCreditsError } from '../lib/credits.js';
 import * as store from './store.js';
@@ -66,13 +67,16 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
   claimed.chargeRef = charge ? `experiment:${e.id}:${claimed.id}:${claimed.attempts}` : undefined;
   try{if(!await deps.save(e,charge,claimed.chargeRef))return false;}catch(err){
     if(!(err instanceof InsufficientCreditsError || err instanceof ExperimentError))throw err;
-    const latest=await deps.load(workspaceId,id);if(isActive(latest)){latest.status='paused';latest.error='insufficient_budget';await deps.save(latest);}return false;
+    const latest=await deps.load(workspaceId,id);if(isActive(latest)){latest.status='paused';latest.error=err instanceof ExperimentError ? err.message : 'insufficient_budget';await deps.save(latest);}return false;
   }
   let result:unknown;let failure:unknown;
   try{result=await prepared.execute();}catch(err){failure=err;}
   // Persist result against fresh cancellation/version state; do not erase a concurrent command.
   // CAS retries are DB-only and never repeat provider work.
   for(let attempt=0;attempt<5;attempt++){
+    // A refund settlement needs one read, two billing lookups and three
+    // batched statements. Leave the durable receipt intact if fenced out.
+    if(remainingD1Queries()<6)return false;
     const latest=await deps.load(workspaceId,id);const receipt=latest.tasks.find(x=>x.id===t.id)!;
     if(receipt.status==='done'||receipt.status==='failed')return isActive(latest);
     let refund = 0;
@@ -89,12 +93,19 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
   // Receipt stays running; lease expiry pauses instead of rebilling a successful but uncommitted output.
   return false;
 }
-export async function tick(wallBudgetMs=120000) {
-  const deadline=Date.now()+Math.min(wallBudgetMs,180000);let steps=0;
-  const candidates=await store.candidates();
+export const STEP_QUERY_RESERVE = 40;
+export async function tick(wallBudgetMs=120000, deps = { candidates: store.candidates, step, remaining: remainingD1Queries, now: Date.now }) {
+  const deadline=deps.now()+Math.min(wallBudgetMs,180000);let steps=0;
+  const maxSteps=3;
+  // Reserve preparation, claim, provider metadata and all five settlement
+  // attempts before paid work. Earlier schedulers consume this same budget.
+  if(deps.remaining()<STEP_QUERY_RESERVE+1)return {steps};
+  const candidates=await deps.candidates();
   for(const e of candidates){
-    while(Date.now()<deadline && steps<12){const progress=await step(e.workspaceId,e.id);steps++;if(!progress)break;}
-    if(Date.now()>=deadline||steps>=12)break;
+    while(deps.now()<deadline && steps<maxSteps && deps.remaining()>=STEP_QUERY_RESERVE){
+      const progress=await deps.step(e.workspaceId,e.id);steps++;if(!progress)break;
+    }
+    if(deps.now()>=deadline||steps>=maxSteps||deps.remaining()<STEP_QUERY_RESERVE)break;
   }
   return {steps};
 }

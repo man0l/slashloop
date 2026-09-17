@@ -76,7 +76,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     }
     S.validateVariants(e,proposals);
     e.variants=proposals; const changed=e.variants.find(x=>x.id===v.id)!;
-    changed.history.push({revision:changed.revision,brief:structuredClone(v.brief)}); changed.brief=edit.brief; changed.revision++;
+    changed.history.push({revision:changed.revision,brief:v.brief}); changed.brief=edit.brief; changed.revision++;
   } else if(action==='generate') {
     if(e.status!=='review' && e.status!=='completed') throw new S.ExperimentError(409,'not_reviewable');
     const choices=S.Generate.parse(b).variants;

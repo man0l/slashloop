@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { db, dbDialect, rawBatch, type RawStatement } from '../store.js';
 import { resolveBillingWorkspace, InsufficientCreditsError } from '../lib/credits.js';
 import { ExperimentError, type Experiment } from './schema.js';
+import { encodeExperiment } from './document-budget.js';
 
 export async function batch(statements: RawStatement[]): Promise<unknown[][]> {
   if (dbDialect() === 'sqlite') return rawBatch(statements);
@@ -22,8 +23,9 @@ export async function list(workspaceId: string): Promise<Experiment[]> {
   return (result[0] as Array<{ dataJson: string }>).map(r => JSON.parse(r.dataJson));
 }
 export async function create(e: Experiment, key: string): Promise<Experiment> {
+  const json = encodeExperiment(e);
   await batch([{ sql: 'INSERT INTO "Experiment" ("id","workspaceId","status","version","dataJson","createdAt","updatedAt","createKey") VALUES (?,?,?,0,?,?,?,?) ON CONFLICT ("workspaceId","createKey") DO NOTHING RETURNING "id"',
-    params: [e.id,e.workspaceId,e.status,JSON.stringify(e),new Date(e.createdAt),new Date(e.updatedAt),key] }]);
+    params: [e.id,e.workspaceId,e.status,json,new Date(e.createdAt),new Date(e.updatedAt),key] }]);
   const result = await batch([{ sql: 'SELECT "dataJson" FROM "Experiment" WHERE "workspaceId" = ? AND "createKey" = ?', params: [e.workspaceId,key] }]);
   const prior: Experiment = JSON.parse((result[0]![0] as { dataJson: string }).dataJson);
   if (prior.createFingerprint !== e.createFingerprint) throw new ExperimentError(409, 'idempotency_conflict');
@@ -37,9 +39,10 @@ export async function create(e: Experiment, key: string): Promise<Experiment> {
  * deltas under ref + ':refund' — the deterministic ids make a duplicate
  * refund violate the ledger primary key instead of double-crediting.
  */
-export function creditStatements(e: Experiment, next: Experiment, billingId: string, charge: number, ref: string): RawStatement[] {
-  const predicate = 'EXISTS (SELECT 1 FROM "Experiment" WHERE "id"=? AND "dataJson"=?)';
-  const proof = [e.id, JSON.stringify(next)];
+export function creditStatements(e: Experiment, next: Experiment & { writeToken: string }, billingId: string, charge: number, ref: string): RawStatement[] {
+  const token = dbDialect() === 'sqlite' ? `json_extract("dataJson", '$.writeToken')` : `("dataJson"::jsonb ->> 'writeToken')`;
+  const predicate = `EXISTS (SELECT 1 FROM "Experiment" WHERE "id"=? AND ${token}=?)`;
+  const proof = [e.id, next.writeToken];
   const min = dbDialect() === 'sqlite' ? 'MIN' : 'LEAST';
   const max = dbDialect() === 'sqlite' ? 'MAX' : 'GREATEST';
   if (charge < 0) {
@@ -68,6 +71,7 @@ export async function save(e: Experiment, charge = 0, chargeRef?: string): Promi
   const next = { ...e, writeToken: randomUUID(), version: previous + 1, updatedAt: new Date().toISOString(), creditsCharged: e.creditsCharged + charge };
   if (next.creditsCharged > e.maxCredits) throw new ExperimentError(402, 'experiment_budget_exceeded');
   if (charge < 0 && !chargeRef) throw new ExperimentError(500, 'refund_requires_charge_ref');
+  const json = encodeExperiment(next);
   const statements: RawStatement[] = [];
   let billingId = '';
   if (charge !== 0) {
@@ -76,7 +80,7 @@ export async function save(e: Experiment, charge = 0, chargeRef?: string): Promi
   }
   const gate = charge > 0 ? ' AND EXISTS (SELECT 1 FROM "Workspace" WHERE "id" = ? AND "planCredits" + "packCredits" >= ?)' : '';
   statements.push({ sql: `UPDATE "Experiment" SET "dataJson"=?, "version"=?, "status"=?, "updatedAt"=? WHERE "id"=? AND "workspaceId"=? AND "version"=?${gate} RETURNING "id"`,
-    params: [JSON.stringify(next),next.version,next.status,new Date(next.updatedAt),e.id,e.workspaceId,previous,...(charge > 0 ? [billingId,charge] : [])] });
+    params: [json,next.version,next.status,new Date(next.updatedAt),e.id,e.workspaceId,previous,...(charge > 0 ? [billingId,charge] : [])] });
   // Fresh unpredictable receipt only exists if OUR exact JSON CAS succeeded.
   // Ledger and account debit are in the SAME D1 batch: no debit/checkpoint gap.
   if (charge !== 0) {

@@ -15,7 +15,7 @@ test('SQLite refunds restore original credit buckets and reject a duplicate refu
     CREATE TABLE CreditLedger(id TEXT PRIMARY KEY, workspaceId TEXT, delta INTEGER, bucket TEXT, reason TEXT, tool TEXT, balanceAfter INTEGER NOT NULL, refId TEXT, createdAt TEXT);
     INSERT INTO Workspace VALUES ('w',2,10);`);
   const e = { id: 'e' } as Experiment;
-  const next = { id: 'e', version: 1 } as Experiment;
+  const next = { id: 'e', version: 1, writeToken: 'receipt-1' } as Experiment & { writeToken: string };
   db.run('INSERT INTO Experiment VALUES (?,?)', ['e',JSON.stringify(next)]);
   function apply(charge: number) {
     db.transaction(() => {
@@ -24,6 +24,10 @@ test('SQLite refunds restore original credit buckets and reject a duplicate refu
       }
     })();
   }
+  db.run('UPDATE Experiment SET dataJson=?', [JSON.stringify({...next,writeToken:'another-writer'})]);
+  apply(5);
+  expect(db.query('SELECT planCredits,packCredits FROM Workspace').get()).toEqual({planCredits:2,packCredits:10});
+  db.run('UPDATE Experiment SET dataJson=?', [JSON.stringify(next)]);
   apply(5);
   expect(db.query('SELECT planCredits,packCredits FROM Workspace').get()).toEqual({planCredits:0,packCredits:7});
   apply(-5);
@@ -53,7 +57,7 @@ test('engine rejection atomically restores SQL balances while unknown outcomes r
       prepare: async () => ({execute: async () => { throw known ? new SafeFailure('rejected') : new Error('connection lost'); }}),
       save: async (e,charge=0,ref) => {
         if(e.version!==row.version)return false;
-        const next={...e,version:e.version+1,creditsCharged:e.creditsCharged+charge};
+        const next={...e,writeToken:crypto.randomUUID(),version:e.version+1,creditsCharged:e.creditsCharged+charge};
         db.transaction(() => {
           db.run('UPDATE Experiment SET dataJson=? WHERE id=?',[JSON.stringify(next),e.id]);
           if(charge)for(const s of creditStatements(e,next,'w',charge,ref!)) db.query(s.sql).all(...(s.params??[]).map(v=>v instanceof Date?v.toISOString():v) as any[]);

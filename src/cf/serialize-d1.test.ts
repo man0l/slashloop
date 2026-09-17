@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { d1BindParam } from '../store.js';
 import { serializeD1, timedD1 } from './serialize-d1.js';
+import { withD1Budget, remainingD1Queries } from './d1-budget.js';
 
 describe('d1BindParam', () => {
   test('Dates become ISO strings D1 will accept', () => {
@@ -63,6 +64,26 @@ function mockD1(opts?: { hang?: boolean }) {
 
   return { d1, get maxInflight() { return maxInflight; }, started };
 }
+
+describe('D1 invocation budget', () => {
+  test('counts each batch statement once across schedulers', async () => {
+    const d1 = timedD1(mockD1().d1);
+    await withD1Budget(async () => {
+      await d1.batch(Array.from({length: 7}, () => d1.prepare('SELECT 1')));
+      expect(remainingD1Queries()).toBe(43);
+      await d1.prepare('SELECT 1').bind().all();
+      expect(remainingD1Queries()).toBe(42);
+    });
+    expect(remainingD1Queries()).toBe(Infinity);
+  });
+  test('overlapping invocations never share their counters', async () => {
+    const d1 = timedD1(mockD1().d1);
+    await Promise.all([1, 4].map(count => withD1Budget(async () => {
+      await d1.batch(Array.from({length: count}, () => d1.prepare('SELECT 1')));
+      expect(remainingD1Queries()).toBe(50-count);
+    })));
+  });
+});
 
 describe('serializeD1', () => {
   test('runs concurrent statements one at a time', async () => {

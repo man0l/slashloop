@@ -11,6 +11,8 @@
 // concurrency is avoided by sequential Prisma calls (no Promise.all of db.*,
 // no `_count` includes). This helper stays for rawBatch/tests.
 
+import { countD1Queries } from './d1-budget.js';
+
 export const D1_QUERY_TIMEOUT_MS = 8_000;
 
 /** Timeout for the timeout-only wrapper below (diagnostic, not a gate). */
@@ -141,15 +143,20 @@ export function timedD1(d1: D1Database, opts: TimedD1Options = {}): D1Database {
       },
     );
 
+  const counted = <T,>(count: number, execute: () => T): T => {
+    countD1Queries(count);
+    return execute();
+  };
+
   const wrapStatement = (stmt: D1PreparedStatement, query: string): D1PreparedStatement => {
     const wrapped: D1PreparedStatement = {
       bind(...values: unknown[]) {
         return wrapStatement(stmt.bind(...values), query);
       },
-      first: <T = unknown>(colName?: string) => guard('first', query, stmt.first<T>(colName)),
-      run: <T = unknown>() => guard('run', query, stmt.run<T>()),
-      all: <T = unknown>() => guard('all', query, stmt.all<T>()),
-      raw: <T = unknown[]>(options?: { columnNames?: boolean }) => guard('raw', query, stmt.raw<T>(options)),
+      first: <T = unknown>(colName?: string) => counted(1, () => guard('first', query, stmt.first<T>(colName))),
+      run: <T = unknown>() => counted(1, () => guard('run', query, stmt.run<T>())),
+      all: <T = unknown>() => counted(1, () => guard('all', query, stmt.all<T>())),
+      raw: <T = unknown[]>(options?: { columnNames?: boolean }) => counted(1, () => guard('raw', query, stmt.raw<T>(options))),
     };
     ORIGINALS.set(wrapped, stmt);
     QUERY_TEXT.set(wrapped, query);
@@ -165,10 +172,10 @@ export function timedD1(d1: D1Database, opts: TimedD1Options = {}): D1Database {
     batch<T = unknown>(statements: D1PreparedStatement[]) {
       const first = statements.length ? (QUERY_TEXT.get(statements[0]!) ?? '(batched statements)') : '(empty batch)';
       const label = statements.length === 1 ? 'batch[1]' : `batch[${statements.length}]`;
-      return guard(label, first, d1.batch<T>(statements.map(unwrap)));
+      return counted(statements.length, () => guard(label, first, d1.batch<T>(statements.map(unwrap))));
     },
     exec(query: string) {
-      return guard('exec', query, d1.exec(query));
+      return counted(query.split(';').filter(part => part.trim()).length, () => guard('exec', query, d1.exec(query)));
     },
     withSession(constraintOrBookmark?: string) {
       const session = d1.withSession(constraintOrBookmark);
@@ -176,7 +183,7 @@ export function timedD1(d1: D1Database, opts: TimedD1Options = {}): D1Database {
       return {
         prepare: (query: string) => wrappedDb.prepare(query),
         run: <T = unknown>(...statements: D1PreparedStatement[]) =>
-          guard('session.run', '(batched statements)', session.run<T>(...statements.map(unwrap))),
+          counted(statements.length, () => guard('session.run', '(batched statements)', session.run<T>(...statements.map(unwrap)))),
       } satisfies D1DatabaseSession;
     },
   };

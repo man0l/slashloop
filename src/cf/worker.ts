@@ -15,6 +15,7 @@ import { route } from './router.js';
 import { createOAuthProvider } from './oauth.js';
 import { runWithWaitUntil } from './wait-until.js';
 import { tick as experimentTick } from '../experiments/engine.js';
+import { withD1Budget } from './d1-budget.js';
 
 // OAuthProvider owns fetch: /mcp (apiHandlers) + /authorize, /token,
 // /register and the OAuth metadata endpoints; everything else falls through
@@ -38,7 +39,7 @@ export default {
   },
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    await runWithWaitUntil((p) => { ctx.waitUntil(p); }, async () => {
+    await withD1Budget(() => runWithWaitUntil((p) => { ctx.waitUntil(p); }, async () => {
       // Register the store first — every drain/sweep touches the DB.
       await ensureStore(env, ctx);
 
@@ -107,6 +108,6 @@ export default {
           console.error('[worker] experiments tick failed', err instanceof Error ? err.name : 'unknown');
         });
       }
-    });
+    }));
   },
 } satisfies ExportedHandler<Env>;
