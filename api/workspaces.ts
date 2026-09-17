@@ -8,13 +8,16 @@
 // GET    /api/workspaces/:id/members           — list teammates (owner or member).
 // POST   /api/workspaces/:id/members { email } — invite a teammate (owner only).
 // DELETE /api/workspaces/:id/members?email=…   — remove a teammate (owner only).
+// POST   /api/workspaces?action=invite-all { email } — invite to EVERY owned
+//       workspace at once (basic teams); teammate signs up with that email
+//       and all workspaces appear in their switcher.
 //
 // One file, not two — see api/sources.ts for why (Hobby plan's 12-function
 // cap). vercel.json rewrites /api/workspaces/:id here with an `id` query param.
 import { corsPreflight } from '../src/lib/cors.js';
 import { requireAuth, requireWorkspaceAccess, jsonResponse } from '../src/lib/authz.js';
 import { listWorkspacesForUser, createWorkspaceForUser, renameWorkspaceForUser, resolveAccountPlanKey, WorkspaceLimitError } from '../src/lib/workspaces.js';
-import { listMembers, inviteMember, removeMember, TeamError } from '../src/lib/team.js';
+import { listMembers, inviteMember, inviteMemberToAllWorkspaces, removeMember, TeamError } from '../src/lib/team.js';
 import { db } from '../src/db.js';
 import { buildWeeklyRetro } from '../src/lib/posts.js';
 import { buildBenchmark } from '../src/lib/benchmark.js';
@@ -122,6 +125,29 @@ export async function POST(request: Request): Promise<Response> {
 
   const auth = await requireAuth(request);
   if (!auth.ok) return auth.response;
+
+  // Basic teams: one invite covering every workspace the caller owns.
+  if (url.searchParams.get('action') === 'invite-all') {
+    let body: { email?: string };
+    try {
+      body = (await request.json()) as { email?: string };
+    } catch {
+      return jsonResponse(400, { error: 'invalid_json' }, request);
+    }
+    if (!body.email?.trim()) return jsonResponse(400, { error: 'email is required' }, request);
+    try {
+      const result = await inviteMemberToAllWorkspaces({
+        ownerId: auth.userId,
+        ownerEmail: auth.email,
+        rawEmail: body.email,
+        invitedBy: auth.userId,
+      });
+      return jsonResponse(200, result, request);
+    } catch (err) {
+      if (err instanceof TeamError) return jsonResponse(400, { error: err.code, message: err.message }, request);
+      throw err;
+    }
+  }
 
   let body: { name?: string };
   try {

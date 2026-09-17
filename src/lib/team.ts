@@ -44,13 +44,15 @@ export async function listMembers(workspaceId: string): Promise<WorkspaceMemberV
 /**
  * Add `rawEmail` as a member of `workspace`. Owner-only at the route layer.
  * Idempotent (unique on [workspaceId, email]); re-inviting an existing member
- * just re-sends the notification email.
+ * just re-sends the notification email (unless `opts.sendEmail` is false —
+ * the bulk invite below sends one combined mail instead).
  */
 export async function inviteMember(
   workspace: { id: string; name: string },
   ownerEmail: string | undefined,
   rawEmail: string,
   invitedBy: string,
+  opts: { sendEmail?: boolean } = {},
 ): Promise<WorkspaceMemberView> {
   const email = rawEmail.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -80,7 +82,7 @@ export async function inviteMember(
 
   // Courtesy only: never let mail failure fail the invite (sendEmail already
   // never throws; a double .catch for belt-and-braces).
-  if (emailConfigured()) {
+  if (opts.sendEmail !== false && emailConfigured()) {
     const origin = process.env.PUBLIC_URL?.replace(/\/$/, '') ?? 'https://slashloop.dev';
     void sendEmail({
       to: email,
@@ -105,6 +107,85 @@ export async function removeMember(workspaceId: string, rawEmail: string): Promi
   const email = rawEmail.trim().toLowerCase();
   const deleted = await db.workspaceMember.deleteMany({ where: { workspaceId, email } });
   if (deleted.count === 0) throw new TeamError('not_a_member', 'That person is not a member of this workspace.');
+}
+
+export type BulkInviteResult = {
+  email: string;
+  workspaces: Array<{ id: string; name: string; status: 'added' | 'already_member' | 'skipped_limit' }>;
+};
+
+/**
+ * Invite `rawEmail` to EVERY workspace owned by `ownerId` in one call — the
+ * "basic teams" flow: the teammate signs up with that email (Google login)
+ * and all of the inviter's workspaces show up in their switcher, because
+ * membership is email-keyed (see module header). Idempotent per workspace;
+ * a full workspace reports `skipped_limit` instead of failing the batch.
+ * Sends ONE combined notification email, not one per workspace.
+ */
+export async function inviteMemberToAllWorkspaces(input: {
+  ownerId: string;
+  ownerEmail: string | undefined;
+  rawEmail: string;
+  invitedBy: string;
+}): Promise<BulkInviteResult> {
+  const email = input.rawEmail.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new TeamError('invalid_email', "That doesn't look like an email address.");
+  }
+  if (input.ownerEmail && email === input.ownerEmail.trim().toLowerCase()) {
+    throw new TeamError('self_invite', 'You already have access — these are your workspaces.');
+  }
+
+  const owned = await db.workspace.findMany({
+    where: { ownerId: input.ownerId },
+    select: { id: true, name: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  if (!owned.length) throw new TeamError('no_workspaces', 'You have no workspaces to share yet.');
+
+  const workspaces: BulkInviteResult['workspaces'] = [];
+  for (const workspace of owned) {
+    const already = await db.workspaceMember.count({ where: { workspaceId: workspace.id, email } });
+    if (already > 0) {
+      workspaces.push({ id: workspace.id, name: workspace.name, status: 'already_member' });
+      continue;
+    }
+    try {
+      await inviteMember(workspace, input.ownerEmail, email, input.invitedBy, { sendEmail: false });
+      workspaces.push({ id: workspace.id, name: workspace.name, status: 'added' });
+    } catch (err) {
+      if (err instanceof TeamError && err.code === 'member_limit_reached') {
+        workspaces.push({ id: workspace.id, name: workspace.name, status: 'skipped_limit' });
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  invalidateWorkspaceList(input.invitedBy);
+
+  if (emailConfigured()) {
+    const origin = process.env.PUBLIC_URL?.replace(/\/$/, '') ?? 'https://slashloop.dev';
+    const names = workspaces
+      .filter((w) => w.status !== 'skipped_limit')
+      .map((w) => w.name)
+      .join(', ');
+    void sendEmail({
+      to: email,
+      subject: `You've been invited to ${workspaces.length === 1 ? 'a workspace' : `${workspaces.length} workspaces`} on Slashloop`,
+      text:
+        `You've been invited to share ${names} on Slashloop.\n\n` +
+        `Sign in with this email address (${email}) using Google and the workspaces ` +
+        `show up in your workspace switcher:\n${origin}/login\n`,
+      html:
+        `<p>You've been invited to share <strong>${escapeHtml(names)}</strong> on Slashloop.</p>` +
+        `<p>Sign in with this email address (${escapeHtml(email)}) using Google and the workspaces ` +
+        `show up in your workspace switcher.</p>` +
+        `<p><a href="${origin}/login">Sign in →</a></p>`,
+    }).catch(() => {});
+  }
+
+  return { email, workspaces };
 }
 
 function escapeHtml(s: string): string {

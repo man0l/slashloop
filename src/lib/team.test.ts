@@ -7,9 +7,16 @@ type MemberRow = { id: string; workspaceId: string; email: string; invitedBy: st
 
 let members: MemberRow[] = [];
 let sentEmails: Array<{ to: string; subject: string }> = [];
+let ownedWorkspaces: Array<{ id: string; name: string }> = [
+  { id: 'ws-1', name: 'Acme' },
+  { id: 'ws-2', name: 'Side' },
+];
 
 mock.module('../db.js', () => ({
   db: {
+    workspace: {
+      findMany: async () => ownedWorkspaces,
+    },
     workspaceMember: {
       count: async ({ where }: { where: { workspaceId: string } }) =>
         members.filter((m) => m.workspaceId === where.workspaceId).length,
@@ -46,7 +53,7 @@ mock.module('./cache.js', () => ({
   getOrFill: async (_key: string, _ttl: number, fill: () => unknown) => fill(),
 }));
 
-const { inviteMember, removeMember, listMembers, MAX_MEMBERS_PER_WORKSPACE, TeamError } = await import('./team.js');
+const { inviteMember, inviteMemberToAllWorkspaces, removeMember, listMembers, MAX_MEMBERS_PER_WORKSPACE, TeamError } = await import('./team.js');
 
 // TeamError.code, not .message — toThrow() matches message text.
 const errorCode = (p: Promise<unknown>): Promise<string> =>
@@ -65,6 +72,10 @@ const workspace = { id: 'ws-1', name: 'Acme' };
 beforeEach(() => {
   members = [];
   sentEmails = [];
+  ownedWorkspaces = [
+    { id: 'ws-1', name: 'Acme' },
+    { id: 'ws-2', name: 'Side' },
+  ];
 });
 
 describe('inviteMember', () => {
@@ -105,5 +116,46 @@ describe('removeMember', () => {
     await removeMember('ws-1', 'A@B.CO');
     expect(await listMembers('ws-1')).toHaveLength(0);
     expect(await errorCode(removeMember('ws-1', 'a@b.co'))).toBe('not_a_member');
+  });
+});
+
+describe('inviteMemberToAllWorkspaces', () => {
+  test('adds one row per owned workspace and sends a single email', async () => {
+    const result = await inviteMemberToAllWorkspaces({
+      ownerId: 'user-1',
+      ownerEmail: 'owner@acme.io',
+      rawEmail: 'Teamie@Example.COM',
+      invitedBy: 'user-1',
+    });
+    expect(result.email).toBe('teamie@example.com');
+    expect(result.workspaces).toEqual([
+      { id: 'ws-1', name: 'Acme', status: 'added' },
+      { id: 'ws-2', name: 'Side', status: 'added' },
+    ]);
+    expect(sentEmails).toHaveLength(1);
+    expect(sentEmails[0].to).toBe('teamie@example.com');
+  });
+
+  test('re-invite reports already_member without new rows or mail', async () => {
+    await inviteMemberToAllWorkspaces({ ownerId: 'user-1', ownerEmail: undefined, rawEmail: 'a@b.co', invitedBy: 'user-1' });
+    sentEmails = [];
+    const result = await inviteMemberToAllWorkspaces({ ownerId: 'user-1', ownerEmail: undefined, rawEmail: 'a@b.co', invitedBy: 'user-1' });
+    expect(result.workspaces.every((w) => w.status === 'already_member')).toBe(true);
+    expect(sentEmails).toHaveLength(1); // combined mail still goes out, but no new rows
+    expect(members).toHaveLength(2);
+  });
+
+  test('rejects bad emails, self-invites, and ownerless callers', async () => {
+    expect(await errorCode(inviteMemberToAllWorkspaces({ ownerId: 'user-1', ownerEmail: undefined, rawEmail: 'nope', invitedBy: 'user-1' }))).toBe(
+      'invalid_email',
+    );
+    expect(
+      await errorCode(inviteMemberToAllWorkspaces({ ownerId: 'user-1', ownerEmail: 'OWNER@acme.io', rawEmail: 'owner@acme.io', invitedBy: 'user-1' })),
+    ).toBe('self_invite');
+    ownedWorkspaces = [];
+    expect(
+      await errorCode(inviteMemberToAllWorkspaces({ ownerId: 'user-1', ownerEmail: undefined, rawEmail: 'a@b.co', invitedBy: 'user-1' })),
+    ).toBe('no_workspaces');
+    expect(members).toHaveLength(0);
   });
 });
