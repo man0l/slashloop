@@ -39,6 +39,8 @@ export const MAX_TASK_ATTEMPTS = 4;
 export const MAX_MANUAL_ATTEMPTS = 6;
 /** Up to this many slide renders may run concurrently within one experiment. */
 export const PARALLEL_SLIDES = 3;
+/** Candidates rendered per slide; Jev (TypeSafe) picks the most viral one. */
+export const SLIDE_FANOUT = 3;
 const RETRY_BACKOFF_MS = [60_000, 300_000, 900_000];
 export function retryBackoffMs(attempts: number): number {
   return RETRY_BACKOFF_MS[Math.min(Math.max(attempts, 1), RETRY_BACKOFF_MS.length) - 1]!;

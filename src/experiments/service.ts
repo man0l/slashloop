@@ -41,19 +41,19 @@ export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: 
     // Per-job retry estimate: price exactly the named jobs that still need provider work.
     const wanted = new Set(taskIds);
     const jobs = e.tasks.filter(t=>wanted.has(t.id)&&t.status!=='done');
-    const count = (kind:S.Task['kind'])=>jobs.filter(t=>t.kind===kind).length;
-    const analysisCredits = count('analysis')*CREDIT_COSTS.analyzeVideo;
-    const planningCredits = (count('report')+count('briefs'))*CREDIT_COSTS.experimentPlanningCall;
-    const generationCredits = count('slide')*CREDIT_COSTS.experimentSlide;
+    const priceOf = (t:S.Task)=>t.kind==='slide' ? CREDIT_COSTS.experimentSlide*S.SLIDE_FANOUT : taskCost(t);
+    const analysisCredits = jobs.filter(t=>t.kind==='analysis').reduce((n,t)=>n+priceOf(t),0);
+    const planningCredits = jobs.filter(t=>t.kind==='report'||t.kind==='briefs').reduce((n,t)=>n+priceOf(t),0);
+    const generationCredits = jobs.filter(t=>t.kind==='slide').reduce((n,t)=>n+priceOf(t),0);
     return { analysisCredits,planningCredits,generationCredits,totalCredits:analysisCredits+planningCredits+generationCredits,
       remainingCredits:e.maxCredits-e.creditsCharged, workspaceCredits:(await creditBalance(e.workspaceId)).total,
       maxCredits:e.maxCredits,generationBasis:e.generationBasis,exactProviderUsdCap:false,
-      maxProviderRequests:jobs.length,
+      maxProviderRequests:jobs.reduce((n,t)=>n+(t.kind==='slide'?S.SLIDE_FANOUT:1),0),
       pricing:{analysis:CREDIT_COSTS.analyzeVideo,planningCall:CREDIT_COSTS.experimentPlanningCall,slide:CREDIT_COSTS.experimentSlide} };
   }
   const analysisCredits = stage === 'plan' ? e.inputs.filter(x=>x.status!=='ready').length*CREDIT_COSTS.analyzeVideo : 0;
   const planningCredits = stage === 'plan' ? (e.report ? 0 : CREDIT_COSTS.experimentPlanningCall) + (e.variants.length ? 0 : CREDIT_COSTS.experimentPlanningCall) : 0;
-  const generationCredits = stage === 'generate' ? variants.reduce((n,v)=>n+(v.slides.length ? v.slides.filter(s=>s.status!=='done').length : e.slideCount)*CREDIT_COSTS.experimentSlide,0) : 0;
+  const generationCredits = stage === 'generate' ? variants.reduce((n,v)=>n+(v.slides.length ? v.slides.filter(s=>s.status!=='done').length : e.slideCount)*CREDIT_COSTS.experimentSlide,0)*S.SLIDE_FANOUT : 0;
   return { analysisCredits,planningCredits,generationCredits,totalCredits:analysisCredits+planningCredits+generationCredits,
     remainingCredits:e.maxCredits-e.creditsCharged, workspaceCredits:(await creditBalance(e.workspaceId)).total,
     maxCredits:e.maxCredits,generationBasis:e.generationBasis,exactProviderUsdCap:false,

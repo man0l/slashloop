@@ -88,7 +88,8 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
     const claimed=e.tasks.find(x=>x.id===t.id);
     if(!claimed||claimed.status!=='pending')continue;
     claimed.status='running';claimed.startedAt=deps.now();claimed.attempts++;
-    const charge=prepared.free ? 0 : taskCost(claimed);claimed.charged+=charge;
+    // A fanned-out task pays for every candidate it renders (units × unit price).
+    const charge=prepared.free ? 0 : taskCost(claimed)*(prepared.units??1);claimed.charged+=charge;
     claimed.chargeRef = charge ? `experiment:${e.id}:${claimed.id}:${claimed.attempts}` : undefined;
     try{
       if(!await deps.save(e,charge,claimed.chargeRef))continue;

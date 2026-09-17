@@ -22,6 +22,8 @@ const deps = (videos: Video[], calls: unknown[] = []) => ({
   findSources: async () => videos,
   generateImage: async (opts: unknown) => { calls.push(opts); return { buffer: Buffer.alloc(600), contentType: 'image/jpeg', costUsd: 0 }; },
   upload: async () => ({ path: 'stored', sizeBytes: 600 }),
+  describeCandidates: async (buffers: Buffer[]) => buffers.map((_, i) => ({ id: `c${i}`, description: `candidate ${i}` })),
+  classify: async () => ({ value: 'c0', confidence: 0.9 }),
 });
 test('selects original slides deterministically across variants and rotates sources', () => {
   const { e, videos } = fixture();
@@ -50,7 +52,7 @@ test('prepare attaches the original image to exactly one render and saves proven
   const prepared = await prepare(e, { id: 't', kind: 'slide', target: 'v', index: 1 } as Task, deps(videos, calls));
   expect(calls).toHaveLength(0);
   const result = await prepared.execute();
-  expect(calls).toHaveLength(1);
+  expect(calls).toHaveLength(3);
   const request = calls[0] as { referenceUrl?: string; prompt: string };
   expect(request.referenceUrl).toBe('https://assets.example.test/w/b/slides/01.jpg');
   expect(request.prompt).toContain('approved brief controls');
@@ -65,5 +67,44 @@ test('failed slide retries reuse the identical reference', async () => {
     await prepared.execute();
   }
   const urls = calls.map(c => (c as { referenceUrl?: string }).referenceUrl);
-  expect(urls).toEqual(['https://assets.example.test/w/b/slides/01.jpg', 'https://assets.example.test/w/b/slides/01.jpg']);
+  expect(urls).toEqual(['https://assets.example.test/w/b/slides/01.jpg', 'https://assets.example.test/w/b/slides/01.jpg', 'https://assets.example.test/w/b/slides/01.jpg', 'https://assets.example.test/w/b/slides/01.jpg', 'https://assets.example.test/w/b/slides/01.jpg', 'https://assets.example.test/w/b/slides/01.jpg']);
+});
+test('Jev picks the winning fan-out candidate and the rest are discarded', async () => {
+  const uploads: string[] = [];
+  const renders: string[] = [];
+  process.env.OPENROUTER_API_KEY = 'test-only';
+  const { e, videos } = fixture();
+  const deps = {
+    findSources: async () => videos,
+    generateImage: async () => { const id = `cand${renders.length}`; renders.push(id); return { buffer: Buffer.alloc(600 + renders.length), contentType: 'image/jpeg', costUsd: 0 }; },
+    upload: async (opts: { body: Buffer }) => { uploads.push(String(opts.body.length)); return { path: 'stored', sizeBytes: opts.body.length }; },
+    describeCandidates: async (buffers: Buffer[]) => buffers.map((_, i) => ({ id: `c${i}`, description: `candidate ${i}` })),
+    classify: async () => ({ value: 'c1', confidence: 0.82, probabilities: { c0: 0.1, c1: 0.8, c2: 0.1 } }),
+  };
+  const prepared = await prepare(e, { id: 't', kind: 'slide', target: 'v', index: 0 } as Task, deps);
+  const result = await prepared.execute() as { fanout: { rendered: number; chosen: number; judge: { choice: string } }; url: string };
+  expect(renders).toHaveLength(3);
+  expect(result.fanout).toMatchObject({ rendered: 3, chosen: 1, judge: { choice: 'c1' } });
+  expect(uploads).toHaveLength(1);
+  expect(uploads[0]).toBe('602');
+});
+test('judge failure falls back to the first candidate instead of losing the render', async () => {
+  const uploads: string[] = [];
+  const renders: string[] = [];
+  process.env.OPENROUTER_API_KEY = 'test-only';
+  const { e, videos } = fixture();
+  const deps = {
+    findSources: async () => videos,
+    generateImage: async () => { const id = `cand${renders.length}`; renders.push(id); return { buffer: Buffer.alloc(600 + renders.length), contentType: 'image/jpeg', costUsd: 0 }; },
+    upload: async (opts: { body: Buffer }) => { uploads.push(String(opts.body.length)); return { path: 'stored', sizeBytes: opts.body.length }; },
+    describeCandidates: async () => { throw new Error('grok down'); },
+    classify: async () => { throw new Error('typesafe down'); },
+  };
+  const prepared = await prepare(e, { id: 't', kind: 'slide', target: 'v', index: 0 } as Task, deps);
+  const result = await prepared.execute() as { fanout: { rendered: number; chosen: number; judge: { error?: string } } };
+  expect(renders).toHaveLength(3);
+  expect(result.fanout.rendered).toBe(3);
+  expect(result.fanout.chosen).toBe(0);
+  expect(result.fanout.judge.error).toContain('grok down');
+  expect(uploads).toHaveLength(1);
 });
