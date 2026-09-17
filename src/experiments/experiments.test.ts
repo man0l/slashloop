@@ -9,6 +9,13 @@ function harness(prepare:EngineDeps['prepare']){let row=fixture();let charges=0;
 const result={videoId:'v',status:'ready',analysisId:'a',jobId:null,error:null,coverage:{basis:'video',observed:1,total:null,complete:true},evidence:[{location:'second:0',observation:'A cup'}]};
 describe('durable experiment steps',()=>{
  test('concurrent ticks submit and debit once',async()=>{let calls=0;const h=harness(async()=>({execute:async()=>{calls++;return result;}}));await Promise.all([step('w','e',h.deps),step('w','e',h.deps)]);expect(calls).toBe(1);expect(h.charges).toBe(5);expect(h.row.inputs[0]?.analysisId).toBe('a');});
+ test('parallel steps fill slots with distinct jobs, never double-charging',async()=>{let calls=0;const h=harness(async(_e,t)=>({execute:async()=>{calls++;await new Promise(r=>setTimeout(r,5));return {...result,videoId:t.target!};}}));
+  const inputs=['v1','v2','v3'].map(videoId=>({videoId,status:'pending',analysisId:null,jobId:null,error:null,coverage:null,evidence:[]}));
+  const tasks=['t1','t2','t3'].map((id,i)=>({id,kind:'analysis' as const,target:`v${i+1}`,status:'pending' as const,attempts:0,charged:0}));
+  h.set({...fixture(),inputs,tasks});
+  await Promise.all([step('w','e',h.deps),step('w','e',h.deps),step('w','e',h.deps),step('w','e',h.deps)]);
+  expect(calls).toBe(3);expect(h.charges).toBe(15);
+  expect(h.row.inputs.map(i=>i.status)).toEqual(['ready','ready','ready']);});
  test('compatible analysis discovered after queueing is free',async()=>{const h=harness(async()=>({free:true,execute:async()=>result}));await step('w','e',h.deps);expect(h.charges).toBe(0);expect(h.row.inputs[0]?.status).toBe('ready');});
  test('hydration parks existing MediaJob id without charging',async()=>{const h=harness(async()=>{throw new HydrationPending('fetch-1');});expect(await step('w','e',h.deps)).toBe(false);expect(h.row.inputs[0]).toMatchObject({status:'hydrating',jobId:'fetch-1'});expect(h.charges).toBe(0);expect(h.row.tasks[0]?.status).toBe('pending');});
  test('unknown paid outcome pauses and never submits again',async()=>{let calls=0;const h=harness(async()=>({execute:async()=>{calls++;throw new Error('socket lost');}}));h.set({...fixture(),tasks:[{id:'t',kind:'analysis',target:'v',status:'pending',attempts:3,charged:0}]});await step('w','e',h.deps);expect(h.row.status).toBe('paused');expect(h.row.tasks[0]?.status).toBe('unknown');expect(h.charges).toBe(5);expect(calls).toBe(1);});
