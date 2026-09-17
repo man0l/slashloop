@@ -29,7 +29,7 @@ async function handle(request:Request):Promise<Response> {
     if(request.method==='GET'&&!action&&!variantId)response=id?{experiment:serialize(await load(workspaceId,id))}:{experiments:(await list(workspaceId)).map(serialize)};
     else if(request.method==='POST'&&!id)response={experiment:serialize(await createExperiment(b))};
     else if(request.method==='POST'&&id&&action==='estimate'){
-      const parsed=Estimate.parse(b);response={estimate:await estimate(await load(workspaceId,id),parsed.stage,parsed.variantIds)};
+      const parsed=Estimate.parse(b);response={estimate:await estimate(await load(workspaceId,id),parsed.stage,parsed.variantIds,parsed.taskIds)};
     }else if(request.method==='POST'&&id&&action)response={experiment:serialize(await mutate(workspaceId,id,action,b))};
     else if(request.method==='PATCH'&&id&&variantId)response={experiment:serialize(await mutate(workspaceId,id,'edit',b,variantId))};
     else return jsonResponse(405,{error:'method_not_allowed'},request);

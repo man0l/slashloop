@@ -5,7 +5,7 @@ import { InsufficientCreditsError } from '../lib/credits.js';
 import * as store from './store.js';
 import { prepare, SafeFailure, HydrationPending, type Prepared } from './providers.js';
 import { taskCost } from './service.js';
-import { ExperimentError, type Experiment, type Task, type Input, type ReportData, type Proposal } from './schema.js';
+import { ExperimentError, MAX_TASK_ATTEMPTS, retryBackoffMs, type Experiment, type Task, type Input, type ReportData, type Proposal } from './schema.js';
 export interface EngineDeps {
   load: typeof store.load; save: typeof store.save;
   prepare(e:Experiment,t:Task):Promise<Prepared>;
@@ -30,22 +30,33 @@ function settle(e:Experiment,t:Task,result:unknown) {
   }
 }
 /** Advance exactly one paid step, with a durable receipt before provider invocation.
- * CAS losers never call the provider. Unknown receipts are never automatically replayed.
+ * CAS losers never call the provider. Failures and unknown outcomes self-heal through
+ * MAX_TASK_ATTEMPTS-1 automatic retries with exponential backoff before surfacing.
  */
 export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults):Promise<boolean> {
   let e=await deps.load(workspaceId,id);if(!isActive(e))return false;
   const running=e.tasks.find(t=>t.status==='running');
   if(running){
     if(deps.now()-(running.startedAt??0)<180000)return false;
-    running.status='unknown';running.error='provider_outcome_unknown';e.status='paused';e.error='Provider outcome unknown. Reconciliation required; no automatic retry.';
+    // The provider request is gone (or settlement stalled). Requeue with backoff while
+    // attempts remain — the prior attempt's charge stays retained, so a duplicate
+    // delivery costs at most its per-job price. Exhausted receipts pause for review.
+    if(running.attempts<MAX_TASK_ATTEMPTS){running.status='pending';running.error='provider_outcome_unknown';running.nextAttemptAt=deps.now()+retryBackoffMs(running.attempts);await deps.save(e);return false;}
+    running.status='unknown';running.error='provider_outcome_unknown';e.status='paused';e.error='Provider outcome unknown. Retry individual jobs from the experiment page.';
     await deps.save(e);return false;
   }
-  const t=e.tasks.find(t=>t.status==='pending');if(!t)return false;
+  const t=e.tasks.find(t=>t.status==='pending'&&(t.nextAttemptAt??0)<=deps.now());if(!t)return false;
   let prepared:Prepared;
   try{prepared=await deps.prepare(e,t);}catch(err){
     if(err instanceof HydrationPending){
       const input=e.inputs.find(i=>i.videoId===t.target);if(input&&!input.jobId){input.jobId=err.jobId;input.status='hydrating';input.error=null;}
       await deps.save(e);return false;
+    }
+    t.attempts++;
+    if(t.attempts<MAX_TASK_ATTEMPTS){
+      t.status='pending';t.error=err instanceof SafeFailure?err.message:'preparation_failed';t.nextAttemptAt=deps.now()+retryBackoffMs(t.attempts);
+      const input=e.inputs.find(i=>i.videoId===t.target);if(input){input.status='pending';input.error=t.error;}
+      await deps.save(e);return e.status==='planning';
     }
     t.status='failed';t.error=err instanceof SafeFailure?err.message:'preparation_failed';
     // workerd hides stack traces from container logs; record the actual cause
@@ -85,11 +96,22 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
     let refund = 0;
     if(failure){
       const known=failure instanceof SafeFailure || failure instanceof ZodError || failure instanceof ExperimentError;
-      receipt.status=known?'failed':'unknown';receipt.error=known?'provider_result_rejected':'provider_outcome_unknown';
+      receipt.error=known?'provider_result_rejected':'provider_outcome_unknown';
       if(known && receipt.chargeRef && charge) { refund = charge; receipt.charged -= refund; }
-      const input=latest.inputs.find(i=>i.videoId===t.target);if(t.kind==='analysis'&&input){input.status='failed';input.error=receipt.error;}
-      const v=latest.variants.find(v=>v.id===t.target);if(v){v.status=known?'failed':'paused';v.error=receipt.error;if(t.index!==undefined){v.slides[t.index]!.status=receipt.status;v.slides[t.index]!.error=receipt.error;}}
-      if(isActive(latest)&&!(known&&t.kind==='analysis'&&latest.allowPartial)) {latest.status=known?'failed':'paused';latest.error=receipt.error;}
+      const input=latest.inputs.find(i=>i.videoId===t.target);
+      const v=latest.variants.find(v=>v.id===t.target);
+      if(receipt.attempts<MAX_TASK_ATTEMPTS){
+        // Self-heal: requeue with backoff, keep the experiment running. Known failures
+        // are refunded above; unknown receipts keep their retained charge.
+        receipt.status='pending';receipt.nextAttemptAt=deps.now()+retryBackoffMs(receipt.attempts);
+        if(t.kind==='analysis'&&input){input.status='pending';}
+        if(v){v.status='generating';v.error=receipt.error;if(t.index!==undefined){v.slides[t.index]!.status='pending';v.slides[t.index]!.error=receipt.error;}}
+      }else{
+        receipt.status=known?'failed':'unknown';
+        if(t.kind==='analysis'&&input){input.status='failed';input.error=receipt.error;}
+        if(v){v.status=known?'failed':'paused';v.error=receipt.error;if(t.index!==undefined){v.slides[t.index]!.status=receipt.status;v.slides[t.index]!.error=receipt.error;}}
+        if(isActive(latest)&&!(known&&t.kind==='analysis'&&latest.allowPartial)) {latest.status=known?'failed':'paused';latest.error=receipt.error;}
+      }
     }else settle(latest,receipt,result);
     if(await deps.save(latest,-refund,refund ? receipt.chargeRef : undefined))return isActive(latest);
   }

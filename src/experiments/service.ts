@@ -34,9 +34,23 @@ function selected(e: S.Experiment, ids?: string[]) {
   return variants;
 }
 export function taskCost(t: Pick<S.Task,'kind'>) { return t.kind==='analysis' ? CREDIT_COSTS.analyzeVideo : t.kind==='slide' ? CREDIT_COSTS.experimentSlide : CREDIT_COSTS.experimentPlanningCall; }
-export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: string[]) {
+export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: string[], taskIds?: string[]) {
   if (stage === 'plan' && ids) throw new S.ExperimentError(400,'variantIds_only_for_generation');
   const variants = selected(e,ids);
+  if (taskIds) {
+    // Per-job retry estimate: price exactly the named jobs that still need provider work.
+    const wanted = new Set(taskIds);
+    const jobs = e.tasks.filter(t=>wanted.has(t.id)&&t.status!=='done');
+    const count = (kind:S.Task['kind'])=>jobs.filter(t=>t.kind===kind).length;
+    const analysisCredits = count('analysis')*CREDIT_COSTS.analyzeVideo;
+    const planningCredits = (count('report')+count('briefs'))*CREDIT_COSTS.experimentPlanningCall;
+    const generationCredits = count('slide')*CREDIT_COSTS.experimentSlide;
+    return { analysisCredits,planningCredits,generationCredits,totalCredits:analysisCredits+planningCredits+generationCredits,
+      remainingCredits:e.maxCredits-e.creditsCharged, workspaceCredits:(await creditBalance(e.workspaceId)).total,
+      maxCredits:e.maxCredits,generationBasis:e.generationBasis,exactProviderUsdCap:false,
+      maxProviderRequests:jobs.length,
+      pricing:{analysis:CREDIT_COSTS.analyzeVideo,planningCall:CREDIT_COSTS.experimentPlanningCall,slide:CREDIT_COSTS.experimentSlide} };
+  }
   const analysisCredits = stage === 'plan' ? e.inputs.filter(x=>x.status!=='ready').length*CREDIT_COSTS.analyzeVideo : 0;
   const planningCredits = stage === 'plan' ? (e.report ? 0 : CREDIT_COSTS.experimentPlanningCall) + (e.variants.length ? 0 : CREDIT_COSTS.experimentPlanningCall) : 0;
   const generationCredits = stage === 'generate' ? variants.reduce((n,v)=>n+(v.slides.length ? v.slides.filter(s=>s.status!=='done').length : e.slideCount)*CREDIT_COSTS.experimentSlide,0) : 0;
@@ -98,13 +112,28 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     e.status='generating';
   } else if(action==='retry') {
     if(e.status!=='failed' && e.status!=='paused') throw new S.ExperimentError(409,'not_retryable');
-    // A timeout/crash may have billed the provider. No user-facing retry can erase that receipt.
-    if(e.tasks.some(t=>t.status==='unknown'||t.status==='running')) throw new S.ExperimentError(409,'provider_outcome_unknown','Provider outcome requires reconciliation; automatic retry is disabled.');
-    const ids=S.Retry.parse(b).variantIds; if(ids) selected(e,ids);
-    const retryTasks=e.tasks.filter(t=>t.status==='failed' && (!ids || (t.kind==='slide' && ids.includes(t.target!))));
-    if(!retryTasks.length || retryTasks.some(t=>t.attempts>=2)) throw new S.ExperimentError(409,'retry_limit');
-    for(const t of retryTasks) {t.status='pending';t.error=undefined;}
-    for(const v of e.variants) if(retryTasks.some(t=>t.target===v.id)){v.status='generating';v.error=null;}
+    // Only genuinely in-flight leases block a retry; exhausted/unknown jobs are retryable
+    // on demand (each retry re-charges, so a lost provider delivery costs at most one more).
+    if(e.tasks.some(t=>t.status==='running')) throw new S.ExperimentError(409,'provider_outcome_unknown','A provider request is still in flight. Refresh and retry in a moment.');
+    const ids=S.Retry.parse(b).variantIds; const wantedTaskIds=S.Retry.parse(b).taskIds;
+    let retryTasks: S.Task[];
+    if (wantedTaskIds) {
+      const wanted = new Set(wantedTaskIds);
+      retryTasks = e.tasks.filter(t=>wanted.has(t.id)&&(t.status==='failed'||t.status==='unknown'));
+      if (!retryTasks.length) throw new S.ExperimentError(409,'nothing_to_retry');
+    } else {
+      retryTasks = e.tasks.filter(t=>t.status==='failed' && (!ids || (t.kind==='slide' && ids.includes(t.target!))));
+      if(!retryTasks.length) throw new S.ExperimentError(409,'nothing_to_retry');
+      if(ids) selected(e,ids);
+    }
+    if(retryTasks.some(t=>t.attempts>=S.MAX_MANUAL_ATTEMPTS)) throw new S.ExperimentError(409,'retry_limit');
+    for(const t of retryTasks) {t.status='pending';t.error=undefined;t.nextAttemptAt=undefined;}
+    for(const v of e.variants){
+      const vt=retryTasks.filter(t=>t.target===v.id);
+      if(!vt.length) continue;
+      v.status='generating';v.error=null;
+      for(const t of vt) if(t.index!==undefined){v.slides[t.index]!.status='pending';}
+    }
     e.error=null;e.status=e.report&&e.variants.length?'generating':'planning';
   } else throw new S.ExperimentError(404,'action_not_found');
   if(key)e.commands[key]=hash;

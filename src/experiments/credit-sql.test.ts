@@ -51,7 +51,7 @@ test('engine rejection atomically restores SQL balances while unknown outcomes r
       createdAt:'2026-09-16',updatedAt:'2026-09-16',variantCount:1,slideCount:3,report:null,error:null,
       instructions:{goal:'Test',brand:'',audience:'',language:'English',direction:'',lockedConstraints:[],variables:['hook'],mode:'controlled'},
       generationBasis:'text-directed',assetPolicy:'retained',commands:{},createFingerprint:'test',
-      tasks:[{id:'t',kind:'analysis',target:'v',status:'pending',attempts:0,charged:0}],
+      tasks:[{id:'t',kind:'analysis',target:'v',status:'pending',attempts:3,charged:0}],
       inputs:[{videoId:'v',status:'pending',analysisId:null,jobId:null,error:null,coverage:null,evidence:[]}],variants:[],allowPartial:false };
     db.run('INSERT INTO Experiment VALUES (?,?)',['e',JSON.stringify(row)]);
     const deps: EngineDeps = {

@@ -30,10 +30,17 @@ export const Create = z.object({ workspaceId: Id, videoIds: z.array(Id).min(1).m
 export const WorkspaceBody = z.object({ workspaceId: Id }).strict();
 export const Command = WorkspaceBody.extend({ idempotencyKey: Key });
 export const Plan = Command.extend({ allowPartial: z.boolean().optional() });
-export const Retry = Command.extend({ variantIds: z.array(Id).min(1).max(12).optional() });
+export const Retry = Command.extend({ variantIds: z.array(Id).min(1).max(12).optional(), taskIds: z.array(z.string().min(1)).min(1).max(150).optional() });
 export const Generate = Command.extend({ variants: z.array(z.object({ id: Id, revision: z.number().int().positive() }).strict()).min(1).max(12) });
-export const Estimate = WorkspaceBody.extend({ stage: z.enum(['plan', 'generate']), variantIds: z.array(Id).min(1).max(12).optional() });
+export const Estimate = WorkspaceBody.extend({ stage: z.enum(['plan', 'generate']), variantIds: z.array(Id).min(1).max(12).optional(), taskIds: z.array(z.string().min(1)).min(1).max(150).optional() });
 export const EditBrief = WorkspaceBody.extend({ revision: z.number().int().positive(), brief: Brief });
+/** Every job self-heals through 3 automatic retries with exponential backoff (4 attempts total). */
+export const MAX_TASK_ATTEMPTS = 4;
+export const MAX_MANUAL_ATTEMPTS = 6;
+const RETRY_BACKOFF_MS = [60_000, 300_000, 900_000];
+export function retryBackoffMs(attempts: number): number {
+  return RETRY_BACKOFF_MS[Math.min(Math.max(attempts, 1), RETRY_BACKOFF_MS.length) - 1]!;
+}
 export const Report = z.object({ summary: text.min(1), patterns: z.array(z.object({
   id: Id, name: z.string().min(1).max(100), description: text.min(1), sourceIds: z.array(Id).min(1).max(20),
   confidence: z.number().min(0).max(1), frequency: z.number().int().min(1).max(20),
@@ -47,7 +54,7 @@ export type ReportData = z.infer<typeof Report>;
 export type Proposal = z.infer<typeof VariantProposal>;
 export type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'unknown';
 export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide'; target?: string; index?: number;
-  status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; }
+  status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number; }
 export interface Input { videoId: string; status: string; analysisId: string | null; jobId: string | null; error: string | null;
   coverage: { basis: string; observed: number; total: number | null; complete: boolean } | null; evidence: Array<{ location: string; observation: string }>; }
 export type GenerationBasis = 'text-directed' | 'source-referenced';
