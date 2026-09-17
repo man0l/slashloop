@@ -22,6 +22,10 @@ export async function list(workspaceId: string): Promise<Experiment[]> {
   const result = await batch([{ sql: 'SELECT "dataJson" FROM "Experiment" WHERE "workspaceId" = ? ORDER BY "createdAt" DESC LIMIT 50', params: [workspaceId] }]);
   return (result[0] as Array<{ dataJson: string }>).map(r => JSON.parse(r.dataJson));
 }
+export async function remove(workspaceId: string, id: string): Promise<boolean> {
+  const result = await batch([{ sql: 'DELETE FROM "Experiment" WHERE "id" = ? AND "workspaceId" = ? RETURNING "id"', params: [id, workspaceId] }]);
+  return ((result[0] ?? []) as unknown[]).length > 0;
+}
 export async function create(e: Experiment, key: string): Promise<Experiment> {
   const json = encodeExperiment(e);
   await batch([{ sql: 'INSERT INTO "Experiment" ("id","workspaceId","status","version","dataJson","createdAt","updatedAt","createKey") VALUES (?,?,?,0,?,?,?,?) ON CONFLICT ("workspaceId","createKey") DO NOTHING RETURNING "id"',

@@ -4,7 +4,8 @@ import { corsPreflight } from '../src/lib/cors.js';
 import { InsufficientCreditsError } from '../src/lib/credits.js';
 import { ExperimentError, Id, Estimate } from '../src/experiments/schema.js';
 import { createExperiment, estimate, mutate } from '../src/experiments/service.js';
-import { load, list, serialize } from '../src/experiments/store.js';
+import { load, list, remove, serialize } from '../src/experiments/store.js';
+import { deleteObjects, thumbBucket } from '../src/lib/storage.js';
 
 export const OPTIONS=async(request:Request)=>corsPreflight(request);
 async function body(request:Request):Promise<Record<string,unknown>> {
@@ -32,6 +33,16 @@ async function handle(request:Request):Promise<Response> {
       const parsed=Estimate.parse(b);response={estimate:await estimate(await load(workspaceId,id),parsed.stage,parsed.variantIds,parsed.taskIds)};
     }else if(request.method==='POST'&&id&&action)response={experiment:serialize(await mutate(workspaceId,id,action,b))};
     else if(request.method==='PATCH'&&id&&variantId)response={experiment:serialize(await mutate(workspaceId,id,'edit',b,variantId))};
+    else if(request.method==='DELETE'&&id&&!action){
+      const e=await load(workspaceId,id);
+      if(e.status==='planning'||e.status==='generating') throw new ExperimentError(409,'active_experiment','Cancel the experiment before deleting it.');
+      // Retained slide images live under the retained prefix; remove them with the record.
+      const paths=[...e.tasks.map(t=>t.path),...e.variants.flatMap(v=>v.slides.map(s=>s.path))].filter((p):p is string=>!!p);
+      const deleted=await remove(workspaceId,id);
+      if(!deleted) throw new ExperimentError(404,'experiment_not_found');
+      if(paths.length)await deleteObjects(thumbBucket(),paths).catch(()=>0);
+      response={deleted:true};
+    }
     else return jsonResponse(405,{error:'method_not_allowed'},request);
     return jsonResponse(200,response,request);
   }catch(err){
