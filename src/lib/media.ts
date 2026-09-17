@@ -347,7 +347,7 @@ export function resolveRecreationUrls(rawJson: string | null | undefined): strin
   }
 }
 
-const RECREATION_MODEL = 'openai/gpt-image-2.5-sunburst';
+const RECREATION_MODEL = 'meta/muse-image';
 
 /** Stamp AI-recreated slide keys onto the video's rawJson. Split from
  *  persistRecreation so the Workers-native stepper (which uploads slides to

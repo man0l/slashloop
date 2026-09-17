@@ -9,7 +9,7 @@ afterEach(() => {
   else process.env.OPENROUTER_API_KEY = originalKey;
 });
 
-describe('Muse image test override', () => {
+describe('Muse image default', () => {
   test('sends meta/muse-image to the real image adapter and decodes a mocked result', async () => {
     process.env.OPENROUTER_API_KEY = 'local-test-only';
     const image = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
@@ -18,14 +18,15 @@ describe('Muse image test override', () => {
       usage: { cost: 0.0123 },
     }), { status: 200 }));
 
-    const result = await generateOpenRouterImage({ model: 'meta/muse-image', prompt: 'A blue ceramic bowl', quality: 'low', aspectRatio: '9:16' });
+    const result = await generateOpenRouterImage({ prompt: 'A blue ceramic bowl', referenceUrl: 'https://example.com/reference.jpg', quality: 'low', aspectRatio: '9:16' });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0]!;
     expect(String(url)).toEndWith('/images');
-    expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'meta/muse-image', prompt: 'A blue ceramic bowl', quality: 'low', aspect_ratio: '9:16' });
+    const body = JSON.parse(String(init?.body));
+    expect(body).toEqual({ model: 'meta/muse-image', prompt: 'A blue ceramic bowl\nCompose the image in 9:16 aspect ratio.', input_references: [{type:'image_url',image_url:{url:'https://example.com/reference.jpg'}}] });
     expect(result.buffer).toEqual(image);
     expect(result.contentType).toBe('image/jpeg');
     expect(result.costUsd).toBe(0.0123);
-    expect(RECREATE_IMAGE_MODEL).toBe('openai/gpt-image-2.5-sunburst');
+    expect(RECREATE_IMAGE_MODEL).toBe('meta/muse-image');
   });
 });

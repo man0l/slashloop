@@ -293,8 +293,8 @@ export async function callOpenRouterText(
   }
 }
 
-/** Cheap TikTok-slide recreation: GPT Image 2.5 Sunburst at low quality. */
-export const RECREATE_IMAGE_MODEL = 'openai/gpt-image-2.5-sunburst';
+/** Default model for image recreation and experiment slides. */
+export const RECREATE_IMAGE_MODEL = 'meta/muse-image';
 
 export async function generateOpenRouterImage(opts: {
   prompt: string;
@@ -307,13 +307,17 @@ export async function generateOpenRouterImage(opts: {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error('OPENROUTER_API_KEY environment variable is not set');
 
+  const model = opts.model ?? RECREATE_IMAGE_MODEL;
+  const muse = model === 'meta/muse-image';
   const body: Record<string, unknown> = {
-    model: opts.model ?? RECREATE_IMAGE_MODEL,
-    prompt: opts.prompt,
-    quality: opts.quality ?? 'low',
-    aspect_ratio: opts.aspectRatio ?? '9:16',
-    output_format: 'jpeg',
-    output_compression: 70,
+    model,
+    prompt: muse ? `${opts.prompt}\nCompose the image in ${opts.aspectRatio ?? '9:16'} aspect ratio.` : opts.prompt,
+    ...(!muse ? {
+      quality: opts.quality ?? 'low',
+      aspect_ratio: opts.aspectRatio ?? '9:16',
+      output_format: 'jpeg',
+      output_compression: 70,
+    } : {}),
   };
   if (opts.referenceUrl) {
     body.input_references = [{
