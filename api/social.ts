@@ -18,6 +18,12 @@ const PROVIDERS: ProviderId[] = ['tiktok', 'youtube', 'instagram'];
 
 export function socialConfigFromEnv(): SocialConfig {
   return {
+    // Stream drives the metadata scrub (video re-encode); absent = video
+    // scrubbing fails with a setup message instead of silently skipping.
+    scrub:
+      process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_STREAM_TOKEN
+        ? { accountId: process.env.CLOUDFLARE_ACCOUNT_ID, token: process.env.CLOUDFLARE_STREAM_TOKEN }
+        : undefined,
     tiktok: process.env.SOCIAL_TIKTOK_CLIENT_ID
       ? { clientId: process.env.SOCIAL_TIKTOK_CLIENT_ID, clientSecret: process.env.SOCIAL_TIKTOK_CLIENT_SECRET ?? '' }
       : undefined,

@@ -55,7 +55,7 @@ export interface CalendarGroup {
   media: MediaContent[];
   /** Aggregate state for chip coloring: any PROCESSING wins, then ERROR,
    *  then queued-until, then fully PUBLISHED; DRAFT groups report 'draft'. */
-  state: 'queued' | 'processing' | 'published' | 'error' | 'draft';
+  state: 'queued' | 'processing' | 'published' | 'error' | 'draft' | 'scrubbing';
   posts: Array<{
     id: string;
     provider: ProviderId;
@@ -93,6 +93,7 @@ function groupRows(rows: SocialPostRow[]): CalendarGroup[] {
 
   for (const group of byGroup.values()) {
     if (group.posts.every((p) => p.state === 'DRAFT')) group.state = 'draft';
+    else if (group.posts.every((p) => p.state === 'SCRUB')) group.state = 'scrubbing';
     else if (group.posts.some((p) => p.state === 'PROCESSING')) group.state = 'processing';
     else if (group.posts.some((p) => p.state === 'ERROR')) group.state = 'error';
     else if (group.posts.every((p) => p.state === 'PUBLISHED')) group.state = 'published';
@@ -119,6 +120,9 @@ interface CreateBody {
   publishDate?: number;
   /** Save as a draft instead of scheduling. */
   draft?: boolean;
+  /** Re-capture every media item (fresh bytes, no source fingerprint):
+   *  images re-encoded now-ish by the engine, videos through Stream. */
+  stripMetadata?: boolean;
   settings?: Record<string, Record<string, unknown>>;
 }
 
@@ -140,6 +144,7 @@ export async function POST(request: Request): Promise<Response> {
   const publishDate = asDraft && !Number.isFinite(Number(body.publishDate)) ? 0 : Math.floor(Number(body.publishDate));
   if (!Number.isFinite(publishDate)) return json(400, { error: 'invalid_publish_date' }, request);
 
+  const stripMetadata = Boolean(body.stripMetadata);
   const media: MediaContent[] = [];
   for (const item of body.media ?? []) {
     if (!item?.url || typeof item.url !== 'string') continue;
@@ -149,6 +154,8 @@ export async function POST(request: Request): Promise<Response> {
       url: item.url,
       ...(item.alt ? { alt: item.alt } : {}),
       ...(item.thumbnail ? { thumbnail: item.thumbnail } : {}),
+      // Recreated decks are already fresh — a scrub mark would waste a pass.
+      ...(stripMetadata ? { scrub: true } : {}),
     });
   }
 
@@ -185,7 +192,7 @@ export async function POST(request: Request): Promise<Response> {
       content: body.content!.trim(),
       settings: settingsByIntegration[integration.id] ?? {},
       media,
-      state: asDraft ? ('DRAFT' as const) : ('QUEUE' as const),
+      state: asDraft ? ('DRAFT' as const) : media.some((m) => m.scrub) ? ('SCRUB' as const) : ('QUEUE' as const),
     })),
   );
 
@@ -208,6 +215,8 @@ export async function PATCH(request: Request): Promise<Response> {
     /** Update caption + media (drafts and queued groups only). */
     content?: string;
     media?: Array<{ type?: string; url?: string; alt?: string; thumbnail?: string }>;
+    /** Mark (or unmark) the group's media for the metadata scrub. */
+    stripMetadata?: boolean;
   };
   try {
     body = (await request.json()) as typeof body;
@@ -236,11 +245,12 @@ export async function PATCH(request: Request): Promise<Response> {
     return processingGuard(result, { updated: result.updated });
   }
 
-  // Schedule a draft (DRAFT → QUEUE with a date).
+  // Schedule a draft (DRAFT → QUEUE — or SCRUB when the media still carries
+  // scrub marks) with a date.
   if (body.state === 'QUEUE') {
     const publishDate = Math.floor(Number(body.publishDate));
     if (!Number.isFinite(publishDate)) return json(400, { error: 'invalid_publish_date' }, request);
-    const result = await socialStore.scheduleGroup(claims.sub, id, publishDate);
+    const result = await socialStore.scheduleGroup(claims.sub, id, publishDate, body.stripMetadata ? 'SCRUB' : 'QUEUE');
     return processingGuard(result, { scheduled: result.scheduled, publishDate });
   }
 

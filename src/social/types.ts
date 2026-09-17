@@ -24,6 +24,9 @@ export interface MediaContent {
   url: string;
   alt?: string;
   thumbnail?: string;
+  /** true = pending metadata scrub (re-captured before publishing); the
+   *  engine replaces url + clears the flag as it processes each item. */
+  scrub?: boolean;
 }
 
 export interface PostDetails {
@@ -86,6 +89,9 @@ export interface SocialConfig {
   tiktok?: { clientId: string; clientSecret: string };
   youtube?: { clientId: string; clientSecret: string };
   instagram?: { clientId: string; clientSecret: string; graphVersion?: string };
+  /** Cloudflare Stream credentials for the metadata scrub (video re-encode).
+   *  Absent = video scrubbing fails fast with a setup message. */
+  scrub?: { accountId: string; token: string };
   /** Injectable clock for tests; defaults to Date.now(). */
   now?: () => number;
 }
@@ -112,7 +118,7 @@ export interface SocialPostRow {
   owner_id: string;
   integration_id: string;
   provider: ProviderId;
-  state: 'QUEUE' | 'PROCESSING' | 'PUBLISHED' | 'ERROR' | 'DRAFT';
+  state: 'QUEUE' | 'PROCESSING' | 'PUBLISHED' | 'ERROR' | 'DRAFT' | 'SCRUB';
   publish_date: number;
   content: string;
   settings: string | null;
@@ -122,4 +128,6 @@ export interface SocialPostRow {
   release_url: string | null;
   error: string | null;
   attempts: number;
+  created_at: number;
+  updated_at: number;
 }

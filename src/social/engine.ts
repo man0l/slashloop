@@ -17,6 +17,7 @@
 import { createRegistry, getProvider } from './registry.js';
 import * as store from './store.js';
 import { BadBodyError, ReconnectError, RefreshTokenError } from './errors.js';
+import { mediaWithScrubbedUrl, nextScrubItem, scrubImageToR2, streamDelete, streamDownloadToR2, streamDownloadUrl, streamStatus, streamUpload } from './scrub.js';
 import type { ProviderPostContext, SocialConfig, SocialIntegrationRow, SocialPostRow } from './types.js';
 
 export interface TickOptions {
@@ -37,6 +38,8 @@ export interface TickReport {
   errored: number;
   resumed: number;
   deferred: number;
+  /** Posts that finished metadata scrubbing and re-entered the QUEUE. */
+  scrubbed: number;
   failures: Array<{ postId: string; provider: string; error: string }>;
 }
 
@@ -53,7 +56,7 @@ export async function socialEngineTick(cfg: SocialConfig, options: TickOptions =
   const now = options.nowSeconds ?? Math.floor(Date.now() / 1000);
   const registry = createRegistry(cfg);
 
-  const report: TickReport = { claimed: 0, published: 0, errored: 0, resumed: 0, deferred: 0, failures: [] };
+  const report: TickReport = { claimed: 0, published: 0, errored: 0, resumed: 0, deferred: 0, scrubbed: 0, failures: [] };
 
   // 1. Fresh posts: claim the due batch.
   const claimed = await store.claimDuePosts(batchLimit, now);
@@ -77,7 +80,104 @@ export async function socialEngineTick(cfg: SocialConfig, options: TickOptions =
     apply(report, outcome);
   }
 
+  // 3. Metadata scrub: re-capture one media item per SCRUB post per tick
+  //    (image re-encode CPU and Stream waits stay out of HTTP requests).
+  report.scrubbed = await processScrubPosts(cfg, { limit: 3, maxAttempts, now });
+
   return report;
+}
+
+/** Drive the scrub pipeline. One item per post per tick: images re-encode
+ *  immediately; videos walk upload → poll → download across ticks with the
+ *  Stream uid parked in pending_data. An orphan sweep deletes Stream assets
+ *  for posts stuck >2h so no billable minutes outlive the job. */
+async function processScrubPosts(cfg: SocialConfig, limits: { limit: number; maxAttempts: number; now: number }): Promise<number> {
+  const posts = await store.scrubPosts(limits.limit);
+  let scrubbed = 0;
+
+  for (const post of posts) {
+    const media = safeParseArray(post.media);
+    const pending = safeParse(post.pending_data) ?? {};
+    const scrubState = (pending.scrub as { phase?: string; streamId?: string } | undefined) ?? {};
+
+    // Orphan sweep: a Stream asset older than 2h is a stuck job — delete it
+    // and fail the post so Stream minutes cannot leak forever.
+    if (scrubState.streamId && limits.now - post.updated_at > 2 * 3600) {
+      if (cfg.scrub) await streamDelete(cfg.scrub, scrubState.streamId);
+      await store.markError(post.id, 'Metadata scrub timed out — the video could not be re-encoded in time. Try scheduling it again.');
+      continue;
+    }
+
+    const item = nextScrubItem(media);
+    if (!item) {
+      await store.finishScrub(post.id, media);
+      scrubbed++;
+      continue;
+    }
+
+    const attempts = post.attempts + 1;
+    try {
+      if (item.item.type === 'image') {
+        const url = await scrubImageToR2(item.item.url);
+        const next = mediaWithScrubbedUrl(media, item.index, url);
+        if (nextScrubItem(next)) await store.replacePostMedia(post.id, next);
+        else {
+          await store.finishScrub(post.id, next);
+          scrubbed++;
+        }
+        continue;
+      }
+
+      // Video: Cloudflare Stream re-encode, one phase per tick.
+      if (!cfg.scrub) {
+        await store.markError(post.id, 'Metadata scrub needs Cloudflare Stream configured on the worker (CLOUDFLARE_STREAM_TOKEN).');
+        continue;
+      }
+
+      if (scrubState.phase === 'download' && scrubState.streamId) {
+        const url = await streamDownloadUrl(cfg.scrub, scrubState.streamId);
+        if (!url) {
+          await store.savePendingData(post.id, { ...pending, scrub: { phase: 'download', streamId: scrubState.streamId } }, attempts);
+          continue;
+        }
+        const newUrl = await streamDownloadToR2(cfg.scrub, url);
+        await streamDelete(cfg.scrub, scrubState.streamId); // no billable minutes linger
+        const next = mediaWithScrubbedUrl(media, item.index, newUrl);
+        if (nextScrubItem(next)) await store.replacePostMedia(post.id, next);
+        else {
+          await store.finishScrub(post.id, next);
+          scrubbed++;
+        }
+        continue;
+      }
+
+      if (scrubState.phase === 'poll' && scrubState.streamId) {
+        const state = await streamStatus(cfg.scrub, scrubState.streamId);
+        if (state === 'ready') {
+          await store.savePendingData(post.id, { ...pending, scrub: { phase: 'download', streamId: scrubState.streamId } }, attempts);
+        } else if (state === 'error') {
+          await streamDelete(cfg.scrub, scrubState.streamId);
+          await store.markError(post.id, 'Stream could not re-encode the video — the file may be corrupt. Try re-uploading it.');
+        } else {
+          await store.savePendingData(post.id, { ...pending, scrub: { phase: 'poll', streamId: scrubState.streamId } }, attempts);
+        }
+        continue;
+      }
+
+      const streamId = await streamUpload(cfg.scrub, item.item.url);
+      await store.savePendingData(post.id, { ...pending, scrub: { phase: 'poll', streamId } }, attempts);
+    } catch (err) {
+      if (attempts > limits.maxAttempts) {
+        if (scrubState.streamId && cfg.scrub) await streamDelete(cfg.scrub, scrubState.streamId);
+        await store.markError(post.id, `Metadata scrub failed repeatedly: ${(err as Error).message}`.slice(0, 500));
+        continue;
+      }
+      // Transient: keep the phase, retry on a later tick.
+      await store.savePendingData(post.id, { ...pending, scrub: { ...scrubState, phase: scrubState.phase ?? 'upload' } }, attempts);
+    }
+  }
+
+  return scrubbed;
 }
 
 type Outcome = { kind: 'published' } | { kind: 'errored'; error: string } | { kind: 'resumed' } | { kind: 'deferred' };

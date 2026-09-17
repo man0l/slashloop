@@ -9,6 +9,7 @@ import { BadBodyError, classifyHttpError } from './errors.js';
 import { TikTokProvider } from './providers/tiktok.js';
 import { YouTubeProvider } from './providers/youtube.js';
 import { InstagramProvider } from './providers/instagram.js';
+import { mediaWithScrubbedUrl, nextScrubItem } from './scrub.js';
 
 // ── OAuth state (HMAC, stateless) ───────────────────────────────────────────
 
@@ -136,5 +137,29 @@ describe('instagram provider', () => {
     expect(provider.classify('{"error":{"code":190,"message":"Session expired"}}', 400)).toBe('refresh-token');
     expect(provider.classify('{"error":{"code":4,"message":"Application request limit reached"}}', 400)).toBe('retry');
     expect(provider.classify('{"error":{"code":10,"message":"Permission denied"}}', 400)).toBe('bad-body');
+  });
+});
+
+// ── scrub helpers ───────────────────────────────────────────────────────────
+
+describe('scrub helpers', () => {
+  const media = [
+    { type: 'image' as const, url: 'https://x/1.jpg' },
+    { type: 'video' as const, url: 'https://x/clip.mp4', scrub: true },
+    { type: 'image' as const, url: 'https://x/2.jpg', scrub: true },
+  ];
+
+  test('nextScrubItem finds the first marked item', () => {
+    const next = nextScrubItem(media);
+    expect(next?.index).toBe(1);
+    expect(next?.item.url).toBe('https://x/clip.mp4');
+    expect(nextScrubItem(media.map((m) => ({ ...m, scrub: false })))).toBeNull();
+  });
+
+  test('mediaWithScrubbedUrl swaps the url and clears only that flag', () => {
+    const next = mediaWithScrubbedUrl(media, 1, 'https://x/fresh.mp4');
+    expect(next[1]).toEqual({ type: 'video', url: 'https://x/fresh.mp4', scrub: false });
+    expect(next[2].scrub).toBe(true); // other items untouched
+    expect(next[0].url).toBe('https://x/1.jpg');
   });
 });

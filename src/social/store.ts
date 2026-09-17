@@ -165,14 +165,15 @@ export interface CreatePostInput {
   content: string;
   settings: Record<string, unknown>;
   media: Array<{ type: 'image' | 'video'; url: string; alt?: string; thumbnail?: string }>;
-  /** 'DRAFT' rows carry publishDate 0 until scheduled. */
-  state?: 'QUEUE' | 'DRAFT';
+  /** 'DRAFT' rows carry publishDate 0 until scheduled; 'SCRUB' rows wait for
+   *  the engine's metadata-scrub phase before the QUEUE claim picks them. */
+  state?: 'QUEUE' | 'DRAFT' | 'SCRUB';
 }
 
 export async function createPostGroup(inputs: CreatePostInput[]): Promise<void> {
   if (!inputs.length) return;
   const now = nowSeconds();
-  const state = inputs[0]?.state === 'DRAFT' ? 'DRAFT' : 'QUEUE';
+  const state = inputs[0]?.state ?? 'QUEUE';
   const statements: RawStatement[] = inputs.map((input) => ({
     sql: `INSERT INTO social_posts
             (id, group_id, owner_id, integration_id, provider, state, publish_date, content, settings, media, attempts, created_at, updated_at)
@@ -220,6 +221,39 @@ export async function listDrafts(ownerId: string, limit = 50): Promise<SocialPos
       },
     ]),
   );
+}
+
+/** Posts waiting for (or mid) metadata scrub, oldest first. */
+export async function scrubPosts(limit: number): Promise<SocialPostRow[]> {
+  return rows<SocialPostRow>(
+    await rawBatch([
+      {
+        sql: "SELECT * FROM social_posts WHERE state = 'SCRUB' ORDER BY updated_at ASC LIMIT ?1",
+        params: [limit],
+      },
+    ]),
+  );
+}
+
+/** Scrub complete: persist the re-captured media and release the post to
+ *  the normal QUEUE claim. */
+export async function finishScrub(id: string, media: Array<{ type: 'image' | 'video'; url: string; alt?: string; thumbnail?: string }>): Promise<void> {
+  await rawBatch([
+    {
+      sql: `UPDATE social_posts SET media = ?2, state = 'QUEUE', pending_data = NULL, updated_at = ?3 WHERE id = ?1`,
+      params: [id, JSON.stringify(media), nowSeconds()],
+    },
+  ]);
+}
+
+/** Swap in the scrubbed media (URLs replaced, scrub flags cleared). */
+export async function replacePostMedia(id: string, media: Array<{ type: 'image' | 'video'; url: string; alt?: string; thumbnail?: string }>): Promise<void> {
+  await rawBatch([
+    {
+      sql: 'UPDATE social_posts SET media = ?2, updated_at = ?3 WHERE id = ?1',
+      params: [id, JSON.stringify(media), nowSeconds()],
+    },
+  ]);
 }
 
 export async function getPost(id: string): Promise<SocialPostRow | undefined> {
@@ -274,23 +308,35 @@ export async function updateGroupContent(
   return { updated, processing };
 }
 
-/** Schedule a draft: DRAFT → QUEUE with a publish date. The engine then
- *  treats it like any scheduled post. */
-export async function scheduleGroup(ownerId: string, groupId: string, publishDate: number): Promise<{ scheduled: number; processing: number }> {
+/** Schedule a draft: DRAFT → QUEUE (or SCRUB when the post carries media
+ *  that still needs the metadata scrub) with a publish date. */
+export async function scheduleGroup(ownerId: string, groupId: string, publishDate: number, targetState: 'QUEUE' | 'SCRUB' = 'QUEUE'): Promise<{ scheduled: number; processing: number }> {
   const results = await rawBatch([
     {
       sql: "SELECT COUNT(*) AS n FROM social_posts WHERE group_id = ?1 AND owner_id = ?2 AND state = 'PROCESSING'",
       params: [groupId, ownerId],
     },
+    // Scrub scheduling must MARK the media (the engine reads the per-item
+    // flags); json_each rewrites every media object with scrub: true.
+    ...(targetState === 'SCRUB'
+      ? [
+          {
+            sql: `UPDATE social_posts
+                  SET media = (SELECT json_group_array(json_set(j.value, '$.scrub', json('true'))) FROM json_each(media) j)
+                  WHERE group_id = ?1 AND owner_id = ?2 AND state = 'DRAFT'`,
+            params: [groupId, ownerId],
+          },
+        ]
+      : []),
     {
-      sql: `UPDATE social_posts SET state = 'QUEUE', publish_date = ?3, updated_at = ?4
+      sql: `UPDATE social_posts SET state = ?4, publish_date = ?3, updated_at = ?5
             WHERE group_id = ?1 AND owner_id = ?2 AND state = 'DRAFT'`,
-      params: [groupId, ownerId, publishDate, nowSeconds()],
+      params: [groupId, ownerId, publishDate, targetState, nowSeconds()],
     },
     { sql: 'SELECT changes() AS n', params: [] },
   ]);
   const processing = Number((results[0]?.[0] as { n?: number } | undefined)?.n ?? 0);
-  const scheduled = Number((results[2]?.[0] as { n?: number } | undefined)?.n ?? 0);
+  const scheduled = Number((results[results.length - 1]?.[0] as { n?: number } | undefined)?.n ?? 0);
   return { scheduled, processing };
 }
 
