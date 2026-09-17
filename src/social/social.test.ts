@@ -9,6 +9,7 @@ import { BadBodyError, classifyHttpError } from './errors.js';
 import { TikTokProvider } from './providers/tiktok.js';
 import { YouTubeProvider } from './providers/youtube.js';
 import { InstagramProvider } from './providers/instagram.js';
+import { ThreadsProvider } from './providers/threads.js';
 import { mediaWithScrubbedUrl, nextScrubItem } from './scrub.js';
 
 // ── OAuth state (HMAC, stateless) ───────────────────────────────────────────
@@ -137,6 +138,38 @@ describe('instagram provider', () => {
     expect(provider.classify('{"error":{"code":190,"message":"Session expired"}}', 400)).toBe('refresh-token');
     expect(provider.classify('{"error":{"code":4,"message":"Application request limit reached"}}', 400)).toBe('retry');
     expect(provider.classify('{"error":{"code":10,"message":"Permission denied"}}', 400)).toBe('bad-body');
+  });
+});
+
+// ── Threads ───────────────────────────────────────────────────────────────────
+
+describe('threads provider', () => {
+  const provider = new ThreadsProvider();
+
+  test('checkValidity enforces text-or-media, 500 chars, max 20 items', () => {
+    const photo = { type: 'image' as const, url: 'https://x/pic.jpg' };
+    expect(provider.checkValidity({ message: 'hello', settings: {}, media: [] })).toBe(true);
+    expect(provider.checkValidity({ message: '', settings: {}, media: [photo] })).toBe(true);
+    expect(provider.checkValidity({ message: '', settings: {}, media: [] })).not.toBe(true);
+    expect(provider.checkValidity({ message: 'x'.repeat(501), settings: {}, media: [] })).not.toBe(true);
+    expect(provider.checkValidity({ message: '', settings: {}, media: Array(21).fill(photo) })).not.toBe(true);
+  });
+
+  test('classify maps Threads/Meta error codes', () => {
+    expect(provider.classify('{"error":{"code":190,"message":"Session expired"}}', 400)).toBe('refresh-token');
+    expect(provider.classify('{"error":{"code":4,"message":"Application request limit reached"}}', 429)).toBe('retry');
+    expect(provider.classify('{"error":{"code":10,"message":"Permission revoked"}}', 400)).toBe('reconnect');
+    expect(provider.classify('{}', 500)).toBe('retry');
+  });
+
+  test('generateAuthUrl points at threads.com with the right scopes', async () => {
+    const url = await provider.generateAuthUrl(
+      { threads: { clientId: 'CID', clientSecret: 'CS' } },
+      'https://mcp.slashloop.dev/api/social/callback/threads',
+      'ST',
+    );
+    expect(url.startsWith('https://www.threads.com/oauth/authorize?')).toBe(true);
+    expect(url).toContain('scope=threads_basic%2Cthreads_content_publish');
   });
 });
 

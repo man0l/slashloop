@@ -15,7 +15,7 @@
 //                    bytes, publish IG containers, set thumbnails) — guarded
 //                    so a retry can never duplicate a post.
 
-export type ProviderId = 'tiktok' | 'youtube' | 'instagram';
+export type ProviderId = 'tiktok' | 'youtube' | 'instagram' | 'threads';
 
 export interface MediaContent {
   type: 'image' | 'video';
@@ -89,6 +89,7 @@ export interface SocialConfig {
   tiktok?: { clientId: string; clientSecret: string };
   youtube?: { clientId: string; clientSecret: string };
   instagram?: { clientId: string; clientSecret: string; graphVersion?: string };
+  threads?: { clientId: string; clientSecret: string };
   /** Cloudflare Stream credentials for the metadata scrub (video re-encode).
    *  Absent = video scrubbing fails fast with a setup message. */
   scrub?: { accountId: string; token: string };

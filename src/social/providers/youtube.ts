@@ -98,7 +98,9 @@ export class YouTubeProvider implements SocialProvider {
       expiresIn: token.expires_in ?? 3600,
       internalId,
       name: snippet.title ?? 'YouTube channel',
-      profile: snippet.customUrl ?? internalId,
+      // customUrl arrives with a leading @ (the site renders its own @) —
+      // normalize at storage so every consumer stays single-@.
+      profile: String(snippet.customUrl ?? internalId).replace(/^@/, ''),
       picture: snippet.thumbnails?.default?.url,
     };
   }

@@ -14,7 +14,7 @@ import { verifySupabaseJwt } from '../remote/auth.js';
 import { corsHeaders, corsPreflight } from '../src/lib/cors.js';
 import { signOAuthState, socialStore, getProvider, createRegistry, type SocialConfig, type ProviderId } from '../src/social/index.js';
 
-const PROVIDERS: ProviderId[] = ['tiktok', 'youtube', 'instagram'];
+const PROVIDERS: ProviderId[] = ['tiktok', 'youtube', 'instagram', 'threads'];
 
 export function socialConfigFromEnv(): SocialConfig {
   return {
@@ -36,6 +36,9 @@ export function socialConfigFromEnv(): SocialConfig {
           clientSecret: process.env.SOCIAL_META_CLIENT_SECRET ?? '',
           graphVersion: process.env.SOCIAL_META_GRAPH_VERSION,
         }
+      : undefined,
+    threads: process.env.SOCIAL_THREADS_CLIENT_ID
+      ? { clientId: process.env.SOCIAL_THREADS_CLIENT_ID, clientSecret: process.env.SOCIAL_THREADS_CLIENT_SECRET ?? '' }
       : undefined,
   };
 }
@@ -74,7 +77,7 @@ export async function GET(request: Request): Promise<Response> {
   // Which platforms have developer-app credentials on this deployment —
   // the site hides connect buttons for the rest instead of erroring on click.
   const cfg = socialConfigFromEnv();
-  const configured = [cfg.tiktok && 'tiktok', cfg.youtube && 'youtube', cfg.instagram && 'instagram'].filter(Boolean);
+  const configured = [cfg.tiktok && 'tiktok', cfg.youtube && 'youtube', cfg.instagram && 'instagram', cfg.threads && 'threads'].filter(Boolean);
   return json(200, { integrations: integrations.map(sanitizeIntegration), configured }, request);
 }
 

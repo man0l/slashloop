@@ -17,7 +17,9 @@ const API = 'https://open.tiktokapis.com/v2';
 export class TikTokProvider implements SocialProvider {
   identifier: ProviderId = 'tiktok';
   name = 'TikTok';
-  scopes = ['user.info.basic', 'video.publish', 'video.upload'];
+  // Drafts-only: uploads land in the creator's TikTok inbox for review —
+  // Direct Post is deliberately off (no video.publish scope requested).
+  scopes = ['user.info.basic', 'video.upload'];
 
   /** Chunk rules: TikTok accepts a single chunk up to 64MB; bigger files go
    *  out as 10MB chunks with the remainder riding in the final PUT. */
@@ -174,11 +176,13 @@ export class TikTokProvider implements SocialProvider {
     }
 
     // Photos: PULL_FROM_URL only — no byte streaming path for photos.
+    // UPLOAD mode sends photo sets to the creator's inbox as drafts (Direct
+    // Post stays off — see scopes above).
     const init = await providerFetch(`${API}/post/publish/content/init/`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${ctx.token}`, 'Content-Type': 'application/json; charset=UTF-8' },
       body: JSON.stringify({
-        post_mode: 'DIRECT_POST',
+        post_mode: 'UPLOAD',
         media_type: 'PHOTO',
         post_info: {
           title: str(ctx.post.settings.title) || ctx.post.message.slice(0, 90),
@@ -263,9 +267,8 @@ export class TikTokProvider implements SocialProvider {
         };
       }
       case 'SEND_TO_USER_INBOX':
-        // UPLOAD-mode semantics never selected by this client (DIRECT_POST
-        // only), but if TikTok routes it there anyway the post is "live" in
-        // the user's inbox — surface it as completed with the inbox URL.
+        // Drafts mode: uploads land in the creator's TikTok inbox for review
+        // — this is the expected terminal state, surfaced as completed.
         return { status: 'completed', postId: publishId, releaseUrl: 'https://www.tiktok.com/messages' };
       case 'FAILED':
         throw new BadBodyError(status?.data?.message || 'TikTok refused to publish the post');
