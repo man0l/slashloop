@@ -22,6 +22,8 @@ const deps = (videos: Video[], calls: unknown[] = []) => ({
   findSources: async () => videos,
   generateImage: async (opts: unknown) => { calls.push(opts); return { buffer: Buffer.alloc(600), contentType: 'image/jpeg', costUsd: 0 }; },
   upload: async () => ({ path: 'stored', sizeBytes: 600 }),
+  generateBriefCandidates: async () => { throw new Error('not used'); },
+  jevScores: async () => ({}),
   describeCandidates: async (buffers: Buffer[]) => buffers.map((_, i) => ({ id: `c${i}`, description: `candidate ${i}` })),
   classify: async () => ({ value: 'c0', confidence: 0.9 }),
 });
@@ -80,6 +82,8 @@ test('Jev picks the winning fan-out candidate and the rest are discarded', async
     findSources: async () => videos,
     generateImage: async () => { const id = `cand${renders.length}`; renders.push(id); return { buffer: Buffer.alloc(600 + renders.length), contentType: 'image/jpeg', costUsd: 0 }; },
     upload: async (opts: { body: Buffer }) => { uploads.push(String(opts.body.length)); return { path: 'stored', sizeBytes: opts.body.length }; },
+    generateBriefCandidates: async () => { throw new Error('not used'); },
+    jevScores: async () => ({}),
     describeCandidates: async (buffers: Buffer[]) => buffers.map((_, i) => ({ id: `c${i}`, description: `candidate ${i}` })),
     classify: async () => ({ value: 'c1', confidence: 0.82, probabilities: { c0: 0.1, c1: 0.8, c2: 0.1 } }),
   };
@@ -99,6 +103,8 @@ test('judge failure falls back to the first candidate instead of losing the rend
     findSources: async () => videos,
     generateImage: async () => { const id = `cand${renders.length}`; renders.push(id); return { buffer: Buffer.alloc(600 + renders.length), contentType: 'image/jpeg', costUsd: 0 }; },
     upload: async (opts: { body: Buffer }) => { uploads.push(String(opts.body.length)); return { path: 'stored', sizeBytes: opts.body.length }; },
+    generateBriefCandidates: async () => { throw new Error('not used'); },
+    jevScores: async () => ({}),
     describeCandidates: async () => { throw new Error('grok down'); },
     classify: async () => { throw new Error('typesafe down'); },
   };

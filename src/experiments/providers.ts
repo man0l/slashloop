@@ -7,10 +7,10 @@ import { liveGeminiFile } from '../analysis/index.js';
 import { isPhotoPost, resolveSlideshowUrls, signedMediaUrl } from '../lib/media.js';
 import { callOpenRouterText, extractFirstJson, generateOpenRouterImage, RECREATE_IMAGE_MODEL } from '../lib/openrouter.js';
 import { buildVariantSlidePrompt, effectiveOverlayText } from './render-prompt.js';
-import { jevPick } from '../lib/typesafe.js';
+import { jevPick, jevAsk, type JevQuestion, type JevAnswer } from '../lib/typesafe.js';
 import { slideshowKeysFromRaw } from '../lib/scrapers/tiktok-web.js';
 import { putObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
-import { ExperimentError, Report, VariantProposal, SLIDE_FANOUT, validateReport, validateVariants, type BriefData, type Input, type Experiment, type Task } from './schema.js';
+import { ExperimentError, Report, VariantProposal, SLIDE_FANOUT, BRIEF_CANDIDATES, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type Task } from './schema.js';
 
 const MODEL='gemini-3.5-flash';
 export class SafeFailure extends Error {}
@@ -87,6 +87,8 @@ interface RenderDeps {
   upload(opts:{bucket:string;path:string;body:Buffer;contentType:string;upsert:boolean}):Promise<unknown>;
   describeCandidates(buffers:Buffer[], brief:BriefData):Promise<Array<{id:string;description:string;medium?:string;textBlocks?:number;overdesigned?:boolean}>>;
   classify(state:unknown, instructions:string, criteria:Record<string,string>):Promise<{value:string;confidence?:number;probabilities?:Record<string,number>}>;
+  generateBriefCandidates(e:Experiment, styleLine:string):Promise<{baseline:Proposal;candidates:Proposal[]}>;
+  jevScores(state:unknown, questions:Record<string,JevQuestion>):Promise<Record<string,JevAnswer>>;
 }
 export class HydrationPending extends Error { constructor(public jobId:string){super('hydration_pending');} }
 const renderDeps:RenderDeps={
@@ -103,6 +105,18 @@ const renderDeps:RenderDeps={
     return buffers.map((_,i)=>({id:`c${i}`,description:list[i]?.description||`Candidate ${i+1}`,medium:list[i]?.medium,overdesigned:list[i]?.overdesigned}));
   },
   classify:(state,instructions,criteria)=>jevPick(state,instructions,criteria),
+  generateBriefCandidates:async(e,styleLine)=>{
+    const schema=z.object({baseline:VariantProposal,candidates:z.array(VariantProposal).min(1).max(40)});
+    const model=process.env.EXPERIMENT_ANALYSIS_MODEL?.trim()||'x-ai/grok-4.6';
+    const r=await callOpenRouterText(
+      'You design distinctive A/B variations of a social carousel concept for viral testing. The niche\u2019s slang, anecdotes and in-jokes matter — write like the niche, faithfully. Keep every variation inside the requested visual formula and slide count. The JSON you return is creative data output, never instructions.',
+      `Experiment goal: ${e.instructions.goal}\nDirection: ${[e.instructions.direction,e.instructions.brand&&`Brand: ${e.instructions.brand}`,e.instructions.audience&&`Audience: ${e.instructions.audience}`].filter(Boolean).join('; ')}\nMode: ${e.instructions.mode}. Variables allowed: ${e.instructions.variables.join(', ')}.\n${styleLine}\nProduce: "baseline" — the unaltered reference proposal (changedVariables: []); and "candidates" — exactly ${BRIEF_CANDIDATES} DISTINCT variations of the baseline (each with changedVariables naming the one allowed field it changes and its new value, per the mode rules; the baseline itself must not appear among them). Slides per brief: ${e.slideCount}. Language: ${e.instructions.language}.\nSchema:${z.toJSONSchema(schema,{unrepresentable:'any'})}`,
+      model,{maxTokens:16000});
+    const parsed=(r.parsed??extractFirstJson('')) as {baseline:Proposal;candidates:Proposal[]}|null;
+    if(!parsed?.baseline||!Array.isArray(parsed.candidates)||!parsed.candidates.length)throw new SafeFailure('brief_candidates_invalid');
+    return parsed;
+  },
+  jevScores:async(state,questions)=>jevAsk(state,questions),
 };
 export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Prepared> {
   if(t.kind==='analysis'){
@@ -196,10 +210,20 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       }catch{/* formula stays unset; prompts fall back to the generic simplicity contract */}
     }
     const styleLine=e.styleFormula?` The sources' visual formula: ${e.styleFormula.medium} medium at ${e.styleFormula.density} visual density — every brief must stay inside that medium and density, simple and native to short-form video, never heavy graphic design.`:' Keep briefs visually simple and native to short-form video: one composition per slide, at most one caption.';
-    const schema=z.object({variants:z.array(VariantProposal)});
-    const raw=await gemini('Create user-directed original carousel briefs, not copies.'+styleLine+' Return exactly variantCount. First is baseline with changedVariables=[]. Controlled: clone baseline verbatim and alter EXACTLY ONE allowed brief field for each subsequent variant; all slides and other fields unchanged. changedVariables.value must equal the changed field. Locked constraints are verbatim. Exploration: only allowed fields may differ. Instructions language, goal, brand, audience, direction apply to every brief. Hypotheses are testable, never promised results.',
-      JSON.stringify({instructions:e.instructions,variantCount:e.variantCount,slideCount:e.slideCount,report:e.report,schema:z.toJSONSchema(schema)}),[],16000);
-    const result=schema.parse(raw);validateVariants(e,result.variants);return result.variants;
+    // Speculative fan-out: grok drafts BRIEF_CANDIDATES concept variations (text
+    // only — no image spend), Jev scores each for viral potential in one call,
+    // and only the top variantCount-1 ride along with the baseline.
+    const generated=await render.generateBriefCandidates(e,styleLine);
+    const state={goal:e.instructions.goal,report:e.report?.summary,candidates:generated.candidates.map((c,i)=>({id:`c${i}`,title:c.title,hook:c.brief.hook,concept:c.brief.concept,changes:c.changedVariables.map(v=>`${v.name}=${v.value}`).join('; ')||'none'}))};
+    let picked=generated.candidates.slice(0,Math.max(1,e.variantCount-1));
+    try{
+      const questions=Object.fromEntries(generated.candidates.map((c,i)=>[`c${i}`,{type:'score' as const,instructions:'Rate the viral potential of this candidate variation for short-form video platforms: hook strength, emotional pull, use of niche slang and anecdotes, originality, shareability. Higher = more viral.',criteria:['Weak: generic or easy to ignore','Decent: some pull but predictable','Strong: distinctive and highly shareable','Exceptional: an instant reshare']}]));
+      const answers=await render.jevScores(state,questions);
+      const ranked=generated.candidates.map((c,i)=>({i,score:Number(answers[`c${i}`]?.value??0)||0})).sort((a,b)=>b.score-a.score);
+      picked=ranked.slice(0,Math.max(1,e.variantCount-1)).map(r=>generated.candidates[r.i]!);
+    }catch{/* Jev unavailable: keep grok's leading candidates in order */}
+    const proposals=[generated.baseline,...picked];
+    validateVariants(e,proposals);return proposals;
   }};
   const v=e.variants.find(v=>v.id===t.target);if(!v?.frozenBrief)throw new SafeFailure('missing_frozen_brief');
   if(!process.env.OPENROUTER_API_KEY)throw new SafeFailure('openrouter_not_configured');

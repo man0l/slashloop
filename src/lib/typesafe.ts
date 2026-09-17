@@ -5,24 +5,31 @@
 const TYPESAFE_URL = 'https://api.typesafe.ai/v1/systemone';
 
 export interface JevAnswer { value: string; confidence?: number; probabilities?: Record<string, number>; }
+export type JevQuestion = { type: 'choice' | 'score' | 'noul'; instructions: string; criteria?: unknown };
 
 /**
- * Ask Jev a single Choice question over the given state and return the winning
- * option key with its probability distribution. Throws on any failure — callers
- * decide the fallback (judgment failures must never lose paid work).
+ * Ask Jev one or more typed questions over the given state in a single call
+ * (the speculative fan-out pattern: many questions, code decides what matters).
  */
-export async function jevPick(state: unknown, instructions: string, criteria: Record<string, string>): Promise<JevAnswer> {
+export async function jevAsk(state: unknown, questions: Record<string, JevQuestion>): Promise<Record<string, JevAnswer>> {
   const key = process.env.TYPESAFE_API_KEY;
   if (!key) throw new Error('TYPESAFE_API_KEY not set');
   const res = await fetch(TYPESAFE_URL, {
     method: 'POST',
     signal: AbortSignal.timeout(30_000),
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ state, model: 'jev-latest', questions: { winner: { type: 'choice', instructions, criteria } } }),
+    body: JSON.stringify({ state, model: 'jev-latest', questions }),
   });
   if (!res.ok) throw new Error(`typesafe_${res.status}`);
-  const data = await res.json() as { answers?: Record<string, { value?: string; confidence?: number; probabilities?: Record<string, number> }> };
-  const answer = data.answers?.winner;
+  const data = await res.json() as { answers?: Record<string, JevAnswer> };
+  if (!data.answers) throw new Error('typesafe_empty_answer');
+  return data.answers;
+}
+
+/** Single Choice question convenience wrapper (slide fan-out selection). */
+export async function jevPick(state: unknown, instructions: string, criteria: Record<string, string>): Promise<JevAnswer> {
+  const answers = await jevAsk(state, { winner: { type: 'choice', instructions, criteria } });
+  const answer = answers.winner;
   if (!answer?.value) throw new Error('typesafe_empty_answer');
-  return { value: answer.value, confidence: answer.confidence, probabilities: answer.probabilities };
+  return answer;
 }

@@ -41,6 +41,8 @@ export const MAX_MANUAL_ATTEMPTS = 6;
 export const PARALLEL_SLIDES = 3;
 /** Candidates rendered per slide; Jev (TypeSafe) picks the most viral one. */
 export const SLIDE_FANOUT = 3;
+/** Concept candidates generated at the briefs stage; Jev ranks them, top variantCount-1 win. */
+export const BRIEF_CANDIDATES = 20;
 const RETRY_BACKOFF_MS = [60_000, 300_000, 900_000];
 export function retryBackoffMs(attempts: number): number {
   return RETRY_BACKOFF_MS[Math.min(Math.max(attempts, 1), RETRY_BACKOFF_MS.length) - 1]!;
