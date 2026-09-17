@@ -22,6 +22,8 @@ const OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL ?? 'https://openrout
 export interface OpenRouterTextCallOptions {
   maxTokens?: number;
   temperature?: number;
+  /** Override the 90s default — large multi-brief generations need minutes. */
+  timeoutMs?: number;
   /** Cover images as real image parts (sent as base64 data URLs). */
   images?: Array<{ mimeType: string; dataBase64: string }>;
 }
@@ -238,7 +240,7 @@ export async function callOpenRouterText(
   // Bounded like gemini.ts: text calls run on Worker request paths.
   const res = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
     method: 'POST',
-    signal: AbortSignal.timeout(90_000),
+    signal: AbortSignal.timeout(options?.timeoutMs ?? 90_000),
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,

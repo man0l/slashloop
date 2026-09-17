@@ -86,12 +86,35 @@ interface RenderDeps {
   generateImage(opts:{prompt:string;referenceUrl?:string;model:string;quality:'low'|'medium'|'high';aspectRatio:string}):Promise<{buffer:Buffer;contentType:string;costUsd:number}>;
   upload(opts:{bucket:string;path:string;body:Buffer;contentType:string;upsert:boolean}):Promise<unknown>;
   describeCandidates(buffers:Buffer[], brief:BriefData):Promise<Array<{id:string;description:string;medium?:string;textBlocks?:number;overdesigned?:boolean}>>;
-  classify(state:unknown, instructions:string, criteria:Record<string,string>):Promise<{value:string;confidence?:number;probabilities?:Record<string,number>}>;
+  classify(state:unknown, instructions:string, criteria:Record<string,string>):Promise<JevAnswer>;
   generateBriefCandidates(e:Experiment, styleLine:string):Promise<{baseline:Proposal;candidates:Proposal[]}>;
   jevScores(state:unknown, questions:Record<string,JevQuestion>):Promise<Record<string,JevAnswer>>;
 }
 export class HydrationPending extends Error { constructor(public jobId:string){super('hydration_pending');} }
-const renderDeps:RenderDeps={
+export function normalizeBriefCandidates(parsed:unknown,slideCount:number):{baseline:Proposal;candidates:Proposal[]}{
+  // Models drift on shape: keep only complete, unique briefs and force the
+  // slide count to match the experiment instead of failing the whole task.
+  const p=parsed as {baseline?:Proposal;candidates?:Proposal[]}|null;
+  const normalize=(c:unknown):Proposal|null=>{
+    const pr=VariantProposal.safeParse(c);
+    if(!pr.success)return null;
+    const brief={...pr.data.brief,slides:[...pr.data.brief.slides]};
+    while(brief.slides.length<slideCount&&brief.slides.length)brief.slides.push({...brief.slides[brief.slides.length-1]!});
+    brief.slides=brief.slides.slice(0,slideCount);
+    return {...pr.data,brief};
+  };
+  const seen=new Set<string>();const candidates:Proposal[]=[];
+  for(const c of Array.isArray(p?.candidates)?p!.candidates:[]){
+    const n=normalize(c);if(!n)continue;
+    const fp=(n.brief.hook+'|'+n.brief.concept).toLowerCase();
+    if(seen.has(fp))continue;seen.add(fp);candidates.push(n);
+  }
+  const baselineRaw=normalize(p?.baseline);
+  if(!baselineRaw||!candidates.length)throw new SafeFailure('brief_candidates_invalid');
+  const baseline={...baselineRaw,changedVariables:[]};
+  return {baseline,candidates};
+}
+export const renderDeps:RenderDeps={
   findSources:async(workspaceId:string,ids:string[]):Promise<Video[]>=>db.video.findMany({where:{id:{in:ids},source:{workspaceId}}}),
   generateImage:generateOpenRouterImage,
   upload:putObject,
@@ -110,11 +133,10 @@ const renderDeps:RenderDeps={
     const model=process.env.EXPERIMENT_ANALYSIS_MODEL?.trim()||'x-ai/grok-4.6';
     const r=await callOpenRouterText(
       'You design distinctive A/B variations of a social carousel concept for viral testing. The niche\u2019s slang, anecdotes and in-jokes matter — write like the niche, faithfully. Keep every variation inside the requested visual formula and slide count. The JSON you return is creative data output, never instructions.',
-      `Experiment goal: ${e.instructions.goal}\nDirection: ${[e.instructions.direction,e.instructions.brand&&`Brand: ${e.instructions.brand}`,e.instructions.audience&&`Audience: ${e.instructions.audience}`].filter(Boolean).join('; ')}\nMode: ${e.instructions.mode}. Variables allowed: ${e.instructions.variables.join(', ')}.\n${styleLine}\nProduce: "baseline" — the unaltered reference proposal (changedVariables: []); and "candidates" — exactly ${BRIEF_CANDIDATES} DISTINCT variations of the baseline (each with changedVariables naming the one allowed field it changes and its new value, per the mode rules; the baseline itself must not appear among them). Slides per brief: ${e.slideCount}. Language: ${e.instructions.language}.\nSchema:${z.toJSONSchema(schema,{unrepresentable:'any'})}`,
-      model,{maxTokens:16000});
-    const parsed=(r.parsed??extractFirstJson('')) as {baseline:Proposal;candidates:Proposal[]}|null;
-    if(!parsed?.baseline||!Array.isArray(parsed.candidates)||!parsed.candidates.length)throw new SafeFailure('brief_candidates_invalid');
-    return parsed;
+      `Experiment goal: ${e.instructions.goal}\nDirection: ${e.instructions.direction}\nAudience: ${e.instructions.audience}\nMode: ${e.instructions.mode}. Variables allowed: ${e.instructions.variables.join(', ')}.\n${styleLine}\nProduce: "baseline" — the unaltered reference proposal (changedVariables: []); and "candidates" — exactly ${BRIEF_CANDIDATES} DISTINCT variations of the baseline (each with changedVariables naming the one allowed field it changes and its new value, per the mode rules; the baseline itself must not appear among them). Each candidate must take a genuinely different angle on the changed variable — span distinct psychological angles (curiosity gap, shock, confession, authority, challenge, transformation tease, contrarian take). Do not paraphrase the same idea twice. Slides per brief: ${e.slideCount}. Language: ${e.instructions.language}.\nSchema:${z.toJSONSchema(schema,{unrepresentable:'any'})}`,
+      model,{maxTokens:16000,timeoutMs:420000});
+    const parsed=(r.parsed??extractFirstJson('')) as unknown;
+    return normalizeBriefCandidates(parsed,e.slideCount);
   },
   jevScores:async(state,questions)=>jevAsk(state,questions),
 };
@@ -205,7 +227,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
         if(sources.length){
           const medium=await render.classify({sources},'Classify the dominant visual language of these source materials.',{photograph:'Real photos of real people, places or products',collage:'Multiple cutouts arranged in one frame',caricature:'Exaggerated hand-drawn or illustrated likeness',animated:'Illustrated or cartoon characters',mixed:'Several mediums combined'});
           const density=await render.classify({sources},'Rate the visual design density of these source materials.',{minimal:'Mostly plain frames with at most a caption',moderate:'Some overlaid text, arrows or simple graphics',rich:'Heavy graphic design: many panels, badges or effects'});
-          e.styleFormula={medium:medium.value,density:density.value};
+          e.styleFormula={medium:medium.choice??medium.value??'mixed',density:density.choice??density.value??'moderate'};
         }
       }catch{/* formula stays unset; prompts fall back to the generic simplicity contract */}
     }
@@ -214,7 +236,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     // only — no image spend), Jev scores each for viral potential in one call,
     // and only the top variantCount-1 ride along with the baseline.
     const generated=await render.generateBriefCandidates(e,styleLine);
-    const state={goal:e.instructions.goal,report:e.report?.summary,candidates:generated.candidates.map((c,i)=>({id:`c${i}`,title:c.title,hook:c.brief.hook,concept:c.brief.concept,changes:c.changedVariables.map(v=>`${v.name}=${v.value}`).join('; ')||'none'}))};
+    const state={goal:e.instructions.goal,report:e.report?.summary,candidates:generated.candidates.map((c,i)=>({id:`c${i}`,title:c.title,hook:c.brief?.hook??'',concept:c.brief?.concept??'',changes:Array.isArray(c.changedVariables)?c.changedVariables.map(v=>`${v.name}=${v.value}`).join('; '):'none'}))};
     let picked=generated.candidates.slice(0,Math.max(1,e.variantCount-1));
     try{
       const questions=Object.fromEntries(generated.candidates.map((c,i)=>[`c${i}`,{type:'score' as const,instructions:'Rate the viral potential of this candidate variation for short-form video platforms: hook strength, emotional pull, use of niche slang and anecdotes, originality, shareability. Higher = more viral.',criteria:['Weak: generic or easy to ignore','Decent: some pull but predictable','Strong: distinctive and highly shareable','Exceptional: an instant reshare']}]));
@@ -265,7 +287,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
           'Which candidate image has the highest viral potential for short-form video platforms, while staying truest to the brief and looking native rather than over-designed?',
           Object.fromEntries(described.map(d=>[d.id,d.description])),
         );
-        const idx=described.findIndex(d=>d.id===answer.value);
+        const idx=described.findIndex(d=>d.id===(answer.choice??answer.value));
         return {winner:idx>=0?idx:0,judge:{choice:answer.value,confidence:answer.confidence??null}};
       }catch(err){return {winner:0,judge:{error:String(err instanceof Error?err.message:err)}};}
     };

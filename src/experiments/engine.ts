@@ -38,7 +38,9 @@ function settle(e:Experiment,t:Task,result:unknown) {
 export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults):Promise<boolean> {
   let e=await deps.load(workspaceId,id);if(!isActive(e))return false;
   const running=e.tasks.filter(t=>t.status==='running');
-  const expired=running.find(t=>deps.now()-(t.startedAt??0)>=180000);
+  // Briefs with a 20-candidate generation legitimately run for minutes.
+  const leaseMs=(t:Task)=>t.kind==='briefs'?600_000:180_000;
+  const expired=running.find(t=>deps.now()-(t.startedAt??0)>=leaseMs(t));
   if(expired){
     // The provider request is gone (or settlement stalled). Requeue with backoff while
     // attempts remain — the prior attempt's charge stays retained, so a duplicate

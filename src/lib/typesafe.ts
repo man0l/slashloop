@@ -4,7 +4,17 @@
 
 const TYPESAFE_URL = 'https://api.typesafe.ai/v1/systemone';
 
-export interface JevAnswer { value: string; confidence?: number; probabilities?: Record<string, number>; }
+export interface JevAnswer {
+  type?: string;
+  /** Choice answers carry the selected option key here. */
+  choice?: string;
+  /** Score answers carry the weighted 0..1 value here. */
+  score?: number;
+  noul?: number;
+  value?: string;
+  confidence?: number;
+  probabilities?: Record<string, number>;
+}
 export type JevQuestion = { type: 'choice' | 'score' | 'noul'; instructions: string; criteria?: unknown };
 
 /**
@@ -30,6 +40,6 @@ export async function jevAsk(state: unknown, questions: Record<string, JevQuesti
 export async function jevPick(state: unknown, instructions: string, criteria: Record<string, string>): Promise<JevAnswer> {
   const answers = await jevAsk(state, { winner: { type: 'choice', instructions, criteria } });
   const answer = answers.winner;
-  if (!answer?.value) throw new Error('typesafe_empty_answer');
+  if (!answer?.choice && !answer?.value) throw new Error('typesafe_empty_answer');
   return answer;
 }
