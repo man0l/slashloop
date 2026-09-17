@@ -22,7 +22,7 @@ test('exact boundary includes the candidate query: nine prior queries admit, ten
     const h=harness();
     await withD1Budget(async () => {
       for(let i=0;i<prior;i++)countD1Queries(1);
-      expect(await tick(120000,h.deps)).toEqual({steps:prior===9?1:0});
+      expect(await tick(120000,h.deps)).toEqual(prior===9?{steps:1,active:true}:{steps:0,active:false});
       expect(h.calls).toBe(prior===9?1:0);
       expect(h.scans).toBe(prior===9?1:0);
     });
@@ -33,7 +33,7 @@ test('busy preceding schedulers defer before any experiment DB or paid work', as
   const h=harness();
   await withD1Budget(async () => {
     countD1Queries(15);
-    expect(await tick(120000,h.deps)).toEqual({steps:0});
+    expect(await tick(120000,h.deps)).toEqual({steps:0,active:false});
     expect(h.scans).toBe(0);
     expect(h.calls).toBe(0);
   });
@@ -43,12 +43,12 @@ test('idle preceding schedulers leave room for one fully reserved step', async (
   const h=harness();
   await withD1Budget(async () => {
     countD1Queries(6);
-    expect(await tick(120000,h.deps)).toEqual({steps:1});
+    expect(await tick(120000,h.deps)).toEqual({steps:1,active:true});
     expect(remainingD1Queries()).toBe(33);
   });
 });
 
 test('standalone ticks remain capped even without Worker accounting', async () => {
   const h=harness();
-  expect(await tick(120000,h.deps)).toEqual({steps:3});
+  expect(await tick(120000,h.deps)).toEqual({steps:3,active:true});
 });

@@ -97,12 +97,12 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
   return false;
 }
 export const STEP_QUERY_RESERVE = 40;
-export async function tick(wallBudgetMs=120000, deps = { candidates: store.candidates, step, remaining: remainingD1Queries, now: Date.now }) {
+export async function tick(wallBudgetMs=120000, deps = { candidates: store.candidates, step, remaining: remainingD1Queries, now: Date.now }): Promise<{steps:number;active:boolean}> {
   const deadline=deps.now()+Math.min(wallBudgetMs,180000);let steps=0;
   const maxSteps=3;
   // Reserve preparation, claim, provider metadata and all five settlement
   // attempts before paid work. Earlier schedulers consume this same budget.
-  if(deps.remaining()<STEP_QUERY_RESERVE+1)return {steps};
+  if(deps.remaining()<STEP_QUERY_RESERVE+1)return {steps,active:false};
   const candidates=await deps.candidates();
   for(const e of candidates){
     while(deps.now()<deadline && steps<maxSteps && deps.remaining()>=STEP_QUERY_RESERVE){
@@ -110,5 +110,8 @@ export async function tick(wallBudgetMs=120000, deps = { candidates: store.candi
     }
     if(deps.now()>=deadline||steps>=maxSteps||deps.remaining()<STEP_QUERY_RESERVE)break;
   }
-  return {steps};
+  // Callers keep ticking at a fast cadence while any experiment is still
+  // planning/generating, even when this tick made no progress (a running
+  // task inside its lease).
+  return {steps,active:candidates.length>0};
 }

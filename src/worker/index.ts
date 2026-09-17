@@ -82,13 +82,15 @@ const RECLAIM_INTERVAL_MS = (() => {
 
 // Experiments advance on this loop (moved off the CF */2 cron: workerd's
 // fetch context broke experiment media preparation — the VPS runs the same
-// code fine). No extra cron trigger is consumed (Free plan cap); the tick is
-// throttled and single-flight so MediaJob draining is never blocked, and its
-// failures are logged, never thrown. Only media workers (analyze/recreate
-// kinds — the containers holding the Gemini/OpenRouter/R2 credentials) tick;
-// maintenance-only containers skip it.
-const EXPERIMENT_TICK_INTERVAL_MS = 120_000;
+// code fine). No extra cron trigger is consumed (Free plan cap). The tick is
+// single-flight so MediaJob draining is never blocked, its failures are
+// logged, never thrown, and while an experiment is active the loop re-ticks
+// within EXPERIMENT_TICK_MIN_INTERVAL_MS — one tick already chains up to 3
+// steps back-to-back, so provider-bound work progresses near-live instead of
+// waiting on minute-scale cadence or the idle backoff.
+const EXPERIMENT_TICK_MIN_INTERVAL_MS = 5_000;
 let lastExperimentTickAt = 0;
+let experimentsActiveUntil = 0;
 let experimentTickInFlight: Promise<unknown> | null = null;
 
 // Which MediaJob kinds this worker claims. WORKER_KINDS is a comma-separated
@@ -239,13 +241,17 @@ while (!shuttingDown) {
     }
 
     // Experiment engine: drive planning/generation steps on the VPS (no 60s
-    // ceiling). Skipped entirely on video/fetch-only workers (WORKER_KINDS
-    // without refresh/rescore/maintenance roles) so a dedicated analyze
-    // container does not also bill Gemini/OpenRouter here.
-    if (!experimentTickInFlight && Date.now() - lastExperimentTickAt >= EXPERIMENT_TICK_INTERVAL_MS) {
+    // ceiling). While any experiment is planning/generating the loop re-ticks
+    // within 5s (one tick chains up to 3 steps); idle experiments back off to
+    // the 120s cadence. MediaJob draining is never blocked: the tick runs
+    // single-flight, detached from the claim round below.
+    if (!experimentTickInFlight && Date.now() - lastExperimentTickAt >= (Date.now() < experimentsActiveUntil ? EXPERIMENT_TICK_MIN_INTERVAL_MS : 120_000)) {
       lastExperimentTickAt = Date.now();
       experimentTickInFlight = experimentTick(120_000)
-        .then(({ steps }) => { if (steps > 0) console.log(`[worker] experiment tick advanced ${steps} step(s)`); })
+        .then(({ steps, active }) => {
+          if (steps > 0) console.log(`[worker] experiment tick advanced ${steps} step(s)`);
+          experimentsActiveUntil = active ? Date.now() + 10 * 60_000 : 0;
+        })
         .catch((err) => {
           console.error(`[worker] experiment tick failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
         })
@@ -260,10 +266,13 @@ while (!shuttingDown) {
     if (jobs.length === 0) {
       // Exponential backoff on an empty queue — the common case (~97% of
       // polls). Jitter ±15% so sibling containers don't re-sync their polls.
+      // While an experiment is active the sleep caps at the 5s re-tick
+      // interval so planning/generation is never parked behind idle backoff.
       idleRounds++;
       const backoff = Math.min(IDLE_MS * 2 ** idleRounds, MAX_IDLE_MS);
       const jittered = Math.round(backoff * (0.85 + Math.random() * 0.3));
-      await idleSleep(jittered);
+      const capped = Date.now() < experimentsActiveUntil ? Math.min(jittered, EXPERIMENT_TICK_MIN_INTERVAL_MS) : jittered;
+      await idleSleep(capped);
       continue;
     }
     idleRounds = 0;
