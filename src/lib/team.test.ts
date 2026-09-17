@@ -7,6 +7,7 @@ type MemberRow = { id: string; workspaceId: string; email: string; invitedBy: st
 
 let members: MemberRow[] = [];
 let sentEmails: Array<{ to: string; subject: string }> = [];
+let failSends = false;
 let ownedWorkspaces: Array<{ id: string; name: string }> = [
   { id: 'ws-1', name: 'Acme' },
   { id: 'ws-2', name: 'Side' },
@@ -43,6 +44,7 @@ mock.module('../db.js', () => ({
 mock.module('./email.js', () => ({
   emailConfigured: () => true,
   sendEmail: async (input: { to: string; subject: string }) => {
+    if (failSends) return { sent: false, reason: 'resend_403: domain not verified' };
     sentEmails.push({ to: input.to, subject: input.subject });
     return { sent: true, id: 'x' };
   },
@@ -73,6 +75,7 @@ const workspace = { id: 'ws-1', name: 'Acme' };
 beforeEach(() => {
   members = [];
   sentEmails = [];
+  failSends = false;
   ownedWorkspaces = [
     { id: 'ws-1', name: 'Acme' },
     { id: 'ws-2', name: 'Side' },
@@ -83,6 +86,7 @@ describe('inviteMember', () => {
   test('normalizes the email and creates the row', async () => {
     const m = await inviteMember(workspace, 'owner@acme.io', '  Teamie@Example.COM ', 'user-1');
     expect(m.email).toBe('teamie@example.com');
+    expect(m.mail).toEqual({ sent: true });
     expect(await listMembers('ws-1')).toHaveLength(1);
     expect(sentEmails).toHaveLength(1);
     expect(sentEmails[0].to).toBe('teamie@example.com');
@@ -158,6 +162,7 @@ describe('inviteMemberToAllWorkspaces', () => {
       invitedBy: 'user-1',
     });
     expect(result.email).toBe('teamie@example.com');
+    expect(result.mail).toEqual({ sent: true });
     expect(result.workspaces).toEqual([
       { id: 'ws-1', name: 'Acme', status: 'added' },
       { id: 'ws-2', name: 'Side', status: 'added' },
@@ -175,7 +180,17 @@ describe('inviteMemberToAllWorkspaces', () => {
     expect(members).toHaveLength(2);
   });
 
+  test('mail failure is reported, not thrown — the invite still lands', async () => {
+    failSends = true;
+    const result = await inviteMemberToAllWorkspaces({ ownerId: 'user-1', ownerEmail: undefined, rawEmail: 'a@b.co', invitedBy: 'user-1' });
+    expect(result.mail).toEqual({ sent: false, reason: 'resend_403: domain not verified' });
+    expect(members).toHaveLength(2);
+  });
+
   test('rejects bad emails, self-invites, and ownerless callers', async () => {
+    expect(await errorCode(inviteMemberToAllWorkspaces({ ownerId: 'user-1', ownerEmail: undefined, rawEmail: 'nope', invitedBy: 'user-1' }))).toBe(
+      'invalid_email',
+    );
     expect(await errorCode(inviteMemberToAllWorkspaces({ ownerId: 'user-1', ownerEmail: undefined, rawEmail: 'nope', invitedBy: 'user-1' }))).toBe(
       'invalid_email',
     );

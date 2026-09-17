@@ -32,6 +32,21 @@ export class TeamError extends Error {
 
 export type WorkspaceMemberView = Pick<WorkspaceMember, 'id' | 'email' | 'createdAt'>;
 
+export type MailStatus = { sent: boolean; reason?: string };
+
+async function sendInviteMail(to: { to: string; subject: string; text: string; html: string }): Promise<MailStatus> {
+  // Courtesy, but REPORTED: callers surface failures in the UI instead of
+  // failing silently (a missing domain verification otherwise looks like a
+  // working invite). Never throws — failure is data, not an exception.
+  if (!emailConfigured()) return { sent: false, reason: 'not_configured' };
+  try {
+    const result = await sendEmail(to);
+    return result.sent ? { sent: true } : { sent: false, reason: result.reason ?? 'unknown' };
+  } catch (err) {
+    return { sent: false, reason: (err as Error).message.slice(0, 200) };
+  }
+}
+
 export async function listMembers(workspaceId: string): Promise<WorkspaceMemberView[]> {
   const members = await db.workspaceMember.findMany({
     where: { workspaceId },
@@ -53,7 +68,7 @@ export async function inviteMember(
   rawEmail: string,
   invitedBy: string,
   opts: { sendEmail?: boolean } = {},
-): Promise<WorkspaceMemberView> {
+): Promise<WorkspaceMemberView & { mail: MailStatus }> {
   const email = rawEmail.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw new TeamError('invalid_email', "That doesn't look like an email address.");
@@ -80,11 +95,12 @@ export async function inviteMember(
   // don't know (they may never have signed in) — the TTL self-heals it.
   invalidateWorkspaceList(invitedBy);
 
-  // Courtesy only: never let mail failure fail the invite (sendEmail already
-  // never throws; a double .catch for belt-and-braces).
-  if (opts.sendEmail !== false && emailConfigured()) {
+  // Courtesy, but reported: the route surfaces mail failures so a broken
+  // mail setup never looks like a working invite.
+  let mail: MailStatus = { sent: false, reason: 'skipped' };
+  if (opts.sendEmail !== false) {
     const origin = process.env.PUBLIC_URL?.replace(/\/$/, '') ?? 'https://slashloop.dev';
-    void sendEmail({
+    mail = await sendInviteMail({
       to: email,
       subject: `${workspace.name} on Slashloop — you've been invited`,
       text:
@@ -96,10 +112,10 @@ export async function inviteMember(
         `<p>Sign in with this email address (${escapeHtml(email)}) using Google and the workspace ` +
         `shows up in your workspace switcher.</p>` +
         `<p><a href="${origin}/login">Sign in →</a></p>`,
-    }).catch(() => {});
+    });
   }
 
-  return { id: member.id, email: member.email, createdAt: member.createdAt };
+  return { id: member.id, email: member.email, createdAt: member.createdAt, mail };
 }
 
 /** Remove a teammate. Owner-only at the route layer. */
@@ -112,6 +128,7 @@ export async function removeMember(workspaceId: string, rawEmail: string): Promi
 export type BulkInviteResult = {
   email: string;
   workspaces: Array<{ id: string; name: string; status: 'added' | 'already_member' | 'skipped_limit' }>;
+  mail: MailStatus;
 };
 
 export type TeamRoster = Array<{
@@ -199,28 +216,26 @@ export async function inviteMemberToAllWorkspaces(input: {
 
   invalidateWorkspaceList(input.invitedBy);
 
-  if (emailConfigured()) {
-    const origin = process.env.PUBLIC_URL?.replace(/\/$/, '') ?? 'https://slashloop.dev';
-    const names = workspaces
-      .filter((w) => w.status !== 'skipped_limit')
-      .map((w) => w.name)
-      .join(', ');
-    void sendEmail({
-      to: email,
-      subject: `You've been invited to ${workspaces.length === 1 ? 'a workspace' : `${workspaces.length} workspaces`} on Slashloop`,
-      text:
-        `You've been invited to share ${names} on Slashloop.\n\n` +
-        `Sign in with this email address (${email}) using Google and the workspaces ` +
-        `show up in your workspace switcher:\n${origin}/login\n`,
-      html:
-        `<p>You've been invited to share <strong>${escapeHtml(names)}</strong> on Slashloop.</p>` +
-        `<p>Sign in with this email address (${escapeHtml(email)}) using Google and the workspaces ` +
-        `show up in your workspace switcher.</p>` +
-        `<p><a href="${origin}/login">Sign in →</a></p>`,
-    }).catch(() => {});
-  }
+  const origin = process.env.PUBLIC_URL?.replace(/\/$/, '') ?? 'https://slashloop.dev';
+  const names = workspaces
+    .filter((w) => w.status !== 'skipped_limit')
+    .map((w) => w.name)
+    .join(', ');
+  const mail = await sendInviteMail({
+    to: email,
+    subject: `You've been invited to ${workspaces.length === 1 ? 'a workspace' : `${workspaces.length} workspaces`} on Slashloop`,
+    text:
+      `You've been invited to share ${names} on Slashloop.\n\n` +
+      `Sign in with this email address (${email}) using Google and the workspaces ` +
+      `show up in your workspace switcher:\n${origin}/login\n`,
+    html:
+      `<p>You've been invited to share <strong>${escapeHtml(names)}</strong> on Slashloop.</p>` +
+      `<p>Sign in with this email address (${escapeHtml(email)}) using Google and the workspaces ` +
+      `show up in your workspace switcher.</p>` +
+      `<p><a href="${origin}/login">Sign in →</a></p>`,
+  });
 
-  return { email, workspaces };
+  return { email, workspaces, mail };
 }
 
 function escapeHtml(s: string): string {
