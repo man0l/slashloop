@@ -245,8 +245,8 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
         return {winner:idx>=0?idx:0,judge:{choice:answer.value,confidence:answer.confidence??null}};
       }catch(err){return {winner:0,judge:{error:String(err instanceof Error?err.message:err)}};}
     };
-    const styleViolated=(d:{medium?:string;overdesigned?:boolean}|undefined)=>!!d&&(
-      d.overdesigned===true||!!(formulaMedium&&d.medium&&d.medium!==formulaMedium));
+    const styleViolated=(d:Record<string, unknown>|undefined)=>!!d&&(
+      d.overdesigned===true||!!(formulaMedium&&d.medium&&d['medium']!==formulaMedium));
     const formulaMedium=e.styleFormula&&e.styleFormula.medium!=='mixed'?e.styleFormula.medium:null;
 
     let wave=await renderWave(basePrompt+referenceLine);
