@@ -44,6 +44,23 @@ test('briefs stage: parameter candidates are Jev-ranked and top variants join th
   expect(briefJudge.candidates).toHaveLength(BRIEF_CANDIDATES);
   expect(briefJudge.picked).toEqual(['V8', 'V1']);
 });
+test('extra grok keys and missing overlayText still expand', () => {
+  const parsed = {
+    baseline: {
+      title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', extra: true,
+      slides: [
+        { role: 'hook', scene: 'A studio' },
+        { role: 'body', scene: 'A gym', overlayText: 'Hi' },
+        { role: 'cta', scene: 'A mirror' },
+      ],
+    },
+    candidates: [{ title: 'V1', hypothesis: 'h', extra: 1, changedVariables: [{ name: 'Hook', value: 'Hook 1' }] }],
+  };
+  const n = normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['hook'] } } as never);
+  expect(n.candidates).toHaveLength(1);
+  expect(n.candidates[0]!.brief.hook).toBe('Hook 1');
+  expect(n.baseline.brief.slides[0]!.overlayText).toBe('');
+});
 test('top-level storyboard without a nested baseline key still expands', () => {
   const parsed = {
     title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides,

@@ -182,9 +182,17 @@ export const renderDeps:RenderDeps={
       baseline:boardObj?.baseline??(BriefStoryboard.safeParse(boardObj).success?boardObj:undefined),
       candidates:deltaObj?.candidates??(Array.isArray(deltaRes.parsed)?deltaRes.parsed:undefined),
     };
-    const out=normalizeBriefCandidates(parsed,e.slideCount,e);
-    console.log(`[experiments] briefs fan-out ${e.id} ${Date.now()-started}ms delta ${deltaRes.inputTokens}/${deltaRes.outputTokens} board ${boardRes.inputTokens}/${boardRes.outputTokens} candidates ${out.candidates.length}`);
-    return out;
+    try {
+      const out=normalizeBriefCandidates(parsed,e.slideCount,e);
+      console.log(`[experiments] briefs fan-out ${e.id} ${Date.now()-started}ms delta ${deltaRes.inputTokens}/${deltaRes.outputTokens} board ${boardRes.inputTokens}/${boardRes.outputTokens} candidates ${out.candidates.length}`);
+      return out;
+    } catch (err) {
+      const boardKeys=boardObj?Object.keys(boardObj).join(','):'none';
+      const nCand=Array.isArray(parsed.candidates)?parsed.candidates.length:0;
+      const story=BriefStoryboard.safeParse(parsed.baseline);
+      console.error(`[experiments] briefs parse ${e.id} boardKeys=${boardKeys} nCand=${nCand} story=${story.success?'ok':story.error.issues[0]?.message} ${(err as Error).message}`);
+      throw err;
+    }
   },
   jevScores:async(state,questions)=>jevAsk(state,questions),
 };

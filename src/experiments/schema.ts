@@ -18,7 +18,7 @@ export const Instructions = z.object({
     ctx.addIssue({ code: 'custom', message: 'Controlled variables: hook, character, visualStyle, caption, cta. Concept/slides require exploration.' });
   }
 });
-export const BriefSlide = z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text }).strict();
+export const BriefSlide = z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text.default('') });
 export const Brief = z.object({
   concept: text.min(1), hook: text.min(1), character: text, visualStyle: text.min(1), caption: text,
   cta: text, lockedConstraints: z.array(text.min(1)).max(20),
@@ -27,15 +27,18 @@ export const Brief = z.object({
 /** One storyboard grok returns at the briefs fan-out. Candidates are deltas, not full carousels. */
 export const BriefStoryboard = z.object({
   title: z.string().min(1).max(160), hypothesis: text.min(1),
-  concept: text.min(1), hook: text.min(1), character: text, visualStyle: text.min(1), caption: text,
+  concept: text.min(1), hook: text.min(1), character: text.default(''), visualStyle: text.min(1).default('photograph'), caption: text.default(''),
   slides: z.array(BriefSlide).min(3).max(8),
-}).strict();
+});
 /** Parameter-only variation. Slides are optional and only required when the changed variable is `slides`. */
 export const BriefDelta = z.object({
   title: z.string().min(1).max(160), hypothesis: text.min(1),
-  changedVariables: z.array(z.object({ name: z.enum(VARIABLE_FIELDS), value: text.min(1) }).strict()).min(1).max(7),
+  changedVariables: z.array(z.object({
+    name: z.string().trim().toLowerCase().pipe(z.enum(VARIABLE_FIELDS)),
+    value: text.min(1),
+  })).min(1).max(7),
   slides: z.array(BriefSlide).min(3).max(8).optional(),
-}).strict();
+});
 export const Create = z.object({ workspaceId: Id, videoIds: z.array(Id).min(1).max(20), instructions: Instructions,
   variantCount: z.number().int().min(1).max(12), slideCount: z.number().int().min(3).max(8),
   maxCredits: z.number().int().min(1).max(10000), idempotencyKey: Key,
