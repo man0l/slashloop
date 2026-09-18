@@ -26,6 +26,8 @@ export interface OpenRouterTextCallOptions {
   timeoutMs?: number;
   /** Cover images as real image parts (sent as base64 data URLs). */
   images?: Array<{ mimeType: string; dataBase64: string }>;
+  /** Grok-4.6 defaults to high reasoning; briefs fan-out wants low latency. */
+  reasoningEffort?: 'low' | 'medium' | 'high';
 }
 
 /** Map our internal Gemini model id -> OpenRouter's canonical model id. */
@@ -256,6 +258,7 @@ export async function callOpenRouterText(
       temperature: options?.temperature ?? 0.3,
       max_tokens: options?.maxTokens ?? 8192,
       response_format: { type: 'json_object' },
+      ...(options?.reasoningEffort ? { reasoning: { effort: options.reasoningEffort } } : {}),
     }),
   });
 

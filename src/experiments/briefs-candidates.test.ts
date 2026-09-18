@@ -44,6 +44,16 @@ test('briefs stage: parameter candidates are Jev-ranked and top variants join th
   expect(briefJudge.candidates).toHaveLength(BRIEF_CANDIDATES);
   expect(briefJudge.picked).toEqual(['V8', 'V1']);
 });
+test('top-level storyboard without a nested baseline key still expands', () => {
+  const parsed = {
+    title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides,
+    candidates: [{ title: 'V1', hypothesis: 'h', changedVariables: [{ name: 'hook', value: 'Hook 1' }] }],
+  };
+  const n = normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['hook'] } } as never);
+  expect(n.baseline.title).toBe('B');
+  expect(n.candidates).toHaveLength(1);
+  expect(n.candidates[0]!.brief.hook).toBe('Hook 1');
+});
 test('storyboard + parameter deltas expand onto the baseline slides', () => {
   const parsed = {
     baseline: { title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides },

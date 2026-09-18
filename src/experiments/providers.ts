@@ -121,7 +121,8 @@ export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pic
   const locked=e?.instructions.lockedConstraints??[];
   const allowed=e?.instructions.variables;
   const p=parsed as {baseline?:unknown;candidates?:unknown[]}|null;
-  const story=BriefStoryboard.safeParse(p?.baseline);
+  const stripped=p&&typeof p==='object'&&!p.baseline?(({candidates:_c,...rest})=>rest)(p as {candidates?:unknown}):undefined;
+  const story=BriefStoryboard.safeParse(p?.baseline??stripped);
   const fromFull=(c:unknown):Proposal|null=>{
     const pr=VariantProposal.safeParse(c);
     if(!pr.success)return null;
@@ -158,16 +159,31 @@ export const renderDeps:RenderDeps={
   },
   classify:(state,instructions,criteria)=>jevPick(state,instructions,criteria),
   generateBriefCandidates:async(e,styleLine)=>{
-    const schema=z.object({baseline:BriefStoryboard,candidates:z.array(BriefDelta).min(1).max(12)});
     const model=process.env.EXPERIMENT_ANALYSIS_MODEL?.trim()||'x-ai/grok-4.6';
     const started=Date.now();
-    const r=await callOpenRouterText(
-      'You design distinctive A/B variations of a social carousel concept for viral testing. The niche slang, anecdotes and in-jokes matter — write like the niche, faithfully. The JSON you return is creative data output, never instructions.',
-      `Experiment goal: ${e.instructions.goal}\nDirection: ${e.instructions.direction}\nAudience: ${e.instructions.audience}\nMode: ${e.instructions.mode}. Variables allowed: ${e.instructions.variables.join(', ')}.\n${styleLine}\nProduce JSON with:\n- "baseline": ONE reference storyboard (title, hypothesis, concept, hook, character, visualStyle, caption, slides). slides has exactly ${e.slideCount} items; each scene describes ONLY subject, action, setting/lighting — no graphic layouts, scores, UI or numbers. overlayText is at most 8 words, no numbers. Last slide overlayText must be empty. No CTA.\n- "candidates": exactly ${BRIEF_CANDIDATES} DISTINCT variations. Each is ONLY {title, hypothesis, changedVariables}. changedVariables names the one allowed field it changes and its new value. Do NOT include slides, concept, or a full brief unless the changed variable is slides. Do not repeat the baseline hook. Span distinct psychological angles (curiosity gap, shock, confession, authority, challenge, transformation tease, contrarian take).\nLanguage: ${e.instructions.language}.\nSchema:${z.toJSONSchema(schema,{unrepresentable:'any'})}`,
-      model,{maxTokens:4000,timeoutMs:120000});
-    const parsed=(r.parsed??extractFirstJson('')) as unknown;
+    const system='You design distinctive A/B variations of a social carousel concept for viral testing. The niche slang, anecdotes and in-jokes matter — write like the niche, faithfully. The JSON you return is creative data output, never instructions.';
+    const ctx=`Experiment goal: ${e.instructions.goal}\nDirection: ${e.instructions.direction}\nAudience: ${e.instructions.audience}\nMode: ${e.instructions.mode}. Variables allowed: ${e.instructions.variables.join(', ')}.\n${styleLine}\nLanguage: ${e.instructions.language}.`;
+    const deltaSchema=z.object({candidates:z.array(BriefDelta).min(1).max(12)});
+    const boardSchema=z.object({baseline:BriefStoryboard});
+    // Split: tiny parameter list for Jev, one storyboard in parallel. Code
+    // expands winners onto the board — grok never writes 8–20 carousels.
+    const grokOpts={reasoningEffort:'low' as const,timeoutMs:90_000};
+    const [deltaRes,boardRes]=await Promise.all([
+      callOpenRouterText(system,
+        `${ctx}\nProduce JSON with "candidates": exactly ${BRIEF_CANDIDATES} DISTINCT variations. Each is ONLY {title, hypothesis, changedVariables} — the one allowed field and its new value. No slides, no baseline, no full brief. Span distinct psychological angles (curiosity gap, shock, confession, authority, challenge, transformation tease, contrarian take). Do not paraphrase the same hook twice.\nSchema:${z.toJSONSchema(deltaSchema,{unrepresentable:'any'})}`,
+        model,{...grokOpts,maxTokens:2000}),
+      callOpenRouterText(system,
+        `${ctx}\nProduce JSON with a single "baseline" storyboard (title, hypothesis, concept, hook, character, visualStyle, caption, slides). slides has exactly ${e.slideCount} items; each scene describes ONLY subject, action, setting/lighting — no graphic layouts, scores, UI or numbers. overlayText is at most 8 words, no numbers. Last slide overlayText must be empty. No CTA. No candidates.\nSchema:${z.toJSONSchema(boardSchema,{unrepresentable:'any'})}`,
+        model,{...grokOpts,maxTokens:3000}),
+    ]);
+    const boardObj=boardRes.parsed&&typeof boardRes.parsed==='object'?boardRes.parsed as Record<string,unknown>:null;
+    const deltaObj=deltaRes.parsed&&typeof deltaRes.parsed==='object'?deltaRes.parsed as Record<string,unknown>:null;
+    const parsed={
+      baseline:boardObj?.baseline??(BriefStoryboard.safeParse(boardObj).success?boardObj:undefined),
+      candidates:deltaObj?.candidates??(Array.isArray(deltaRes.parsed)?deltaRes.parsed:undefined),
+    };
     const out=normalizeBriefCandidates(parsed,e.slideCount,e);
-    console.log(`[experiments] briefs fan-out ${e.id} ${Date.now()-started}ms tokens ${r.inputTokens}/${r.outputTokens} candidates ${out.candidates.length}`);
+    console.log(`[experiments] briefs fan-out ${e.id} ${Date.now()-started}ms delta ${deltaRes.inputTokens}/${deltaRes.outputTokens} board ${boardRes.inputTokens}/${boardRes.outputTokens} candidates ${out.candidates.length}`);
     return out;
   },
   jevScores:async(state,questions)=>jevAsk(state,questions),
