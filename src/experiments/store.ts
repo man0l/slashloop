@@ -104,7 +104,7 @@ export async function candidates(): Promise<Array<{ id: string; workspaceId: str
 export function serialize(e: Experiment) {
   const { tasks, commands, createFingerprint, version, allowPartial, ...publicData } = e;
   // Compact per-job projection so the UI can offer manual retry on a single failed job.
-  const jobs = tasks.map(({ id, kind, target, index, status, error, attempts, nextAttemptAt }) => ({ id, kind, target, index, status, error, attempts, nextAttemptAt }));
+  const jobs = tasks.map(({ id, kind, target, index, status, error, attempts, nextAttemptAt, startedAt }) => ({ id, kind, target, index, status, error, attempts, nextAttemptAt, startedAt }));
   return { ...publicData, jobs, inputs: e.inputs.map(({ evidence, ...input }) => input), variants: e.variants.map(({ history, frozenBrief, ...v }) => v),
     providerBudget: { maxRequests: 2 * (e.inputs.length + 2 + e.variantCount * e.slideCount), requestsStarted: tasks.reduce((n,t) => n+t.attempts,0), exactUsdCap: false } };
 }

@@ -13,6 +13,13 @@ export interface EngineDeps {
 }
 const defaults:EngineDeps={load:store.load,save:store.save,prepare,now:Date.now};
 const isActive=(e:Experiment)=>e.status==='planning'||e.status==='generating';
+/** Stable, short cause for the UI/logs. Never include provider payloads. */
+function rejectionCause(failure:unknown):string|null {
+  if(failure instanceof ExperimentError)return failure.code;
+  if(failure instanceof SafeFailure)return failure.message.slice(0,80);
+  if(failure instanceof ZodError)return 'invalid_schema';
+  return null;
+}
 function settle(e:Experiment,t:Task,result:unknown) {
   t.status='done';t.error=undefined;
   if(t.kind==='analysis') {
@@ -106,6 +113,11 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
     }
     let result:unknown;let failure:unknown;
     try{result=await prepared.execute();}catch(err){failure=err;}
+    if(failure){
+      const cause=rejectionCause(failure);
+      // Counts/codes only — briefs payloads and source evidence must not land in logs.
+      console.error(`[experiments] ${t.kind}${t.index!==undefined?`#${t.index}`:''} ${e.id} ${cause?`provider_result_rejected:${cause}`:'provider_outcome_unknown'}`);
+    }
     // Persist result against fresh cancellation/version state; do not erase a concurrent command.
     // CAS retries are DB-only and never repeat provider work.
     for(let attempt=0;attempt<5;attempt++){
@@ -117,7 +129,8 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
       let refund = 0;
       if(failure){
         const known=failure instanceof SafeFailure || failure instanceof ZodError || failure instanceof ExperimentError;
-        receipt.error=known?'provider_result_rejected':'provider_outcome_unknown';
+        const cause=rejectionCause(failure);
+        receipt.error=known?`provider_result_rejected${cause?`:${cause}`:''}`:'provider_outcome_unknown';
         if(known && receipt.chargeRef && charge) { refund = charge; receipt.charged -= refund; }
         const input=latest.inputs.find(i=>i.videoId===t.target);
         const v=latest.variants.find(v=>v.id===t.target);
