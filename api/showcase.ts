@@ -28,6 +28,9 @@ function thumbBase(): string {
   return (process.env.R2_THUMB_PUBLIC_BASE ?? '').replace(/\/$/, '');
 }
 
+// Manually excluded from the shelf (owner call).
+const EXCLUDE_VIDEO_IDS = new Set(['65d08c21-def1-4d71-a703-83f6c99562f3']);
+
 export async function GET(request: Request): Promise<Response> {
   const ids = showcaseWorkspaceIds();
   if (!ids.length) {
@@ -45,6 +48,7 @@ export async function GET(request: Request): Promise<Response> {
     orderBy: { score: { outlierScore: 'desc' } },
     take: 12,
     select: {
+      id: true,
       creatorHandle: true,
       caption: true,
       views: true,
@@ -57,7 +61,7 @@ export async function GET(request: Request): Promise<Response> {
 
   const base = thumbBase();
   const items = videos.flatMap((v) => {
-    if (!v.thumbKey || !base) return [];
+    if (!v.thumbKey || !base || EXCLUDE_VIDEO_IDS.has(v.id)) return [];
     return [
       {
         creator: v.creatorHandle,
