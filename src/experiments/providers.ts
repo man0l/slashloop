@@ -12,6 +12,8 @@ import { slideshowKeysFromRaw } from '../lib/scrapers/tiktok-web.js';
 import { putObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
 import { ExperimentError, Report, VariantProposal, BriefStoryboard, BriefDelta, SLIDE_FANOUT, BRIEF_CANDIDATES, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type Task } from './schema.js';
 import { deriveStorySlideCount } from './slide-count.js';
+import { batch } from './store.js';
+import { D1_PARAM_CHUNK } from '../store.js';
 
 const MODEL='gemini-3.5-flash';
 export class SafeFailure extends Error {}
@@ -119,16 +121,27 @@ export function expandDelta(baseline:Proposal,delta:z.infer<typeof BriefDelta>,s
   return {title:delta.title,hypothesis:delta.hypothesis,changedVariables:delta.changedVariables,brief};
 }
 export async function resolveStorySlideCount(e:Experiment):Promise<number> {
-  const videos=await db.video.findMany({where:{id:{in:e.inputs.map(i=>i.videoId)}}});
-  const sources=await Promise.all(videos.map(async v=>{
-    const originalCount=isPhotoPost(v)?resolveSlideshowUrls(v.rawJson).length:null;
-    let analysis:unknown;
-    if(originalCount){
-      const row=await db.analysis.findFirst({where:{videoId:v.id,schemaVersion:'v3'},orderBy:{createdAt:'desc'},select:{analysisJson:true}});
-      if(row?.analysisJson)try{analysis=JSON.parse(row.analysisJson);}catch{/* ignore */}
+  const ids=e.inputs.map(i=>i.videoId);
+  if(!ids.length)return e.slideCount;
+  const videos:Array<{id:string;rawJson:string;durationSec:number|null;mediaStatus:string|null;thumbnailUrl:string|null}>=[];
+  const latest=new Map<string,unknown>();
+  for(let i=0;i<ids.length;i+=D1_PARAM_CHUNK){
+    const chunk=ids.slice(i,i+D1_PARAM_CHUNK);
+    const ph=chunk.map(()=>'?').join(',');
+    const [vrows,arows]=await Promise.all([
+      batch([{sql:`SELECT "id","rawJson","durationSec","mediaStatus","thumbnailUrl" FROM "Video" WHERE "id" IN (${ph})`,params:chunk}]),
+      batch([{sql:`SELECT "videoId","analysisJson" FROM "Analysis" WHERE "videoId" IN (${ph}) AND "schemaVersion"=? ORDER BY "createdAt" DESC`,params:[...chunk,'v3']}]),
+    ]);
+    videos.push(...((vrows[0]??[]) as typeof videos));
+    for(const row of (arows[0]??[]) as Array<{videoId:string;analysisJson:string}>){
+      if(latest.has(row.videoId))continue;
+      try{latest.set(row.videoId,JSON.parse(row.analysisJson));}catch{latest.set(row.videoId,null);}
     }
-    return {originalCount:originalCount||null,analysis};
-  }));
+  }
+  const sources=videos.map(v=>{
+    const originalCount=isPhotoPost(v)?resolveSlideshowUrls(v.rawJson).length:null;
+    return {originalCount:originalCount||null,analysis:latest.get(v.id)};
+  });
   return deriveStorySlideCount(sources)??e.slideCount;
 }
 export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pick<Experiment,'instructions'>):{baseline:Proposal;candidates:Proposal[]}{
