@@ -28,6 +28,8 @@ export interface OpenRouterTextCallOptions {
   images?: Array<{ mimeType: string; dataBase64: string }>;
   /** Grok-4.6 defaults to high reasoning; briefs fan-out wants low latency. */
   reasoningEffort?: 'low' | 'medium' | 'high';
+  /** OpenRouter/xAI structured outputs. json_object only guarantees JSON syntax. */
+  jsonSchema?: { name: string; schema: Record<string, unknown>; strict?: boolean };
 }
 
 /** Map our internal Gemini model id -> OpenRouter's canonical model id. */
@@ -257,7 +259,9 @@ export async function callOpenRouterText(
       ],
       temperature: options?.temperature ?? 0.3,
       max_tokens: options?.maxTokens ?? 8192,
-      response_format: { type: 'json_object' },
+      response_format: options?.jsonSchema
+        ? { type: 'json_schema', json_schema: { name: options.jsonSchema.name, strict: options.jsonSchema.strict ?? true, schema: options.jsonSchema.schema } }
+        : { type: 'json_object' },
       ...(options?.reasoningEffort ? { reasoning: { effort: options.reasoningEffort } } : {}),
     }),
   });
