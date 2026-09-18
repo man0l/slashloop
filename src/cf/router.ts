@@ -11,6 +11,7 @@
 
 import * as mcp from './mcp.js';
 import * as gallery from '../../api/gallery.js';
+import * as showcase from '../../api/showcase.js';
 import * as sources from '../../api/sources.js';
 import * as videos from '../../api/videos.js';
 import * as experiments from '../../api/experiments.js';
@@ -101,6 +102,7 @@ const ROUTES: Route[] = [
   { re: /^\/health$/, page: 'health' },
   { re: /^\/gallery$/, mod: gallery },
   { re: /^\/api\/gallery-data$/, mod: gallery, inject: { mode: 'data' } },
+  { re: /^\/api\/showcase$/, mod: showcase },
   { re: /^\/api\/billing(?:\/([^/]+?))?$/, mod: billing, inject: { action: '$1' } },
   // sources — specific actions before the generic /:id capture.
   { re: /^\/api\/sources\/suggest\/verify$/, mod: sources, inject: { action: 'suggest-verify' } },
