@@ -9,10 +9,20 @@
 // outliers only. Each item carries its source niche (nicheTag ?? query).
 
 import { db } from '../src/db.js';
-import { corsHeaders, corsPreflight } from '../src/lib/cors.js';
 
-export async function OPTIONS(request: Request): Promise<Response> {
-  return corsPreflight(request);
+function publicCors(): Record<string, string> {
+  // Intentionally open: this endpoint serves only allow-listed public
+  // showcase rows (no auth, no user data). The strict origin allowlist in
+  // src/lib/cors.ts stays for every credentialed route.
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  };
+}
+
+export async function OPTIONS(): Promise<Response> {
+  return new Response(null, { status: 204, headers: publicCors() });
 }
 
 function showcaseWorkspaceIds(): string[] {
@@ -34,7 +44,7 @@ const EXCLUDE_VIDEO_IDS = new Set(['65d08c21-def1-4d71-a703-83f6c99562f3']);
 export async function GET(request: Request): Promise<Response> {
   const ids = showcaseWorkspaceIds();
   if (!ids.length) {
-    return json(200, { items: [] }, request);
+    return json(200, { items: [] });
   }
 
   const videos = await db.video.findMany({
@@ -76,12 +86,12 @@ export async function GET(request: Request): Promise<Response> {
     ];
   });
 
-  return json(200, { items }, request);
+  return json(200, { items });
 }
 
-function json(status: number, body: unknown, request: Request): Response {
+function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json', ...corsHeaders(request) },
+    headers: { 'Content-Type': 'application/json', ...publicCors() },
   });
 }
