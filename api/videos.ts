@@ -1,7 +1,8 @@
 // GET   /api/videos/:id?workspaceId=...            — video detail (analysis, playback URL, job status).
 // POST  /api/videos/:id/analyze { workspaceId, forceBackend? } — trigger AI analysis.
 // POST  /api/videos/:id/fetch { workspaceId }      — queue a download-only fetch (store the MP4, no analysis, free).
-// POST  /api/videos/:id/recreate { workspaceId }   — queue a cheap OpenRouter slideshow restage (2 credits).
+// POST  /api/videos/:id/recreate { workspaceId }   — queue a slideshow restage (10 credits/slide; video mode
+//        pre-auths the 8-slide max and refunds the difference after planning).
 //
 // One file, not two: the Hobby plan caps a deployment at 12 Serverless
 // Functions (see api/sources.ts for the same constraint) and this deployment

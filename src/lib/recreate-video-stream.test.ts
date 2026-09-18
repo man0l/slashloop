@@ -2,8 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import {
   advanceRecreateVideoJob, parseRecreatePayload,
   failRecreateVideoJob, driveVideoRecreateJob, RECREATE_STEP_LEASE_MS,
+  recreatePreAuthCredits, recreateTrueUpRefund,
   type RecreateVideoDeps,
 } from './recreate-video-stream.js';
+import { CREDIT_COSTS } from './credits.js';
 
 const VIDEO = {
   id: 'v-1',
@@ -223,8 +225,34 @@ describe('driveVideoRecreateJob', () => {
   });
 });
 
-describe('parseRecreatePayload', () => {
-  test('survives garbage payloads', () => {
+describe('per-slide pricing math', () => {
+  const perSlide = CREDIT_COSTS.recreateSlideshow;
+
+  test('pre-auth scales with slides, capped at the 8-slide max', () => {
+    expect(recreatePreAuthCredits(3)).toBe(3 * perSlide);
+    expect(recreatePreAuthCredits(8)).toBe(8 * perSlide);
+    expect(recreatePreAuthCredits(35)).toBe(8 * perSlide);
+    expect(recreatePreAuthCredits(0)).toBe(0);
+  });
+
+  test('true-up refunds exactly the pre-auth/max gap', () => {
+    expect(recreateTrueUpRefund(8 * perSlide, 3)).toBe(5 * perSlide);
+    expect(recreateTrueUpRefund(8 * perSlide, 8)).toBe(0);
+    expect(recreateTrueUpRefund(null, 3)).toBe(0);
+    expect(recreateTrueUpRefund(2, 3)).toBe(0); // legacy flat rows never true up upward
+  });
+
+  test('a slide at 10 credits prices sunburst at 80% and Muse near 90%', () => {
+    const revenuePerSlide = perSlide * 0.0097; // Creator credit value
+    const sunburstMargin = (revenuePerSlide - 0.02) / revenuePerSlide;
+    const flashMargin = (revenuePerSlide - 0.01) / revenuePerSlide;
+    expect(perSlide).toBe(10);
+    expect(sunburstMargin).toBeGreaterThan(0.75);
+    expect(flashMargin).toBeGreaterThan(0.85);
+  });
+});
+
+describe('parseRecreatePayload', () => {  test('survives garbage payloads', () => {
     expect(parseRecreatePayload('not json')).toEqual({ mode: 'video' });
     expect(parseRecreatePayload('{"mode":"video","phase":"copy"}').phase).toBe('copy');
   });

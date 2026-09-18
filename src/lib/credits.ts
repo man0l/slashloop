@@ -53,10 +53,15 @@ export const CREDIT_COSTS = {
   analyzeVideo: 5,
   /** Experiments: one bounded Gemini synthesis/brief request, separately metered. */
   experimentPlanningCall: 2,
-  /** Experiments: one original low-quality OpenRouter image, not a whole deck. */
-  experimentSlide: 2,
-  /** Recreate a photo carousel via OpenRouter gpt-image-2.5-sunburst at low quality. */
-  recreateSlideshow: 2,
+  /** Experiments: one generated image at ~$0.01-0.02 provider cost.
+   *  Priced 10/slide: 80% margin on sunburst (~$0.02), ~90% if we switch to
+   *  Muse (~$0.01). Price for the expensive model; the cheap one is upside. */
+  experimentSlide: 10,
+  /** Slideshow restage, PER SLIDE (not per deck): ~$0.01-0.02 provider cost
+   *  per 9:16 image. Photo mode debits the exact slide count; video mode
+   *  pre-auths the 8-slide max and refunds the difference after planning.
+   *  10/slide = 80% on sunburst, ~90% on Muse (same logic as experimentSlide). */
+  recreateSlideshow: 10,
   /** generate_hook_variations — a real Gemini text call. */
   generateHookVariations: 2,
   /** create_brief — a real Gemini text call. */

@@ -506,7 +506,8 @@ export async function processClaimedJob(
       if (terminal && job.opId) {
         await refundCredits(
           job.workspaceId,
-          job.preAuthCredits ?? CREDIT_COSTS.recreateSlideshow,
+          // Pre-per-slide rows were flat 2/deck; current rows carry the true amount.
+          job.preAuthCredits ?? 2,
           'recreate_slideshow',
           `${job.opId}:fail`,
           'call_failed',

@@ -32,7 +32,7 @@ import { generateOpenRouterImage } from './openrouter.js';
 import { liveGeminiFile } from '../analysis/index.js';
 import {
   planVideoSlides, buildVideoSlidePrompt,
-  fallbackIntervalPlan, planTimestamps, MIN_VIDEO_SLIDES,
+  fallbackIntervalPlan, planTimestamps, MIN_VIDEO_SLIDES, MAX_VIDEO_SLIDES,
   type VideoSlidePlan, type VideoSlidePlanResult,
 } from './recreate-slideshow.js';
 import {
@@ -51,6 +51,8 @@ export interface VideoRecreatePayload {
   plan?: VideoSlidePlan['slides'];
   planModel?: string;
   planSource?: string;
+  /** Per-slide pricing true-up done (enqueue pre-auths the 8-slide max). */
+  priced?: boolean;
   streamUid?: string;
   thumbBase?: string;
   slideIndex?: number;
@@ -63,6 +65,19 @@ export interface VideoRecreatePayload {
 
 /** One tick may advance a running job only if the previous step is stale. */
 export const RECREATE_STEP_LEASE_MS = 90_000;
+
+/** Video decks pre-auth the 8-slide max at enqueue (slide count unknown until
+ *  the plan phase); photo decks debit the exact count up front. */
+export function recreatePreAuthCredits(slideCount: number): number {
+  return Math.max(0, Math.min(slideCount, MAX_VIDEO_SLIDES)) * CREDIT_COSTS.recreateSlideshow;
+}
+
+/** True-up once the plan lands: refund the pre-auth/max gap (0 when the deck
+ *  used the full max). Pure — the caller performs the refund + row update. */
+export function recreateTrueUpRefund(preAuthCredits: number | null, slideCount: number): number {
+  const actual = Math.max(0, slideCount) * CREDIT_COSTS.recreateSlideshow;
+  return Math.max(0, (preAuthCredits ?? actual) - actual);
+}
 
 /** Stream-ready polling inside a drive: 4s interval, ~3 min cap before the
  *  drive yields and the cron resumes the job. */
@@ -182,7 +197,9 @@ export function defaultRecreateVideoDeps(): RecreateVideoDeps {
       if (!opId) return;
       await refundCredits(
         workspaceId,
-        preAuthCredits ?? CREDIT_COSTS.recreateSlideshow,
+        // Pre-per-slide rows (flat 2/deck); current rows always carry the
+        // true-up'd amount on the row itself.
+        preAuthCredits ?? 2,
         'recreate_slideshow',
         `${opId}:fail`,
         'call_failed',
@@ -261,6 +278,19 @@ export async function advanceRecreateVideoJob(
     payload.plan = plan.slides;
     payload.planModel = planResult.model;
     payload.planSource = planResult.source;
+    // Per-slide pricing true-up, once: enqueue pre-authed the 8-slide max,
+    // now that the plan is known refund the difference and pin the row's
+    // preAuthCredits to the true amount (terminal-failure refunds read it).
+    if (!payload.priced && job.opId) {
+      const refund = recreateTrueUpRefund(job.preAuthCredits, payload.plan.length);
+      if (refund > 0) {
+        await refundCredits(job.workspaceId, refund, 'recreate_slideshow', `${job.opId}:trueup`, 'adjustment').catch((e) =>
+          console.warn(`[recreate-stream] true-up refund failed for ${job.id}: ${(e as Error).message}`),
+        );
+        await db.mediaJob.update({ where: { id: job.id }, data: { preAuthCredits: (job.preAuthCredits ?? 0) - refund } });
+      }
+      payload.priced = true;
+    }
     payload.phase = 'copy';
     await deps.savePayload(job.id, payload);
     return payload;

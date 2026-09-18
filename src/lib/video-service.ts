@@ -15,7 +15,8 @@ import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls, resolveRecreatio
 import { enqueueAnalyzeJob, enqueueFetchJob, enqueueRecreateJob, latestReportingJobForVideo, outstandingJobForVideo, latestJobForVideo, type MediaJobRow } from './jobs.js';
 import { classifyGeminiError, errorCodeFor, parseJobLastError, friendlyGeminiMessage, type GeminiErrorCode } from './gemini-errors.js';
 import { keepAlive } from '../cf/wait-until.js';
-import { driveVideoRecreateJob, defaultRecreateVideoDeps } from './recreate-video-stream.js';
+import { driveVideoRecreateJob, defaultRecreateVideoDeps, recreatePreAuthCredits } from './recreate-video-stream.js';
+import { MAX_VIDEO_SLIDES, MAX_RECREATE_SLIDES } from './recreate-slideshow.js';
 
 export type AnalyzeVideoOutcome =
   | { ok: true; queued: true; job: MediaJobRow; backend: string; creditsCharged: number; creditsRemaining: number }
@@ -267,8 +268,16 @@ export async function recreateSlideshowForWorkspace(
   }
 
   const opId = randomUUID();
+  // Per-slide pricing: photo decks know their slide count up front (exact
+  // debit); video decks plan later, so pre-auth the max and let the driver
+  // true-up refund the difference once the plan lands.
+  const isPhoto = isPhotoPost(video);
+  const slideCount = isPhoto
+    ? Math.min(Math.max(resolveSlideshowUrls(video.rawJson).length, 1), MAX_RECREATE_SLIDES)
+    : MAX_VIDEO_SLIDES;
+  const preAuthCredits = recreatePreAuthCredits(slideCount);
   try {
-    await debitCredits(workspace.id, CREDIT_COSTS.recreateSlideshow, 'recreate_slideshow', `${opId}:preauth`);
+    await debitCredits(workspace.id, preAuthCredits, 'recreate_slideshow', `${opId}:preauth`);
   } catch (err) {
     if (err instanceof InsufficientCreditsError) {
       return { ok: false, errorCode: 'insufficient_credits', error: err.message, required: err.required, creditsCharged: 0, creditsRemaining: err.remaining };
@@ -280,8 +289,8 @@ export async function recreateSlideshowForWorkspace(
     workspaceId: workspace.id,
     videoId,
     opId,
-    preAuthCredits: CREDIT_COSTS.recreateSlideshow,
-    payload: { mode: isPhotoPost(video) ? 'photo' : 'video' },
+    preAuthCredits,
+    payload: { mode: isPhoto ? 'photo' : 'video' },
   });
   // Instant start on the Worker: drive the whole pipeline in this request's
   // background instead of waiting for the next */2 tick (the cron remains the
@@ -308,7 +317,7 @@ export async function recreateSlideshowForWorkspace(
     })().catch((err: unknown) => console.warn(`[recreate] enqueue drive failed for ${videoId} (cron resumes): ${(err as Error).message}`)),
   );
   const balance = await creditBalance(workspace.id);
-  return { ok: true, queued: true, job, creditsCharged: CREDIT_COSTS.recreateSlideshow, creditsRemaining: balance.total };
+  return { ok: true, queued: true, job, creditsCharged: preAuthCredits, creditsRemaining: balance.total };
 }
 
 /**
