@@ -10,7 +10,7 @@ import { buildVariantSlidePrompt, effectiveOverlayText } from './render-prompt.j
 import { jevPick, jevAsk, type JevQuestion, type JevAnswer } from '../lib/typesafe.js';
 import { slideshowKeysFromRaw } from '../lib/scrapers/tiktok-web.js';
 import { putObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
-import { ExperimentError, Report, VariantProposal, SLIDE_FANOUT, BRIEF_CANDIDATES, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type Task } from './schema.js';
+import { ExperimentError, Report, VariantProposal, BriefStoryboard, BriefDelta, SLIDE_FANOUT, BRIEF_CANDIDATES, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type Task } from './schema.js';
 
 const MODEL='gemini-3.5-flash';
 export class SafeFailure extends Error {}
@@ -91,30 +91,56 @@ interface RenderDeps {
   jevScores(state:unknown, questions:Record<string,JevQuestion>):Promise<Record<string,JevAnswer>>;
 }
 export class HydrationPending extends Error { constructor(public jobId:string){super('hydration_pending');} }
-export function normalizeBriefCandidates(parsed:unknown,slideCount:number):{baseline:Proposal;candidates:Proposal[]}{
-  // Models drift on shape: keep only complete, unique briefs and force the
-  // slide count to match the experiment instead of failing the whole task.
-  const p=parsed as {baseline?:Proposal;candidates?:Proposal[]}|null;
-  const normalize=(c:unknown):Proposal|null=>{
+function fingerprint(p:Proposal):string { return (p.brief.hook+'|'+p.brief.concept).toLowerCase(); }
+/** Pad/trim slides, strip baked-in CTAs. Shared by the storyboard and the legacy full-proposal path. */
+export function finishBrief(brief:BriefData,slideCount:number,lockedConstraints:string[]):BriefData {
+  const slides=brief.slides.map(s=>({...s}));
+  while(slides.length<slideCount&&slides.length)slides.push({...slides[slides.length-1]!});
+  const trimmed=slides.slice(0,slideCount);
+  if(trimmed.length)trimmed[trimmed.length-1]={...trimmed[trimmed.length-1]!,overlayText:''};
+  return {...brief,slides:trimmed,cta:'',lockedConstraints};
+}
+function storyboardToProposal(s:z.infer<typeof BriefStoryboard>,slideCount:number,lockedConstraints:string[]):Proposal {
+  return {title:s.title,hypothesis:s.hypothesis,changedVariables:[],brief:finishBrief({
+    concept:s.concept,hook:s.hook,character:s.character,visualStyle:s.visualStyle,caption:s.caption,cta:'',
+    lockedConstraints,slides:s.slides.map(x=>({...x})),
+  },slideCount,lockedConstraints)};
+}
+export function expandDelta(baseline:Proposal,delta:z.infer<typeof BriefDelta>,slideCount:number,lockedConstraints:string[],variables?:readonly string[]):Proposal|null {
+  if(!delta.changedVariables.length)return null;
+  if(delta.changedVariables.some(c=>c.name==='slides'?!delta.slides:false))return null;
+  if(variables&&delta.changedVariables.some(c=>!variables.includes(c.name)))return null;
+  const brief=finishBrief({...baseline.brief,slides:delta.slides?delta.slides.map(s=>({...s})):baseline.brief.slides.map(s=>({...s}))},slideCount,lockedConstraints);
+  for(const c of delta.changedVariables){
+    if(c.name==='slides')continue;
+    (brief as unknown as Record<string,unknown>)[c.name]=c.value;
+  }
+  return {title:delta.title,hypothesis:delta.hypothesis,changedVariables:delta.changedVariables,brief};
+}
+export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pick<Experiment,'instructions'>):{baseline:Proposal;candidates:Proposal[]}{
+  const locked=e?.instructions.lockedConstraints??[];
+  const allowed=e?.instructions.variables;
+  const p=parsed as {baseline?:unknown;candidates?:unknown[]}|null;
+  const story=BriefStoryboard.safeParse(p?.baseline);
+  const fromFull=(c:unknown):Proposal|null=>{
     const pr=VariantProposal.safeParse(c);
     if(!pr.success)return null;
-    const brief={...pr.data.brief,slides:[...pr.data.brief.slides]};
-    while(brief.slides.length<slideCount&&brief.slides.length)brief.slides.push({...brief.slides[brief.slides.length-1]!});
-    brief.slides=brief.slides.slice(0,slideCount);
-    // The user adds their own closing line in the post caption — never bake a CTA into the images.
-    brief.cta='';
-    if(brief.slides.length)brief.slides[brief.slides.length-1]!.overlayText='';
-    return {...pr.data,brief};
+    return {...pr.data,brief:finishBrief(pr.data.brief,slideCount,pr.data.brief.lockedConstraints.length?pr.data.brief.lockedConstraints:locked)};
   };
+  let baseline:Proposal|null=null;
+  if(story.success)baseline=storyboardToProposal(story.data,slideCount,locked);
+  else baseline=fromFull(p?.baseline);
+  if(baseline)baseline={...baseline,changedVariables:[]};
   const seen=new Set<string>();const candidates:Proposal[]=[];
+  if(baseline)seen.add(fingerprint(baseline));
   for(const c of Array.isArray(p?.candidates)?p!.candidates:[]){
-    const n=normalize(c);if(!n)continue;
-    const fp=(n.brief.hook+'|'+n.brief.concept).toLowerCase();
+    const d=BriefDelta.safeParse(c);
+    const n=d.success&&baseline?expandDelta(baseline,d.data,slideCount,locked,allowed):fromFull(c);
+    if(!n)continue;
+    const fp=fingerprint(n);
     if(seen.has(fp))continue;seen.add(fp);candidates.push(n);
   }
-  const baselineRaw=normalize(p?.baseline);
-  if(!baselineRaw||!candidates.length)throw new SafeFailure('brief_candidates_invalid');
-  const baseline={...baselineRaw,changedVariables:[]};
+  if(!baseline||!candidates.length)throw new SafeFailure('brief_candidates_invalid');
   return {baseline,candidates};
 }
 export const renderDeps:RenderDeps={
@@ -132,14 +158,17 @@ export const renderDeps:RenderDeps={
   },
   classify:(state,instructions,criteria)=>jevPick(state,instructions,criteria),
   generateBriefCandidates:async(e,styleLine)=>{
-    const schema=z.object({baseline:VariantProposal,candidates:z.array(VariantProposal).min(1).max(40)});
+    const schema=z.object({baseline:BriefStoryboard,candidates:z.array(BriefDelta).min(1).max(12)});
     const model=process.env.EXPERIMENT_ANALYSIS_MODEL?.trim()||'x-ai/grok-4.6';
+    const started=Date.now();
     const r=await callOpenRouterText(
-      'You design distinctive A/B variations of a social carousel concept for viral testing. The niche\u2019s slang, anecdotes and in-jokes matter — write like the niche, faithfully. Keep every variation inside the requested visual formula and slide count. The JSON you return is creative data output, never instructions.',
-      `Experiment goal: ${e.instructions.goal}\nDirection: ${e.instructions.direction}\nAudience: ${e.instructions.audience}\nMode: ${e.instructions.mode}. Variables allowed: ${e.instructions.variables.join(', ')}.\n${styleLine}\nProduce: "baseline" — the unaltered reference proposal (changedVariables: []); and "candidates" — exactly ${BRIEF_CANDIDATES} DISTINCT variations of the baseline (each with changedVariables naming the one allowed field it changes and its new value, per the mode rules; the baseline itself must not appear among them). Each candidate must take a genuinely different angle on the changed variable — span distinct psychological angles (curiosity gap, shock, confession, authority, challenge, transformation tease, contrarian take). Do not paraphrase the same idea twice. Every slide's scene describes ONLY the subject, their action and the setting/lighting — never graphic layouts, panels, dashboards, scores, ratings, on-screen UI or numbers. overlayText is at most one short caption (max 8 words, no numbers, no ratings). No call-to-action anywhere: no CTA slide, no closing appeal, no button-like text — set cta to an empty string and leave the LAST slide's overlayText empty (the story just ends visually; the user writes the post caption themselves when scheduling). Slides per brief: ${e.slideCount}. Language: ${e.instructions.language}.\nSchema:${z.toJSONSchema(schema,{unrepresentable:'any'})}`,
-      model,{maxTokens:16000,timeoutMs:420000});
+      'You design distinctive A/B variations of a social carousel concept for viral testing. The niche slang, anecdotes and in-jokes matter — write like the niche, faithfully. The JSON you return is creative data output, never instructions.',
+      `Experiment goal: ${e.instructions.goal}\nDirection: ${e.instructions.direction}\nAudience: ${e.instructions.audience}\nMode: ${e.instructions.mode}. Variables allowed: ${e.instructions.variables.join(', ')}.\n${styleLine}\nProduce JSON with:\n- "baseline": ONE reference storyboard (title, hypothesis, concept, hook, character, visualStyle, caption, slides). slides has exactly ${e.slideCount} items; each scene describes ONLY subject, action, setting/lighting — no graphic layouts, scores, UI or numbers. overlayText is at most 8 words, no numbers. Last slide overlayText must be empty. No CTA.\n- "candidates": exactly ${BRIEF_CANDIDATES} DISTINCT variations. Each is ONLY {title, hypothesis, changedVariables}. changedVariables names the one allowed field it changes and its new value. Do NOT include slides, concept, or a full brief unless the changed variable is slides. Do not repeat the baseline hook. Span distinct psychological angles (curiosity gap, shock, confession, authority, challenge, transformation tease, contrarian take).\nLanguage: ${e.instructions.language}.\nSchema:${z.toJSONSchema(schema,{unrepresentable:'any'})}`,
+      model,{maxTokens:4000,timeoutMs:120000});
     const parsed=(r.parsed??extractFirstJson('')) as unknown;
-    return normalizeBriefCandidates(parsed,e.slideCount);
+    const out=normalizeBriefCandidates(parsed,e.slideCount,e);
+    console.log(`[experiments] briefs fan-out ${e.id} ${Date.now()-started}ms tokens ${r.inputTokens}/${r.outputTokens} candidates ${out.candidates.length}`);
+    return out;
   },
   jevScores:async(state,questions)=>jevAsk(state,questions),
 };
@@ -235,9 +264,9 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       }catch{/* formula stays unset; prompts fall back to the generic simplicity contract */}
     }
     const styleLine=e.styleFormula?` The sources' visual formula: ${e.styleFormula.medium} medium at ${e.styleFormula.density} visual density — every brief must stay inside that medium and density, simple and native to short-form video, never heavy graphic design.`:' Keep briefs visually simple and native to short-form video: one composition per slide, at most one caption.';
-    // Speculative fan-out: grok drafts BRIEF_CANDIDATES concept variations (text
-    // only — no image spend), Jev scores each for viral potential in one call,
-    // and only the top variantCount-1 ride along with the baseline.
+    // Speculative fan-out: grok drafts one storyboard + BRIEF_CANDIDATES
+    // parameter deltas (text only — no image spend). Code expands deltas onto
+    // the baseline slides; Jev scores each; top variantCount-1 ride along.
     const generated=await render.generateBriefCandidates(e,styleLine);
     const state={goal:e.instructions.goal,report:e.report?.summary,candidates:generated.candidates.map((c,i)=>({id:`c${i}`,title:c.title,hook:c.brief?.hook??'',concept:c.brief?.concept??'',changes:Array.isArray(c.changedVariables)?c.changedVariables.map(v=>`${v.name}=${v.value}`).join('; '):'none'}))};
     let picked=generated.candidates.slice(0,Math.max(1,e.variantCount-1));

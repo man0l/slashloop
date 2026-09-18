@@ -1,17 +1,18 @@
 import { expect, test } from 'bun:test';
 import { normalizeBriefCandidates, prepare } from './providers.js';
+import { BRIEF_CANDIDATES } from './schema.js';
 import type { Experiment, Task, Proposal } from './schema.js';
 
 const baseBrief = { concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', cta: '', lockedConstraints: [], slides: [
   { role: 'hook', scene: 'A studio', overlayText: '' }, { role: 'body', scene: 'A gym', overlayText: '' }, { role: 'cta', scene: 'A mirror', overlayText: '' }] };
 
-test('briefs stage: 20 candidates generated, Jev ranks them, top variants join the baseline', async () => {
+test('briefs stage: parameter candidates are Jev-ranked and top variants join the baseline', async () => {
   const mkProposal = (i: number) => {
     const hook = i === 0 ? 'Start here' : `Hook variant ${i}`;
     return { title: `V${i}`, hypothesis: 'It will resonate', changedVariables: i === 0 ? [] : [{ name: 'hook' as const, value: hook }], brief: { ...baseBrief, hook } };
   };
   const baseline = mkProposal(0);
-  const candidates = Array.from({ length: 20 }, (_, i) => mkProposal(i + 1));
+  const candidates = Array.from({ length: BRIEF_CANDIDATES }, (_, i) => mkProposal(i + 1));
   const e = {
     id: 'e', workspaceId: 'w', status: 'planning', version: 0, createdAt: '', updatedAt: '', creditsCharged: 0, maxCredits: 100,
     instructions: { goal: 'Go viral', brand: '', audience: '', language: 'English', direction: '', lockedConstraints: [], variables: ['hook'], mode: 'controlled' },
@@ -40,8 +41,24 @@ test('briefs stage: 20 candidates generated, Jev ranks them, top variants join t
   expect(proposals[0]!.brief.hook).toBe('Start here'); // baseline always rides along
   expect(proposals[1]!.brief.hook).toBe('Hook variant 8'); // Jev's top-scored candidate
   expect(proposals[2]!.brief.hook).toBe('Hook variant 1'); // next best in grok order
-  expect(briefJudge.candidates).toHaveLength(20);
+  expect(briefJudge.candidates).toHaveLength(BRIEF_CANDIDATES);
   expect(briefJudge.picked).toEqual(['V8', 'V1']);
+});
+test('storyboard + parameter deltas expand onto the baseline slides', () => {
+  const parsed = {
+    baseline: { title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides },
+    candidates: [
+      { title: 'V1', hypothesis: 'h', changedVariables: [{ name: 'hook', value: 'Hook 1' }] },
+      { title: 'V1dup', hypothesis: 'h', changedVariables: [{ name: 'hook', value: 'Hook 1' }] },
+      { title: 'V2', hypothesis: 'h', changedVariables: [{ name: 'hook', value: 'Hook 2' }] },
+      { title: 'bad', hypothesis: 'h', changedVariables: [{ name: 'character', value: 'A chef' }] },
+    ],
+  };
+  const n = normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['hook'] } } as never);
+  expect(n.candidates.map(c => c.brief.hook)).toEqual(['Hook 1', 'Hook 2']);
+  expect(n.candidates[0]!.brief.slides.map(s => s.scene)).toEqual(n.baseline.brief.slides.map(s => s.scene));
+  expect(n.candidates[0]!.brief.character).toBe('An artist');
+  expect(n.baseline.changedVariables).toEqual([]);
 });
 
 test('call-to-action text is stripped from every candidate and the baseline', async () => {

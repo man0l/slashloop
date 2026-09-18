@@ -18,10 +18,23 @@ export const Instructions = z.object({
     ctx.addIssue({ code: 'custom', message: 'Controlled variables: hook, character, visualStyle, caption, cta. Concept/slides require exploration.' });
   }
 });
+export const BriefSlide = z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text }).strict();
 export const Brief = z.object({
   concept: text.min(1), hook: text.min(1), character: text, visualStyle: text.min(1), caption: text,
   cta: text, lockedConstraints: z.array(text.min(1)).max(20),
-  slides: z.array(z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text }).strict()).min(3).max(8),
+  slides: z.array(BriefSlide).min(3).max(8),
+}).strict();
+/** One storyboard grok returns at the briefs fan-out. Candidates are deltas, not full carousels. */
+export const BriefStoryboard = z.object({
+  title: z.string().min(1).max(160), hypothesis: text.min(1),
+  concept: text.min(1), hook: text.min(1), character: text, visualStyle: text.min(1), caption: text,
+  slides: z.array(BriefSlide).min(3).max(8),
+}).strict();
+/** Parameter-only variation. Slides are optional and only required when the changed variable is `slides`. */
+export const BriefDelta = z.object({
+  title: z.string().min(1).max(160), hypothesis: text.min(1),
+  changedVariables: z.array(z.object({ name: z.enum(VARIABLE_FIELDS), value: text.min(1) }).strict()).min(1).max(7),
+  slides: z.array(BriefSlide).min(3).max(8).optional(),
 }).strict();
 export const Create = z.object({ workspaceId: Id, videoIds: z.array(Id).min(1).max(20), instructions: Instructions,
   variantCount: z.number().int().min(1).max(12), slideCount: z.number().int().min(3).max(8),
@@ -41,8 +54,8 @@ export const MAX_MANUAL_ATTEMPTS = 6;
 export const PARALLEL_SLIDES = 3;
 /** Candidates rendered per slide; Jev (TypeSafe) picks the most viral one. */
 export const SLIDE_FANOUT = 3;
-/** Concept candidates generated at the briefs stage; Jev ranks them, top variantCount-1 win. */
-export const BRIEF_CANDIDATES = 20;
+/** Parameter deltas generated at the briefs stage; Jev ranks them, top variantCount-1 win. */
+export const BRIEF_CANDIDATES = 8;
 export const RETRY_BACKOFF_MS = 60_000;
 export function retryBackoffMs(_attempts = 1): number {
   return RETRY_BACKOFF_MS;
