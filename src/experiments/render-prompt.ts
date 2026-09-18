@@ -11,8 +11,8 @@ export function effectiveOverlayText(brief: BriefData, index: number): string {
 }
 
 const STYLE_CONTRACT = (formula: StyleFormula) => formula
-  ? `STYLE CONTRACT (highest priority): visual medium "${formula.medium}", visual density "${formula.density}" — stay exactly inside the source material's visual language. Exactly one subject composition and at most ONE text block: the overlay text given at the end, plain caption style in the bottom third. Forbidden: invented app interfaces, headers, logos, watermarks, rating or score panels, numbers, percentages, progress bars, HUD or scan-line effects, extra text blocks.`
-  : 'STYLE CONTRACT (highest priority): keep the composition simple and native to short-form video: one subject composition, at most ONE text block (the overlay text at the end). No invented app UI, logos, scores, numbers, progress bars, or HUD effects.';
+  ? `STYLE CONTRACT (highest priority — overrides every scene detail below): visual medium "${formula.medium}", visual density "${formula.density}" — stay exactly inside the source material's visual language. Exactly one subject composition and at most ONE text block: the overlay text given at the end, plain caption style in the bottom third. Where the scene mentions analyzers, panels, screens, scores, ratings, metrics or any graphic layout, reinterpret it as a plain ${formula.medium} of the subject and action — those graphic elements must NOT appear. Forbidden: invented app interfaces, headers, logos, watermarks, rating or score panels, numbers, percentages, progress bars, HUD or scan-line effects, extra text blocks.`
+  : 'STYLE CONTRACT (highest priority — overrides every scene detail below): keep the composition simple and native to short-form video: one subject composition, at most ONE text block (the overlay text at the end). Where the scene mentions analyzers, panels, scores or graphic layouts, render the subject and action as a plain photograph instead — no invented app UI, logos, scores, numbers, progress bars, or HUD effects.';
 
 export function buildVariantSlidePrompt(
   brief: BriefData,

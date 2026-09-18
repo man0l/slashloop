@@ -19,8 +19,13 @@ function settle(e:Experiment,t:Task,result:unknown) {
     const input=result as Input; e.inputs[e.inputs.findIndex(i=>i.videoId===t.target)]=input;
   } else if(t.kind==='report') e.report={...result as ReportData,coverage:{included:e.inputs.filter(i=>i.status==='ready').map(i=>i.videoId),excluded:e.inputs.filter(i=>i.status!=='ready').map(i=>({videoId:i.videoId,error:i.error})),partial:e.inputs.some(i=>i.status!=='ready')}};
   else if(t.kind==='briefs') {
+    // New shape: {proposals, briefJudge}; a plain array is kept for older callers.
+    const payload=result as {proposals?:Proposal[];briefJudge?:unknown}|Proposal[];
+    const proposals=Array.isArray(payload)?payload:payload.proposals??[];
+    const judge=Array.isArray(payload)?undefined:(payload as {briefJudge?:{candidates:Array<{title:string;hook:string;score:number;confidence?:number}>;picked?:string[]}|null}).briefJudge;
+    if(judge)e.briefJudge=judge;
     const baselineId=randomUUID();
-    e.variants=(result as Proposal[]).map((v,i)=>({...v,id:i===0?baselineId:randomUUID(),baselineId:i===0?null:baselineId,revision:1,status:'draft',generationBasis:e.generationBasis,history:[],frozenBrief:null,slides:[],error:null}));
+    e.variants=proposals.map((v,i)=>({...v,id:i===0?baselineId:randomUUID(),baselineId:i===0?null:baselineId,revision:1,status:'draft',generationBasis:e.generationBasis,history:[],frozenBrief:null,slides:[],error:null}));
     if(isActive(e))e.status='review';
   } else {
     const v=e.variants.find(v=>v.id===t.target)!;const slide=v.slides[t.index!]!;

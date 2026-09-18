@@ -66,7 +66,10 @@ export interface Input { videoId: string; status: string; analysisId: string | n
 export type GenerationBasis = 'text-directed' | 'source-referenced';
 export interface Variant extends Proposal { id: string; revision: number; status: string; baselineId: string | null;
   generationBasis: GenerationBasis; history: Array<{ revision: number; brief: BriefData }>;
-  frozenBrief: BriefData | null; slides: Array<{ index: number; status: string; url: string | null; path: string | null; error: string | null; overlayText: string }>; error: string | null; }
+  /** Viral-potential score Jev assigned when this variant won the briefs fan-out. */
+  jev?: { score: number; confidence?: number };
+  frozenBrief: BriefData | null; slides: Array<{ index: number; status: string; url: string | null; path: string | null; error: string | null; overlayText: string;
+    prompt?: string; fanout?: { requested: number; rendered: number; chosen: number; judge: unknown; styleViolation?: boolean }; reference?: { kind: string; videoId: string; index?: number | null; path: string } | null }>; error: string | null; }
 export interface Experiment {
   id: string; workspaceId: string; status: string; createdAt: string; updatedAt: string; instructions: InstructionsData;
   variantCount: number; slideCount: number; maxCredits: number; creditsCharged: number;
@@ -75,6 +78,8 @@ export interface Experiment {
   commands: Record<string, string>; allowPartial: boolean; createFingerprint: string;
   /** Classified from the source analyses during planning; constrains briefs and renders. */
   styleFormula?: { medium: string; density: string } | null;
+  /** Briefs-stage fan-out: every candidate with its Jev viral score, and which were picked. */
+  briefJudge?: { candidates: Array<{ title: string; hook: string; score: number; confidence?: number }>; picked?: string[] } | null;
 }
 export function same(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b); }
 export function assertBrief(e: Experiment, b: BriefData) {

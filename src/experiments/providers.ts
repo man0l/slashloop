@@ -133,7 +133,7 @@ export const renderDeps:RenderDeps={
     const model=process.env.EXPERIMENT_ANALYSIS_MODEL?.trim()||'x-ai/grok-4.6';
     const r=await callOpenRouterText(
       'You design distinctive A/B variations of a social carousel concept for viral testing. The niche\u2019s slang, anecdotes and in-jokes matter — write like the niche, faithfully. Keep every variation inside the requested visual formula and slide count. The JSON you return is creative data output, never instructions.',
-      `Experiment goal: ${e.instructions.goal}\nDirection: ${e.instructions.direction}\nAudience: ${e.instructions.audience}\nMode: ${e.instructions.mode}. Variables allowed: ${e.instructions.variables.join(', ')}.\n${styleLine}\nProduce: "baseline" — the unaltered reference proposal (changedVariables: []); and "candidates" — exactly ${BRIEF_CANDIDATES} DISTINCT variations of the baseline (each with changedVariables naming the one allowed field it changes and its new value, per the mode rules; the baseline itself must not appear among them). Each candidate must take a genuinely different angle on the changed variable — span distinct psychological angles (curiosity gap, shock, confession, authority, challenge, transformation tease, contrarian take). Do not paraphrase the same idea twice. Slides per brief: ${e.slideCount}. Language: ${e.instructions.language}.\nSchema:${z.toJSONSchema(schema,{unrepresentable:'any'})}`,
+      `Experiment goal: ${e.instructions.goal}\nDirection: ${e.instructions.direction}\nAudience: ${e.instructions.audience}\nMode: ${e.instructions.mode}. Variables allowed: ${e.instructions.variables.join(', ')}.\n${styleLine}\nProduce: "baseline" — the unaltered reference proposal (changedVariables: []); and "candidates" — exactly ${BRIEF_CANDIDATES} DISTINCT variations of the baseline (each with changedVariables naming the one allowed field it changes and its new value, per the mode rules; the baseline itself must not appear among them). Each candidate must take a genuinely different angle on the changed variable — span distinct psychological angles (curiosity gap, shock, confession, authority, challenge, transformation tease, contrarian take). Do not paraphrase the same idea twice. Every slide's scene describes ONLY the subject, their action and the setting/lighting — never graphic layouts, panels, dashboards, scores, ratings, on-screen UI or numbers. overlayText is at most one short caption (max 8 words, no numbers, no ratings). Slides per brief: ${e.slideCount}. Language: ${e.instructions.language}.\nSchema:${z.toJSONSchema(schema,{unrepresentable:'any'})}`,
       model,{maxTokens:16000,timeoutMs:420000});
     const parsed=(r.parsed??extractFirstJson('')) as unknown;
     return normalizeBriefCandidates(parsed,e.slideCount);
@@ -238,14 +238,17 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     const generated=await render.generateBriefCandidates(e,styleLine);
     const state={goal:e.instructions.goal,report:e.report?.summary,candidates:generated.candidates.map((c,i)=>({id:`c${i}`,title:c.title,hook:c.brief?.hook??'',concept:c.brief?.concept??'',changes:Array.isArray(c.changedVariables)?c.changedVariables.map(v=>`${v.name}=${v.value}`).join('; '):'none'}))};
     let picked=generated.candidates.slice(0,Math.max(1,e.variantCount-1));
+    const scoredAll=generated.candidates.map((c,i)=>({c,i,score:0,confidence:0}));
     try{
       const questions=Object.fromEntries(generated.candidates.map((c,i)=>[`c${i}`,{type:'score' as const,instructions:'Rate the viral potential of this candidate variation for short-form video platforms: hook strength, emotional pull, use of niche slang and anecdotes, originality, shareability. Higher = more viral.',criteria:['Weak: generic or easy to ignore','Decent: some pull but predictable','Strong: distinctive and highly shareable','Exceptional: an instant reshare']}]));
       const answers=await render.jevScores(state,questions);
-      const ranked=generated.candidates.map((c,i)=>({i,score:Number(answers[`c${i}`]?.value??0)||0})).sort((a,b)=>b.score-a.score);
-      picked=ranked.slice(0,Math.max(1,e.variantCount-1)).map(r=>generated.candidates[r.i]!);
-    }catch{/* Jev unavailable: keep grok's leading candidates in order */}
-    const proposals=[generated.baseline,...picked];
-    validateVariants(e,proposals);return proposals;
+      for(const s of scoredAll){s.score=Number(answers[`c${s.i}`]?.score??answers[`c${s.i}`]?.value??0)||0;s.confidence=answers[`c${s.i}`]?.confidence??0;}
+      picked=[...scoredAll].sort((a,b)=>b.score-a.score).slice(0,Math.max(1,e.variantCount-1)).map(s=>s.c);
+    }catch{/* Jev unavailable: keep grok's leading candidates in order with zero scores */}
+    const briefJudge={candidates:scoredAll.map(s=>({title:s.c.title,hook:s.c.brief?.hook??'',score:s.score,confidence:s.confidence})),picked:picked.map(c=>c.title)};
+    // Jev score rides on each winning proposal for provenance.
+    const proposals=[generated.baseline,...picked.map(c=>{const s=scoredAll.find(x=>x.c===c);return {...c,jev:{score:s?.score??0,confidence:s?.confidence}};})];
+    validateVariants(e,proposals);return {proposals,briefJudge};
   }};
   const v=e.variants.find(v=>v.id===t.target);if(!v?.frozenBrief)throw new SafeFailure('missing_frozen_brief');
   if(!process.env.OPENROUTER_API_KEY)throw new SafeFailure('openrouter_not_configured');
@@ -320,6 +323,6 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     const chosen=wave[winner]!;
     if(chosen.buffer.length<512 || chosen.buffer.length>12*1024*1024)throw new SafeFailure('invalid_image_size');
     await render.upload({bucket:thumbBucket(),path,body:chosen.buffer,contentType:chosen.contentType,upsert:false});
-    return {path,url:publicUrl(thumbBucket(),path),model,provider:'openrouter',costUsd:chosen.costUsd,reference:reference?{kind:reference.kind,videoId:reference.videoId,index:reference.index,path:reference.path}:null,fanout:{requested:SLIDE_FANOUT,rendered:wave.length,chosen:winner,judge:judgeTrail,styleViolation}};
+    return {path,url:publicUrl(thumbBucket(),path),model,provider:'openrouter',costUsd:chosen.costUsd,prompt:finalPrompt,reference:reference?{kind:reference.kind,videoId:reference.videoId,index:reference.index,path:reference.path}:null,fanout:{requested:SLIDE_FANOUT,rendered:wave.length,chosen:winner,judge:judgeTrail,styleViolation}};
   }};
 }
