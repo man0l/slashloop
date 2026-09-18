@@ -70,10 +70,15 @@ export async function GET(request: Request): Promise<Response> {
   });
 
   const base = thumbBase();
+  const seen = new Set<string>();
   const items = videos.flatMap((v) => {
-    if (!v.thumbKey || !base || EXCLUDE_VIDEO_IDS.has(v.id)) return [];
+    // Same TikTok video can be ingested twice (re-scrapes); the shelf shows
+    // each URL once.
+    if (!v.thumbKey || !base || EXCLUDE_VIDEO_IDS.has(v.id) || seen.has(v.url)) return [];
+    seen.add(v.url);
     return [
       {
+        id: v.id,
         creator: v.creatorHandle,
         caption: v.caption ?? '',
         views: v.views,
