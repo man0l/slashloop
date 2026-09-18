@@ -44,6 +44,17 @@ test('briefs stage: 20 candidates generated, Jev ranks them, top variants join t
   expect(briefJudge.picked).toEqual(['V8', 'V1']);
 });
 
+test('call-to-action text is stripped from every candidate and the baseline', async () => {
+  const mk = (i: number, cta = `Swipe to keep ${i}`) => ({ title: `V${i}`, hypothesis: 'h', changedVariables: [{ name: 'hook', value: `Hook ${i}` }], brief: { ...baseBrief, hook: `Hook ${i}`, cta, slides: [...baseBrief.slides.slice(0, 2), { role: 'cta', scene: 'A mirror', overlayText: `Tap now ${i}` }] } });
+  const baseline = { title: 'B', hypothesis: 'h', changedVariables: [], brief: { ...baseBrief, cta: 'Follow for more', slides: [...baseBrief.slides, { role: 'cta', scene: 'A mirror', overlayText: 'Follow now' }] } };
+  const normalized = normalizeBriefCandidates({ baseline, candidates: [mk(1), mk(2)] }, 3);
+  expect(normalized.baseline.brief.cta).toBe('');
+  expect(normalized.candidates.every(c => c.brief.cta === '')).toBe(true);
+  for (const c of [normalized.baseline, ...normalized.candidates]) {
+    expect(c.brief.slides[c.brief.slides.length - 1]!.overlayText).toBe(''); // no baked-in CTA text
+  }
+});
+
 test('malformed and duplicate candidates are dropped before Jev ranking', async () => {
   const mk = (i: number) => ({ title: `V${i}`, hypothesis: 'h', changedVariables: [{ name: 'hook', value: `Hook ${i}` }], brief: { ...baseBrief, hook: `Hook ${i}` } });
   const baseline = { title: 'B', hypothesis: 'h', changedVariables: [], brief: { ...baseBrief } };
