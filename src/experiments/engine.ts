@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { remainingD1Queries } from '../cf/d1-budget.js';
 import { ZodError } from 'zod/v4';
 import { InsufficientCreditsError } from '../lib/credits.js';
+import { classifyOpenRouterError } from '../lib/openrouter.js';
 import * as store from './store.js';
 import { prepare, SafeFailure, HydrationPending, type Prepared } from './providers.js';
 import { taskCost } from './service.js';
@@ -18,10 +19,32 @@ function rejectionCause(failure:unknown):string|null {
   if(failure instanceof ExperimentError)return failure.code;
   if(failure instanceof SafeFailure)return failure.message.slice(0,80);
   if(failure instanceof ZodError)return 'invalid_schema';
+  if(failure instanceof Error)return providerCause(failure.message);
   return null;
 }
+function providerCause(message:string):string {
+  const classified=classifyOpenRouterError(new Error(message));
+  const status=/(\d{3})/.exec(message)?.[1];
+  if(classified.category==='quota')return status?`credits_exhausted_${status}`:'credits_exhausted';
+  if(classified.category==='rate_limit')return status?`rate_limited_${status}`:'rate_limited';
+  if(classified.category==='auth')return status?`auth_${status}`:'auth';
+  if(classified.category==='timeout'||/timeout|abort/i.test(message))return 'timeout';
+  if(classified.category==='server')return status?`provider_server_${status}`:'provider_server';
+  const gemini=/gemini_(?:outcome_unknown|rejected)_(\d+)/.exec(message);
+  if(gemini)return gemini[1]==='429'?'rate_limited_429':`gemini_${gemini[1]}`;
+  const stripped=message.replace(/\{[\s\S]*\}/g,'').replace(/\s+/g,' ').trim();
+  return stripped.slice(0,80)||'unknown';
+}
+function shortFailure(failure:unknown):string {
+  const m=failure instanceof Error?failure.message:String(failure);
+  return m.replace(/\{[\s\S]*\}/g,'').replace(/\s+/g,' ').trim().slice(0,200);
+}
+function jobError(known:boolean,cause:string|null):string {
+  const prefix=known?'provider_result_rejected':'provider_outcome_unknown';
+  return cause?`${prefix}:${cause}`:prefix;
+}
 function settle(e:Experiment,t:Task,result:unknown) {
-  t.status='done';t.error=undefined;
+  t.status='done';t.error=undefined;if(isActive(e))e.error=null;
   if(t.kind==='analysis') {
     const input=result as Input; e.inputs[e.inputs.findIndex(i=>i.videoId===t.target)]=input;
   } else if(t.kind==='report') e.report={...result as ReportData,coverage:{included:e.inputs.filter(i=>i.status==='ready').map(i=>i.videoId),excluded:e.inputs.filter(i=>i.status!=='ready').map(i=>({videoId:i.videoId,error:i.error})),partial:e.inputs.some(i=>i.status!=='ready')}};
@@ -43,7 +66,7 @@ function settle(e:Experiment,t:Task,result:unknown) {
 }
 /** Advance paid steps with a durable receipt before each provider invocation.
  * CAS losers never call the provider. Failures and unknown outcomes self-heal through
- * MAX_TASK_ATTEMPTS-1 automatic retries with exponential backoff before surfacing.
+ * MAX_TASK_ATTEMPTS-1 automatic retries (1 minute apart) before surfacing.
  * Up to PARALLEL_SLIDES renders may run concurrently per experiment: a step whose
  * claim race is lost re-picks another pending task instead of giving up.
  */
@@ -114,9 +137,10 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
     let result:unknown;let failure:unknown;
     try{result=await prepared.execute();}catch(err){failure=err;}
     if(failure){
+      const known=failure instanceof SafeFailure || failure instanceof ZodError || failure instanceof ExperimentError;
       const cause=rejectionCause(failure);
-      // Counts/codes only — briefs payloads and source evidence must not land in logs.
-      console.error(`[experiments] ${t.kind}${t.index!==undefined?`#${t.index}`:''} ${e.id} ${cause?`provider_result_rejected:${cause}`:'provider_outcome_unknown'}`);
+      // Codes + short provider status only — briefs payloads and source evidence must not land in logs.
+      console.error(`[experiments] ${t.kind}${t.index!==undefined?`#${t.index}`:''} ${e.id} ${jobError(known,cause)} ${shortFailure(failure)}`);
     }
     // Persist result against fresh cancellation/version state; do not erase a concurrent command.
     // CAS retries are DB-only and never repeat provider work.
@@ -130,7 +154,8 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
       if(failure){
         const known=failure instanceof SafeFailure || failure instanceof ZodError || failure instanceof ExperimentError;
         const cause=rejectionCause(failure);
-        receipt.error=known?`provider_result_rejected${cause?`:${cause}`:''}`:'provider_outcome_unknown';
+        receipt.error=jobError(known,cause);
+        if(isActive(latest))latest.error=receipt.error;
         if(known && receipt.chargeRef && charge) { refund = charge; receipt.charged -= refund; }
         const input=latest.inputs.find(i=>i.videoId===t.target);
         const v=latest.variants.find(v=>v.id===t.target);

@@ -41,19 +41,28 @@ describe('durable experiment steps',()=>{
   expect(calls).toBe(1);expect(h.row.status).toBe('planning');expect(h.charges).toBe(0);
   expect(h.row.tasks[0]).toMatchObject({status:'pending',nextAttemptAt:1000+60_000,error:'provider_result_rejected:invalid_image_size'});
   clock+=60_000;await step('w','e',h.deps);
-  expect(calls).toBe(2);expect(h.row.tasks[0]?.nextAttemptAt).toBe(clock+300_000);
-  clock+=300_000;await step('w','e',h.deps);
-  expect(calls).toBe(3);expect(h.row.tasks[0]?.nextAttemptAt).toBe(clock+900_000);
-  clock+=900_000;await step('w','e',h.deps);
+  expect(calls).toBe(2);expect(h.row.tasks[0]?.nextAttemptAt).toBe(clock+60_000);
+  clock+=60_000;await step('w','e',h.deps);
+  expect(calls).toBe(3);expect(h.row.tasks[0]?.nextAttemptAt).toBe(clock+60_000);
+  clock+=60_000;await step('w','e',h.deps);
   expect(calls).toBe(4);expect(h.row.status).toBe('failed');expect(h.row.tasks[0]?.status).toBe('failed');});
  test('unknown outcome auto-retries with retained charge, then pauses',async()=>{let calls=0;let clock=1000;const h=harness(async()=>({execute:async()=>{calls++;throw new Error('socket lost');}}));h.deps.now=()=>clock;
   await step('w','e',h.deps);
   expect(calls).toBe(1);expect(h.row.status).toBe('planning');expect(h.row.tasks[0]?.status).toBe('pending');expect(h.charges).toBe(5);
-  for(const delay of [60_000,300_000,900_000]){clock+=delay;await step('w','e',h.deps);}
+  expect(h.row.tasks[0]?.error).toBe('provider_outcome_unknown:socket lost');
+  expect(h.row.error).toBe('provider_outcome_unknown:socket lost');
+  for(const delay of [60_000,60_000,60_000]){clock+=delay;await step('w','e',h.deps);}
   expect(calls).toBe(4);expect(h.row.status).toBe('paused');expect(h.row.tasks[0]?.status).toBe('unknown');expect(h.charges).toBe(20);});
+ test('OpenRouter credit exhaustion is labelled on the job',async()=>{
+  const h=harness(async()=>({execute:async()=>{throw new Error('OpenRouter API error 402: {"error":{"message":"Insufficient credits","metadata":{"error_type":"payment_required"}}}');}}));
+  h.set({...fixture(),tasks:[{id:'t',kind:'analysis',target:'v',status:'pending',attempts:0,charged:0}]});
+  await step('w','e',h.deps);
+  expect(h.row.tasks[0]?.error).toBe('provider_outcome_unknown:credits_exhausted_402');
+  expect(h.row.error).toBe('provider_outcome_unknown:credits_exhausted_402');
+ });
  test('backing-off job is skipped until its nextAttemptAt passes',async()=>{let calls=0;const h=harness(async()=>({execute:async()=>{calls++;throw new Error('x');}}));h.set({...fixture(),tasks:[{id:'t',kind:'analysis',target:'v',status:'pending',attempts:1,charged:0,nextAttemptAt:5000}]});expect(await step('w','e',h.deps)).toBe(false);expect(calls).toBe(0);expect(h.charges).toBe(0);});
  test('preparation failures also consume the retry budget',async()=>{let calls=0;let clock=1000;const h=harness(async()=>{calls++;throw new SafeFailure('media_unavailable_403');});h.deps.now=()=>clock;
-  for(const delay of [0,60_000,300_000,900_000]){clock+=delay;await step('w','e',h.deps);}
+  for(const delay of [0,60_000,60_000,60_000]){clock+=delay;await step('w','e',h.deps);}
   expect(calls).toBe(4);expect(h.row.status).toBe('failed');expect(h.row.tasks[0]?.status).toBe('failed');});
 });
 describe('validation',()=>{

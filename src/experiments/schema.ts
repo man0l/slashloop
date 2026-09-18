@@ -34,7 +34,7 @@ export const Retry = Command.extend({ variantIds: z.array(Id).min(1).max(12).opt
 export const Generate = Command.extend({ variants: z.array(z.object({ id: Id, revision: z.number().int().positive() }).strict()).min(1).max(12) });
 export const Estimate = WorkspaceBody.extend({ stage: z.enum(['plan', 'generate']), variantIds: z.array(Id).min(1).max(12).optional(), taskIds: z.array(z.string().min(1)).min(1).max(150).optional() });
 export const EditBrief = WorkspaceBody.extend({ revision: z.number().int().positive(), brief: Brief });
-/** Every job self-heals through 3 automatic retries with exponential backoff (4 attempts total). */
+/** Every job self-heals through 3 automatic retries, 1 minute apart (4 attempts total). */
 export const MAX_TASK_ATTEMPTS = 4;
 export const MAX_MANUAL_ATTEMPTS = 6;
 /** Up to this many slide renders may run concurrently within one experiment. */
@@ -43,9 +43,9 @@ export const PARALLEL_SLIDES = 3;
 export const SLIDE_FANOUT = 3;
 /** Concept candidates generated at the briefs stage; Jev ranks them, top variantCount-1 win. */
 export const BRIEF_CANDIDATES = 20;
-const RETRY_BACKOFF_MS = [60_000, 300_000, 900_000];
-export function retryBackoffMs(attempts: number): number {
-  return RETRY_BACKOFF_MS[Math.min(Math.max(attempts, 1), RETRY_BACKOFF_MS.length) - 1]!;
+export const RETRY_BACKOFF_MS = 60_000;
+export function retryBackoffMs(_attempts = 1): number {
+  return RETRY_BACKOFF_MS;
 }
 export const Report = z.object({ summary: text.min(1), patterns: z.array(z.object({
   id: Id, name: z.string().min(1).max(100), description: text.min(1), sourceIds: z.array(Id).min(1).max(20),
