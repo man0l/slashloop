@@ -281,8 +281,10 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       try{
         const sources=e.inputs.filter(i=>i.status==='ready').map((i,ix)=>({source:`s${ix}`,observations:i.evidence.slice(0,8).map(v=>v.observation).join(' | ').slice(0,1500)}));
         if(sources.length){
-          const medium=await render.classify({sources},'Classify the dominant visual language of these source materials.',{photograph:'Real photos of real people, places or products',collage:'Multiple cutouts arranged in one frame',caricature:'Exaggerated hand-drawn or illustrated likeness',animated:'Illustrated or cartoon characters',mixed:'Several mediums combined'});
-          const density=await render.classify({sources},'Rate the visual design density of these source materials.',{minimal:'Mostly plain frames with at most a caption',moderate:'Some overlaid text, arrows or simple graphics',rich:'Heavy graphic design: many panels, badges or effects'});
+          const [medium,density]=await Promise.all([
+            render.classify({sources},'Classify the dominant visual language of these source materials.',{photograph:'Real photos of real people, places or products',collage:'Multiple cutouts arranged in one frame',caricature:'Exaggerated hand-drawn or illustrated likeness',animated:'Illustrated or cartoon characters',mixed:'Several mediums combined'}),
+            render.classify({sources},'Rate the visual design density of these source materials.',{minimal:'Mostly plain frames with at most a caption',moderate:'Some overlaid text, arrows or simple graphics',rich:'Heavy graphic design: many panels, badges or effects'}),
+          ]);
           e.styleFormula={medium:medium.choice??medium.value??'mixed',density:density.choice??density.value??'moderate'};
         }
       }catch{/* formula stays unset; prompts fall back to the generic simplicity contract */}
@@ -304,7 +306,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     const briefJudge={candidates:scoredAll.map(s=>({title:s.c.title,hook:s.c.brief?.hook??'',score:s.score,confidence:s.confidence})),picked:picked.map(c=>c.title)};
     // Jev score rides on each winning proposal for provenance.
     const proposals=[generated.baseline,...picked.map(c=>{const s=scoredAll.find(x=>x.c===c);return {...c,jev:{score:s?.score??0,confidence:s?.confidence}};})];
-    validateVariants(e,proposals);return {proposals,briefJudge};
+    validateVariants(e,proposals);return {proposals,briefJudge,styleFormula:e.styleFormula??null};
   }};
   const v=e.variants.find(v=>v.id===t.target);if(!v?.frozenBrief)throw new SafeFailure('missing_frozen_brief');
   if(!process.env.OPENROUTER_API_KEY)throw new SafeFailure('openrouter_not_configured');

@@ -47,7 +47,10 @@ function settle(e:Experiment,t:Task,result:unknown) {
   t.status='done';t.error=undefined;if(isActive(e))e.error=null;
   if(t.kind==='analysis') {
     const input=result as Input; e.inputs[e.inputs.findIndex(i=>i.videoId===t.target)]=input;
-  } else if(t.kind==='report') e.report={...result as ReportData,coverage:{included:e.inputs.filter(i=>i.status==='ready').map(i=>i.videoId),excluded:e.inputs.filter(i=>i.status!=='ready').map(i=>({videoId:i.videoId,error:i.error})),partial:e.inputs.some(i=>i.status!=='ready')}};
+  } else if(t.kind==='report') {
+    e.report={...result as ReportData,coverage:{included:e.inputs.filter(i=>i.status==='ready').map(i=>i.videoId),excluded:e.inputs.filter(i=>i.status!=='ready').map(i=>({videoId:i.videoId,error:i.error})),partial:e.inputs.some(i=>i.status!=='ready')}};
+    if(isActive(e)&&e.tasks.filter(x=>x.kind==='briefs').every(x=>x.status==='done')&&e.variants.length)e.status='review';
+  }
   else if(t.kind==='briefs') {
     // New shape: {proposals, briefJudge}; a plain array is kept for older callers.
     const payload=result as {proposals?:Proposal[];briefJudge?:unknown}|Proposal[];
@@ -55,8 +58,11 @@ function settle(e:Experiment,t:Task,result:unknown) {
     const judge=Array.isArray(payload)?undefined:(payload as {briefJudge?:{candidates:Array<{title:string;hook:string;score:number;confidence?:number}>;picked?:string[]}|null}).briefJudge;
     if(judge)e.briefJudge=judge;
     const baselineId=randomUUID();
+    const extra=Array.isArray(payload)?undefined:payload as {styleFormula?:Experiment['styleFormula']};
+    if(extra?.styleFormula)e.styleFormula=extra.styleFormula;
     e.variants=proposals.map((v,i)=>({...v,id:i===0?baselineId:randomUUID(),baselineId:i===0?null:baselineId,revision:1,status:'draft',generationBasis:e.generationBasis,history:[],frozenBrief:null,slides:[],error:null}));
-    if(isActive(e))e.status='review';
+    // Report (Gemini) and briefs (OpenRouter) may finish in either order.
+    if(isActive(e)&&e.tasks.filter(x=>x.kind==='report').every(x=>x.status==='done'))e.status='review';
   } else {
     const v=e.variants.find(v=>v.id===t.target)!;const slide=v.slides[t.index!]!;
     Object.assign(slide,result,{status:'done',error:null}); t.path=(result as {path:string}).path;
@@ -87,11 +93,12 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
   if(running.length>=PARALLEL_SLIDES)return false;
   for(let pick=0;pick<PARALLEL_SLIDES;pick++){
     if(pick>0){e=await deps.load(workspaceId,id);if(!isActive(e))return false;}
-    // Phase gating: parallel steps must never jump the pipeline (briefs before
-    // report, slides before briefs). Analysis tasks are mutually independent.
+    // Phase gating: analysis first; report (Gemini) and briefs (OpenRouter)
+    // overlap; slides wait for briefs.
     const pendingOrRunning=(kind:Task['kind'])=>e.tasks.some(t=>t.kind===kind&&(t.status==='pending'||t.status==='running'));
     const phaseDone=(kind:Task['kind'])=>{const ks=e.tasks.filter(t=>t.kind===kind);return ks.length>0&&ks.every(t=>t.status==='done');};
-    const eligible=(t:Task)=>t.kind==='report'?!pendingOrRunning('analysis'):t.kind==='briefs'?phaseDone('report'):t.kind==='slide'?phaseDone('briefs'):true;
+    // Report (Gemini) and briefs (OpenRouter) are independent after analysis.
+    const eligible=(t:Task)=>t.kind==='report'||t.kind==='briefs'?!pendingOrRunning('analysis'):t.kind==='slide'?phaseDone('briefs'):true;
     const t=e.tasks.find(t=>t.status==='pending'&&(t.nextAttemptAt??0)<=deps.now()&&eligible(t));if(!t)return false;
     let prepared:Prepared;
     try{prepared=await deps.prepare(e,t);}catch(err){
@@ -137,8 +144,8 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
     let result:unknown;let failure:unknown;
     try{result=await prepared.execute();}catch(err){failure=err;}
     if(failure){
-      const known=failure instanceof SafeFailure || failure instanceof ZodError || failure instanceof ExperimentError;
       const cause=rejectionCause(failure);
+      const known=failure instanceof SafeFailure || failure instanceof ZodError || failure instanceof ExperimentError || /^(credits_exhausted|auth)/.test(cause??'');
       // Codes + short provider status only — briefs payloads and source evidence must not land in logs.
       console.error(`[experiments] ${t.kind}${t.index!==undefined?`#${t.index}`:''} ${e.id} ${jobError(known,cause)} ${shortFailure(failure)}`);
     }
@@ -152,14 +159,15 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
       if(receipt.status==='done'||receipt.status==='failed')return isActive(latest);
       let refund = 0;
       if(failure){
-        const known=failure instanceof SafeFailure || failure instanceof ZodError || failure instanceof ExperimentError;
         const cause=rejectionCause(failure);
+        const terminalQuota=/^(credits_exhausted|auth)/.test(cause??'');
+        const known=failure instanceof SafeFailure || failure instanceof ZodError || failure instanceof ExperimentError || terminalQuota;
         receipt.error=jobError(known,cause);
         if(isActive(latest))latest.error=receipt.error;
         if(known && receipt.chargeRef && charge) { refund = charge; receipt.charged -= refund; }
         const input=latest.inputs.find(i=>i.videoId===t.target);
         const v=latest.variants.find(v=>v.id===t.target);
-        if(receipt.attempts<MAX_TASK_ATTEMPTS){
+        if(receipt.attempts<MAX_TASK_ATTEMPTS && !terminalQuota){
           // Self-heal: requeue with backoff, keep the experiment running. Known failures
           // are refunded above; unknown receipts keep their retained charge.
           receipt.status='pending';receipt.nextAttemptAt=deps.now()+retryBackoffMs(receipt.attempts);
