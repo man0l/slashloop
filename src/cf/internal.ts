@@ -50,7 +50,14 @@ export async function POST(request: Request): Promise<Response> {
     const results = await rawBatch(statements);
     return json(200, { success: true, results });
   } catch (err) {
-    return json(500, { success: false, error: (err as Error).message });
+    // Logged (not just returned) because provider request logs only capture
+    // `POST /internal/raw-batch` — without this line the D1 cause never
+    // reaches indiestack. Counts only: statements/params can carry user data.
+    const e = err as Error;
+    console.error(
+      `[internal/raw-batch] batch failed (${statements.length} statements, ${totalParams} params): ${e.message}${e.stack ? `\n${e.stack}` : ''}`.slice(0, 2000),
+    );
+    return json(500, { success: false, error: e.message });
   }
 }
 
