@@ -32,7 +32,7 @@ test('briefs stage: parameter candidates are Jev-ranked and top variants join th
       return instructions.includes('visual language') ? { value: 'photograph' } : { value: 'minimal' };
     },
     generateBriefCandidates: async () => ({ baseline, candidates }),
-    jevScores: async () => Object.fromEntries(candidates.map((_, i) => [`c${i}`, { value: i === 7 ? 0.99 : 0.1 }])),
+    jevScores: async () => ({ winner: { choice: 'c7', confidence: 0.7, probabilities: Object.fromEntries(candidates.map((_, i) => [`c${i}`, i === 7 ? 0.5 : i === 0 ? 0.3 : 0.02])) } }),
   };
   const prepared = await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never);
   const { proposals, briefJudge } = await prepared.execute() as { proposals: Proposal[]; briefJudge: { candidates: Array<{ title: string; score: number }>; picked: string[] } };
@@ -112,7 +112,7 @@ test('malformed and duplicate candidates are dropped before Jev ranking', async 
     describeCandidates: async () => [] as never[],
     classify: async () => ({ value: 'photograph' }),
     generateBriefCandidates: async () => normalized,
-    jevScores: async () => ({ c0: { value: 0.3 }, c1: { value: 0.3 }, c2: { value: 0.99 } }),
+    jevScores: async () => ({ winner: { choice: 'c2', confidence: 0.7, probabilities: { c0: 0.3, c1: 0.2, c2: 0.5 } } }),
   };
   const e = { id: 'e', workspaceId: 'w', status: 'planning', version: 0, createdAt: '', updatedAt: '', creditsCharged: 0, maxCredits: 100,
     instructions: { goal: 'Go viral', brand: '', audience: '', language: 'English', direction: '', lockedConstraints: [], variables: ['hook'], mode: 'controlled' },

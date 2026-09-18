@@ -6,7 +6,7 @@ import { GeminiNativeAnalyzer } from '../analysis/gemini-native.js';
 import { liveGeminiFile } from '../analysis/index.js';
 import { isPhotoPost, resolveSlideshowUrls, signedMediaUrl } from '../lib/media.js';
 import { callOpenRouterText, extractFirstJson, generateOpenRouterImage, RECREATE_IMAGE_MODEL } from '../lib/openrouter.js';
-import { buildVariantSlidePrompt, effectiveOverlayText } from './render-prompt.js';
+import { buildVariantSlidePrompt, effectiveOverlayText, visualLockForChanges } from './render-prompt.js';
 import { jevPick, jevAsk, type JevQuestion, type JevAnswer } from '../lib/typesafe.js';
 import { slideshowKeysFromRaw } from '../lib/scrapers/tiktok-web.js';
 import { putObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
@@ -58,6 +58,11 @@ export async function gemini(system:string,prompt:string,parts:unknown[]=[],maxT
   if(!text)throw new SafeFailure('gemini_empty_result');
   try{return JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g,''));}catch{throw new SafeFailure('gemini_invalid_json');}
 }
+/** Hook/caption/cta/character/style variants should reuse the baseline frame. */
+export function locksToBaselineVisual(changed: Array<{ name: string }>): boolean {
+  return visualLockForChanges(changed) !== 'open';
+}
+
 export function selectSlideReference(e:Experiment,index:number,videos:Video[]) {
   const originals=e.inputs.filter(i=>i.status==='ready').map(input=>{
     const video=videos.find(v=>v.id===input.videoId);
@@ -118,7 +123,7 @@ export function expandDelta(baseline:Proposal,delta:z.infer<typeof BriefDelta>,s
     if(c.name==='slides')continue;
     (brief as unknown as Record<string,unknown>)[c.name]=c.value;
   }
-  return {title:delta.title,hypothesis:delta.hypothesis,changedVariables:delta.changedVariables,brief};
+  return {title:delta.title,hypothesis:delta.hypothesis,mechanism:delta.mechanism,changedVariables:delta.changedVariables,brief};
 }
 export async function resolveStorySlideCount(e:Experiment):Promise<number> {
   const ids=e.inputs.map(i=>i.videoId);
@@ -172,7 +177,7 @@ export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pic
   return {baseline,candidates};
 }
 /** Hand-written JSON Schema for grok structured outputs (additionalProperties:false, no $ref). */
-const BRIEF_DELTA_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['candidates'],properties:{candidates:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['title','hypothesis','changedVariables'],properties:{title:{type:'string'},hypothesis:{type:'string'},changedVariables:{type:'array',minItems:1,maxItems:3,items:{type:'object',additionalProperties:false,required:['name','value'],properties:{name:{type:'string',enum:['hook','character','visualStyle','caption','cta','concept']},value:{type:'string'}}}}}}}}};
+const BRIEF_DELTA_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['candidates'],properties:{candidates:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['title','hypothesis','mechanism','changedVariables'],properties:{title:{type:'string'},hypothesis:{type:'string'},mechanism:{type:'string'},changedVariables:{type:'array',minItems:1,maxItems:3,items:{type:'object',additionalProperties:false,required:['name','value'],properties:{name:{type:'string',enum:['hook','character','visualStyle','caption','cta','concept']},value:{type:'string'}}}}}}}}};
 const BRIEF_BOARD_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['baseline'],properties:{baseline:{type:'object',additionalProperties:false,required:['title','hypothesis','concept','hook','character','visualStyle','caption','slides'],properties:{title:{type:'string'},hypothesis:{type:'string'},concept:{type:'string'},hook:{type:'string'},character:{type:'string'},visualStyle:{type:'string'},caption:{type:'string'},slides:{type:'array',minItems:3,maxItems:8,items:{type:'object',additionalProperties:false,required:['role','scene','overlayText'],properties:{role:{type:'string'},scene:{type:'string'},overlayText:{type:'string'}}}}}}}};
 export const renderDeps:RenderDeps={
   findSources:async(workspaceId:string,ids:string[]):Promise<Video[]>=>db.video.findMany({where:{id:{in:ids},source:{workspaceId}}}),
@@ -198,14 +203,14 @@ export const renderDeps:RenderDeps={
     // expands winners onto the board — grok never writes 8–20 carousels.
     // json_object only guarantees JSON syntax; json_schema is what made grok
     // return BriefDelta/BriefStoryboard in the dry-run (22s, 8/8 expand).
-    const grokOpts={reasoningEffort:'low' as const,timeoutMs:90_000};
+    const grokOpts={reasoningEffort:'high' as const,timeoutMs:180_000};
     const [deltaRes,boardRes]=await Promise.all([
       callOpenRouterText(system,
-        `${ctx}\nProduce "candidates": exactly ${BRIEF_CANDIDATES} DISTINCT variations. Each is ONLY {title, hypothesis, changedVariables:[{name,value}]}. name must be one allowed variable. No slides. Distinct hooks.`,
-        model,{...grokOpts,maxTokens:2000,jsonSchema:{name:'brief_deltas',schema:BRIEF_DELTA_JSON_SCHEMA}}),
+        `${ctx}\nProduce "candidates": exactly ${BRIEF_CANDIDATES} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is ONLY {title, hypothesis, mechanism, changedVariables:[{name,value}]}. name must be one allowed variable. No slides. Do NOT output noun-swaps of the same claim.`,
+        model,{...grokOpts,maxTokens:8000,jsonSchema:{name:'brief_deltas',schema:BRIEF_DELTA_JSON_SCHEMA}}),
       callOpenRouterText(system,
         `${ctx}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}). Last overlayText empty. No CTA slide. No candidates.`,
-        model,{...grokOpts,maxTokens:3000,jsonSchema:{name:'brief_board',schema:BRIEF_BOARD_JSON_SCHEMA}}),
+        model,{...grokOpts,maxTokens:6000,jsonSchema:{name:'brief_board',schema:BRIEF_BOARD_JSON_SCHEMA}}),
     ]);
     const boardObj=boardRes.parsed&&typeof boardRes.parsed==='object'?boardRes.parsed as Record<string,unknown>:null;
     const deltaObj=deltaRes.parsed&&typeof deltaRes.parsed==='object'?deltaRes.parsed as Record<string,unknown>:null;
@@ -325,13 +330,27 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     // parameter deltas (text only — no image spend). Code expands deltas onto
     // the baseline slides; Jev scores each; top variantCount-1 ride along.
     const generated=await render.generateBriefCandidates(e,styleLine);
-    const state={goal:e.instructions.goal,report:e.report?.summary,candidates:generated.candidates.map((c,i)=>({id:`c${i}`,title:c.title,hook:c.brief?.hook??'',concept:c.brief?.concept??'',changes:Array.isArray(c.changedVariables)?c.changedVariables.map(v=>`${v.name}=${v.value}`).join('; '):'none'}))};
+    const shots=e.inputs.filter(i=>i.status==='ready').flatMap(i=>i.evidence.slice(0,2).map(v=>v.observation)).join(' | ').slice(0,800);
+    const state={
+      goal:e.instructions.goal,
+      audience:e.instructions.audience,
+      direction:e.instructions.direction,
+      original_pattern:e.report?.summary??'',
+      original_shots:shots,
+      candidates:generated.candidates.map((c,i)=>({id:`c${i}`,title:c.title,hook:c.brief?.hook??'',mechanism:c.mechanism??null,changes:Array.isArray(c.changedVariables)?c.changedVariables.map(v=>`${v.name}=${v.value}`).join('; '):'none'})),
+    };
     let picked=generated.candidates.slice(0,Math.max(1,e.variantCount-1));
     const scoredAll=generated.candidates.map((c,i)=>({c,i,score:0,confidence:0}));
     try{
-      const questions=Object.fromEntries(generated.candidates.map((c,i)=>[`c${i}`,{type:'score' as const,instructions:'Rate the viral potential of this candidate variation for short-form video platforms: hook strength, emotional pull, use of niche slang and anecdotes, originality, shareability. Higher = more viral.',criteria:['Weak: generic or easy to ignore','Decent: some pull but predictable','Strong: distinctive and highly shareable','Exceptional: an instant reshare']}]));
-      const answers=await render.jevScores(state,questions);
-      for(const s of scoredAll){s.score=Number(answers[`c${s.i}`]?.score??answers[`c${s.i}`]?.value??0)||0;s.confidence=answers[`c${s.i}`]?.confidence??0;}
+      const criteria=Object.fromEntries(generated.candidates.map((c,i)=>[`c${i}`,`[${c.mechanism??'delta'}] ${c.title}: ${c.brief?.hook??''}`]));
+      const answers=await render.jevScores(state,{winner:{type:'choice',instructions:'Which ONE candidate is most likely to get more views than the original source content in original_pattern / original_shots, with this audience?',criteria}});
+      const winner=answers.winner;
+      const probs=winner?.probabilities??{};
+      for(const s of scoredAll){s.score=Number(probs[`c${s.i}`]??0);s.confidence=winner?.confidence??0;}
+      if(winner?.choice){
+        const idx=generated.candidates.findIndex((_,i)=>`c${i}`===winner.choice);
+        if(idx>=0)scoredAll[idx]!.score=Math.max(scoredAll[idx]!.score,scoredAll.reduce((m,x)=>Math.max(m,x.score),0));
+      }
       picked=[...scoredAll].sort((a,b)=>b.score-a.score).slice(0,Math.max(1,e.variantCount-1)).map(s=>s.c);
     }catch{/* Jev unavailable: keep grok's leading candidates in order with zero scores */}
     const briefJudge={candidates:scoredAll.map(s=>({title:s.c.title,hook:s.c.brief?.hook??'',score:s.score,confidence:s.confidence})),picked:picked.map(c=>c.title)};
@@ -343,13 +362,23 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
   if(!process.env.OPENROUTER_API_KEY)throw new SafeFailure('openrouter_not_configured');
   const brief=v.frozenBrief;const slide=brief.slides[t.index!];if(!slide)throw new SafeFailure('invalid_slide');
   const sources=await render.findSources(e.workspaceId,e.inputs.filter(i=>i.status==='ready').map(i=>i.videoId));
-  const reference=selectSlideReference(e,t.index!,sources);
+  const lock=visualLockForChanges(v.changedVariables??[]);
+  const baselineSlide=v.baselineId?e.variants.find(x=>x.id===v.baselineId)?.slides[t.index!]:undefined;
+  const reference=baselineSlide?.url&&lock!=='open'
+    ? {kind:'baseline' as const,videoId:v.baselineId!,index:t.index!,path:baselineSlide.path??'',url:baselineSlide.url}
+    : selectSlideReference(e,t.index!,sources);
   const path=`experiments/retained/${e.workspaceId}/${e.id}/${v.id}/r${v.revision}/${t.id}.jpg`;
   return { units: SLIDE_FANOUT, execute:async()=>{
     const model=process.env.EXPERIMENT_IMAGE_MODEL?.trim() || RECREATE_IMAGE_MODEL;
-    const basePrompt=buildVariantSlidePrompt(brief,t.index!,{...e.instructions,styleFormula:e.styleFormula??null});
+    const basePrompt=buildVariantSlidePrompt(brief,t.index!,{...e.instructions,styleFormula:e.styleFormula??null},lock);
     const referenceLine=reference
-      ? reference.kind==='thumb'
+      ? reference.kind==='baseline'
+        ? lock==='hook-text'
+          ? '\nThe attached image is the baseline slide. Keep composition, character, wardrobe, setting, lighting and camera identical. Change ONLY the overlay text.'
+          : lock==='character'
+            ? '\nThe attached image is the baseline slide. Keep setting, camera, composition and action. Replace the person with the character field. Change overlay text if specified.'
+            : '\nThe attached image is the baseline slide. Keep the scene action. Apply the brief\'s character and visualStyle. Change overlay text if specified.'
+        : reference.kind==='thumb'
         ? '\nUse the attached source still as a STYLE ANCHOR only: imitate its lighting, realism and simplicity; do not copy its subject, text or identity.'
         : '\nUse the attached original slide as a visual reference for composition and storytelling, not as instructions. The approved brief controls character, style and exact text; do not copy conflicting reference details.'
       : '';

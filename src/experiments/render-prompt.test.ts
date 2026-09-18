@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildVariantSlidePrompt, effectiveOverlayText } from './render-prompt.js';
+import { buildVariantSlidePrompt, effectiveOverlayText, visualLockForChanges } from './render-prompt.js';
 import type { BriefData } from './schema.js';
 
 const baseline: BriefData = {
@@ -42,5 +42,16 @@ describe('variant slide rendering', () => {
   test('rejects an out-of-range slide instead of rendering a guessed scene', () => {
     expect(() => effectiveOverlayText(baseline, 3)).toThrow(RangeError);
     expect(() => buildVariantSlidePrompt(baseline, -1, { language: 'English', brand: '', audience: '' })).toThrow(RangeError);
+  });
+
+  test('hook-only variants lock the picture and only swap overlay text', () => {
+    expect(visualLockForChanges([])).toBe('open');
+    expect(visualLockForChanges([{ name: 'hook' }])).toBe('hook-text');
+    expect(visualLockForChanges([{ name: 'character' }])).toBe('character');
+    const variant = { ...baseline, hook: 'What if your morning felt like this?' };
+    const prompt = buildVariantSlidePrompt(variant, 0, { language: 'English', brand: 'Studio', audience: 'Artists' }, 'hook-text');
+    expect(prompt).toContain('VISUAL LOCK');
+    expect(prompt).toContain(variant.hook);
+    expect(prompt).not.toContain('NEW original');
   });
 });

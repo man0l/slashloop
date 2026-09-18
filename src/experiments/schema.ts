@@ -33,6 +33,7 @@ export const BriefStoryboard = z.object({
 /** Parameter-only variation. Slides are optional and only required when the changed variable is `slides`. */
 export const BriefDelta = z.object({
   title: z.string().min(1).max(160), hypothesis: text.min(1),
+  mechanism: z.string().min(1).max(80).optional(),
   changedVariables: z.array(z.object({
     name: z.string().trim().toLowerCase().pipe(z.enum(VARIABLE_FIELDS)),
     value: text.min(1),
@@ -69,6 +70,7 @@ export const Report = z.object({ summary: text.min(1), patterns: z.array(z.objec
   evidence: z.array(z.object({ videoId: Id, location: z.string().min(1).max(100), observation: text.min(1) }).strict()).min(1).max(20),
 }).strict()).min(1).max(12) }).strict();
 export const VariantProposal = z.object({ title: z.string().min(1).max(160), hypothesis: text.min(1),
+  mechanism: z.string().min(1).max(80).optional(),
   changedVariables: z.array(z.object({ name: z.enum(VARIABLE_FIELDS), value: text.min(1) }).strict()).max(7), brief: Brief }).strict();
 export type InstructionsData = z.infer<typeof Instructions>;
 export type BriefData = z.infer<typeof Brief>;

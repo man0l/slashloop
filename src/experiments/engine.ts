@@ -4,7 +4,7 @@ import { ZodError } from 'zod/v4';
 import { InsufficientCreditsError } from '../lib/credits.js';
 import { classifyOpenRouterError } from '../lib/openrouter.js';
 import * as store from './store.js';
-import { prepare, SafeFailure, HydrationPending, type Prepared } from './providers.js';
+import { prepare, SafeFailure, HydrationPending, locksToBaselineVisual, type Prepared } from './providers.js';
 import { taskCost } from './service.js';
 import { ExperimentError, MAX_TASK_ATTEMPTS, PARALLEL_SLIDES, retryBackoffMs, type Experiment, type Task, type Input, type ReportData, type Proposal } from './schema.js';
 export interface EngineDeps {
@@ -99,8 +99,28 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
     const pendingOrRunning=(kind:Task['kind'])=>e.tasks.some(t=>t.kind===kind&&(t.status==='pending'||t.status==='running'));
     const phaseDone=(kind:Task['kind'])=>{const ks=e.tasks.filter(t=>t.kind===kind);return ks.length>0&&ks.every(t=>t.status==='done');};
     // Report (Gemini) and briefs (OpenRouter) are independent after analysis.
-    const eligible=(t:Task)=>t.kind==='report'||t.kind==='briefs'?!pendingOrRunning('analysis'):t.kind==='slide'?phaseDone('briefs'):true;
-    const t=e.tasks.find(t=>t.status==='pending'&&(t.nextAttemptAt??0)<=deps.now()&&eligible(t));if(!t)return false;
+    const eligible=(t:Task)=>{
+      if(t.kind==='report'||t.kind==='briefs')return !pendingOrRunning('analysis');
+      if(t.kind!=='slide')return true;
+      if(!phaseDone('briefs'))return false;
+      const v=e.variants.find(x=>x.id===t.target);
+      if(!v?.baselineId||!locksToBaselineVisual(v.changedVariables??[]))return true;
+      const base=e.variants.find(x=>x.id===v.baselineId);
+      const bs=base?.slides[t.index!];
+      if(!bs)return true;
+      if(bs.status==='failed'||bs.status==='unknown')return true;
+      return bs.status==='done'&&!!bs.url;
+    };
+    const pending=e.tasks.filter(t=>t.status==='pending'&&(t.nextAttemptAt??0)<=deps.now()&&eligible(t));
+    pending.sort((a,b)=>{
+      const av=a.kind==='slide'?e.variants.find(v=>v.id===a.target):undefined;
+      const bv=b.kind==='slide'?e.variants.find(v=>v.id===b.target):undefined;
+      const aBase=av&&!av.baselineId?0:1;
+      const bBase=bv&&!bv.baselineId?0:1;
+      if(aBase!==bBase)return aBase-bBase;
+      return (a.index??0)-(b.index??0);
+    });
+    const t=pending[0];if(!t)return false;
     let prepared:Prepared;
     try{prepared=await deps.prepare(e,t);}catch(err){
       if(err instanceof HydrationPending){
