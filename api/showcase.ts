@@ -16,7 +16,9 @@ export async function OPTIONS(request: Request): Promise<Response> {
 }
 
 function showcaseWorkspaceIds(): string[] {
-  return (process.env.SHOWCASE_WORKSPACE_IDS ?? '')
+  // No extra worker var (Free plan caps at 64): the default workspace is
+  // baked in, overridable via SHOWCASE_WORKSPACE_IDS if that ever changes.
+  return (process.env.SHOWCASE_WORKSPACE_IDS ?? 'cf7b725d-6063-461c-ad64-c83c9abab8c9')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
