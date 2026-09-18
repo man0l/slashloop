@@ -104,7 +104,7 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
       if(t.kind!=='slide')return true;
       if(!phaseDone('briefs'))return false;
       const v=e.variants.find(x=>x.id===t.target);
-      if(!v?.baselineId||!locksToBaselineVisual(v.changedVariables??[]))return true;
+      if(!v?.baselineId||!locksToBaselineVisual(v.changedVariables??[],e.instructions.variables))return true;
       const base=e.variants.find(x=>x.id===v.baselineId);
       const bs=base?.slides[t.index!];
       if(!bs)return true;

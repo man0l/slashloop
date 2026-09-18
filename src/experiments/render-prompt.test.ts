@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildVariantSlidePrompt, effectiveOverlayText, visualLockForChanges } from './render-prompt.js';
+import { buildVariantSlidePrompt, effectiveOverlayText, visualLockForChanges, renderContract } from './render-prompt.js';
 import type { BriefData } from './schema.js';
 
 const baseline: BriefData = {
@@ -48,10 +48,16 @@ describe('variant slide rendering', () => {
     expect(visualLockForChanges([])).toBe('open');
     expect(visualLockForChanges([{ name: 'hook' }])).toBe('hook-text');
     expect(visualLockForChanges([{ name: 'character' }])).toBe('character');
+    expect(renderContract(['hook'], [{ name: 'hook' }])).toMatchObject({ changeFaces: false, changeOverlay: true, fanout: 1 });
+    expect(renderContract(['character'], [{ name: 'character' }])).toMatchObject({ changeFaces: true, changeOverlay: false, fanout: 3 });
     const variant = { ...baseline, hook: 'What if your morning felt like this?' };
-    const prompt = buildVariantSlidePrompt(variant, 0, { language: 'English', brand: 'Studio', audience: 'Artists' }, 'hook-text');
-    expect(prompt).toContain('VISUAL LOCK');
+    const prompt = buildVariantSlidePrompt(variant, 0, { language: 'English', brand: 'Studio', audience: 'Artists', direction: 'Keep the same teenager', unlocked: ['hook'] }, 'hook-text');
+    expect(prompt.toLowerCase()).toContain('same face');
+    expect(prompt).toContain('same person');
     expect(prompt).toContain(variant.hook);
     expect(prompt).not.toContain('NEW original');
+    const characterPrompt = buildVariantSlidePrompt(variant, 0, { language: 'English', brand: '', audience: '', direction: 'A 19-year-old with a taper fade', unlocked: ['character'] }, 'character');
+    expect(characterPrompt).toContain('Do not keep the baseline');
+    expect(characterPrompt).toContain('taper fade');
   });
 });

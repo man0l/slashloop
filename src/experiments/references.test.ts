@@ -49,6 +49,24 @@ test('video-only sources anchor style with the source thumbnail', () => {
   expect(anchor).toMatchObject({ kind: 'thumb', videoId: 'a', path: 'w/a.jpg' });
   expect(anchor?.url).toContain('assets.example.test');
 });
+test('hook variants render once from the baseline frame instead of fanning out new faces', async () => {
+  const { e, videos } = fixture();
+  process.env.OPENROUTER_API_KEY = 'test-only';
+  e.instructions = { ...e.instructions, variables: ['hook'], mode: 'controlled', goal: 'g', direction: 'do not change faces' };
+  e.variants = [
+    { id: 'base', revision: 1, baselineId: null, changedVariables: [], frozenBrief: e.variants[0]!.frozenBrief, slides: [{ index: 0, status: 'pending', url: null, path: null }, { index: 1, status: 'done', url: 'https://assets.example.test/base.jpg', path: 'base.jpg' }] },
+    { id: 'hookv', revision: 1, baselineId: 'base', changedVariables: [{ name: 'hook', value: 'New hook' }], frozenBrief: e.variants[0]!.frozenBrief, slides: [] },
+  ] as never;
+  const calls: unknown[] = [];
+  const prepared = await prepare(e, { id: 't', kind: 'slide', target: 'hookv', index: 1 } as Task, deps(videos, calls));
+  const result = await prepared.execute() as { fanout: { requested: number; rendered: number }; reference: { kind: string } };
+  expect(calls).toHaveLength(1);
+  const request = calls[0] as { referenceUrl?: string; prompt: string };
+  expect(request.referenceUrl).toBe('https://assets.example.test/base.jpg');
+  expect(request.prompt.toLowerCase()).toContain('same face');
+  expect(result.fanout).toMatchObject({ requested: 1, rendered: 1 });
+  expect(result.reference.kind).toBe('baseline');
+});
 test('prepare attaches the original image to exactly one render and saves provenance', async () => {
   const { e, videos } = fixture();
   process.env.OPENROUTER_API_KEY = 'test-only';
