@@ -5,8 +5,9 @@ import { CREDIT_COSTS, creditBalance } from '../lib/credits.js';
 import * as S from './schema.js';
 import * as store from './store.js';
 import { compatibleInput } from './providers.js';
-import { isPhotoPost } from '../lib/media.js';
+import { isPhotoPost, resolveSlideshowUrls } from '../lib/media.js';
 import { effectiveOverlayText } from './render-prompt.js';
+import { deriveStorySlideCount } from './slide-count.js';
 
 export const fingerprint = (v: unknown): string => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 export async function createExperiment(raw: unknown) {
@@ -14,14 +15,23 @@ export async function createExperiment(raw: unknown) {
   const now = new Date().toISOString();
   const inputs: S.Input[] = [];
   let referenced = false;
+  const slideSources: Array<{ originalCount: number | null; analysis?: unknown }> = [];
   for (const videoId of b.videoIds) {
     const v = await db.video.findFirst({ where: { id: videoId, source: { workspaceId: b.workspaceId } } });
     if (!v) throw new S.ExperimentError(404,'video_not_found');
     if (isPhotoPost(v)) referenced = true;
+    const originalCount = isPhotoPost(v) ? resolveSlideshowUrls(v.rawJson).length : null;
+    let analysis: unknown;
+    if (originalCount) {
+      const row = await db.analysis.findFirst({ where: { videoId: v.id, schemaVersion: 'v3' }, orderBy: { createdAt: 'desc' }, select: { analysisJson: true } });
+      if (row?.analysisJson) try { analysis = JSON.parse(row.analysisJson); } catch { /* ignore broken analysis JSON */ }
+    }
+    slideSources.push({ originalCount: originalCount || null, analysis });
     inputs.push(await compatibleInput(v));
   }
-  const { idempotencyKey, videoIds, workspaceId, ...fields } = b;
-  return store.create({ id: randomUUID(),workspaceId,...fields,status:'draft',createdAt:now,updatedAt:now,
+  const { idempotencyKey, videoIds, workspaceId, slideCount: requestedSlideCount, ...fields } = b;
+  const slideCount = deriveStorySlideCount(slideSources) ?? requestedSlideCount;
+  return store.create({ id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,
     creditsCharged:0,report:null,inputs,variants:[],error:null,
     // Slideshow sources are attached as visual references during rendering; video-only stays text-directed.
     generationBasis:referenced?'source-referenced':'text-directed',

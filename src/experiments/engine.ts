@@ -58,8 +58,9 @@ function settle(e:Experiment,t:Task,result:unknown) {
     const judge=Array.isArray(payload)?undefined:(payload as {briefJudge?:{candidates:Array<{title:string;hook:string;score:number;confidence?:number}>;picked?:string[]}|null}).briefJudge;
     if(judge)e.briefJudge=judge;
     const baselineId=randomUUID();
-    const extra=Array.isArray(payload)?undefined:payload as {styleFormula?:Experiment['styleFormula']};
+    const extra=Array.isArray(payload)?undefined:payload as {styleFormula?:Experiment['styleFormula'];slideCount?:number};
     if(extra?.styleFormula)e.styleFormula=extra.styleFormula;
+    if(typeof extra?.slideCount==='number')e.slideCount=extra.slideCount;
     e.variants=proposals.map((v,i)=>({...v,id:i===0?baselineId:randomUUID(),baselineId:i===0?null:baselineId,revision:1,status:'draft',generationBasis:e.generationBasis,history:[],frozenBrief:null,slides:[],error:null}));
     // Report (Gemini) and briefs (OpenRouter) may finish in either order.
     if(isActive(e)&&e.tasks.filter(x=>x.kind==='report').every(x=>x.status==='done'))e.status='review';

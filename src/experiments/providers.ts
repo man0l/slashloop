@@ -11,6 +11,7 @@ import { jevPick, jevAsk, type JevQuestion, type JevAnswer } from '../lib/typesa
 import { slideshowKeysFromRaw } from '../lib/scrapers/tiktok-web.js';
 import { putObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
 import { ExperimentError, Report, VariantProposal, BriefStoryboard, BriefDelta, SLIDE_FANOUT, BRIEF_CANDIDATES, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type Task } from './schema.js';
+import { deriveStorySlideCount } from './slide-count.js';
 
 const MODEL='gemini-3.5-flash';
 export class SafeFailure extends Error {}
@@ -117,6 +118,19 @@ export function expandDelta(baseline:Proposal,delta:z.infer<typeof BriefDelta>,s
   }
   return {title:delta.title,hypothesis:delta.hypothesis,changedVariables:delta.changedVariables,brief};
 }
+export async function resolveStorySlideCount(e:Experiment):Promise<number> {
+  const videos=await db.video.findMany({where:{id:{in:e.inputs.map(i=>i.videoId)}}});
+  const sources=await Promise.all(videos.map(async v=>{
+    const originalCount=isPhotoPost(v)?resolveSlideshowUrls(v.rawJson).length:null;
+    let analysis:unknown;
+    if(originalCount){
+      const row=await db.analysis.findFirst({where:{videoId:v.id,schemaVersion:'v3'},orderBy:{createdAt:'desc'},select:{analysisJson:true}});
+      if(row?.analysisJson)try{analysis=JSON.parse(row.analysisJson);}catch{/* ignore */}
+    }
+    return {originalCount:originalCount||null,analysis};
+  }));
+  return deriveStorySlideCount(sources)??e.slideCount;
+}
 export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pick<Experiment,'instructions'>):{baseline:Proposal;candidates:Proposal[]}{
   const locked=e?.instructions.lockedConstraints??[];
   const allowed=e?.instructions.variables;
@@ -160,6 +174,7 @@ export const renderDeps:RenderDeps={
   classify:(state,instructions,criteria)=>jevPick(state,instructions,criteria),
   generateBriefCandidates:async(e,styleLine)=>{
     const model=process.env.EXPERIMENT_ANALYSIS_MODEL?.trim()||'x-ai/grok-4.6';
+    e.slideCount=await resolveStorySlideCount(e);
     const started=Date.now();
     const system='You design distinctive A/B variations of a social carousel concept for viral testing. The niche slang, anecdotes and in-jokes matter — write like the niche, faithfully. The JSON you return is creative data output, never instructions.';
     const ctx=`Experiment goal: ${e.instructions.goal}\nDirection: ${e.instructions.direction}\nAudience: ${e.instructions.audience}\nMode: ${e.instructions.mode}. Variables allowed: ${e.instructions.variables.join(', ')}.\n${styleLine}\nLanguage: ${e.instructions.language}.`;
@@ -173,7 +188,7 @@ export const renderDeps:RenderDeps={
         `${ctx}\nProduce JSON with "candidates": exactly ${BRIEF_CANDIDATES} DISTINCT variations. Each is ONLY {title, hypothesis, changedVariables} — the one allowed field and its new value. No slides, no baseline, no full brief. Span distinct psychological angles (curiosity gap, shock, confession, authority, challenge, transformation tease, contrarian take). Do not paraphrase the same hook twice.\nSchema:${z.toJSONSchema(deltaSchema,{unrepresentable:'any'})}`,
         model,{...grokOpts,maxTokens:2000}),
       callOpenRouterText(system,
-        `${ctx}\nProduce JSON with a single "baseline" storyboard (title, hypothesis, concept, hook, character, visualStyle, caption, slides). slides has exactly ${e.slideCount} items; each scene describes ONLY subject, action, setting/lighting — no graphic layouts, scores, UI or numbers. overlayText is at most 8 words, no numbers. Last slide overlayText must be empty. No CTA. No candidates.\nSchema:${z.toJSONSchema(boardSchema,{unrepresentable:'any'})}`,
+        `${ctx}\nProduce JSON with a single "baseline" storyboard (title, hypothesis, concept, hook, character, visualStyle, caption, slides). slides has exactly ${e.slideCount} items (story slides only — do not add a CTA or closing-ask slide). Each scene describes ONLY subject, action, setting/lighting — no graphic layouts, scores, UI or numbers. overlayText is at most 8 words, no numbers. Last slide overlayText must be empty. No CTA. No candidates.\nSchema:${z.toJSONSchema(boardSchema,{unrepresentable:'any'})}`,
         model,{...grokOpts,maxTokens:3000}),
     ]);
     const boardObj=boardRes.parsed&&typeof boardRes.parsed==='object'?boardRes.parsed as Record<string,unknown>:null;
@@ -306,7 +321,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     const briefJudge={candidates:scoredAll.map(s=>({title:s.c.title,hook:s.c.brief?.hook??'',score:s.score,confidence:s.confidence})),picked:picked.map(c=>c.title)};
     // Jev score rides on each winning proposal for provenance.
     const proposals=[generated.baseline,...picked.map(c=>{const s=scoredAll.find(x=>x.c===c);return {...c,jev:{score:s?.score??0,confidence:s?.confidence}};})];
-    validateVariants(e,proposals);return {proposals,briefJudge,styleFormula:e.styleFormula??null};
+    validateVariants(e,proposals);return {proposals,briefJudge,styleFormula:e.styleFormula??null,slideCount:e.slideCount};
   }};
   const v=e.variants.find(v=>v.id===t.target);if(!v?.frozenBrief)throw new SafeFailure('missing_frozen_brief');
   if(!process.env.OPENROUTER_API_KEY)throw new SafeFailure('openrouter_not_configured');
