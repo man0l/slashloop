@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildVariantSlidePrompt, effectiveOverlayText, visualLockForChanges, renderContract } from './render-prompt.js';
+import { buildVariantSlidePrompt, effectiveOverlayText, visualLockForChanges, renderContract, identitySubject, lockCarouselIdentity, styleContract } from './render-prompt.js';
 import type { BriefData } from './schema.js';
 
 const baseline: BriefData = {
@@ -51,13 +51,28 @@ describe('variant slide rendering', () => {
     expect(renderContract(['hook'], [{ name: 'hook' }])).toMatchObject({ changeFaces: false, changeOverlay: true, fanout: 1 });
     expect(renderContract(['character'], [{ name: 'character' }])).toMatchObject({ changeFaces: true, changeOverlay: false, fanout: 3 });
     const variant = { ...baseline, hook: 'What if your morning felt like this?' };
-    const prompt = buildVariantSlidePrompt(variant, 0, { language: 'English', brand: 'Studio', audience: 'Artists', direction: 'Keep the same teenager', unlocked: ['hook'] }, 'hook-text');
+    const prompt = buildVariantSlidePrompt(variant, 0, { language: 'English', brand: 'Studio', audience: 'Artists', direction: 'Keep the same teenager', unlocked: ['hook'], styleFormula: { medium: 'photograph', density: 'minimal' } }, 'hook-text');
     expect(prompt.toLowerCase()).toContain('same face');
     expect(prompt).toContain('same person');
     expect(prompt).toContain(variant.hook);
     expect(prompt).not.toContain('NEW original');
-    const characterPrompt = buildVariantSlidePrompt(variant, 0, { language: 'English', brand: '', audience: '', direction: 'A 19-year-old with a taper fade', unlocked: ['character'] }, 'character');
+    const characterPrompt = buildVariantSlidePrompt(variant, 0, { language: 'English', brand: '', audience: '', direction: 'A 19-year-old with a taper fade', unlocked: ['character'], styleFormula: { medium: 'photograph', density: 'minimal' } }, 'character');
     expect(characterPrompt).toContain('Do not keep the baseline');
     expect(characterPrompt).toContain('taper fade');
+  });
+
+  test('collage and drawing sources lock medium, not a photoreal face', () => {
+    expect(identitySubject({ medium: 'collage', density: 'rich' })).toBe('collage');
+    expect(identitySubject({ medium: 'caricature', density: 'moderate' })).toBe('drawn-character');
+    expect(identitySubject({ medium: 'photograph', density: 'minimal' })).toBe('person');
+    const collage = styleContract({ medium: 'collage', density: 'rich' });
+    expect(collage).toContain('COLLAGE');
+    expect(collage.toLowerCase()).not.toContain('one subject composition');
+    const locked = lockCarouselIdentity(baseline, { medium: 'collage', density: 'rich' });
+    expect(locked.slides[1]!.scene).toContain('collage grammar');
+    expect(locked.slides[1]!.scene).not.toContain('same person as slide 1');
+    const prompt = buildVariantSlidePrompt(baseline, 0, { language: 'English', brand: '', audience: '', styleFormula: { medium: 'collage', density: 'rich' }, unlocked: ['hook'] }, 'hook-text');
+    expect(prompt).toContain('collage grammar');
+    expect(prompt.toLowerCase()).not.toContain('same face');
   });
 });

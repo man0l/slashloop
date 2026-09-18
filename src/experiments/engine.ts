@@ -5,6 +5,7 @@ import { InsufficientCreditsError } from '../lib/credits.js';
 import { classifyOpenRouterError } from '../lib/openrouter.js';
 import * as store from './store.js';
 import { prepare, SafeFailure, HydrationPending, locksToBaselineVisual, type Prepared } from './providers.js';
+import { experimentVisualLock } from './render-prompt.js';
 import { taskCost } from './service.js';
 import { ExperimentError, MAX_TASK_ATTEMPTS, PARALLEL_SLIDES, retryBackoffMs, type Experiment, type Task, type Input, type ReportData, type Proposal } from './schema.js';
 export interface EngineDeps {
@@ -104,6 +105,11 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
       if(t.kind!=='slide')return true;
       if(!phaseDone('briefs'))return false;
       const v=e.variants.find(x=>x.id===t.target);
+      const expLock=experimentVisualLock(e.instructions.variables);
+      if(v&&(t.index??0)>0&&expLock.subjectLocked){
+        const plate=v.slides[0];
+        if(plate&&plate.status!=='failed'&&plate.status!=='unknown'&&!(plate.status==='done'&&plate.url))return false;
+      }
       if(!v?.baselineId||!locksToBaselineVisual(v.changedVariables??[],e.instructions.variables))return true;
       const base=e.variants.find(x=>x.id===v.baselineId);
       const bs=base?.slides[t.index!];

@@ -63,7 +63,7 @@ test('hook variants render once from the baseline frame instead of fanning out n
   expect(calls).toHaveLength(1);
   const request = calls[0] as { referenceUrl?: string; prompt: string };
   expect(request.referenceUrl).toBe('https://assets.example.test/base.jpg');
-  expect(request.prompt.toLowerCase()).toContain('same face');
+  expect(request.prompt.toLowerCase()).toContain('locked frame');
   expect(result.fanout).toMatchObject({ requested: 1, rendered: 1 });
   expect(result.reference.kind).toBe('baseline');
 });

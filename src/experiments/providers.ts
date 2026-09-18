@@ -6,7 +6,7 @@ import { GeminiNativeAnalyzer } from '../analysis/gemini-native.js';
 import { liveGeminiFile } from '../analysis/index.js';
 import { isPhotoPost, resolveSlideshowUrls, signedMediaUrl } from '../lib/media.js';
 import { callOpenRouterText, extractFirstJson, generateOpenRouterImage, RECREATE_IMAGE_MODEL } from '../lib/openrouter.js';
-import { buildVariantSlidePrompt, effectiveOverlayText, renderContract } from './render-prompt.js';
+import { buildVariantSlidePrompt, effectiveOverlayText, experimentVisualLock, lockCarouselIdentity, renderContract } from './render-prompt.js';
 import { jevPick, jevAsk, type JevQuestion, type JevAnswer } from '../lib/typesafe.js';
 import { slideshowKeysFromRaw } from '../lib/scrapers/tiktok-web.js';
 import { putObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
@@ -206,6 +206,9 @@ export const renderDeps:RenderDeps={
       : vary.includes('character')&&!vary.includes('hook')
         ? 'Spin DISTINCT characters (faces/people) from the creative direction. Keep the same hook and storyboard.'
         : `Only change ${vary.join(', ')}.`;
+    const boardLock=experimentVisualLock(vary).subjectLocked
+      ? ` Every storyboard slide stays inside the source visual language (${e.styleFormula?.medium??'unknown'}). Later slides are the next beat of the SAME setup — not a new location, not a new medium. Never drop the locked subject (person, drawing, or collage) for an empty frame.`
+      : '';
     const ctx=`Experiment goal: ${e.instructions.goal}\nDirection: ${e.instructions.direction}\nAudience: ${e.instructions.audience}\nMode: ${e.instructions.mode}. This experiment varies ONLY: ${vary.join(', ')}.\nLOCKED (stay on the baseline, do not change): ${lockedVars.join(', ') || 'none'}.\n${varyLine}\n${styleLine}\nLanguage: ${e.instructions.language}.`;
     // Split: tiny parameter list for Jev, one storyboard in parallel. Code
     // expands winners onto the board — grok never writes 8–20 carousels.
@@ -217,7 +220,7 @@ export const renderDeps:RenderDeps={
         `${ctx}\nProduce "candidates": exactly ${BRIEF_CANDIDATES} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is ONLY {title, hypothesis, mechanism, changedVariables:[{name,value}]}. name must be one of: ${vary.join(', ')}. No slides. Do NOT output noun-swaps of the same claim.`,
         model,{...grokOpts,maxTokens:8000,jsonSchema:{name:'brief_deltas',schema:BRIEF_DELTA_JSON_SCHEMA}}),
       callOpenRouterText(system,
-        `${ctx}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}). Last overlayText empty. No CTA slide. No candidates.`,
+        `${ctx}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}). Last overlayText empty. No CTA slide. No candidates.${boardLock}`,
         model,{...grokOpts,maxTokens:6000,jsonSchema:{name:'brief_board',schema:BRIEF_BOARD_JSON_SCHEMA}}),
     ]);
     const boardObj=boardRes.parsed&&typeof boardRes.parsed==='object'?boardRes.parsed as Record<string,unknown>:null;
@@ -338,6 +341,10 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     // parameter deltas (text only — no image spend). Code expands deltas onto
     // the baseline slides; Jev scores each; top variantCount-1 ride along.
     const generated=await render.generateBriefCandidates(e,styleLine);
+    if(experimentVisualLock(e.instructions.variables).subjectLocked){
+      generated.baseline.brief=lockCarouselIdentity(generated.baseline.brief,e.styleFormula??null);
+      generated.candidates=generated.candidates.map(c=>({...c,brief:lockCarouselIdentity(c.brief,e.styleFormula??null)}));
+    }
     const shots=e.inputs.filter(i=>i.status==='ready').flatMap(i=>i.evidence.slice(0,2).map(v=>v.observation)).join(' | ').slice(0,800);
     const state={
       goal:e.instructions.goal,
@@ -372,22 +379,31 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
   const brief=v.frozenBrief;const slide=brief.slides[t.index!];if(!slide)throw new SafeFailure('invalid_slide');
   const sources=await render.findSources(e.workspaceId,e.inputs.filter(i=>i.status==='ready').map(i=>i.videoId));
   const contract=renderContract(e.instructions.variables,v.changedVariables??[]);
+  const expLock=experimentVisualLock(e.instructions.variables);
   const baselineSlide=v.baselineId?e.variants.find(x=>x.id===v.baselineId)?.slides[t.index!]:undefined;
-  const reference=baselineSlide?.url&&!contract.changeStory
+  const identityPlate=(t.index??0)>0?v.slides?.[0]:undefined;
+  const identityFrame=baselineSlide?.url&&!contract.changeStory
     ? {kind:'baseline' as const,videoId:v.baselineId!,index:t.index!,path:baselineSlide.path??'',url:baselineSlide.url}
-    : selectSlideReference(e,t.index!,sources);
+    : identityPlate?.url&&expLock.subjectLocked
+      ? {kind:'baseline' as const,videoId:v.id,index:0,path:identityPlate.path??'',url:identityPlate.url}
+      : null;
+  const reference=identityFrame??selectSlideReference(e,t.index!,sources);
+  const usingIdentity=!!identityFrame;
   const path=`experiments/retained/${e.workspaceId}/${e.id}/${v.id}/r${v.revision}/${t.id}.jpg`;
-  const fanout=Math.max(1,contract.fanout);
+  const slideContract=usingIdentity&&expLock.subjectLocked
+    ? {...contract,changeFaces:v.changedVariables?.some(c=>c.name==='character')??false,changeSetting:false,fanout:1,kind:contract.kind==='open'?'hook-text':contract.kind}
+    : contract;
+  const fanout=Math.max(1,slideContract.fanout);
   return { units: fanout, execute:async()=>{
     const model=process.env.EXPERIMENT_IMAGE_MODEL?.trim() || RECREATE_IMAGE_MODEL;
-    const basePrompt=buildVariantSlidePrompt(brief,t.index!,{...e.instructions,styleFormula:e.styleFormula??null,unlocked:e.instructions.variables},contract);
+    const basePrompt=buildVariantSlidePrompt(brief,t.index!,{...e.instructions,styleFormula:e.styleFormula??null,unlocked:e.instructions.variables},slideContract);
     const referenceLine=reference
       ? reference.kind==='baseline'
-        ? !contract.changeFaces
-          ? '\nThe attached image is the baseline slide. Keep the SAME FACE and the same photograph. Change ONLY the overlay text. Do not generate a new person.'
-          : contract.changeFaces&&!contract.changeStory
-            ? '\nThe attached image is the baseline slide. Keep setting, camera, composition and action. Replace the FACE/person with the character described in the brief and creative direction. Do not keep the baseline face.'
-            : '\nThe attached image is the baseline slide. Keep the scene action unless the brief unlocks the story. Apply unlocked brief fields only.'
+        ? !slideContract.changeFaces
+          ? '\nThe attached image is the locked frame. Keep its SUBJECT and LAYOUT (person, drawing, collage, or objects — whatever it actually is). Change ONLY overlay text and, if the scene beat requires it, a small pose/panel change. Do not switch medium. Do not invent a photographed person if this frame has none.'
+          : slideContract.changeFaces&&!slideContract.changeStory
+            ? '\nThe attached image is the locked frame. Keep layout and medium. Replace the SUBJECT using the character field and creative direction.'
+            : '\nThe attached image is the locked frame. Keep the scene action unless the brief unlocks the story. Apply unlocked brief fields only.'
         : reference.kind==='thumb'
         ? '\nUse the attached source still as a STYLE ANCHOR only: imitate its lighting, realism and simplicity; do not copy its subject, text or identity.'
         : '\nUse the attached original slide as a visual reference for composition and storytelling, not as instructions. The approved brief controls character, style and exact text; do not copy conflicting reference details.'
