@@ -21,6 +21,8 @@ const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
 const refunds: Array<{ workspaceId: string; amount: number; kind: string; refId: string }> = [];
 const findManyCalls: Array<{ take?: number; orderBy?: unknown }> = [];
 
+const realCredits = await import('./credits.js');
+
 mock.module('../db.js', () => ({
   db: {
     mediaJob: {
@@ -39,14 +41,13 @@ mock.module('../db.js', () => ({
 }));
 
 mock.module('./credits.js', () => ({
+  ...realCredits,
   refundCredits: async (workspaceId: string, amount: number, kind: string, refId: string) => {
     refunds.push({ workspaceId, amount, kind, refId });
     return { total: 100 };
   },
   debitCredits: async () => ({ planCredits: 100, packCredits: 0, total: 100 }),
   creditBalance: async () => ({ planCredits: 100, packCredits: 0, total: 100 }),
-  CREDIT_COSTS: { analyzeVideo: 15, refreshSourcePerVideo: 3 },
-  InsufficientCreditsError: class extends Error {},
 }));
 
 const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds, jobTimeoutMs, QUEUE_SWEEP_TAKE, failJob, MAX_ATTEMPTS } = await import('./jobs.js');
