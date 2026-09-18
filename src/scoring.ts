@@ -71,8 +71,9 @@ function trimmedMedian(values: number[]): number {
 
 /** Score upsert binds videoId, outlierScore, scoreType, explanation, scoredAt. */
 const SCORE_ROWS_PER_STATEMENT = Math.floor(D1_PARAM_CHUNK / 5); // 18 rows × 5 params = 90
-/** Baseline upsert binds creatorHandle, platform, medianViews, sampleSize, computedAt. */
-const BASELINE_ROWS_PER_STATEMENT = Math.floor(D1_PARAM_CHUNK / 5); // 18 rows × 5 params = 90
+/** Baseline upsert binds id, creatorHandle, platform, medianViews, sampleSize, computedAt.
+ *  Prisma `@default(uuid())` is client-side only — raw INSERT must supply id. */
+const BASELINE_ROWS_PER_STATEMENT = Math.floor(D1_PARAM_CHUNK / 6); // 15 rows × 6 params = 90
 
 async function upsertScoresSqlite(results: ScoreResult[]): Promise<void> {
   const scoredAt = new Date();
@@ -107,11 +108,11 @@ async function upsertBaselinesSqlite(
     const placeholders: string[] = [];
     const params: unknown[] = [];
     for (const e of chunk) {
-      placeholders.push('(?, ?, ?, ?, ?)');
-      params.push(e.creatorHandle, e.platform, e.medianViews, e.sampleSize, computedAt);
+      placeholders.push('(?, ?, ?, ?, ?, ?)');
+      params.push(crypto.randomUUID(), e.creatorHandle, e.platform, e.medianViews, e.sampleSize, computedAt);
     }
     const stmt: RawStatement = {
-      sql: `INSERT INTO "Baseline" ("creatorHandle", "platform", "medianViews", "sampleSize", "computedAt")
+      sql: `INSERT INTO "Baseline" ("id", "creatorHandle", "platform", "medianViews", "sampleSize", "computedAt")
             VALUES ${placeholders.join(', ')}
             ON CONFLICT ("creatorHandle", "platform") DO UPDATE SET
               "medianViews" = excluded."medianViews",
@@ -296,7 +297,7 @@ export async function computeCreatorBaselinesBatch(
   // fail a rescore that already has the median in memory.
   if (persisted.length > 0) {
     if (dbDialect() === 'sqlite') {
-      // D1 bulk upsert: ~N/18 chunky INSERT..ON CONFLICT statements instead of
+      // D1 bulk upsert: ~N/15 chunky INSERT..ON CONFLICT statements instead of
       // one baseline.upsert per creator group (a 200-creator hashtag scrape
       // fired 200 sequential upserts against the single D1 writer).
       try {
