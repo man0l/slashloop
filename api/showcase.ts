@@ -41,6 +41,19 @@ function thumbBase(): string {
 // Manually excluded from the shelf (owner call).
 const EXCLUDE_VIDEO_IDS = new Set(['65d08c21-def1-4d71-a703-83f6c99562f3']);
 
+// Niche label for the card: the source's tag, minus noise. Collection
+// sources store a full TikTok URL as the query and creator sources repeat
+// the handle already shown above the card — both render as ugly raw text,
+// so they are dropped (empty niche hides the row client-side).
+function cleanNiche(raw: string | null | undefined, creator: string): string {
+  if (!raw) return '';
+  const n = raw.trim();
+  if (!n || /^https?:\/\//i.test(n)) return '';
+  if (n.replace(/^[@#]/, '').toLowerCase() === creator.replace(/^@/, '').toLowerCase()) return '';
+  if (n.length > 28) return '';
+  return n;
+}
+
 export async function GET(request: Request): Promise<Response> {
   const ids = showcaseWorkspaceIds();
   if (!ids.length) {
@@ -85,7 +98,7 @@ export async function GET(request: Request): Promise<Response> {
         score: v.score?.outlierScore ?? 0,
         thumb: `${base}/${v.thumbKey}`,
         url: v.url,
-        niche: v.source?.nicheTag || v.source?.query || '',
+        niche: cleanNiche(v.source?.nicheTag || v.source?.query || '', v.creatorHandle),
         platform: v.source?.platform || 'tiktok',
       },
     ];
