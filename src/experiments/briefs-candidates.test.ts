@@ -44,6 +44,32 @@ test('briefs stage: parameter candidates are Jev-ranked and top variants join th
   expect(briefJudge.candidates).toHaveLength(BRIEF_CANDIDATES);
   expect(briefJudge.picked).toEqual(['V8', 'V1']);
 });
+test('a one-variant experiment keeps only the baseline instead of failing variant_count', async () => {
+  const baseline = { title: 'B', hypothesis: 'h', changedVariables: [] as [], brief: { ...baseBrief } };
+  const candidates = Array.from({ length: 8 }, (_, i) => ({ title: `V${i+1}`, hypothesis: 'h', changedVariables: [{ name: 'hook' as const, value: `Hook ${i+1}` }], brief: { ...baseBrief, hook: `Hook ${i+1}` } }));
+  const e = {
+    id: 'e', workspaceId: 'w', status: 'planning', version: 0, createdAt: '', updatedAt: '', creditsCharged: 0, maxCredits: 100,
+    instructions: { goal: 'Go viral', brand: '', audience: '', language: 'English', direction: '', lockedConstraints: [], variables: ['hook'], mode: 'controlled' },
+    variantCount: 1, slideCount: 3, report: { summary: 'S' }, error: null, generationBasis: 'text-directed', assetPolicy: 'retained',
+    inputs: [{ videoId: 'v', status: 'ready', analysisId: 'a', jobId: null, error: null, coverage: null, evidence: [{ location: 'second:0', observation: 'A cup' }] }],
+    variants: [], commands: {}, allowPartial: false, createFingerprint: 'x', styleFormula: null,
+    tasks: [{ id: 't', kind: 'briefs', status: 'pending', attempts: 0, charged: 0 }],
+  } as unknown as Experiment;
+  const deps = {
+    findSources: async () => [] as never[],
+    generateImage: async () => { throw new Error('not used'); },
+    upload: async () => ({ path: 's', sizeBytes: 1 }),
+    describeCandidates: async () => [] as never[],
+    classify: async () => ({ value: 'photograph' }),
+    generateBriefCandidates: async () => ({ baseline, candidates }),
+    jevScores: async () => ({ winner: { choice: 'c0', confidence: 0.8, probabilities: { c0: 0.9 } } }),
+  };
+  const prepared = await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never);
+  const { proposals, briefJudge } = await prepared.execute() as { proposals: Proposal[]; briefJudge: { picked: string[] } };
+  expect(proposals).toHaveLength(1);
+  expect(proposals[0]!.title).toBe('B');
+  expect(briefJudge.picked).toEqual([]);
+});
 test('extra grok keys and missing overlayText still expand', () => {
   const parsed = {
     baseline: {

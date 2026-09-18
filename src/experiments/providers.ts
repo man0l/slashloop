@@ -347,7 +347,8 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       original_shots:shots,
       candidates:generated.candidates.map((c,i)=>({id:`c${i}`,title:c.title,hook:c.brief?.hook??'',mechanism:c.mechanism??null,changes:Array.isArray(c.changedVariables)?c.changedVariables.map(v=>`${v.name}=${v.value}`).join('; '):'none'})),
     };
-    let picked=generated.candidates.slice(0,Math.max(1,e.variantCount-1));
+    const keep=Math.max(0,e.variantCount-1);
+    let picked=generated.candidates.slice(0,keep);
     const scoredAll=generated.candidates.map((c,i)=>({c,i,score:0,confidence:0}));
     try{
       const criteria=Object.fromEntries(generated.candidates.map((c,i)=>[`c${i}`,`[${c.mechanism??'delta'}] ${c.title}: ${c.brief?.hook??''}`]));
@@ -359,7 +360,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
         const idx=generated.candidates.findIndex((_,i)=>`c${i}`===winner.choice);
         if(idx>=0)scoredAll[idx]!.score=Math.max(scoredAll[idx]!.score,scoredAll.reduce((m,x)=>Math.max(m,x.score),0));
       }
-      picked=[...scoredAll].sort((a,b)=>b.score-a.score).slice(0,Math.max(1,e.variantCount-1)).map(s=>s.c);
+      picked=keep? [...scoredAll].sort((a,b)=>b.score-a.score).slice(0,keep).map(s=>s.c) : [];
     }catch{/* Jev unavailable: keep grok's leading candidates in order with zero scores */}
     const briefJudge={candidates:scoredAll.map(s=>({title:s.c.title,hook:s.c.brief?.hook??'',score:s.score,confidence:s.confidence})),picked:picked.map(c=>c.title)};
     // Jev score rides on each winning proposal for provenance.
