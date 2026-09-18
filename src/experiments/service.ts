@@ -8,6 +8,7 @@ import { compatibleInput } from './providers.js';
 import { isPhotoPost, resolveSlideshowUrls } from '../lib/media.js';
 import { effectiveOverlayText } from './render-prompt.js';
 import { deriveStorySlideCount } from './slide-count.js';
+import { applyApprovedEstimate } from './budget.js';
 
 export const fingerprint = (v: unknown): string => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 export async function createExperiment(raw: unknown) {
@@ -88,7 +89,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
   } else if (action==='plan') {
     if (e.status!=='draft') throw new S.ExperimentError(409,'not_draft');
     const est = await estimate(e,'plan');
-    if (est.totalCredits>est.remainingCredits || est.totalCredits>est.workspaceCredits) throw new S.ExperimentError(402,'insufficient_budget');
+    applyApprovedEstimate(e, est);
     e.allowPartial=S.Plan.parse(b).allowPartial??false;
     e.status='planning';
     e.tasks=[...e.inputs.filter(i=>i.status!=='ready').map(i=>task('analysis',i.videoId)),task('report'),task('briefs')];
@@ -113,7 +114,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     for(const v of vs) if(v.status!=='draft' || choices.find(x=>x.id===v.id)!.revision!==v.revision) throw new S.ExperimentError(409,'revision_conflict');
     S.validateVariants(e,e.variants);
     const est=await estimate(e,'generate',vs.map(x=>x.id));
-    if(est.totalCredits>est.remainingCredits || est.totalCredits>est.workspaceCredits) throw new S.ExperimentError(402,'insufficient_budget');
+    applyApprovedEstimate(e, est);
     for(const v of vs) {
       v.frozenBrief=structuredClone(v.brief);v.status='generating';
       v.slides=v.brief.slides.map((_s,index)=>({index,status:'pending',url:null,path:null,error:null,overlayText:effectiveOverlayText(v.brief,index)}));
