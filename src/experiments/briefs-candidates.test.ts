@@ -34,12 +34,14 @@ test('briefs stage: 20 candidates generated, Jev ranks them, top variants join t
     jevScores: async () => Object.fromEntries(candidates.map((_, i) => [`c${i}`, { value: i === 7 ? 0.99 : 0.1 }])),
   };
   const prepared = await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never);
-  const result = await prepared.execute() as Proposal[];
+  const { proposals, briefJudge } = await prepared.execute() as { proposals: Proposal[]; briefJudge: { candidates: Array<{ title: string; score: number }>; picked: string[] } };
   expect(e.styleFormula).toEqual({ medium: 'photograph', density: 'minimal' });
-  expect(result).toHaveLength(3);
-  expect(result[0]!.brief.hook).toBe('Start here'); // baseline always rides along
-  expect(result[1]!.brief.hook).toBe('Hook variant 8'); // Jev's top-scored candidate
-  expect(result[2]!.brief.hook).toBe('Hook variant 1'); // next best in grok order
+  expect(proposals).toHaveLength(3);
+  expect(proposals[0]!.brief.hook).toBe('Start here'); // baseline always rides along
+  expect(proposals[1]!.brief.hook).toBe('Hook variant 8'); // Jev's top-scored candidate
+  expect(proposals[2]!.brief.hook).toBe('Hook variant 1'); // next best in grok order
+  expect(briefJudge.candidates).toHaveLength(20);
+  expect(briefJudge.picked).toEqual(['V8', 'V1']);
 });
 
 test('malformed and duplicate candidates are dropped before Jev ranking', async () => {
@@ -64,9 +66,10 @@ test('malformed and duplicate candidates are dropped before Jev ranking', async 
     variants: [], commands: {}, allowPartial: false, createFingerprint: 'x', styleFormula: null,
     tasks: [{ id: 't', kind: 'briefs', status: 'pending', attempts: 0, charged: 0 }] } as unknown as Experiment;
   const prepared = await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never);
-  const result = await prepared.execute() as Proposal[];
-  expect(result).toHaveLength(3);
-  expect(result[1]!.title).toBe('V3'); // Jev's highest-scoring surviving candidate
-  const hooks = result.map(p => p.brief.hook);
+  const { proposals, briefJudge } = await prepared.execute() as { proposals: Proposal[]; briefJudge: { picked: string[] } };
+  expect(proposals).toHaveLength(3);
+  expect(proposals[1]!.title).toBe('V3'); // Jev's highest-scoring surviving candidate
+  const hooks = proposals.map(p => p.brief.hook);
   expect(new Set(hooks).size).toBe(3); // no duplicates survive into variants
+  expect(briefJudge.picked).toEqual(['V3', 'V1']);
 });
