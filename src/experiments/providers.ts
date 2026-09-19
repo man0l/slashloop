@@ -475,13 +475,12 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     // most viral potential. Every rendered candidate costs provider money, so
     // the task is charged units × slide price (see Prepared.units).
     const renderWave=async(p:string)=>{
-      const out:Array<{buffer:Buffer;contentType:string;costUsd:number}>=[];
-      let lastError:unknown=null;
-      for(let i=0;i<fanout;i++){
-        try{out.push(await render.generateImage({prompt:p,referenceUrl:reference?.url,model,quality:'low',aspectRatio:'9:16'}));}
-        catch(err){lastError=err;}
-      }
-      if(!out.length)throw lastError instanceof SafeFailure?lastError:new SafeFailure('all_candidates_failed');
+      // Parallel fan-out: the candidates are independent, so fire them at
+      // once instead of awaiting each render (~23s each) in sequence.
+      const results=await Promise.allSettled(Array.from({length:fanout},
+        ()=>render.generateImage({prompt:p,referenceUrl:reference?.url,model,quality:'low',aspectRatio:'9:16'})));
+      const out=results.flatMap(r=>r.status==='fulfilled'?[r.value]:[]);
+      if(!out.length){const first=results[0];const err=first&&first.status==='rejected'?first.reason:null;throw err instanceof SafeFailure?err:new SafeFailure('all_candidates_failed');}
       return out;
     };
     const describeSafe=async(buffers:Array<{buffer:Buffer}>)=>{
