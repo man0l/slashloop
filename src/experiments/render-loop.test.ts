@@ -13,6 +13,7 @@ function fixture():Experiment{
 
 test('story loop: failed QA triggers corrective re-render and ships the better image',async()=>{
   process.env.OPENROUTER_API_KEY='test';
+  process.env.R2_THUMB_PUBLIC_BASE='https://thumbs.test';
   const e=fixture();
   let renders=0;const prompts: string[]=[];
   const uploaded:Buffer[]=[];
@@ -43,6 +44,7 @@ test('story loop: failed QA triggers corrective re-render and ships the better i
 
 test('story loop: passing QA ships directly without a second render',async()=>{
   process.env.OPENROUTER_API_KEY='test';
+  process.env.R2_THUMB_PUBLIC_BASE='https://thumbs.test';
   const e=fixture();
   let renders=0;
   const render={
