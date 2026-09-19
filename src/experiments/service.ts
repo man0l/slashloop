@@ -20,7 +20,10 @@ export async function createExperiment(raw: unknown) {
   for (const videoId of b.videoIds) {
     const v = await db.video.findFirst({ where: { id: videoId, source: { workspaceId: b.workspaceId } } });
     if (!v) throw new S.ExperimentError(404,'video_not_found');
-    if (isPhotoPost(v)) referenced = true;
+    // Slideshows only: video posts are disabled for selection — the analysis
+    // and render pipeline is carousel-based (slideshow+caption evidence).
+    if (!isPhotoPost(v)) throw new S.ExperimentError(400,'video_not_slideshow','Only slideshows can be selected for experiments.');
+    referenced = true;
     const originalCount = isPhotoPost(v) ? resolveSlideshowUrls(v.rawJson).length : null;
     let analysis: unknown;
     if (originalCount) {
