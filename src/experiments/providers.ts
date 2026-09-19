@@ -378,7 +378,10 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     // parameter deltas (text only — no image spend). Code expands deltas onto
     // the baseline slides; Jev scores each; top variantCount-1 ride along.
     const generated=await render.generateBriefCandidates(e,styleLine);
-    if(experimentVisualLock(e.instructions.variables).subjectLocked){
+    // Source-anchored boards already enforce per-slide subject fidelity via
+    // the SOURCE ADAPTATION LOCK; lockCarouselIdentity would rewrite those
+    // scenes around "the exact same person as slide 1" and flatten the story.
+    if(experimentVisualLock(e.instructions.variables).subjectLocked&&e.generationBasis!=='source-referenced'){
       generated.baseline.brief=lockCarouselIdentity(generated.baseline.brief,e.styleFormula??null);
       generated.candidates=generated.candidates.map(c=>({...c,brief:lockCarouselIdentity(c.brief,e.styleFormula??null)}));
     }
@@ -418,7 +421,11 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
   const contract=renderContract(e.instructions.variables,v.changedVariables??[]);
   const expLock=experimentVisualLock(e.instructions.variables);
   const baselineSlide=v.baselineId?e.variants.find(x=>x.id===v.baselineId)?.slides[t.index!]:undefined;
-  const identityPlate=(t.index??0)>0?v.slides?.[0]:undefined;
+  // The identity plate (lock later slides to this variant's own slide 0) only
+  // fits video-only experiments. For source-referenced ones it collapsed the
+  // carousel into one repeated frame — baseline slide N must adapt SOURCE
+  // slide N, and hook variants lock onto that baseline slide per index.
+  const identityPlate=(t.index??0)>0&&e.generationBasis!=='source-referenced'?v.slides?.[0]:undefined;
   const identityFrame=baselineSlide?.url&&!contract.changeStory
     ? {kind:'baseline' as const,videoId:v.baselineId!,index:t.index!,path:baselineSlide.path??'',url:baselineSlide.url}
     : identityPlate?.url&&expLock.subjectLocked
