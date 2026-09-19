@@ -293,6 +293,45 @@ export async function signUrl(bucket: string, path: string, ttlSeconds: number):
 }
 
 /**
+ * Read an object's bytes back.
+ *
+ * The MCP App gallery's `covers://` / `videos://` resource reads (src/tools/
+ * gallery.ts) serve media to the host as base64 blobs, so the sandboxed page
+ * never depends on a storage origin surviving the iframe CSP. Returns null for
+ * a missing object; throws only when storage is misconfigured.
+ *
+ * Supabase caveat: this fetches the PUBLIC object URL, so it only works for
+ * the thumbs bucket there. Media reads on the legacy Supabase backend keep
+ * going through signUrl() callers instead.
+ */
+export async function getObject(bucket: string, path: string): Promise<Uint8Array | null> {
+  const backend = storageBackend();
+
+  if (backend === 'r2-binding') {
+    const binding = bindingFor(bucket);
+    if (!binding) throw new Error(`R2 binding not registered for bucket ${bucket}`);
+    const obj = await binding.get(path);
+    if (!obj) return null;
+    return new Uint8Array(await obj.arrayBuffer());
+  }
+
+  if (backend === 'r2') {
+    const res = await getR2Client().send(new GetObjectCommand({ Bucket: bucket, Key: path }));
+    if (!res.Body) return null;
+    return new Uint8Array(await res.Body.transformToByteArray());
+  }
+
+  if (backend === 'supabase') {
+    const res = await fetch(`${storageBase()}/object/public/${bucket}/${path}`);
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`Storage read failed (${res.status}) for ${bucket}/${path}`);
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  throw new Error('Storage is not configured');
+}
+
+/**
  * Bulk delete. Returns the number of paths we attempted (or that S3 accepted).
  * Used by the retention sweeper — delete objects first, then null DB columns.
  */

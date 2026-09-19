@@ -8,17 +8,23 @@
 //
 // Deliberately self-contained — inline CSS, inline JS, no external scripts.
 // The host renders this in a sandboxed iframe under a deny-by-default CSP, so
-// every origin has to be declared; declaring only Supabase keeps that surface
-// to one entry and means a bundler is never needed.
+// every origin has to be declared; the declared origins (resourceDomains in
+// src/tools/gallery.ts) only back the direct-URL fallback rendering.
+//
+// Media delivery follows the ext-apps video-resource-server pattern. Inside
+// an MCP host the page runs a minimal ui/initialize + resources/read
+// handshake (mirroring the SDK's PostMessageTransport — ~80 lines instead of
+// the 300KB client bundle) and loads each cover and each MP4 as a base64
+// blob over the host channel, turning them into object URLs. That removes
+// the CSP dependence entirely: covers and playback work even in hosts that
+// ignore `_meta.ui.csp.resourceDomains`. Outside a host (the signed /gallery
+// browser route) window.parent === window, the handshake is skipped and the
+// direct thumb/media URLs render exactly as before.
 //
 // Filters (outlier threshold, min views, sort) and Prev/Next pagination run
 // entirely client-side over the cards already inlined into the HTML — no
 // fetch, so they work inside Claude's sandbox without connect-src. Load a
 // larger pool server-side so filtering + paging still has material to show.
-//
-// §4.3, the playback spike: `resourceDomains` maps to media-src as well as
-// img-src (per the extension's own spec types), so a <video> pointing at a
-// signed Supabase URL *should* play inline.
 // ---------------------------------------------------------------------------
 
 export interface GalleryCard {
@@ -44,6 +50,18 @@ export interface GalleryCard {
   analyzedAt: number | null;
   /** Signed URL for the stored MP4, null when nothing is stored (or it expired). */
   mediaUrl: string | null;
+  /**
+   * `covers://slashloop/{id}` — the stored TikTok cover as a base64-blob
+   * resource read, null when no cover is stored. Lets the app embed covers
+   * over the MCP channel instead of relying on img-src CSP.
+   */
+  coverUri: string | null;
+  /**
+   * `videos://slashloop/{id}` — the stored MP4 as a base64-blob resource read,
+   * null when nothing is stored. Has the same underlying condition as
+   * mediaUrl, plus the case where the object is stored but signing failed.
+   */
+  videoUri: string | null;
   /** Photo-carousel URLs when the TikTok is a slideshow (no MP4). */
   slideshowImages: string[];
   /** AI-recreated carousel URLs. */
@@ -108,15 +126,25 @@ function cardHtml(c: GalleryCard): string {
         </button>`).join('')}</div>`
     : '';
 
-  // The <video> is the spike. preload="none" so a gallery of them costs nothing
-  // until someone actually asks for one — egress is metered on this plan.
+  // The <video> is wrapped so host mode can lay a play overlay over it
+  // without geometry guessing. preload="none" so a gallery of them costs
+  // nothing until someone actually asks for one — egress is metered on this
+  // plan. poster gives the collapsed player a face before anything loads.
   const fetchMsg = c.fetchError ? `${c.fetchError.message} (${c.fetchError.code})` : null;
   const player = c.mediaUrl
-    ? `<video id="v-${esc(c.id)}" class="player" preload="none" controls playsinline
-              src="${esc(c.mediaUrl)}"></video>`
+    ? `<div class="player-wrap"><video id="v-${esc(c.id)}" class="player" preload="none" controls playsinline
+              src="${esc(c.mediaUrl)}"${c.thumbUrl ? ` poster="${esc(c.thumbUrl)}"` : ''}${c.videoUri ? ` data-video-uri="${esc(c.videoUri)}"` : ''}></video></div>`
     : fetchMsg
       ? `<p class="nomedia nomedia-fetch">⛔ Could not scrape this video — ${esc(fetchMsg)}. Frames unavailable.</p>`
       : `<p class="nomedia">No stored video — expired or never analysed. Frames unavailable.</p>`;
+
+  // Cover: direct stored URL for the no-host fallback, plus data-cover-uri so
+  // host mode can swap in the blob read (the only source when the public
+  // thumb origin is missing from the host's CSP).
+  const coverAttrs = c.coverUri ? ` data-cover-uri="${esc(c.coverUri)}"` : '';
+  const thumb = c.thumbUrl
+    ? `<img class="thumb" src="${esc(c.thumbUrl)}" alt="" loading="lazy"${coverAttrs}/>`
+    : `<div class="thumb placeholder"${coverAttrs}></div>`;
 
   const score = c.outlierScore ?? 0;
   // data-* drives client-side filters (no network).
@@ -131,8 +159,7 @@ function cardHtml(c: GalleryCard): string {
            data-fetch-error="${c.fetchError ? esc(c.fetchError.code) : ''}"
            data-handle="${esc(c.creatorHandle.toLowerCase())}">
     <span class="index-badge" title="Reference this as &quot;video ${c.index}&quot;">${c.index}</span>
-    ${c.thumbUrl ? `<img class="thumb" src="${esc(c.thumbUrl)}" alt="" loading="lazy"/>`
-                 : `<div class="thumb placeholder"></div>`}
+    ${thumb}
     <div class="body">
       <div class="meta">
         <strong>@${esc(c.creatorHandle)}</strong>
@@ -280,7 +307,14 @@ export function renderGallery(
   .fetch-error { cursor: help; font-size: 13px; line-height: 1; color: #ff5c5c; }
   .nomedia-fetch { color: #ff5c5c; opacity: .85; }
   .caption { margin: 0; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .player-wrap { position: relative; }
   .player { width: 100%; border-radius: 6px; background: #000; }
+  /* Host mode only: sits over the player until the blob resource read lands.
+     The glyph makes the click affordance obvious while src is stripped. */
+  .play-overlay { position: absolute; inset: 0; display: grid; place-items: center;
+                  cursor: pointer; background: rgba(0,0,0,.35); border-radius: 6px; min-height: 120px; }
+  .play-overlay .glyph { font-size: 34px; color: #fff; line-height: 1;
+                         text-shadow: 0 1px 6px rgba(0,0,0,.6); pointer-events: none; }
   .nomedia { margin: 0; font-size: 12px; opacity: .6; }
   .moments { display: flex; flex-wrap: wrap; gap: 6px; }
   .moment { font: inherit; font-size: 11px; padding: 3px 7px; border: 1px solid var(--line);
@@ -301,7 +335,7 @@ export function renderGallery(
   .density-small .caption { font-size: 11px; -webkit-line-clamp: 1; }
   .density-small .nomedia,
   .density-small .moments,
-  .density-small .player { display: none; }
+  .density-small .player-wrap { display: none; }
   .density-small .src { font-size: 11px; }
 
   /* list — smallest thumbs, one row per video */
@@ -315,7 +349,7 @@ export function renderGallery(
   .density-list .caption { font-size: 12px; -webkit-line-clamp: 1; }
   .density-list .nomedia,
   .density-list .moments,
-  .density-list .player { display: none; }
+  .density-list .player-wrap { display: none; }
   .density-list .src { font-size: 11px; }
 
   .empty, .note { opacity: .7; }
@@ -510,7 +544,208 @@ ${cards.length ? toolbarHtml(filters) : ''}
   if (nextEl) nextEl.addEventListener('click', function () { page += 1; apply(false); });
   apply(true);
 
-  // Key-moment seek: one signed URL, seek without re-fetch.
+  // ── MCP Apps host link (minimal client) ──
+  // Mirrors @modelcontextprotocol/ext-apps' PostMessageTransport + App.connect()
+  // for exactly what this page needs: the ui/initialize handshake and proxied
+  // resources/read calls (covers + MP4s as base64 blobs — the ext-apps
+  // video-resource-server pattern). A full SDK bundle is ~300KB per gallery
+  // render; this block is the whole client. Any failure leaves the fallback
+  // rendering (direct thumb/media URLs) untouched.
+  var MCP = (function () {
+    if (window.parent === window) {
+      // Browser route (signed /gallery link, preview script): not framed, so
+      // there is no host to handshake with — never start a timeout.
+      return {
+        ready: function () { return Promise.resolve(false); },
+        canReadResources: function () { return false; },
+        readResource: null,
+      };
+    }
+    var nextId = 1;
+    var pending = {};
+    var initPromise = null;
+    var canRead = false;
+
+    function send(msg) { window.parent.postMessage(msg, '*'); }
+
+    function request(method, params, timeoutMs) {
+      return new Promise(function (resolve, reject) {
+        var id = nextId++;
+        var timer = setTimeout(function () {
+          delete pending[id];
+          reject(new Error(method + ' timed out'));
+        }, timeoutMs || 20000);
+        pending[id] = { resolve: resolve, reject: reject, timer: timer };
+        send({ jsonrpc: '2.0', id: id, method: method, params: params });
+      });
+    }
+
+    window.addEventListener('message', function (ev) {
+      if (ev.source !== window.parent) return;
+      var d = ev.data;
+      if (!d || d.jsonrpc !== '2.0') return;
+      if (d.method != null && d.id != null) {
+        // Host→app requests: answer ping, decline anything else so the host
+        // never hangs on a view that implements no app-side handlers.
+        if (d.method === 'ping') send({ jsonrpc: '2.0', id: d.id, result: {} });
+        else send({ jsonrpc: '2.0', id: d.id, error: { code: -32601, message: 'Not implemented: ' + d.method } });
+        return;
+      }
+      if (d.id == null) return; // notifications carry no id — nothing pending
+      var p = pending[d.id];
+      if (!p) return;
+      clearTimeout(p.timer);
+      delete pending[d.id];
+      if (d.error) p.reject(new Error(d.error.message || 'request failed'));
+      else p.resolve(d.result);
+    });
+
+    function ready() {
+      if (initPromise) return initPromise;
+      initPromise = request('ui/initialize', {
+        appInfo: { name: 'slashloop-gallery', version: '1.0.0' },
+        appCapabilities: {},
+        protocolVersion: '2026-01-26',
+      }, 5000).then(function (res) {
+        // resources/read proxying is opt-in on the host side; without it the
+        // blob pattern is unreachable and direct URLs are the only path.
+        canRead = Boolean(res && res.hostCapabilities && res.hostCapabilities.serverResources);
+        send({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} });
+        return canRead;
+      }, function () { return false; });
+      return initPromise;
+    }
+
+    return {
+      ready: ready,
+      canReadResources: function () { return canRead; },
+      readResource: function (uri) { return request('resources/read', { uri: uri }); },
+    };
+  })();
+
+  function resourceObjectUrl(res) {
+    var c = res && res.contents && res.contents[0];
+    if (!c || !c.blob) return null;
+    var bin = atob(c.blob);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], { type: c.mimeType || 'application/octet-stream' }));
+  }
+
+  function removeOverlay(v) {
+    var wrap = v.parentNode;
+    var o = wrap && wrap.querySelector('.play-overlay');
+    if (o) o.remove();
+  }
+
+  /** Load an MP4 through the host channel and point the player at the blob. */
+  function loadViaHost(v) {
+    if (v.dataset.hostLoaded === '1') return Promise.resolve(true);
+    if (v.dataset.hostLoading === '1') return v._hostPromise || Promise.resolve(false);
+    var uri = v.dataset.videoUri;
+    if (!uri || !MCP.canReadResources()) return Promise.resolve(false);
+    v.dataset.hostLoading = '1';
+    v._hostPromise = MCP.readResource(uri).then(function (res) {
+      var url = resourceObjectUrl(res);
+      if (!url) throw new Error('resource read returned no blob');
+      v.src = url;
+      v.dataset.hostLoaded = '1';
+      v.dataset.hostLoading = '0';
+      removeOverlay(v);
+      return true;
+    }).catch(function (err) {
+      v.dataset.hostLoading = '0';
+      // Restore the signed URL — hosts that honour resourceDomains can still
+      // stream it directly even when the blob path failed.
+      if (v.dataset.fallbackSrc) v.src = v.dataset.fallbackSrc;
+      throw err;
+    });
+    return v._hostPromise;
+  }
+
+  function attachPlayOverlay(v) {
+    var wrap = v.parentNode;
+    if (!wrap || wrap.querySelector('.play-overlay')) return;
+    var o = document.createElement('div');
+    o.className = 'play-overlay';
+    o.setAttribute('role', 'button');
+    o.setAttribute('aria-label', 'Play — loads through the conversation');
+    o.title = 'Play — loads through the conversation';
+    var g = document.createElement('span');
+    g.className = 'glyph';
+    g.textContent = '▶';
+    o.appendChild(g);
+    o.addEventListener('click', function () {
+      loadViaHost(v).then(function (ok) {
+        if (ok) v.play().catch(function () {});
+      }).catch(function () {
+        // Blob path failed; the signed URL (if restored) takes over.
+        removeOverlay(v);
+        v.play().catch(function () {});
+      });
+    });
+    wrap.appendChild(o);
+  }
+
+  /** Swap covers to blob reads as their cards scroll into view. */
+  function setupCoverLoader() {
+    var els = grid.querySelectorAll('[data-cover-uri]');
+    if (!els.length) return;
+    var cache = {};
+    function load(el) {
+      var uri = el.dataset.coverUri;
+      if (!uri || el.dataset.coverState === '1') return;
+      el.dataset.coverState = '1';
+      MCP.readResource(uri).then(function (res) {
+        var url = resourceObjectUrl(res);
+        if (!url) throw new Error('no cover blob');
+        cache[uri] = url;
+        var img = document.createElement('img');
+        img.className = 'thumb';
+        img.alt = '';
+        img.src = url;
+        el.replaceWith(img);
+      }).catch(function () {
+        // Keep whatever was there (direct URL or placeholder).
+        el.dataset.coverState = '0';
+      });
+    }
+    if (typeof IntersectionObserver === 'undefined') {
+      Array.prototype.forEach.call(els, load);
+      return;
+    }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        io.unobserve(en.target);
+        load(en.target);
+      });
+    }, { rootMargin: '200px' });
+    Array.prototype.forEach.call(els, function (el) { io.observe(el); });
+  }
+
+  function activateHostMode() {
+    // Video: strip the direct src (kept as fallback) and stack a play overlay
+    // on every player so the first play loads through resources/read.
+    allCards().forEach(function (card) {
+      var v = card.querySelector('video.player');
+      if (!v || !v.dataset.videoUri) return;
+      var src = v.getAttribute('src');
+      if (src) {
+        v.dataset.fallbackSrc = src;
+        v.removeAttribute('src');
+      }
+      attachPlayOverlay(v);
+    });
+    setupCoverLoader();
+  }
+
+  MCP.ready().then(function (ok) {
+    if (ok && MCP.canReadResources()) activateHostMode();
+  });
+
+  // Key-moment seek: one source per video, seek without re-fetch. In host
+  // mode the first seek rides the same blob load as play.
   document.addEventListener('click', function (e) {
     var btn = e.target.closest ? e.target.closest('.moment') : null;
     if (!btn) return;
@@ -518,8 +753,19 @@ ${cards.length ? toolbarHtml(filters) : ''}
     if (!v) return;
     var t = parseFloat(btn.dataset.t) || 0;
     var go = function () { try { v.currentTime = t; v.play(); } catch (err) {} };
-    if (v.readyState >= 1) go();
-    else { v.addEventListener('loadedmetadata', go, { once: true }); v.load(); }
+    var whenReady = function () {
+      if (v.readyState >= 1) go();
+      else v.addEventListener('loadedmetadata', go, { once: true });
+    };
+    if (v.dataset.videoUri && v.dataset.hostLoaded !== '1' && MCP.canReadResources()) {
+      loadViaHost(v).then(function (ok) {
+        if (ok) whenReady();
+        else { v.load(); whenReady(); }
+      }).catch(function () { whenReady(); });
+      return;
+    }
+    whenReady();
+    if (v.readyState < 1) v.load();
   });
 })();
 </script>

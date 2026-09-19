@@ -42,16 +42,17 @@ import type { GalleryFilters } from '../src/ui/gallery.js';
 /**
  * Deny-by-default CSP, mirroring what the MCP App declares via
  * `_meta.ui.csp.resourceDomains` (§4.1). The page is self-contained — inline
- * CSS and inline JS, no fetch at runtime — so only the storage origin is
- * needed, for `img-src` and `media-src`.
+ * CSS and inline JS — so the only remote origins needed are the ones the
+ * direct-URL rendering actually points at (stored thumb public base, the
+ * Worker's /thumbs and /media routes), for `img-src` and `media-src`.
  *
  * `'unsafe-inline'` on script-src is required by that self-contained design and
  * is the same trade the sandboxed-iframe version already makes; there is no
  * user-controlled HTML in the document (every field goes through esc() in
  * src/ui/gallery.ts).
  */
-function csp(storageOrigin: string | null): string {
-  const media = storageOrigin ? `${storageOrigin} data: blob:` : `data: blob:`;
+function csp(domains: string[]): string {
+  const media = [...domains, 'data:', 'blob:'].join(' ');
   return [
     "default-src 'none'",
     `img-src ${media}`,
@@ -183,7 +184,7 @@ export async function GET(request: Request): Promise<Response> {
   try {
     // Same context binding as the MCP path, so requireWorkspace() resolves the
     // token holder's workspace and nothing else.
-    const { html, cspOrigin } = await runWithUser(userId, () =>
+    const { html, resourceDomains } = await runWithUser(userId, () =>
       buildGalleryHtml({
         sourceId: url.searchParams.get('sourceId') ?? undefined,
         minOutlier: num(url.searchParams.get('minOutlier')),
@@ -197,7 +198,7 @@ export async function GET(request: Request): Promise<Response> {
       status: 200,
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
-        'Content-Security-Policy': csp(cspOrigin),
+        'Content-Security-Policy': csp(resourceDomains),
         // The HTML embeds signed media URLs and is scoped to one user.
         'Cache-Control': 'no-store',
         'Referrer-Policy': 'no-referrer',

@@ -20,6 +20,7 @@ import { cacheKey, getOrFill } from '../lib/cache.js';
 import { requireWorkspace, currentUserId } from '../context.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls, resolveRecreationUrls, isPhotoPost } from '../lib/media.js';
+import { getObject, thumbBucket, mediaBucket } from '../lib/storage.js';
 import { latestFetchErrors } from '../lib/jobs.js';
 import { signGalleryUrl, ttlHumanized } from '../lib/gallery-link.js';
 import { withNextSteps, analyzeCostLabel } from '../lib/next-steps.js';
@@ -30,6 +31,24 @@ import { ResourceTemplate, type McpServer } from '@modelcontextprotocol/sdk/serv
 const GALLERY_URI = 'ui://slashloop/gallery.html';
 /** RFC 6570 template so hosts can resources/read a source-scoped gallery. */
 const GALLERY_URI_TEMPLATE = 'ui://slashloop/gallery.html{?sourceId,minOutlier,analyzedBy,density}';
+
+/**
+ * Per-video media resources, served as base64 blobs — the ext-apps
+ * video-resource-server pattern. The page (src/ui/gallery.ts) reads them
+ * through the host's proxied resources/read and turns the blobs into object
+ * URLs, so covers and playback never depend on a storage origin surviving
+ * the iframe's CSP (the §4.3 spike's weak point).
+ */
+export const COVER_URI_TEMPLATE = 'covers://slashloop/{videoId}';
+export const VIDEO_URI_TEMPLATE = 'videos://slashloop/{videoId}';
+
+export function coverResourceUri(videoId: string): string {
+  return `covers://slashloop/${videoId}`;
+}
+
+export function videoResourceUri(videoId: string): string {
+  return `videos://slashloop/${videoId}`;
+}
 
 /**
  * Cards inlined into the HTML for client-side filters. Larger than the old
@@ -85,17 +104,30 @@ function analyzedByKeyOf(backend: string | undefined): GalleryCard['analyzedBy']
 }
 
 /**
- * The single origin the app is allowed to load anything from.
+ * Origins the app may load images/media from when it renders OUTSIDE an MCP
+ * host (the signed /gallery browser route) or inside hosts that apply
+ * `_meta.ui.csp.resourceDomains` literally.
  *
- * Derived from SUPABASE_URL rather than hardcoded so a fork or a staging
- * project does not silently render a blank gallery — a wrong origin here fails
- * as a CSP violation in a sandboxed iframe, which is close to invisible.
+ * Derived from the env that actually shapes the URLs rather than one fixed
+ * origin: stored thumbs come from R2_THUMB_PUBLIC_BASE (or the Worker's
+ * cacheable /thumbs route on PUBLIC_URL), signed MP4s come from the Worker's
+ * /media route on PUBLIC_URL, and the legacy Supabase Storage backend serves
+ * both from SUPABASE_URL. The old single-origin derivation from SUPABASE_URL
+ * alone predated the R2 migration and CSP-blocked every cover and video in
+ * hosts that honoured the declaration.
  */
-function storageOrigin(): string | null {
-  const raw = process.env.SUPABASE_URL;
-  if (!raw) return null;
-  try { return new URL(raw).origin; } catch { return null; }
+function resourceDomains(): string[] {
+  const origins = new Set<string>();
+  const add = (raw: string | undefined) => {
+    if (!raw) return;
+    try { origins.add(new URL(raw).origin); } catch { /* unparseable — skip */ }
+  };
+  add(process.env.R2_THUMB_PUBLIC_BASE || process.env.R2_PUBLIC_BASE);
+  add(process.env.PUBLIC_URL);
+  add(process.env.SUPABASE_URL);
+  return [...origins];
 }
+export { resourceDomains };
 
 /**
  * Load gallery cards for the current workspace.
@@ -343,6 +375,15 @@ async function buildCardsUncached(
       caption: v.caption,
       url: v.url,
       thumbUrl: resolveThumbUrl(v),
+      // MCP-App resource URIs (base64 blob reads). coverUri follows the STORED
+      // copy — the whole point is not depending on expiring TikTok CDN URLs.
+      // videoUri needs only the stored object, so it still exists when
+      // mediaUrl's signing failed (mediaUrl and videoUri have the same
+      // underlying condition otherwise).
+      coverUri: v.thumbKey ? coverResourceUri(v.id) : null,
+      videoUri: media[i]!.url || (v.mediaKey && v.mediaStatus === 'stored')
+        ? videoResourceUri(v.id)
+        : null,
       views: v.views,
       engagementRate: v.views > 0
         ? `${((v.likes + v.comments + (v.shares ?? 0)) / v.views * 100).toFixed(1)}%`
@@ -397,7 +438,7 @@ export async function buildGalleryHtml(opts: BuildCardsOptions = {}): Promise<{
   html: string;
   cards: GalleryCard[];
   note?: string;
-  cspOrigin: string | null;
+  resourceDomains: string[];
   filters: GalleryFilters;
 }> {
   const { cards, note, filters } = await buildCards(opts);
@@ -405,7 +446,7 @@ export async function buildGalleryHtml(opts: BuildCardsOptions = {}): Promise<{
     html: renderGallery(cards, note, filters),
     cards,
     note,
-    cspOrigin: storageOrigin(),
+    resourceDomains: resourceDomains(),
     filters,
   };
 }
@@ -418,7 +459,8 @@ export function registerGalleryApp(server: McpServer) {
       title: 'Show the outlier gallery',
       description:
         'Render the workspace\'s top videos as an interactive gallery inside the conversation — '
-        + 'stored thumbnails, inline playback where a video is still stored, clickable key moments, '
+        + 'TikTok cover images and inline playback with full player controls (covers/video load as '
+        + 'base64 blobs over MCP resource reads), clickable key moments, '
         + 'and in-UI filters (outlier score dropdown, min views, sort, analyzed by backend). '
         + 'ALWAYS call this after a successful refresh_source (or track+refresh) so the user can SEE '
         + 'the scraped videos rather than only a text count. Also use when the user wants to view, '
@@ -600,13 +642,14 @@ export function registerGalleryApp(server: McpServer) {
     },
   );
 
-  const resourceMeta = (cspOrigin: string | null) => ({
+  const resourceMeta = () => ({
     ui: {
       // §4.1. resourceDomains maps to img-src, script-src, style-src,
-      // font-src AND media-src (per the extension's spec types), so this
-      // one origin covers both the public thumbs and the signed MP4s.
-      // No connectDomains: the page fetches nothing at runtime.
-      csp: { resourceDomains: cspOrigin ? [cspOrigin] : [] },
+      // font-src AND media-src (per the extension's spec types). In-host the
+      // page now loads covers and video as base64 blobs over resources/read,
+      // so these origins only matter for the direct-URL fallback rendering
+      // (and hosts that ignore or fail the resource path).
+      csp: { resourceDomains: resourceDomains() },
     },
   });
 
@@ -617,13 +660,13 @@ export function registerGalleryApp(server: McpServer) {
     GALLERY_URI,
     { description: 'Interactive gallery of the workspace\'s outlier videos (sorted by outlier score, with filters).' },
     async () => {
-      const { html, cspOrigin } = await buildGalleryHtml();
+      const { html } = await buildGalleryHtml();
       return {
         contents: [{
           uri: GALLERY_URI,
           mimeType: RESOURCE_MIME_TYPE,
           text: html,
-          _meta: resourceMeta(cspOrigin),
+          _meta: resourceMeta(),
         }],
       };
     },
@@ -650,7 +693,7 @@ export function registerGalleryApp(server: McpServer) {
       const rawDensity = variables.density;
       const dRaw = Array.isArray(rawDensity) ? rawDensity[0] : rawDensity;
       const density = dRaw === 'large' || dRaw === 'medium' || dRaw === 'small' || dRaw === 'list' ? dRaw : undefined;
-      const { html, cspOrigin } = await buildGalleryHtml({
+      const { html } = await buildGalleryHtml({
         sourceId: typeof sourceId === 'string' ? sourceId : undefined,
         minOutlier: Number.isFinite(minOutlier) ? minOutlier : undefined,
         analyzedBy,
@@ -661,7 +704,95 @@ export function registerGalleryApp(server: McpServer) {
           uri: uri.toString(),
           mimeType: RESOURCE_MIME_TYPE,
           text: html,
-          _meta: resourceMeta(cspOrigin),
+          _meta: resourceMeta(),
+        }],
+      };
+    },
+  );
+
+  // ── Per-video media resources (the video-resource-server pattern) ──
+  //
+  // Both handlers scope the video to the CALLER's workspace via
+  // requireWorkspace() — a resource URI is just a string a rendered page can
+  // produce, so the id alone must never authorise a read.
+
+  /** Magic-byte sniff: cover objects are stored image-typed but keep a .jpg path. */
+  function imageMimeOf(bytes: Uint8Array): string {
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+    if (bytes[0] === 0x52 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+      return 'image/webp';
+    }
+    return 'image/jpeg';
+  }
+
+  // registerAppResource only accepts exact URIs in this SDK version, and the
+  // blobs need no _meta.ui of their own — plain template registration it is
+  // (same as the filtered-gallery resource above).
+  server.registerResource(
+    'slashloop cover',
+    new ResourceTemplate(COVER_URI_TEMPLATE, { list: undefined }),
+    {
+      description: 'One video\'s stored TikTok cover image, base64 blob. mimeType reflects the actual bytes (JPEG/PNG/WebP).',
+      mimeType: 'image/jpeg',
+    },
+    async (uri, variables) => {
+      const raw = variables.videoId;
+      const videoId = Array.isArray(raw) ? raw[0] : raw;
+      if (!videoId) throw new Error('videoId is required');
+
+      const workspace = await requireWorkspace();
+      const video = await db.video.findFirst({
+        where: { id: videoId, source: { workspaceId: workspace.id } },
+        select: { thumbKey: true },
+      });
+      if (!video?.thumbKey) throw new Error(`No stored cover for ${videoId}`);
+
+      const bytes = await getObject(thumbBucket(), video.thumbKey);
+      if (!bytes) throw new Error(`Cover object missing in storage: ${video.thumbKey}`);
+
+      return {
+        contents: [{
+          uri: uri.toString(),
+          mimeType: imageMimeOf(bytes),
+          blob: Buffer.from(bytes).toString('base64'),
+        }],
+      };
+    },
+  );
+
+  server.registerResource(
+    'slashloop video',
+    new ResourceTemplate(VIDEO_URI_TEMPLATE, { list: undefined }),
+    {
+      description: 'One video\'s stored MP4, base64 blob — read by the gallery app to play and seek inside the sandboxed iframe.',
+      mimeType: 'video/mp4',
+    },
+    async (uri, variables) => {
+      const raw = variables.videoId;
+      const videoId = Array.isArray(raw) ? raw[0] : raw;
+      if (!videoId) throw new Error('videoId is required');
+
+      const workspace = await requireWorkspace();
+      const video = await db.video.findFirst({
+        where: { id: videoId, source: { workspaceId: workspace.id } },
+        select: { mediaKey: true, mediaStatus: true },
+      });
+      if (!video?.mediaKey || video.mediaStatus !== 'stored') {
+        throw new Error(`No stored video for ${videoId} (expired, never analysed, or fetch failed)`);
+      }
+
+      // R2 binding / S3 read — no self-fetch, no second signature. The legacy
+      // Supabase backend only exposes the public thumbs bucket here; media on
+      // that backend keeps going through signUrl() callers.
+      const bytes = await getObject(mediaBucket(), video.mediaKey);
+      if (!bytes) throw new Error(`Stored video missing in storage: ${video.mediaKey}`);
+
+      return {
+        contents: [{
+          uri: uri.toString(),
+          mimeType: 'video/mp4',
+          blob: Buffer.from(bytes).toString('base64'),
         }],
       };
     },

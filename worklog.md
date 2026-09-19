@@ -335,3 +335,19 @@ Work Log:
 Stage Summary:
 - One service layer, two equal frontends: every loop action is reachable from both Claude (tools) and the browser (REST+panel); the model-facing lock guarantees re-rolls stay inside the user's edited frame.
 - Verified live: mcp.slashloop.dev hook-test route auth-gates (401), slashloop.dev/tests serves, Vercel production Ready on both projects.
+
+---
+Task ID: 10
+Agent: main
+Task: Gallery MCP App — TikTok covers + video player via base64 resource reads (ext-apps video-resource-server pattern)
+
+Work Log:
+- Motivation: the §4.3 spike leaned on `_meta.ui.csp.resourceDomains` for img/media, but the declared origin was derived from SUPABASE_URL alone — stale since the R2 migration, so hosts that honoured the declaration CSP-blocked covers and playback. Adopted the ext-apps video-resource-server pattern instead: media travels through the MCP channel as base64 blobs, no storage origin needed in-host.
+- src/lib/storage.ts: getObject(bucket, path) read helper (r2-binding native get, S3 GetObject, Supabase public URL — thumbs only there).
+- src/tools/gallery.ts: two workspace-scoped resource templates — covers://slashloop/{videoId} (stored TikTok cover, magic-byte JPEG/PNG/WebP sniff) and videos://slashloop/{videoId} (stored MP4) — both base64 blobs, both requiring requireWorkspace() + source.workspaceId match so a bare videoId authorises nothing. Cards gained coverUri/videoUri (videoUri also covers the sign-failed-but-stored case). resourceDomains() now derives origins from the env that actually shapes URLs (R2_THUMB_PUBLIC_BASE/R2_PUBLIC_BASE + PUBLIC_URL + SUPABASE_URL).
+- src/ui/gallery.ts: minimal MCP Apps client (~90 lines inline — PostMessageTransport-equivalent: ui/initialize with 5s timeout → ui/notifications/initialized → proxied resources/read; host→app ping answered, other requests declined). Not framed (window.parent === window → browser route) skips the handshake entirely. Host mode (handshake ok + hostCapabilities.serverResources): covers swap to blob object URLs via IntersectionObserver as cards scroll in; each <video> gets its src stripped (kept as fallback) plus a ▶ play overlay — first play loads the MP4 blob then native controls take over (play/pause/seek/fullscreen). Key-moment seeks ride the same blob load. Fallback rendering (signed /gallery browser route) unchanged.
+- api/gallery.ts CSP + preview_gallery.ts log switched from a single cspOrigin to the origin list.
+- Tests: src/tools/gallery.test.ts — URI shapes, resourceDomains derivation (env save/restore), rendered markup wiring (data-cover-uri/data-video-uri/player-wrap/poster, no URIs without stored media).
+
+Stage Summary:
+- In an MCP Apps host the gallery now embeds stored TikTok covers and plays videos with full controls over the resource-read blob channel; the browser fallback route keeps direct URLs with a corrected CSP. Verified: tsc + typecheck:vercel clean; bun test ./src 556 pass (8 new).

@@ -42,7 +42,7 @@ async function main() {
 
   // Optional --userId targets a real user's workspace (ownerId = Supabase uid);
   // null falls back to the local/default single-tenant workspace.
-  const { html, cards, note, cspOrigin } = await runWithUser(userId ?? null, () =>
+  const { html, cards, note, resourceDomains } = await runWithUser(userId ?? null, () =>
     buildGalleryHtml({ sourceId, limit }),
   );
 
@@ -55,7 +55,7 @@ async function main() {
   console.log(`[preview_gallery] cards=${cards.length}`
     + (sourceId ? ` sourceId=${sourceId}` : '')
     + (note ? `\n[preview_gallery] note: ${note}` : ''));
-  console.log(`[preview_gallery] cspOrigin=${cspOrigin ?? '(none — thumbs may fail if not stored)'}`);
+  console.log(`[preview_gallery] resourceDomains=${resourceDomains.length ? resourceDomains.join(' ') : '(none — thumbs may fail if not stored)'}`);
   if (cards.length) {
     console.log('[preview_gallery] top by outlier score:');
     for (const c of cards.slice(0, 8)) {
