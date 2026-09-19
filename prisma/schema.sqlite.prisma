@@ -75,8 +75,8 @@ model Workspace {
   /// in src/lib/retention.ts and is rejected above the plan ceiling —
   /// retention is a COGS lever, same class of field as monthlyBudgetCents.
   /// See docs/media-storage-plan.md §1.4.
-  thumbRetentionDays Int @default(3)
-  mediaRetentionDays Int @default(3)
+  thumbRetentionDays Int @default(30)
+  mediaRetentionDays Int @default(30)
 
   // --- weekly digest ---
   /// Opt-out for the weekly outlier digest (api/cron/digest.ts). On by
