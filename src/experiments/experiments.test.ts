@@ -57,6 +57,7 @@ describe('durable experiment steps',()=>{
   expect(h.row.error).toBe('provider_outcome_unknown:socket lost');
   for(const delay of [60_000,60_000,60_000]){clock+=delay;await step('w','e',h.deps);}
   expect(calls).toBe(4);expect(h.row.status).toBe('paused');expect(h.row.tasks[0]?.status).toBe('unknown');expect(h.charges).toBe(20);});
+  test('DOM TimeoutError wording tags as timeout, not raw text',async()=>{const h=harness(async()=>({execute:async()=>{throw new Error('The operation timed out.');}}));await step('w','e',h.deps);expect(h.row.tasks[0]?.error).toBe('provider_outcome_unknown:timeout');expect(h.row.error).toBe('provider_outcome_unknown:timeout');});
  test('OpenRouter credit exhaustion is labelled on the job',async()=>{
   const h=harness(async()=>({execute:async()=>{throw new Error('OpenRouter API error 402: {"error":{"message":"Insufficient credits","metadata":{"error_type":"payment_required"}}}');}}));
   h.set({...fixture(),tasks:[{id:'t',kind:'analysis',target:'v',status:'pending',attempts:0,charged:0}]});

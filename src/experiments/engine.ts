@@ -29,7 +29,7 @@ function providerCause(message:string):string {
   if(classified.category==='quota')return status?`credits_exhausted_${status}`:'credits_exhausted';
   if(classified.category==='rate_limit')return status?`rate_limited_${status}`:'rate_limited';
   if(classified.category==='auth')return status?`auth_${status}`:'auth';
-  if(classified.category==='timeout'||/timeout|abort/i.test(message))return 'timeout';
+  if(classified.category==='timeout'||/timeout|timed out|abort/i.test(message))return 'timeout';
   if(classified.category==='server')return status?`provider_server_${status}`:'provider_server';
   const gemini=/gemini_(?:outcome_unknown|rejected)_(\d+)/.exec(message);
   if(gemini)return gemini[1]==='429'?'rate_limited_429':`gemini_${gemini[1]}`;
