@@ -25,7 +25,7 @@ import { db } from '../db.js';
 import { dbDialect, isUniqueViolation, rawBatch, type RawStatement } from '../store.js';
 import type { Prisma, Workspace } from '@prisma/client';
 import { customerIdField, subscriptionIdField } from './stripe.js';
-import { retentionCeiling } from './retention.js';
+import { defaultRetentionDays, retentionCeiling } from './retention.js';
 
 export class InsufficientCreditsError extends Error {
   constructor(
@@ -82,7 +82,14 @@ export const FREE_TIER_PLAN_CREDITS = 300;
 
 /** Default billing fields for a newly created workspace. */
 export function freeTierGrant() {
-  return { planKey: 'free', planCredits: FREE_TIER_PLAN_CREDITS, packCredits: 0 };
+  // Explicit retention seed: D1 can't ALTER a SQLite column default, so new
+  // workspaces must not rely on the schema's stale DEFAULT 3 (see retention.ts).
+  const seed = { planKey: 'free', planCredits: FREE_TIER_PLAN_CREDITS, packCredits: 0 };
+  return {
+    ...seed,
+    thumbRetentionDays: defaultRetentionDays('thumb'),
+    mediaRetentionDays: defaultRetentionDays('media'),
+  };
 }
 
 export interface CreditBalance {

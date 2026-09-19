@@ -11,8 +11,8 @@
 
 /** Longest retention each plan may request, in days. */
 export const PLAN_RETENTION_MAX: Record<string, number> = {
-  free: 3,
-  creator: 7,
+  free: 30,
+  creator: 30,
   pro: 30,
 };
 
@@ -73,5 +73,5 @@ export function defaultRetentionDays(kind: 'thumb' | 'media'): number {
     ? process.env.THUMB_RETENTION_DAYS_DEFAULT
     : process.env.MEDIA_RETENTION_DAYS_DEFAULT;
   const n = Number(raw);
-  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 30;
 }
