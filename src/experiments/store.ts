@@ -18,8 +18,11 @@ export async function load(workspaceId: string, id: string): Promise<Experiment>
   if (!row) throw new ExperimentError(404, 'experiment_not_found');
   return JSON.parse(row.dataJson);
 }
-export async function list(workspaceId: string): Promise<Experiment[]> {
-  const result = await batch([{ sql: 'SELECT "dataJson" FROM "Experiment" WHERE "workspaceId" = ? ORDER BY "createdAt" DESC LIMIT 50', params: [workspaceId] }]);
+/** Newest first. limit is capped server-side so a client can't pull unbounded. */
+export async function list(workspaceId: string, limit = 50, offset = 0): Promise<Experiment[]> {
+  const lim = Math.max(1, Math.min(Math.floor(Number(limit) || 50), 50));
+  const off = Math.max(0, Math.floor(Number(offset) || 0));
+  const result = await batch([{ sql: 'SELECT "dataJson" FROM "Experiment" WHERE "workspaceId" = ? ORDER BY "createdAt" DESC LIMIT ? OFFSET ?', params: [workspaceId, lim, off] }]);
   return (result[0] as Array<{ dataJson: string }>).map(r => JSON.parse(r.dataJson));
 }
 export async function remove(workspaceId: string, id: string): Promise<boolean> {

@@ -1,3 +1,4 @@
+import { z } from 'zod/v4';
 import { ZodError } from 'zod/v4';
 import { requireWorkspaceAccess, jsonResponse } from '../src/lib/authz.js';
 import { corsPreflight } from '../src/lib/cors.js';
@@ -27,12 +28,46 @@ async function handle(request:Request):Promise<Response> {
     const workspaceId=Id.parse(b?.workspaceId??url.searchParams.get('workspaceId'));
     const auth=await requireWorkspaceAccess(request,workspaceId);if(!auth.ok)return auth.response;
     let response:unknown;
-    if(request.method==='GET'&&!action&&!variantId)response=id?{experiment:serialize(await load(workspaceId,id))}:{experiments:(await list(workspaceId)).map(serialize)};
+    if(request.method==='GET'&&!action&&!variantId){
+      if(id)response={experiment:serialize(await load(workspaceId,id))};
+      else {
+        // Paginated list: one extra row reveals whether another page exists
+        // without a separate count query. limit is re-capped inside list().
+        const limit=Math.min(Math.max(Number(url.searchParams.get('limit'))||50,1),50);
+        const offset=Math.max(Number(url.searchParams.get('offset'))||0,0);
+        const rows=await list(workspaceId,limit+1,offset);
+        const nextOffset=rows.length>limit?offset+limit:null;
+        response={experiments:rows.slice(0,limit).map(serialize),nextOffset};
+      }
+    }
     else if(request.method==='POST'&&!id)response={experiment:serialize(await createExperiment(b))};
     else if(request.method==='POST'&&id&&action==='estimate'){
       const parsed=Estimate.parse(b);response={estimate:await estimate(await load(workspaceId,id),parsed.stage,parsed.variantIds,parsed.taskIds)};
     }else if(request.method==='POST'&&id&&action)response={experiment:serialize(await mutate(workspaceId,id,action,b))};
     else if(request.method==='PATCH'&&id&&variantId)response={experiment:serialize(await mutate(workspaceId,id,'edit',b,variantId))};
+    else if(request.method==='DELETE'&&!id){
+      // Bulk delete: best-effort per id — running experiments are refused, the
+      // rest cascade (document row + retained R2 images) exactly like the
+      // single delete. Partial outcomes are reported, never thrown as one.
+      const ids=z.array(Id).min(1).max(100).parse(b?.ids);
+      const deleted:string[]=[];const failed:Array<{id:string;code:string;message?:string}>=[];
+      const paths:string[]=[];
+      for(const delId of ids){
+        try{
+          const del=await load(workspaceId,delId);
+          if(del.status==='planning'||del.status==='generating'){failed.push({id:delId,code:'active_experiment',message:'Cancel the experiment before deleting it.'});continue;}
+          const own=[...del.tasks.map(t=>t.path),...del.variants.flatMap(v=>v.slides.map(s=>s.path))].filter((p):p is string=>!!p);
+          if(await remove(workspaceId,delId)){deleted.push(delId);paths.push(...own);}
+          else failed.push({id:delId,code:'experiment_not_found'});
+        }catch(err){
+          failed.push(err instanceof ExperimentError
+            ? {id:delId,code:err.code,message:err.message}
+            : {id:delId,code:'experiment_request_failed',message:err instanceof Error?err.message:undefined});
+        }
+      }
+      if(paths.length)await deleteObjects(thumbBucket(),paths).catch(()=>0);
+      response={deleted:deleted.length,failed};
+    }
     else if(request.method==='DELETE'&&id&&!action){
       const e=await load(workspaceId,id);
       if(e.status==='planning'||e.status==='generating') throw new ExperimentError(409,'active_experiment','Cancel the experiment before deleting it.');
