@@ -180,6 +180,37 @@ export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pic
 /** Hand-written JSON Schema for grok structured outputs (additionalProperties:false, no $ref). */
 const BRIEF_DELTA_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['candidates'],properties:{candidates:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['title','hypothesis','mechanism','changedVariables'],properties:{title:{type:'string'},hypothesis:{type:'string'},mechanism:{type:'string'},changedVariables:{type:'array',minItems:1,maxItems:3,items:{type:'object',additionalProperties:false,required:['name','value'],properties:{name:{type:'string',enum:['hook','character','visualStyle','caption','cta','concept']},value:{type:'string'}}}}}}}}};
 const BRIEF_BOARD_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['baseline'],properties:{baseline:{type:'object',additionalProperties:false,required:['title','hypothesis','concept','hook','character','visualStyle','caption','slides'],properties:{title:{type:'string'},hypothesis:{type:'string'},concept:{type:'string'},hook:{type:'string'},character:{type:'string'},visualStyle:{type:'string'},caption:{type:'string'},slides:{type:'array',minItems:3,maxItems:8,items:{type:'object',additionalProperties:false,required:['role','scene','overlayText'],properties:{role:{type:'string'},scene:{type:'string'},overlayText:{type:'string'}}}}}}}};
+/**
+ * Per-storyboard-slide source description, mirroring selectSlideReference's
+ * rotation (originals[index % n], sourceIndex = min(index, len-1)) so the
+ * storyboard slide adapts exactly the frame the renderer will receive as
+ * reference. Format-agnostic: structure flows from the observations.
+ */
+export function sourceSlidesBlock(e: Experiment): string {
+  const carousels: string[][] = [];
+  for (const i of e.inputs) {
+    if (i.status !== 'ready') continue;
+    const obs = i.evidence
+      .filter(v => v.location.startsWith('slide:'))
+      .sort((a, b) => Number(a.location.slice(6)) - Number(b.location.slice(6)));
+    if (obs.length) carousels.push(obs.map(v => `slide ${v.location.slice(6)}: ${v.observation}`));
+  }
+  if (!carousels.length) return '';
+  const lines: string[] = [];
+  for (let n = 0; n < e.slideCount; n++) {
+    const car = carousels[n % carousels.length]!;
+    const idx = Math.min(n, car.length - 1);
+    lines.push(`- storyboard slide ${n + 1} adapts carousel ${(n % carousels.length) + 1}: ${car[idx]}`);
+  }
+  return lines.join('\n');
+}
+const SOURCE_ADAPTATION_LOCK = `SOURCE ADAPTATION LOCK (highest priority):
+- Slide N re-renders ONLY the image its listed source description describes: same composition, same framing, same background, same text placement. Same world, same kind of image.
+- COMPOSITION FIDELITY: each source description enumerates the frame's contents element by element. Your scene must restate every element the description lists, in its position — never drop, merge, add, or reorder elements, even when the story beat only involves one of them.
+- MEDIUM FIDELITY: every element keeps the medium its own description states. A photographed subject stays a photograph of that kind of subject; a drawn or animated subject stays that drawing style. Name each element's medium in the scene. Subjects belong only to the slide that describes them — never import a subject from another slide into this one.
+- The storyboard can never invent a subject, person, location, or medium that the source descriptions do not contain. If a hook beat needs something the sources cannot show, tell it through the overlay text instead.
+- "character" = the subjects as described, slide by slide. "visualStyle" = the source's medium and look, unchanged.
+- Each scene is 1-3 sentences: enumerate the frame element by element (position, content, medium), then the story beat (what changed).`;
 export const renderDeps:RenderDeps={
   findSources:async(workspaceId:string,ids:string[]):Promise<Video[]>=>db.video.findMany({where:{id:{in:ids},source:{workspaceId}}}),
   generateImage:generateOpenRouterImage,
@@ -215,12 +246,18 @@ export const renderDeps:RenderDeps={
     // json_object only guarantees JSON syntax; json_schema is what made grok
     // return BriefDelta/BriefStoryboard in the dry-run (22s, 8/8 expand).
     const grokOpts={reasoningEffort:'high' as const,timeoutMs:180_000};
+    // Source-anchored board: with slide evidence attached, the storyboard must
+    // adapt the exact source frames (rotation matches selectSlideReference).
+    // Video-only or evidence-less experiments keep the free-form board.
+    const sourceBlock=sourceSlidesBlock(e);
+    const boardPrompt=sourceBlock
+      ? `${ctx}\nSOURCE SLIDES (from the analysis — these ARE the carousel being tested; each storyboard slide owns exactly the source slide listed):\n${sourceBlock}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}).\n${SOURCE_ADAPTATION_LOCK}\n- overlayText = the exact words on the image, in the source's own text style. Slide 1 overlay = the hook. Last overlayText empty. No CTA slide. No candidates.`
+      : `${ctx}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}). Last overlayText empty. No CTA slide. No candidates.${boardLock}`;
     const [deltaRes,boardRes]=await Promise.all([
       callOpenRouterText(system,
-        `${ctx}\nProduce "candidates": exactly ${BRIEF_CANDIDATES} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is ONLY {title, hypothesis, mechanism, changedVariables:[{name,value}]}. name must be one of: ${vary.join(', ')}. No slides. Do NOT output noun-swaps of the same claim.`,
+        `${ctx}\nProduce "candidates": exactly ${BRIEF_CANDIDATES} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is ONLY {title, hypothesis, mechanism, changedVariables:[{name,value}]}. name must be one of: ${vary.join(', ')}. Every change lands as text, styling or panel content on the SAME source imagery — never a new scene, subject or layout. Do NOT output noun-swaps of the same claim.`,
         model,{...grokOpts,maxTokens:8000,jsonSchema:{name:'brief_deltas',schema:BRIEF_DELTA_JSON_SCHEMA}}),
-      callOpenRouterText(system,
-        `${ctx}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}). Last overlayText empty. No CTA slide. No candidates.${boardLock}`,
+      callOpenRouterText(system, boardPrompt,
         model,{...grokOpts,maxTokens:6000,jsonSchema:{name:'brief_board',schema:BRIEF_BOARD_JSON_SCHEMA}}),
     ]);
     const boardObj=boardRes.parsed&&typeof boardRes.parsed==='object'?boardRes.parsed as Record<string,unknown>:null;

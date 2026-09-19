@@ -154,3 +154,16 @@ test('malformed and duplicate candidates are dropped before Jev ranking', async 
   expect(new Set(hooks).size).toBe(3); // no duplicates survive into variants
   expect(briefJudge.picked).toEqual(['V3', 'V1']);
 });
+
+test('camelCase variable names survive normalization (visualStyle deltas were all rejected)', () => {
+  const parsed = {
+    baseline: { title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides },
+    candidates: [
+      { title: 'V1', hypothesis: 'h', mechanism: 'm', changedVariables: [{ name: 'hook', value: 'Hook A' }, { name: 'visualStyle', value: 'Harsh flash photography' }] },
+      { title: 'V2', hypothesis: 'h', mechanism: 'm', changedVariables: [{ name: 'hook', value: 'Hook B' }, { name: 'visualstyle', value: 'Cold blue tones' }] },
+    ],
+  };
+  const n = normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['hook', 'visualStyle'] } } as never);
+  expect(n.candidates.map(c => c.brief.visualStyle)).toEqual(['Harsh flash photography', 'Cold blue tones']);
+  expect(n.candidates.map(c => c.brief.hook)).toEqual(['Hook A', 'Hook B']);
+});

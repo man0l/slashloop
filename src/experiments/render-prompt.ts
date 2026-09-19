@@ -186,7 +186,11 @@ export function buildVariantSlidePrompt(
   const { caption: _caption, hook: _hook, cta: _cta, slides: _slides, ...rest } = brief;
   const directionJson = kind === 'hook-text'
     ? { visualStyle: brief.visualStyle, concept: brief.concept, lockedConstraints: brief.lockedConstraints }
-    : rest;
+    : { ...rest,
+        // The global character description bleeds across slides (a chad anime
+        // mention for slide 3 stylized slide 2's photo subject). Unless the
+        // contract actually swaps faces, the slide scene is the subject truth.
+        character: contract.changeFaces ? rest.character : 'render only the subjects described in this slide scene' };
   const opener = kind === 'hook-text'
     ? (subject === 'person'
       ? 'Edit the attached 9:16 frame. Output the SAME photograph with new overlay text only.'

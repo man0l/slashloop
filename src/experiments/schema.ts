@@ -35,7 +35,9 @@ export const BriefDelta = z.object({
   title: z.string().min(1).max(160), hypothesis: text.min(1),
   mechanism: z.string().min(1).max(80).optional(),
   changedVariables: z.array(z.object({
-    name: z.string().trim().toLowerCase().pipe(z.enum(VARIABLE_FIELDS)),
+    // Case-insensitive enum match: toLowerCase alone never matches the
+    // camelCase 'visualStyle', silently rejecting every delta that varies it.
+    name: z.string().trim().transform(v => VARIABLE_FIELDS.find(f => f.toLowerCase() === v.toLowerCase()) ?? v).pipe(z.enum(VARIABLE_FIELDS)),
     value: text.min(1),
   })).min(1).max(7),
   slides: z.array(BriefSlide).min(3).max(8).optional(),
