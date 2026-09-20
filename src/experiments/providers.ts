@@ -284,7 +284,7 @@ export const renderDeps:RenderDeps={
     // expands winners onto the board — grok never writes 8–20 carousels.
     // json_object only guarantees JSON syntax; json_schema is what made grok
     // return BriefDelta/BriefStoryboard in the dry-run (22s, 8/8 expand).
-    const grokOpts={reasoningEffort:'high' as const,timeoutMs:180_000};
+    const grokOpts={reasoningEffort:'medium' as const,timeoutMs:180_000};
     // variantCount can exceed the default candidate pool (up to 12 variants,
     // BRIEF_CANDIDATES=8) — ask for exactly what picking needs, or large
     // experiments could never satisfy variant_count validation.
