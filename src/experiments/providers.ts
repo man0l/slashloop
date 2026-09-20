@@ -16,6 +16,12 @@ import { batch } from './store.js';
 import { D1_PARAM_CHUNK } from '../store.js';
 
 const MODEL='gemini-3.5-flash';
+/** Best-effort real-cost ledger row for an OpenRouter call (price visibility). */
+function logAiCost(workspaceId:string, refId:string, costUsd:number|undefined) {
+  const cents=Math.round((costUsd??0)*100);
+  if(!cents)return;
+  db.usageLog.create({data:{workspaceId,kind:'ai',provider:'openrouter',units:1,costCents:cents,refId}}).catch(()=>{});
+}
 export class SafeFailure extends Error {}
 async function boundedBytes(res:Response,max:number):Promise<Uint8Array> {
   if(!res.ok)throw new SafeFailure(`media_unavailable_${res.status}`);
@@ -303,6 +309,7 @@ export const renderDeps:RenderDeps={
       callOpenRouterText(system, boardPrompt,
         model,{...grokOpts,maxTokens:6000,jsonSchema:{name:'brief_board',schema:BRIEF_BOARD_JSON_SCHEMA}}),
     ]);
+    logAiCost(e.workspaceId,`briefs:${e.id}`,(deltaRes.costUsd??0)+(boardRes.costUsd??0));
     const boardObj=boardRes.parsed&&typeof boardRes.parsed==='object'?boardRes.parsed as Record<string,unknown>:null;
     const deltaObj=deltaRes.parsed&&typeof deltaRes.parsed==='object'?deltaRes.parsed as Record<string,unknown>:null;
     const parsed={
@@ -398,6 +405,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
               `Carousel: ${urls.length} images; shots must describe EVERY slide, timestampSec=0-based index, durationSec=0, no audio claims.\nCaption context:${video.caption.slice(0,1000)}\nSchema:${schema}`,
               analysisModel,
               { images: photoImages, maxTokens: 8192, timeoutMs: 180_000 });
+            logAiCost(e.workspaceId,`analysis:${video.id}`,r.costUsd);
             const parsed=r.parsed ?? extractFirstJson('');
             if(!parsed)throw new SafeFailure('grok_invalid_json');
             return parsed;
@@ -622,6 +630,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       }
     }
     if(chosen.buffer.length<512 || chosen.buffer.length>12*1024*1024)throw new SafeFailure('invalid_image_size');
+    logAiCost(e.workspaceId,`slide:${e.id}:${v.id}#${t.index}`,chosen.costUsd);
     await render.upload({bucket:thumbBucket(),path,body:chosen.buffer,contentType:chosen.contentType,upsert:false});
     return {path,url:publicUrl(thumbBucket(),path),model,provider:'openrouter',costUsd:chosen.costUsd,prompt:finalPrompt,reference:reference?{kind:reference.kind,videoId:reference.videoId,index:reference.index,path:reference.path}:null,fanout:{requested:fanout,rendered:wave.length,chosen:winner,judge:judgeTrail,styleViolation},story:{ok:story.ok,reasons:story.reasons,corrected:story.corrected}};
   }};

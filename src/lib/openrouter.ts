@@ -112,6 +112,8 @@ export interface OpenRouterResult {
   parsed: unknown;
   inputTokens: number;
   outputTokens: number;
+  /** What OpenRouter billed for this call in USD (0 when unreported). */
+  costUsd: number;
 }
 
 /**
@@ -173,7 +175,7 @@ export async function callOpenRouterVideo(
   model: string,
   videoUrl: string,
   options?: OpenRouterVideoCallOptions,
-): Promise<{ rawText: string; inputTokens: number; outputTokens: number }> {
+): Promise<{ rawText: string; inputTokens: number; outputTokens: number; costUsd: number }> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error('OPENROUTER_API_KEY environment variable is not set');
 
@@ -209,7 +211,7 @@ export async function callOpenRouterVideo(
 
   const data = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
     error?: { message?: string; code?: number };
   };
 
@@ -224,6 +226,7 @@ export async function callOpenRouterVideo(
     rawText: content,
     inputTokens: data.usage?.prompt_tokens ?? 0,
     outputTokens: data.usage?.completion_tokens ?? 0,
+    costUsd: Number(data.usage?.cost ?? 0),
   };
 }
 
@@ -273,7 +276,7 @@ export async function callOpenRouterText(
 
   const data = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
     error?: { message?: string; code?: number };
   };
 
@@ -296,6 +299,7 @@ export async function callOpenRouterText(
       parsed: JSON.parse(raw),
       inputTokens: data.usage?.prompt_tokens ?? 0,
       outputTokens: data.usage?.completion_tokens ?? 0,
+      costUsd: Number(data.usage?.cost ?? 0),
     };
   } catch {
     throw new Error('Failed to parse OpenRouter response as JSON');
