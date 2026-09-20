@@ -185,7 +185,8 @@ test('concept candidates must retell the storyboard — plain and copied storybo
   };
   const n = normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['concept'] } } as never);
   expect(n.candidates.map(c => c.title)).toEqual(['Real']);
-  expect(n.candidates[0]!.brief.slides.map(s => s.overlayText)).toEqual(['ANGLE ONE', 'THE PROOF', '']);
+  // slide 1's overlay is aligned to the (locked) brief hook — what render will burn in
+  expect(n.candidates[0]!.brief.slides.map(s => s.overlayText)).toEqual(['Start here', 'THE PROOF', '']);
   expect(n.candidates[0]!.changedVariables.map(c => c.name)).toEqual(['concept']);
 });
 

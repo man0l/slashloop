@@ -148,6 +148,9 @@ export function expandDelta(baseline:Proposal,delta:z.infer<typeof BriefDelta>,s
     if(c.name==='slides')continue;
     (brief as unknown as Record<string,unknown>)[c.name]=c.value;
   }
+  // effectiveOverlayText renders brief.hook on slide 1 — when a retold
+  // storyboard ships its own slide-1 copy, align it so review shows what renders.
+  if(delta.slides&&brief.slides.length)brief.slides[0]={...brief.slides[0]!,overlayText:brief.hook};
   return {title:delta.title,hypothesis:delta.hypothesis,mechanism:delta.mechanism,changedVariables:delta.changedVariables,brief};
 }
 function sameSlides(a:readonly unknown[],b:readonly unknown[]):boolean {
