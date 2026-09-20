@@ -61,8 +61,21 @@ describe('variant slide rendering', () => {
     expect(characterPrompt).toContain('taper fade');
   });
 
-  test('collage and drawing sources lock medium, not a photoreal face', () => {
-    expect(identitySubject({ medium: 'collage', density: 'rich' })).toBe('collage');
+  test('non-edit locks must erase source text, never preserve it', () => {
+    const ctx = { language: 'English', brand: '', audience: '' };
+    const characterPrompt = buildVariantSlidePrompt(
+      { ...baseline, character: 'A fitness coach holding a phone' },
+      1, { ...ctx, unlocked: ['character'] }, 'character');
+    expect(characterPrompt).toContain('erase EVERY word');
+    expect(characterPrompt).toContain('Do not copy any text');
+    const stylePrompt = buildVariantSlidePrompt(
+      { ...baseline, visualStyle: 'Neon infographic' },
+      1, { ...ctx, unlocked: ['visualStyle'] }, 'visualStyle');
+    expect(stylePrompt).toContain('erase EVERY word');
+    expect(stylePrompt).toContain('must be gone');
+  });
+
+  test('collage and drawing sources lock medium, not a photoreal face', () => {    expect(identitySubject({ medium: 'collage', density: 'rich' })).toBe('collage');
     expect(identitySubject({ medium: 'caricature', density: 'moderate' })).toBe('drawn-character');
     expect(identitySubject({ medium: 'photograph', density: 'minimal' })).toBe('person');
     const collage = styleContract({ medium: 'collage', density: 'rich' });
