@@ -107,7 +107,9 @@ export function assertBrief(e: Experiment, b: BriefData) {
     throw new ExperimentError(422, 'locked_constraints', 'Slide count and lockedConstraints must match the experiment.');
 }
 export function validateVariants(e: Experiment, proposals: Proposal[]) {
-  if (proposals.length !== e.variantCount) throw new ExperimentError(422, 'variant_count');
+  // Fewer than requested is a degraded success (the fan-out cannot always
+  // produce enough distinct survivors) — never a reason to fail the plan.
+  if (proposals.length < 1 || proposals.length > e.variantCount) throw new ExperimentError(422, 'variant_count');
   const baseline = proposals[0]!;
   for (let i = 0; i < proposals.length; i++) {
     const p = proposals[i]!; assertBrief(e, p.brief);

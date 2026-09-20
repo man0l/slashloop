@@ -199,3 +199,13 @@ test('concept variants with retold storyboards validate; copied storyboards are 
   const copied = { ...good, brief: { ...baseBrief, concept: 'New angle' } };
   expect(() => validateVariants(e, [base, copied])).toThrow('identical slide briefs');
 });
+
+test('a 10-variant experiment degrades to the 9 deliverable proposals instead of failing', () => {
+  const e = { instructions: { lockedConstraints: [], variables: ['hook'], mode: 'controlled' }, variantCount: 10, slideCount: 3 } as never;
+  const base = { title: 'B', hypothesis: 'h', changedVariables: [], brief: { ...baseBrief } };
+  const variants = Array.from({ length: 8 }, (_, i) => ({ title: `V${i}`, hypothesis: 'h', changedVariables: [{ name: 'hook' as const, value: `Hook ${i}` }], brief: { ...baseBrief, hook: `Hook ${i}` } }));
+  expect(() => validateVariants(e, [base, ...variants])).not.toThrow();
+  const extra = { title: 'VX', hypothesis: 'h', changedVariables: [{ name: 'hook' as const, value: 'Hook X' }], brief: { ...baseBrief, hook: 'Hook X' } };
+  expect(() => validateVariants(e, [base, ...variants, extra])).not.toThrow();
+  expect(() => validateVariants(e, [base, ...variants, extra, { ...extra, title: 'VY', brief: { ...baseBrief, hook: 'Hook Y' } }])).toThrow('variant_count');
+});

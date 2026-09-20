@@ -18,7 +18,7 @@ const isActive=(e:Experiment)=>e.status==='planning'||e.status==='generating';
 /** Stable, short cause for the UI/logs. Never include provider payloads. */
 function rejectionCause(failure:unknown):string|null {
   if(failure instanceof ExperimentError)return failure.code;
-  if(failure instanceof SafeFailure)return failure.message.slice(0,80);
+  if(failure instanceof SafeFailure)return failure.message.slice(0,200);
   if(failure instanceof ZodError)return 'invalid_schema';
   if(failure instanceof Error)return providerCause(failure.message);
   return null;

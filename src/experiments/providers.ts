@@ -280,6 +280,10 @@ export const renderDeps:RenderDeps={
     // json_object only guarantees JSON syntax; json_schema is what made grok
     // return BriefDelta/BriefStoryboard in the dry-run (22s, 8/8 expand).
     const grokOpts={reasoningEffort:'high' as const,timeoutMs:180_000};
+    // variantCount can exceed the default candidate pool (up to 12 variants,
+    // BRIEF_CANDIDATES=8) — ask for exactly what picking needs, or large
+    // experiments could never satisfy variant_count validation.
+    const needed=Math.max(BRIEF_CANDIDATES,e.variantCount-1);
     // Source-anchored board: with slide evidence attached, the storyboard must
     // adapt the exact source frames (rotation matches selectSlideReference).
     // Video-only or evidence-less experiments keep the free-form board.
@@ -289,7 +293,7 @@ export const renderDeps:RenderDeps={
       : `${ctx}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}). Last overlayText empty. No CTA slide. No candidates.${boardLock}`;
     const [deltaRes,boardRes]=await Promise.all([
       callOpenRouterText(system,
-        `${ctx}\nProduce "candidates": exactly ${BRIEF_CANDIDATES} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is {title, hypothesis, mechanism, changedVariables:[{name,value}]} plus "slides" REQUIRED whenever the variation changes concept, angle or story: the full storyboard of exactly ${e.slideCount} {role,scene,overlayText} — the storyline is LOCKED to the source, so copy the baseline slide scenes and their order VERBATIM and rewrite ONLY the overlayText so the new angle speaks through the words on the images; slide 1 overlay stays the hook pinned by any KEEP UNCHANGED rule; last overlayText empty. Candidates that merely restate the baseline copy are rejected. name must be one of: ${vary.join(', ')}. The source imagery, composition, subjects and storyline stay; only the overlay copy follows the new angle. Do NOT output noun-swaps of the same claim.`,
+        `${ctx}\nProduce "candidates": exactly ${needed} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is {title, hypothesis, mechanism, changedVariables:[{name,value}]} plus "slides" REQUIRED whenever the variation changes concept, angle or story: the full storyboard of exactly ${e.slideCount} {role,scene,overlayText} — the storyline is LOCKED to the source, so copy the baseline slide scenes and their order VERBATIM and rewrite ONLY the overlayText so the new angle speaks through the words on the images; slide 1 overlay stays the hook pinned by any KEEP UNCHANGED rule; last overlayText empty. Candidates that merely restate the baseline copy are rejected. name must be one of: ${vary.join(', ')}. The source imagery, composition, subjects and storyline stay; only the overlay copy follows the new angle. Do NOT output noun-swaps of the same claim.`,
         model,{...grokOpts,maxTokens:16000,jsonSchema:{name:'brief_deltas',schema:BRIEF_DELTA_JSON_SCHEMA}}),
       callOpenRouterText(system, boardPrompt,
         model,{...grokOpts,maxTokens:6000,jsonSchema:{name:'brief_board',schema:BRIEF_BOARD_JSON_SCHEMA}}),
@@ -512,7 +516,14 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       const results=await Promise.allSettled(Array.from({length:fanout},
         ()=>render.generateImage({prompt:p,referenceUrl:reference?.url,model,quality:'low',aspectRatio:'9:16'})));
       const out=results.flatMap(r=>r.status==='fulfilled'?[r.value]:[]);
-      if(!out.length){const first=results[0];const err=first&&first.status==='rejected'?first.reason:null;throw err instanceof SafeFailure?err:new SafeFailure('all_candidates_failed');}
+      if(!out.length){
+        // Diagnosability: a bare all_candidates_failed hides whether the
+        // provider refused content, throttled, or 500'd — keep each reason.
+        const reasons=results.map((r)=>r.status==='fulfilled'?'ok':String(r.status==='rejected'?(r.reason instanceof Error?r.reason.message:r.reason):'unknown').replace(/\s+/g,' ').slice(0,60));
+        const first=results[0];
+        const err=first&&first.status==='rejected'&&first.reason instanceof SafeFailure?first.reason:new SafeFailure(`all_candidates_failed[${reasons.join(' | ')}]`);
+        throw err;
+      }
       return out;
     };
     const describeSafe=async(buffers:Array<{buffer:Buffer}>)=>{
