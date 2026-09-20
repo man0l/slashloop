@@ -168,9 +168,10 @@ test('camelCase variable names survive normalization (visualStyle deltas were al
   expect(n.candidates.map(c => c.brief.hook)).toEqual(['Hook A', 'Hook B']);
 });
 
+// Storyline is locked: same scenes/order as the baseline, new overlay copy per angle.
 const rewrittenSlides = [
-  { role: 'hook', scene: 'A studio, new angle beat', overlayText: 'ANGLE ONE' },
-  { role: 'body', scene: 'A gym, proof beat', overlayText: 'THE PROOF' },
+  { role: 'hook', scene: 'A studio', overlayText: 'ANGLE ONE' },
+  { role: 'body', scene: 'A gym', overlayText: 'THE PROOF' },
   { role: 'cta', scene: 'A mirror', overlayText: '' },
 ];
 
