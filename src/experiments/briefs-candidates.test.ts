@@ -191,6 +191,19 @@ test('concept candidates must retell the storyboard — plain and copied storybo
   expect(n.candidates[0]!.changedVariables.map(c => c.name)).toEqual(['concept']);
 });
 
+test('text-only candidates ignore smuggled storyboard rewrites instead of failing validation', () => {
+  const parsed = {
+    baseline: { title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides },
+    candidates: [
+      { title: 'V1', hypothesis: 'h', changedVariables: [{ name: 'hook', value: 'Hook A' }], slides: [{ role: 'hook', scene: 'A rewritten studio', overlayText: 'New words' }, { role: 'body', scene: 'A rewritten gym', overlayText: 'More words' }, { role: 'cta', scene: 'A mirror', overlayText: '' }] },
+    ],
+  };
+  const n = normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['hook'] } } as never);
+  expect(n.candidates).toHaveLength(1);
+  expect(n.candidates[0]!.brief.hook).toBe('Hook A');
+  expect(n.candidates[0]!.brief.slides.map(s => s.scene)).toEqual(n.baseline.brief.slides.map(s => s.scene));
+});
+
 test('concept variants with retold storyboards validate; copied storyboards are rejected', () => {
   const e = { instructions: { lockedConstraints: [], variables: ['concept'], mode: 'exploration' }, variantCount: 2, slideCount: 3 } as never;
   const base = { title: 'B', hypothesis: 'h', changedVariables: [], brief: { ...baseBrief } };
