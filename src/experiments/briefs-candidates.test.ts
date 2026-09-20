@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { normalizeBriefCandidates, prepare } from './providers.js';
-import { BRIEF_CANDIDATES } from './schema.js';
+import { BRIEF_CANDIDATES, validateVariants } from './schema.js';
 import type { Experiment, Task, Proposal } from './schema.js';
 
 const baseBrief = { concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', cta: '', lockedConstraints: [], slides: [
@@ -166,4 +166,34 @@ test('camelCase variable names survive normalization (visualStyle deltas were al
   const n = normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['hook', 'visualStyle'] } } as never);
   expect(n.candidates.map(c => c.brief.visualStyle)).toEqual(['Harsh flash photography', 'Cold blue tones']);
   expect(n.candidates.map(c => c.brief.hook)).toEqual(['Hook A', 'Hook B']);
+});
+
+const rewrittenSlides = [
+  { role: 'hook', scene: 'A studio, new angle beat', overlayText: 'ANGLE ONE' },
+  { role: 'body', scene: 'A gym, proof beat', overlayText: 'THE PROOF' },
+  { role: 'cta', scene: 'A mirror', overlayText: '' },
+];
+
+test('concept candidates must retell the storyboard — plain and copied storyboards are dropped', () => {
+  const parsed = {
+    baseline: { title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides },
+    candidates: [
+      { title: 'Lazy', hypothesis: 'h', changedVariables: [{ name: 'concept', value: 'New angle, same slides' }] },
+      { title: 'Copier', hypothesis: 'h', changedVariables: [{ name: 'concept', value: 'New angle, copied slides' }], slides: baseBrief.slides },
+      { title: 'Real', hypothesis: 'h', changedVariables: [{ name: 'concept', value: 'New angle told' }], slides: rewrittenSlides },
+    ],
+  };
+  const n = normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['concept'] } } as never);
+  expect(n.candidates.map(c => c.title)).toEqual(['Real']);
+  expect(n.candidates[0]!.brief.slides.map(s => s.overlayText)).toEqual(['ANGLE ONE', 'THE PROOF', '']);
+  expect(n.candidates[0]!.changedVariables.map(c => c.name)).toEqual(['concept']);
+});
+
+test('concept variants with retold storyboards validate; copied storyboards are rejected', () => {
+  const e = { instructions: { lockedConstraints: [], variables: ['concept'], mode: 'exploration' }, variantCount: 2, slideCount: 3 } as never;
+  const base = { title: 'B', hypothesis: 'h', changedVariables: [], brief: { ...baseBrief } };
+  const good = { title: 'V', hypothesis: 'h', changedVariables: [{ name: 'concept' as const, value: 'New angle' }], brief: { ...baseBrief, concept: 'New angle', slides: rewrittenSlides } };
+  expect(() => validateVariants(e, [base, good])).not.toThrow();
+  const copied = { ...good, brief: { ...baseBrief, concept: 'New angle' } };
+  expect(() => validateVariants(e, [base, copied])).toThrow('identical slide briefs');
 });

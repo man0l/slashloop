@@ -26,9 +26,27 @@ async function boundedBytes(res:Response,max:number):Promise<Uint8Array> {
   finally { await reader.cancel().catch(()=>{}); }
   const out=new Uint8Array(size);let i=0;for(const c of chunks){out.set(c,i);i+=c.length;}return out;
 }
+/**
+ * Format-agnostic on-image text lookup: merges whatever the analysis backend
+ * captured — shots[].onScreenText, keyMoments[].textOverlay.text, or the
+ * top-level onScreenText[] — keyed by timestampSec (slide index for carousels,
+ * seconds for videos). Works for any input type, no slideshow assumptions.
+ */
+function overlayByTimestamp(parsed: z.infer<typeof VideoAnalysisDataSchema>): Map<number, string> {
+  const map = new Map<number, string>();
+  for (const s of parsed.shots ?? []) { const t = s.onScreenText?.trim(); if (t) map.set(s.timestampSec, t); }
+  for (const k of parsed.keyMoments ?? []) { const t = k.textOverlay?.text?.trim(); if (t && !map.has(k.timestampSec)) map.set(k.timestampSec, t); }
+  for (const o of parsed.onScreenText ?? []) { const t = o.text?.trim(); if (t && !map.has(o.timestampSec)) map.set(o.timestampSec, t); }
+  return map;
+}
 export function observations(raw:unknown, photo:boolean):Input['evidence'] {
   const parsed=VideoAnalysisDataSchema.safeParse(raw);if(!parsed.success)return [];
-  return (parsed.data.shots??[]).filter(s=>s.description.trim()).slice(0,32).map(s=>({location:photo?`slide:${s.timestampSec}`:`second:${s.timestampSec}`,observation:s.description.slice(0,1000)}));
+  const overlays=overlayByTimestamp(parsed.data);
+  return (parsed.data.shots??[]).filter(s=>s.description.trim()).slice(0,32).map(s=>{
+    const text=overlays.get(s.timestampSec);
+    const observation=text?`${s.description.slice(0,1000)} — on-image text: ${JSON.stringify(text.slice(0,300))}`:s.description.slice(0,1000);
+    return {location:photo?`slide:${s.timestampSec}`:`second:${s.timestampSec}`,observation};
+  });
 }
 export async function compatibleInput(video:Video):Promise<Input> {
   const photo=isPhotoPost(video);
@@ -119,7 +137,11 @@ function storyboardToProposal(s:z.infer<typeof BriefStoryboard>,slideCount:numbe
 }
 export function expandDelta(baseline:Proposal,delta:z.infer<typeof BriefDelta>,slideCount:number,lockedConstraints:string[],variables?:readonly string[]):Proposal|null {
   if(!delta.changedVariables.length)return null;
+  const storyChange=delta.changedVariables.some(c=>c.name==='concept'||c.name==='slides');
   if(delta.changedVariables.some(c=>c.name==='slides'?!delta.slides:false))return null;
+  // A concept/angle change is only real when the storyboard itself retells it:
+  // candidates that keep the baseline slides would render copies of one deck.
+  if(storyChange&&(!delta.slides||sameSlides(delta.slides,baseline.brief.slides)))return null;
   if(variables&&delta.changedVariables.some(c=>!variables.includes(c.name)))return null;
   const brief=finishBrief({...baseline.brief,slides:delta.slides?delta.slides.map(s=>({...s})):baseline.brief.slides.map(s=>({...s}))},slideCount,lockedConstraints);
   for(const c of delta.changedVariables){
@@ -127,6 +149,9 @@ export function expandDelta(baseline:Proposal,delta:z.infer<typeof BriefDelta>,s
     (brief as unknown as Record<string,unknown>)[c.name]=c.value;
   }
   return {title:delta.title,hypothesis:delta.hypothesis,mechanism:delta.mechanism,changedVariables:delta.changedVariables,brief};
+}
+function sameSlides(a:readonly unknown[],b:readonly unknown[]):boolean {
+  return a.length===b.length&&a.every((s,i)=>{const x=s as {scene?:string;overlayText?:string},y=b[i] as {scene?:string;overlayText?:string};return x.scene===y.scene&&x.overlayText===y.overlayText;});
 }
 export async function resolveStorySlideCount(e:Experiment):Promise<number> {
   const ids=e.inputs.map(i=>i.videoId);
@@ -180,7 +205,8 @@ export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pic
   return {baseline,candidates};
 }
 /** Hand-written JSON Schema for grok structured outputs (additionalProperties:false, no $ref). */
-const BRIEF_DELTA_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['candidates'],properties:{candidates:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['title','hypothesis','mechanism','changedVariables'],properties:{title:{type:'string'},hypothesis:{type:'string'},mechanism:{type:'string'},changedVariables:{type:'array',minItems:1,maxItems:3,items:{type:'object',additionalProperties:false,required:['name','value'],properties:{name:{type:'string',enum:['hook','character','visualStyle','caption','cta','concept']},value:{type:'string'}}}}}}}}};
+const BRIEF_DELTA_SLIDES={type:'array',minItems:3,maxItems:8,items:{type:'object',additionalProperties:false,required:['role','scene','overlayText'],properties:{role:{type:'string'},scene:{type:'string'},overlayText:{type:'string'}}}};
+const BRIEF_DELTA_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['candidates'],properties:{candidates:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['title','hypothesis','mechanism','changedVariables'],properties:{title:{type:'string'},hypothesis:{type:'string'},mechanism:{type:'string'},changedVariables:{type:'array',minItems:1,maxItems:3,items:{type:'object',additionalProperties:false,required:['name','value'],properties:{name:{type:'string',enum:['hook','character','visualStyle','caption','cta','concept']},value:{type:'string'}}}},slides:BRIEF_DELTA_SLIDES}}}}};
 const BRIEF_BOARD_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['baseline'],properties:{baseline:{type:'object',additionalProperties:false,required:['title','hypothesis','concept','hook','character','visualStyle','caption','slides'],properties:{title:{type:'string'},hypothesis:{type:'string'},concept:{type:'string'},hook:{type:'string'},character:{type:'string'},visualStyle:{type:'string'},caption:{type:'string'},slides:{type:'array',minItems:3,maxItems:8,items:{type:'object',additionalProperties:false,required:['role','scene','overlayText'],properties:{role:{type:'string'},scene:{type:'string'},overlayText:{type:'string'}}}}}}}};
 /**
  * Per-storyboard-slide source description, mirroring selectSlideReference's
@@ -242,7 +268,10 @@ export const renderDeps:RenderDeps={
     const boardLock=experimentVisualLock(vary).subjectLocked
       ? ` Every storyboard slide stays inside the source visual language (${e.styleFormula?.medium??'unknown'}). Later slides are the next beat of the SAME setup — not a new location, not a new medium. Never drop the locked subject (person, drawing, or collage) for an empty frame.`
       : '';
-    const ctx=`Experiment goal: ${e.instructions.goal}\nDirection: ${e.instructions.direction}\nAudience: ${e.instructions.audience}\nMode: ${e.instructions.mode}. This experiment varies ONLY: ${vary.join(', ')}.\nLOCKED (stay on the baseline, do not change): ${lockedVars.join(', ') || 'none'}.\n${varyLine}\n${styleLine}\nLanguage: ${e.instructions.language}.`;
+    const keepRules=e.instructions.lockedConstraints.length
+      ? `\nKEEP UNCHANGED (user's hard rules, highest priority — obey exactly; when a rule pins copy such as the hook, reuse the source's exact on-image text verbatim): ${e.instructions.lockedConstraints.join(' | ')}`
+      : '';
+    const ctx=`Experiment goal: ${e.instructions.goal}\nDirection: ${e.instructions.direction}\nAudience: ${e.instructions.audience}\nMode: ${e.instructions.mode}. This experiment varies ONLY: ${vary.join(', ')}.\nLOCKED (stay on the baseline, do not change): ${lockedVars.join(', ') || 'none'}.${keepRules}\n${varyLine}\n${styleLine}\nLanguage: ${e.instructions.language}.`;
     // Split: tiny parameter list for Jev, one storyboard in parallel. Code
     // expands winners onto the board — grok never writes 8–20 carousels.
     // json_object only guarantees JSON syntax; json_schema is what made grok
@@ -253,12 +282,12 @@ export const renderDeps:RenderDeps={
     // Video-only or evidence-less experiments keep the free-form board.
     const sourceBlock=sourceSlidesBlock(e);
     const boardPrompt=sourceBlock
-      ? `${ctx}\nSOURCE SLIDES (from the analysis — these ARE the carousel being tested; each storyboard slide owns exactly the source slide listed):\n${sourceBlock}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}).\n${SOURCE_ADAPTATION_LOCK}\n- overlayText = the exact words on the image, in the source's own text style. Slide 1 overlay = the hook. Last overlayText empty. No CTA slide. No candidates.`
+      ? `${ctx}\nSOURCE SLIDES (from the analysis — these ARE the carousel being tested; each storyboard slide owns exactly the source slide listed):\n${sourceBlock}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}).\n${SOURCE_ADAPTATION_LOCK}\n- overlayText = the exact words on the image, in the source's own text style. Source slide descriptions quote each slide's words ("on-image text: ...") — when a KEEP UNCHANGED rule pins that copy (the hooks, captions), reuse those exact words verbatim instead of writing new ones. Slide 1 overlay = the hook. Last overlayText empty. No CTA slide. No candidates.`
       : `${ctx}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}). Last overlayText empty. No CTA slide. No candidates.${boardLock}`;
     const [deltaRes,boardRes]=await Promise.all([
       callOpenRouterText(system,
-        `${ctx}\nProduce "candidates": exactly ${BRIEF_CANDIDATES} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is ONLY {title, hypothesis, mechanism, changedVariables:[{name,value}]}. name must be one of: ${vary.join(', ')}. Every change lands as text, styling or panel content on the SAME source imagery — never a new scene, subject or layout. Do NOT output noun-swaps of the same claim.`,
-        model,{...grokOpts,maxTokens:8000,jsonSchema:{name:'brief_deltas',schema:BRIEF_DELTA_JSON_SCHEMA}}),
+        `${ctx}\nProduce "candidates": exactly ${BRIEF_CANDIDATES} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is {title, hypothesis, mechanism, changedVariables:[{name,value}]} plus "slides" REQUIRED whenever the variation changes concept, angle or story: the full rewritten storyboard of exactly ${e.slideCount} {role,scene,overlayText} — the new angle must be told through the scene beats AND the overlay copy, never by restating the baseline storyboard (such candidates are rejected). Slide 1 overlay stays the hook pinned by any KEEP UNCHANGED rule; last overlayText empty. name must be one of: ${vary.join(', ')}. The source imagery, composition and subjects stay; only the story beats and overlay copy follow the new angle. Do NOT output noun-swaps of the same claim.`,
+        model,{...grokOpts,maxTokens:16000,jsonSchema:{name:'brief_deltas',schema:BRIEF_DELTA_JSON_SCHEMA}}),
       callOpenRouterText(system, boardPrompt,
         model,{...grokOpts,maxTokens:6000,jsonSchema:{name:'brief_board',schema:BRIEF_BOARD_JSON_SCHEMA}}),
     ]);

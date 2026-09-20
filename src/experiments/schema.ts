@@ -112,11 +112,16 @@ export function validateVariants(e: Experiment, proposals: Proposal[]) {
   for (let i = 0; i < proposals.length; i++) {
     const p = proposals[i]!; assertBrief(e, p.brief);
     const changed = VARIABLE_FIELDS.filter(k => !same(p.brief[k], baseline.brief[k]));
+    // A concept change retells the storyboard by definition — the slides diff
+    // is part of that one variable, not a second unapproved one.
+    const effective = changed.includes('concept') ? changed.filter(k => k !== 'slides') : changed;
     if (i === 0 && p.changedVariables.length) throw new ExperimentError(422, 'baseline_has_changes');
     if (i === 0) continue;
-    if (!changed.length || changed.some(k => !e.instructions.variables.includes(k))) throw new ExperimentError(422, 'unapproved_variable');
-    if (e.instructions.mode === 'controlled' && changed.length !== 1) throw new ExperimentError(422, 'not_one_variable');
-    if (!same([...changed].sort(), p.changedVariables.map(c => c.name).sort())) throw new ExperimentError(422, 'incorrect_changed_variables');
+    if (!effective.length || effective.some(k => !e.instructions.variables.includes(k))) throw new ExperimentError(422, 'unapproved_variable');
+    if (e.instructions.mode === 'controlled' && effective.length !== 1) throw new ExperimentError(422, 'not_one_variable');
+    if (!same([...effective].sort(), p.changedVariables.map(c => c.name).sort())) throw new ExperimentError(422, 'incorrect_changed_variables');
+    if ((effective.includes('concept') || effective.includes('slides')) && same(p.brief.slides, baseline.brief.slides))
+      throw new ExperimentError(422, 'identical_storyboard', 'Concept/slides variants must retell the storyboard — identical slide briefs cannot test an angle.');
     for (const c of p.changedVariables) {
       const value = p.brief[c.name];
       if (typeof value === 'string' && c.value !== value) throw new ExperimentError(422, 'incorrect_variable_value');
