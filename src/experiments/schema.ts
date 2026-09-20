@@ -1,4 +1,4 @@
-import { z } from 'zod/v4';
+﻿import { z } from 'zod/v4';
 
 export class ExperimentError extends Error {
   constructor(public statusCode: number, public code: string, message = code) { super(message); }
@@ -57,7 +57,7 @@ export const EditBrief = WorkspaceBody.extend({ revision: z.number().int().posit
 export const MAX_TASK_ATTEMPTS = 4;
 export const MAX_MANUAL_ATTEMPTS = 6;
 /** Up to this many slide renders may run concurrently within one experiment. */
-export const PARALLEL_SLIDES = 12;
+export const PARALLEL_SLIDES = 48;
 /** Candidates rendered per slide; Jev (TypeSafe) picks the most viral one. */
 export const SLIDE_FANOUT = 3;
 /** Parameter deltas generated at the briefs stage; Jev ranks them, top variantCount-1 win. */
@@ -108,13 +108,13 @@ export function assertBrief(e: Experiment, b: BriefData) {
 }
 export function validateVariants(e: Experiment, proposals: Proposal[]) {
   // Fewer than requested is a degraded success (the fan-out cannot always
-  // produce enough distinct survivors) — never a reason to fail the plan.
+  // produce enough distinct survivors) â€” never a reason to fail the plan.
   if (proposals.length < 1 || proposals.length > e.variantCount) throw new ExperimentError(422, 'variant_count');
   const baseline = proposals[0]!;
   for (let i = 0; i < proposals.length; i++) {
     const p = proposals[i]!; assertBrief(e, p.brief);
     const changed = VARIABLE_FIELDS.filter(k => !same(p.brief[k], baseline.brief[k]));
-    // A concept change retells the storyboard by definition — the slides diff
+    // A concept change retells the storyboard by definition â€” the slides diff
     // is part of that one variable, not a second unapproved one.
     const effective = changed.includes('concept') ? changed.filter(k => k !== 'slides') : changed;
     if (i === 0 && p.changedVariables.length) throw new ExperimentError(422, 'baseline_has_changes');
@@ -123,7 +123,7 @@ export function validateVariants(e: Experiment, proposals: Proposal[]) {
     if (e.instructions.mode === 'controlled' && effective.length !== 1) throw new ExperimentError(422, 'not_one_variable');
     if (!same([...effective].sort(), p.changedVariables.map(c => c.name).sort())) throw new ExperimentError(422, 'incorrect_changed_variables');
     if ((effective.includes('concept') || effective.includes('slides')) && same(p.brief.slides, baseline.brief.slides))
-      throw new ExperimentError(422, 'identical_storyboard', 'Concept/slides variants must retell the storyboard — identical slide briefs cannot test an angle.');
+      throw new ExperimentError(422, 'identical_storyboard', 'Concept/slides variants must retell the storyboard â€” identical slide briefs cannot test an angle.');
     for (const c of p.changedVariables) {
       const value = p.brief[c.name];
       if (typeof value === 'string' && c.value !== value) throw new ExperimentError(422, 'incorrect_variable_value');
@@ -144,3 +144,4 @@ export function validateReport(report: ReportData, inputs: Input[]) {
     }
   }
 }
+
