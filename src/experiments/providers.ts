@@ -126,7 +126,12 @@ interface RenderDeps {
   verifyStory?(opts:{scene:string;overlay:string;candidate:Buffer}):Promise<{ok:boolean;reasons:string[]}>;
 }
 export class HydrationPending extends Error { constructor(public jobId:string){super('hydration_pending');} }
-function fingerprint(p:Proposal):string { return (p.brief.hook+'|'+p.brief.concept).toLowerCase(); }
+/** Dedupe key across ALL variable fields — hook+concept alone would drop every
+ *  character/visualStyle/caption/cta candidate as a "duplicate" of the baseline. */
+function fingerprint(p:Proposal):string {
+  const b=p.brief;
+  return JSON.stringify([b.hook,b.concept,b.character,b.visualStyle,b.caption,b.cta,b.slides]).toLowerCase();
+}
 /** Pad/trim slides, strip baked-in CTAs. Shared by the storyboard and the legacy full-proposal path. */
 export function finishBrief(brief:BriefData,slideCount:number,lockedConstraints:string[]):BriefData {
   const slides=brief.slides.map(s=>({...s}));
