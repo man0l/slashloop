@@ -520,6 +520,9 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
         // Diagnosability: a bare all_candidates_failed hides whether the
         // provider refused content, throttled, or 500'd — keep each reason.
         const reasons=results.map((r)=>r.status==='fulfilled'?'ok':String(r.status==='rejected'?(r.reason instanceof Error?r.reason.message:r.reason):'unknown').replace(/\s+/g,' ').slice(0,60));
+        // An empty OpenRouter balance 402s every candidate — surface the known
+        // terminal quota cause (refund + no futile retries) instead of a wave failure.
+        if(reasons.some((r)=>/\b402\b|insufficient credits/i.test(r)))throw new SafeFailure('credits_exhausted_402');
         const first=results[0];
         const err=first&&first.status==='rejected'&&first.reason instanceof SafeFailure?first.reason:new SafeFailure(`all_candidates_failed[${reasons.join(' | ')}]`);
         throw err;
