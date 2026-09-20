@@ -257,7 +257,8 @@ const SOURCE_ADAPTATION_LOCK = `SOURCE ADAPTATION LOCK (highest priority):
 - MEDIUM FIDELITY: every element keeps the medium its own description states. A photographed subject stays a photograph of that kind of subject; a drawn or animated subject stays that drawing style. Name each element's medium in the scene. Subjects belong only to the slide that describes them — never import a subject from another slide into this one.
 - The storyboard can never invent a subject, person, location, or medium that the source descriptions do not contain. If a hook beat needs something the sources cannot show, tell it through the overlay text instead.
 - "character" = the subjects as described, slide by slide. "visualStyle" = the source's medium and look, unchanged.
-- Each scene is 1-3 sentences: enumerate the frame element by element (position, content, medium), then the story beat (what changed).`;
+- Each scene is 1-3 sentences: enumerate the frame element by element (position, content, medium), then the story beat (what changed).
+- HOOK FIDELITY: when a KEEP UNCHANGED rule pins the hook, slide 1 overlay MUST be the source slide-1 on-image text copied VERBATIM — never a new hook, even a cleverer one.`;
 export const renderDeps:RenderDeps={
   findSources:async(workspaceId:string,ids:string[]):Promise<Video[]>=>db.video.findMany({where:{id:{in:ids},source:{workspaceId}}}),
   generateImage:generateOpenRouterImage,
@@ -307,15 +308,20 @@ export const renderDeps:RenderDeps={
     const boardPrompt=sourceBlock
       ? `${ctx}\nSOURCE SLIDES (from the analysis — these ARE the carousel being tested; each storyboard slide owns exactly the source slide listed):\n${sourceBlock}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}).\n${SOURCE_ADAPTATION_LOCK}\n- overlayText = the exact words on the image, in the source's own text style. Source slide descriptions quote each slide's words ("on-image text: ...") — when a KEEP UNCHANGED rule pins that copy (the hooks, captions), reuse those exact words verbatim instead of writing new ones. Slide 1 overlay = the hook. Last overlayText empty. No CTA slide. No candidates.`
       : `${ctx}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}). Last overlayText empty. No CTA slide. No candidates.${boardLock}`;
-    const [deltaRes,boardRes]=await Promise.all([
-      callOpenRouterText(system,
-        `${ctx}\nProduce "candidates": exactly ${needed} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is {title, hypothesis, mechanism, changedVariables:[{name,value}], slides} — "slides" is REQUIRED on every candidate: the full storyboard of exactly ${e.slideCount} {role,scene,overlayText}. Fill "slides" according to the changed variable: concept/angle — copy the baseline scenes and their order VERBATIM and rewrite ONLY the overlay copy so the new angle is actually told; slides — rewrite the scenes and structure too; hook, caption, cta, character or visualStyle — copy the baseline slides VERBATIM, change nothing in them. Never restate the baseline copy on a concept candidate. Slide 1 overlay stays the hook pinned by any KEEP UNCHANGED rule; last overlayText empty. name must be one of: ${vary.join(', ')}. Do NOT output noun-swaps of the same claim.`,
-        model,{...grokOpts,maxTokens:16000,jsonSchema:{name:'brief_deltas',schema:BRIEF_DELTA_JSON_SCHEMA}}),
-      callOpenRouterText(system, boardPrompt,
-        model,{...grokOpts,maxTokens:6000,jsonSchema:{name:'brief_board',schema:BRIEF_BOARD_JSON_SCHEMA}}),
-    ]);
-    logAiCost(e.workspaceId,`briefs:${e.id}`,(deltaRes.costUsd??0)+(boardRes.costUsd??0));
+    // Board FIRST, then the delta call with the approved storyboard in hand:
+    // concept candidates must copy the baseline scenes verbatim, which is only
+    // possible when the model can actually see the baseline it must copy.
+    const boardRes=await callOpenRouterText(system, boardPrompt,
+      model,{...grokOpts,maxTokens:6000,jsonSchema:{name:'brief_board',schema:BRIEF_BOARD_JSON_SCHEMA}});
     const boardObj=boardRes.parsed&&typeof boardRes.parsed==='object'?boardRes.parsed as Record<string,unknown>:null;
+    const boardStory=BriefStoryboard.safeParse(boardObj?.baseline??boardObj);
+    const baselineBlock=boardStory.success
+      ? `\nBASELINE STORYBOARD (already approved — every candidate's "slides" start from these exact ${boardStory.data.slides.length} slides):\n${JSON.stringify(boardStory.data.slides)}\nFill "slides" according to the changed variable: concept/angle — copy these scenes and their order VERBATIM (word for word) and rewrite ONLY the overlayText so the new angle is actually told; slides — rewrite the scenes and structure too; hook, caption, cta, character or visualStyle — copy these slides VERBATIM, change nothing in them.`
+      : `\nFill "slides" according to the changed variable: concept/angle or slides — write the storyboard the angle requires; hook, caption, cta, character or visualStyle — keep slides minimal and neutral.`;
+    const deltaRes=await callOpenRouterText(system,
+      `${ctx}${baselineBlock}\nProduce "candidates": exactly ${needed} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is {title, hypothesis, mechanism, changedVariables:[{name,value}], slides} — "slides" is REQUIRED on every candidate: the full storyboard of exactly ${e.slideCount} {role,scene,overlayText}. Slide 1 overlay stays the hook pinned by any KEEP UNCHANGED rule; last overlayText empty. name must be one of: ${vary.join(', ')}. Do NOT output noun-swaps of the same claim.`,
+      model,{...grokOpts,maxTokens:16000,jsonSchema:{name:'brief_deltas',schema:BRIEF_DELTA_JSON_SCHEMA}});
+    logAiCost(e.workspaceId,`briefs:${e.id}`,(deltaRes.costUsd??0)+(boardRes.costUsd??0));
     const deltaObj=deltaRes.parsed&&typeof deltaRes.parsed==='object'?deltaRes.parsed as Record<string,unknown>:null;
     const parsed={
       baseline:boardObj?.baseline??(BriefStoryboard.safeParse(boardObj).success?boardObj:undefined),
