@@ -197,7 +197,9 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
         if(receipt.attempts<MAX_TASK_ATTEMPTS && !terminalQuota){
           // Self-heal: requeue with backoff, keep the experiment running. Known failures
           // are refunded above; unknown receipts keep their retained charge.
-          receipt.status='pending';receipt.nextAttemptAt=deps.now()+retryBackoffMs(receipt.attempts);
+          // Provider throttles (429 / in-flight budget) carry retry_after=N — honor it.
+          const wait=Number(/retry_after=(\d+)/.exec(failure instanceof Error?failure.message:String(failure ?? ''))?.[1] ?? 0);
+          receipt.status='pending';receipt.nextAttemptAt=deps.now()+Math.max(retryBackoffMs(receipt.attempts),wait*1000);
           if(t.kind==='analysis'&&input){input.status='pending';}
           if(v){v.status='generating';v.error=receipt.error;if(t.index!==undefined){v.slides[t.index]!.status='pending';v.slides[t.index]!.error=receipt.error;}}
         }else{

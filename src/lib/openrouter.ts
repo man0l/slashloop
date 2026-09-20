@@ -350,7 +350,10 @@ export async function generateOpenRouterImage(opts: {
     body: JSON.stringify(body),
   });
   const text = await res.text();
-  if (!res.ok) throw new Error(`OpenRouter image error ${res.status}: ${text.slice(0, 400)}`);
+  if (!res.ok) {
+    const retryAfter = Number(res.headers.get('retry-after'));
+    throw new Error(`OpenRouter image error ${res.status}: ${text.slice(0, 400)}${Number.isFinite(retryAfter) && retryAfter > 0 ? ` retry_after=${retryAfter}` : ''}`);
+  }
 
   let data: {
     data?: Array<{ b64_json?: string; media_type?: string }>;

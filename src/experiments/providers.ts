@@ -538,11 +538,15 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
         // Diagnosability: a bare all_candidates_failed hides whether the
         // provider refused content, throttled, or 500'd — keep each reason.
         const reasons=results.map((r)=>r.status==='fulfilled'?'ok':String(r.status==='rejected'?(r.reason instanceof Error?r.reason.message:r.reason):'unknown').replace(/\s+/g,' ').slice(0,60));
-        // An empty OpenRouter balance 402s every candidate — surface the known
-        // terminal quota cause (refund + no futile retries) instead of a wave failure.
+        const joined=reasons.join(' | ');
+        // An empty OpenRouter balance 402s every candidate — terminal quota
+        // (refund + no futile retries). A transient in-flight-budget 402 or a
+        // 429 throttles us: retryable causes that wait out Retry-After.
+        if(reasons.some((r)=>/in_flight_budget_exhausted/i.test(r))&&!reasons.some((r)=>/insufficient credits/i.test(r)))throw new SafeFailure(`in_flight_budget retry_after=${/retry_after=(\d+)/i.exec(joined)?.[1] ?? 20}`);
         if(reasons.some((r)=>/\b402\b|insufficient credits/i.test(r)))throw new SafeFailure('credits_exhausted_402');
+        if(reasons.some((r)=>/\b429\b|rate.?limit/i.test(r)))throw new SafeFailure(`rate_limited_429 retry_after=${/retry_after=(\d+)/i.exec(joined)?.[1] ?? 30}`);
         const first=results[0];
-        const err=first&&first.status==='rejected'&&first.reason instanceof SafeFailure?first.reason:new SafeFailure(`all_candidates_failed[${reasons.join(' | ')}]`);
+        const err=first&&first.status==='rejected'&&first.reason instanceof SafeFailure?first.reason:new SafeFailure(`all_candidates_failed[${joined.slice(0,160)}]`);
         throw err;
       }
       return out;

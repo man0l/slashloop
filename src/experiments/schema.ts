@@ -57,7 +57,7 @@ export const EditBrief = WorkspaceBody.extend({ revision: z.number().int().posit
 export const MAX_TASK_ATTEMPTS = 4;
 export const MAX_MANUAL_ATTEMPTS = 6;
 /** Up to this many slide renders may run concurrently within one experiment. */
-export const PARALLEL_SLIDES = 6;
+export const PARALLEL_SLIDES = 12;
 /** Candidates rendered per slide; Jev (TypeSafe) picks the most viral one. */
 export const SLIDE_FANOUT = 3;
 /** Parameter deltas generated at the briefs stage; Jev ranks them, top variantCount-1 win. */
