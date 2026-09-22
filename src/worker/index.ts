@@ -185,12 +185,35 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 console.log(`[worker] started — dialect=${isD1Mode ? 'sqlite(D1)' : 'postgres'} kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms → max ${MAX_IDLE_MS}ms, concurrency ${CONCURRENCY}, rescore every ${Math.round(RESCORE_INTERVAL_MS / 1000)}s`);
+// Startup stagger so sibling containers (same image, restarted together by a
+// deploy) don't walk the claim/experiment cadence in phase: each container
+// offsets its first loop iteration by a random 0–5s before the while loop.
+await new Promise<void>((r) => setTimeout(r, Math.floor(Math.random() * 5_000)));
 
 // Staggered start so containers restarted together (deploy/watchtower) don't
 // fire the first sweep in lockstep against D1's single writer.
 let lastReclaimAt = Date.now() - Math.floor(Math.random() * RECLAIM_INTERVAL_MS);
 let lastRescoreAt = Date.now() - Math.floor(Math.random() * RESCORE_INTERVAL_MS);
 let idleRounds = 0;
+
+// Consecutive loop-iteration failures (claimNextJobs threw — usually D1 down).
+// A fixed sleep here re-fires into the outage at full rate from every
+// container (the 2026-09-22 error storm); the streak backs off exponentially
+// and a successful claim below resets it.
+let errorRounds = 0;
+// Failed experiment-tick gate: re-firing at the 5s active cadence through an
+// outage multiplies the same storm, so a failed tick parks itself behind this
+// timestamp. A successful tick clears it.
+let experimentTickBackoffUntil = 0;
+let experimentTickErrorRounds = 0;
+const ERROR_BACKOFF_BASE_MS = 5_000;
+const ERROR_BACKOFF_MAX_MS = 120_000;
+
+/** Exponential backoff for the error streak above, jittered ±15% like the idle path. */
+function errorBackoffMs(rounds: number): number {
+  const backoff = Math.min(ERROR_BACKOFF_BASE_MS * 2 ** (rounds - 1), ERROR_BACKOFF_MAX_MS);
+  return Math.round(backoff * (0.85 + Math.random() * 0.3));
+}
 
 while (!shuttingDown) {
   try {
@@ -245,15 +268,25 @@ while (!shuttingDown) {
     // within 5s (one tick chains up to 3 steps); idle experiments back off to
     // the 120s cadence. MediaJob draining is never blocked: the tick runs
     // single-flight, detached from the claim round below.
-    if (!experimentTickInFlight && Date.now() - lastExperimentTickAt >= (Date.now() < experimentsActiveUntil ? EXPERIMENT_TICK_MIN_INTERVAL_MS : 120_000)) {
+    if (!experimentTickInFlight
+      && Date.now() >= experimentTickBackoffUntil
+      && Date.now() - lastExperimentTickAt >= (Date.now() < experimentsActiveUntil ? EXPERIMENT_TICK_MIN_INTERVAL_MS : 120_000)) {
       lastExperimentTickAt = Date.now();
       experimentTickInFlight = experimentTick(120_000)
         .then(({ steps, active }) => {
           if (steps > 0) console.log(`[worker] experiment tick advanced ${steps} step(s)`);
           experimentsActiveUntil = active ? Date.now() + 10 * 60_000 : 0;
+          experimentTickErrorRounds = 0;
+          experimentTickBackoffUntil = 0;
         })
         .catch((err) => {
-          console.error(`[worker] experiment tick failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+          experimentTickErrorRounds++;
+          const delay = errorBackoffMs(experimentTickErrorRounds);
+          experimentTickBackoffUntil = Date.now() + delay;
+          const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+          console.error(
+            `[worker] experiment tick failed (streak ${experimentTickErrorRounds}, next attempt in ~${Math.round(delay / 1000)}s): ${detail}`,
+          );
         })
         .finally(() => { experimentTickInFlight = null; });
     }
@@ -262,6 +295,10 @@ while (!shuttingDown) {
     // following the ALL_KINDS order — the old per-kind loop fired one claim
     // query per kind per round (7 queries just to find an empty queue).
     const jobs = await claimNextJobs(KINDS, CONCURRENCY);
+    // Claim succeeded — D1 answered, whatever the queue depth. Streak resets
+    // here (not on a claimed job) so a healthy-but-empty D1 clears the
+    // outage backoff too.
+    errorRounds = 0;
 
     if (jobs.length === 0) {
       // Exponential backoff on an empty queue — the common case (~97% of
@@ -320,8 +357,14 @@ while (!shuttingDown) {
     }));
     // No sleep after a round: keep draining the backlog, then idle.
   } catch (err) {
-    console.error(`[worker] loop error: ${(err as Error).message}`);
-    await sleep(5000);
+    errorRounds++;
+    const delay = errorBackoffMs(errorRounds);
+    console.error(
+      `[worker] loop error (streak ${errorRounds}, retrying in ~${Math.round(delay / 1000)}s): ${(err as Error).message}`,
+    );
+    // idleSleep (not a bare sleep) so SIGINT/SIGTERM still exits promptly even
+    // deep in the backoff.
+    await idleSleep(delay);
   }
 }
 

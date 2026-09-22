@@ -578,6 +578,13 @@ model MediaJob {
 
   // The worker's claim query: oldest queued row first.
   @@index([status, createdAt])
+  // The multi-kind claim (claimNextJobs): WHERE status + kind IN +
+  // createdAt-range, so the status-only index above leaves each claim round
+  // scanning every non-done job across ALL kinds. This composite turns it
+  // into a bounded per-kind range scan — it was the query timing out first
+  // in the 2026-09-22 D1 burst (payloadJson NOT LIKE is then evaluated only
+  // inside the recreate-kind window, not the whole table).
+  @@index([status, kind, createdAt])
   // The stuck-claim sweep: running rows older than the cutoff. Without this
   // the sweep is a full MediaJob scan over the D1 HTTP API (observed: request
   // timeouts on every worker, every loop).
