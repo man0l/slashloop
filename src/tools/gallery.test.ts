@@ -65,6 +65,10 @@ describe('resourceDomains', () => {
     delete process.env.R2_THUMB_PUBLIC_BASE;
     process.env.R2_PUBLIC_BASE = 'https://fallback.example.com';
     process.env.PUBLIC_URL = 'https://mcp.slashloop.dev';
+    // The file-level save/restore only snapshots env once: when the whole
+    // suite runs, an EARLIER test file (loaded before this one) may leave
+    // SUPABASE_URL set in this process — pin every input like the test above.
+    delete process.env.SUPABASE_URL;
     expect(resourceDomains()).toEqual(['https://fallback.example.com', 'https://mcp.slashloop.dev']);
   });
 });

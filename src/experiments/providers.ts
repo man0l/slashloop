@@ -20,7 +20,15 @@ const MODEL='gemini-3.5-flash';
 function logAiCost(workspaceId:string, refId:string, costUsd:number|undefined) {
   const cents=Math.round((costUsd??0)*100);
   if(!cents)return;
-  db.usageLog.create({data:{workspaceId,kind:'ai',provider:'openrouter',units:1,costCents:cents,refId}}).catch(()=>{});
+  // Best-effort: never let ledger bookkeeping fail the render. The guard
+  // covers both no-store runtimes (unit tests, import-time callers — the db
+  // proxy throws there) and a store stub without the UsageLog delegate
+  // (store.test.ts's fakeClient — same process in `bun test`, fixed the
+  // 2026-09-22 render-loop suite failures).
+  try {
+    const delegate = (db as { usageLog?: { create: (args: unknown) => Promise<unknown> } }).usageLog;
+    delegate?.create({data:{workspaceId,kind:'ai',provider:'openrouter',units:1,costCents:cents,refId}})?.catch(()=>{});
+  } catch { /* bookkeeping only — the render already succeeded */ }
 }
 export class SafeFailure extends Error {}
 async function boundedBytes(res:Response,max:number):Promise<Uint8Array> {
