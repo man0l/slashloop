@@ -158,23 +158,31 @@ export function expandDelta(baseline:Proposal,delta:z.infer<typeof BriefDelta>,s
   if(!delta.changedVariables.length)return null;
   const storyChange=delta.changedVariables.some(c=>c.name==='concept'||c.name==='slides');
   if(delta.changedVariables.some(c=>c.name==='slides'?!delta.slides:false))return null;
-  if(storyChange&&!delta.slides)return null;
+  if(storyChange&&!delta.slides&&!delta.overlayTexts)return null;
   // A concept/slides candidate that copies the baseline storyboard verbatim
   // would render a second copy of the same deck — drop it.
-  if(storyChange&&sameSlides(delta.slides!,baseline.brief.slides))return null;
+  if(storyChange&&delta.slides&&sameSlides(delta.slides,baseline.brief.slides)&&!delta.overlayTexts)return null;
   if(variables&&delta.changedVariables.some(c=>!variables.includes(c.name)))return null;
   // Text-only variations must not smuggle storyboard rewrites — adopt delta
   // slides ONLY for concept/slides candidates, or the validator sees an
-  // unapproved variable and the whole fan-out fails.
-  const usesSlides=storyChange;
-  const brief=finishBrief({...baseline.brief,slides:usesSlides?delta.slides!.map(s=>({...s})):baseline.brief.slides.map(s=>({...s}))},slideCount,lockedConstraints);
+  // unapproved variable and the whole fan-out fails. Concept candidates may
+  // send overlayTexts instead of full slides: the baseline scenes are kept
+  // verbatim and only the overlay copy is retold (deltas-only fan-out —
+  // the model never re-emits scenes it must not change).
+  const usesSlides=storyChange&&!!delta.slides;
+  const usesOverlays=storyChange&&!delta.slides&&!!delta.overlayTexts;
+  const mergedOverlays=usesOverlays
+    ? baseline.brief.slides.map((s,i)=>({...s,overlayText:delta.overlayTexts![i]??s.overlayText}))
+    : null;
+  if(mergedOverlays&&sameSlides(mergedOverlays,baseline.brief.slides))return null;
+  const brief=finishBrief({...baseline.brief,slides:usesSlides?delta.slides!.map(s=>({...s})):mergedOverlays??baseline.brief.slides.map(s=>({...s}))},slideCount,lockedConstraints);
   for(const c of delta.changedVariables){
     if(c.name==='slides')continue;
     (brief as unknown as Record<string,unknown>)[c.name]=c.value;
   }
   // effectiveOverlayText renders brief.hook on slide 1 — when a retold
   // storyboard ships its own slide-1 copy, align it so review shows what renders.
-  if(usesSlides&&brief.slides.length)brief.slides[0]={...brief.slides[0]!,overlayText:brief.hook};
+  if((usesSlides||usesOverlays)&&brief.slides.length)brief.slides[0]={...brief.slides[0]!,overlayText:brief.hook};
   return {title:delta.title,hypothesis:delta.hypothesis,mechanism:delta.mechanism,changedVariables:delta.changedVariables,brief};
 }
 function sameSlides(a:readonly unknown[],b:readonly unknown[]):boolean {
@@ -233,7 +241,12 @@ export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pic
 }
 /** Hand-written JSON Schema for grok structured outputs (additionalProperties:false, no $ref). */
 const BRIEF_DELTA_SLIDES={type:'array',minItems:3,maxItems:8,items:{type:'object',additionalProperties:false,required:['role','scene','overlayText'],properties:{role:{type:'string'},scene:{type:'string'},overlayText:{type:'string'}}}};
-const BRIEF_DELTA_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['candidates'],properties:{candidates:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['title','hypothesis','mechanism','changedVariables','slides'],properties:{title:{type:'string'},hypothesis:{type:'string'},mechanism:{type:'string'},changedVariables:{type:'array',minItems:1,maxItems:3,items:{type:'object',additionalProperties:false,required:['name','value'],properties:{name:{type:'string',enum:['hook','character','visualStyle','caption','cta','concept','slides']},value:{type:'string'}}}},slides:BRIEF_DELTA_SLIDES}}}}};
+// Deltas-only fan-out: full `slides` are sent ONLY for the `slides`
+// variable (structural rewrite). Concept/angle candidates send `overlayTexts`
+// (merged onto baseline scenes in code); every other variable sends neither
+// and rides on the baseline storyboard verbatim.
+const BRIEF_DELTA_OVERLAYS={type:'array',minItems:3,maxItems:8,items:{type:'string'}};
+const BRIEF_DELTA_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['candidates'],properties:{candidates:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['title','hypothesis','mechanism','changedVariables'],properties:{title:{type:'string'},hypothesis:{type:'string'},mechanism:{type:'string'},changedVariables:{type:'array',minItems:1,maxItems:3,items:{type:'object',additionalProperties:false,required:['name','value'],properties:{name:{type:'string',enum:['hook','character','visualStyle','caption','cta','concept','slides']},value:{type:'string'}}}},slides:BRIEF_DELTA_SLIDES,overlayTexts:BRIEF_DELTA_OVERLAYS}}}}};
 const BRIEF_BOARD_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['baseline'],properties:{baseline:{type:'object',additionalProperties:false,required:['title','hypothesis','concept','hook','character','visualStyle','caption','slides'],properties:{title:{type:'string'},hypothesis:{type:'string'},concept:{type:'string'},hook:{type:'string'},character:{type:'string'},visualStyle:{type:'string'},caption:{type:'string'},slides:{type:'array',minItems:3,maxItems:8,items:{type:'object',additionalProperties:false,required:['role','scene','overlayText'],properties:{role:{type:'string'},scene:{type:'string'},overlayText:{type:'string'}}}}}}}};
 /**
  * Per-storyboard-slide source description, mirroring selectSlideReference's
@@ -317,18 +330,24 @@ export const renderDeps:RenderDeps={
       ? `${ctx}\nSOURCE SLIDES (from the analysis — these ARE the carousel being tested; each storyboard slide owns exactly the source slide listed):\n${sourceBlock}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}).\n${SOURCE_ADAPTATION_LOCK}\n- overlayText = the exact words on the image, in the source's own text style. Source slide descriptions quote each slide's words ("on-image text: ...") — when a KEEP UNCHANGED rule pins that copy (the hooks, captions), reuse those exact words verbatim instead of writing new ones. Slide 1 overlay = the hook. Last overlayText empty. No CTA slide. No candidates.`
       : `${ctx}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}). Last overlayText empty. No CTA slide. No candidates.${boardLock}`;
     // Board FIRST, then the delta call with the approved storyboard in hand:
-    // concept candidates must copy the baseline scenes verbatim, which is only
-    // possible when the model can actually see the baseline it must copy.
+    // candidates that retell (concept) need to see the beats their overlay
+    // copy must fit, and the board itself becomes the baseline proposal.
+    // Deltas-only fan-out: the model emits parameters, never re-emitted
+    // scenes — code merges them onto the baseline, so per-candidate output
+    // stays small and verbatim fidelity is structural, not hoped for.
     const boardRes=await callOpenRouterText(system, boardPrompt,
       model,{...grokOpts,maxTokens:6000,jsonSchema:{name:'brief_board',schema:BRIEF_BOARD_JSON_SCHEMA}});
     const boardObj=boardRes.parsed&&typeof boardRes.parsed==='object'?boardRes.parsed as Record<string,unknown>:null;
     const boardStory=BriefStoryboard.safeParse(boardObj?.baseline??boardObj);
     const baselineBlock=boardStory.success
-      ? `\nBASELINE STORYBOARD (already approved — every candidate's "slides" start from these exact ${boardStory.data.slides.length} slides):\n${JSON.stringify(boardStory.data.slides)}\nFill "slides" according to the changed variable: concept/angle — copy these scenes and their order VERBATIM (word for word) and rewrite ONLY the overlayText so the new angle is actually told; slides — rewrite the scenes and structure too; hook, caption, cta, character or visualStyle — copy these slides VERBATIM, change nothing in them.`
+      ? `\nBASELINE STORYBOARD (already approved — code reuses these exact ${boardStory.data.slides.length} slides for every candidate, so NEVER re-emit scenes you must not change):\n${JSON.stringify(boardStory.data.slides)}\nPer-candidate output by changed variable: concept/angle — "overlayTexts" ONLY: exactly ${boardStory.data.slides.length} strings, one overlay per slide in order, retelling the angle (entry 1 repeats the baseline slide-1 overlay verbatim — the hook stays locked; last entry empty). Never emit "slides" for concept. slides — "slides": rewrite the scenes and structure, the full storyboard of exactly ${e.slideCount} {role,scene,overlayText}. hook, caption, cta, character or visualStyle — parameters ONLY ({title, hypothesis, mechanism, changedVariables}); emit neither "slides" nor "overlayTexts", change nothing in the storyboard.`
       : `\nFill "slides" according to the changed variable: concept/angle or slides — write the storyboard the angle requires; hook, caption, cta, character or visualStyle — keep slides minimal and neutral.`;
+    // Output stays small unless the structure itself is tested: only a
+    // `slides` variable needs room for full storyboards per candidate.
+    const storyVars=vary.some(v=>v==='concept'||v==='slides');
     const deltaRes=await callOpenRouterText(system,
-      `${ctx}${baselineBlock}\nProduce "candidates": exactly ${needed} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is {title, hypothesis, mechanism, changedVariables:[{name,value}], slides} — "slides" is REQUIRED on every candidate: the full storyboard of exactly ${e.slideCount} {role,scene,overlayText}. Slide 1 overlay stays the hook pinned by any KEEP UNCHANGED rule; last overlayText empty. name must be one of: ${vary.join(', ')}. Do NOT output noun-swaps of the same claim.`,
-      model,{...grokOpts,maxTokens:16000,jsonSchema:{name:'brief_deltas',schema:BRIEF_DELTA_JSON_SCHEMA}});
+      `${ctx}${baselineBlock}\nProduce "candidates": exactly ${needed} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is {title, hypothesis, mechanism, changedVariables:[{name,value}]} plus, ONLY as directed above: "overlayTexts" for concept/angle, "slides" for slides, neither for hook, caption, cta, character or visualStyle. Slide 1 overlay stays the hook pinned by any KEEP UNCHANGED rule; last overlayText empty. name must be one of: ${vary.join(', ')}. Do NOT output noun-swaps of the same claim.`,
+      model,{...grokOpts,maxTokens:storyVars?16000:6000,jsonSchema:{name:'brief_deltas',schema:BRIEF_DELTA_JSON_SCHEMA}});
     logAiCost(e.workspaceId,`briefs:${e.id}`,(deltaRes.costUsd??0)+(boardRes.costUsd??0));
     const deltaObj=deltaRes.parsed&&typeof deltaRes.parsed==='object'?deltaRes.parsed as Record<string,unknown>:null;
     const parsed={

@@ -30,7 +30,9 @@ export const BriefStoryboard = z.object({
   concept: text.min(1), hook: text.min(1), character: text.default(''), visualStyle: text.min(1).default('photograph'), caption: text.default(''),
   slides: z.array(BriefSlide).min(3).max(8),
 });
-/** Parameter-only variation. Slides are optional and only required when the changed variable is `slides`. */
+/** Parameter-only variation. Slides are optional and only required when the changed variable is `slides`.
+ * Concept/angle candidates may send `overlayTexts` (one per slide, in order) instead of full slides:
+ * code merges them onto the baseline scenes, so the storyline is kept verbatim. */
 export const BriefDelta = z.object({
   title: z.string().min(1).max(160), hypothesis: text.min(1),
   mechanism: z.string().min(1).max(80).optional(),
@@ -41,6 +43,7 @@ export const BriefDelta = z.object({
     value: text.min(1),
   })).min(1).max(7),
   slides: z.array(BriefSlide).min(3).max(8).optional(),
+  overlayTexts: z.array(text.default('')).min(3).max(8).optional(),
 });
 export const Create = z.object({ workspaceId: Id, videoIds: z.array(Id).min(1).max(20), instructions: Instructions,
   variantCount: z.number().int().min(1).max(12), slideCount: z.number().int().min(3).max(8),

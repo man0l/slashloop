@@ -213,6 +213,52 @@ test('concept variants with retold storyboards validate; copied storyboards are 
   expect(() => validateVariants(e, [base, copied])).toThrow('identical slide briefs');
 });
 
+// Deltas-only fan-out: concept candidates send overlayTexts, code keeps the baseline scenes.
+test('concept overlayTexts merge onto baseline scenes without re-emitting the storyboard', () => {
+  const parsed = {
+    baseline: { title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides },
+    candidates: [
+      { title: 'Angle', hypothesis: 'h', changedVariables: [{ name: 'concept', value: 'New angle told' }], overlayTexts: ['Start here', 'ANGLE TWO', ''] },
+    ],
+  };
+  const n = normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['concept'] } } as never);
+  expect(n.candidates.map(c => c.title)).toEqual(['Angle']);
+  const brief = n.candidates[0]!.brief;
+  expect(brief.slides.map(s => s.scene)).toEqual(n.baseline.brief.slides.map(s => s.scene)); // storyline kept verbatim
+  expect(brief.slides.map(s => s.overlayText)).toEqual(['Start here', 'ANGLE TWO', '']); // angle retold, hook locked, no CTA text
+  expect(brief.concept).toBe('New angle told'); // the parameter still lands on the brief
+});
+
+test('concept candidates with neither slides nor overlayTexts are dropped', () => {
+  const parsed = {
+    baseline: { title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides },
+    candidates: [
+      { title: 'Lazy', hypothesis: 'h', changedVariables: [{ name: 'concept', value: 'New angle, no retell' }] },
+    ],
+  };
+  expect(() => normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['concept'] } } as never)).toThrow('brief_candidates_invalid');
+});
+
+test('slides candidates cannot ride on overlayTexts alone — structure rewrites need full slides', () => {
+  const parsed = {
+    baseline: { title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides },
+    candidates: [
+      { title: 'Restructure', hypothesis: 'h', changedVariables: [{ name: 'slides', value: 'New structure' }], overlayTexts: ['Start here', 'NEW BEAT', ''] },
+    ],
+  };
+  expect(() => normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['slides'] } } as never)).toThrow('brief_candidates_invalid');
+});
+
+test('concept overlayTexts identical to the baseline are dropped as a copied storyboard', () => {
+  const parsed = {
+    baseline: { title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides },
+    candidates: [
+      { title: 'Copier', hypothesis: 'h', changedVariables: [{ name: 'concept', value: 'Same words' }], overlayTexts: ['', '', ''] },
+    ],
+  };
+  expect(() => normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['concept'] } } as never)).toThrow('brief_candidates_invalid');
+});
+
 test('a 10-variant experiment degrades to the 9 deliverable proposals instead of failing', () => {
   const e = { instructions: { lockedConstraints: [], variables: ['hook'], mode: 'controlled' }, variantCount: 10, slideCount: 3 } as never;
   const base = { title: 'B', hypothesis: 'h', changedVariables: [], brief: { ...baseBrief } };
