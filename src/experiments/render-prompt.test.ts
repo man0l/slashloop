@@ -32,9 +32,11 @@ describe('variant slide rendering', () => {
     expect(baseline.slides[0]!.overlayText).toBe('Original opening headline');
   });
 
-  test('middle slide keeps its overlay and final slide uses the current CTA', () => {
+  test('middle slide keeps its overlay and final slide keeps its own payoff overlay', () => {
     expect(effectiveOverlayText(baseline, 1)).toBe('Make room for focus');
-    expect(effectiveOverlayText(baseline, 2)).toBe('Try it today');
+    // The last slide's overlayText is the story's payoff beat ("average
+    // european", "day 30", …) — story copy, not a CTA. It renders verbatim.
+    expect(effectiveOverlayText(baseline, 2)).toBe('Old closing headline');
     const variant = { ...baseline, cta: '' };
     expect(effectiveOverlayText(variant, 2)).toBe('Old closing headline');
   });

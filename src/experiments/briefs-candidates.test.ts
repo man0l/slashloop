@@ -114,14 +114,24 @@ test('storyboard + parameter deltas expand onto the baseline slides', () => {
   expect(n.baseline.changedVariables).toEqual([]);
 });
 
-test('call-to-action text is stripped from every candidate and the baseline', async () => {
-  const mk = (i: number, cta = `Swipe to keep ${i}`) => ({ title: `V${i}`, hypothesis: 'h', changedVariables: [{ name: 'hook', value: `Hook ${i}` }], brief: { ...baseBrief, hook: `Hook ${i}`, cta, slides: [...baseBrief.slides.slice(0, 2), { role: 'cta', scene: 'A mirror', overlayText: `Tap now ${i}` }] } });
-  const baseline = { title: 'B', hypothesis: 'h', changedVariables: [], brief: { ...baseBrief, cta: 'Follow for more', slides: [...baseBrief.slides, { role: 'cta', scene: 'A mirror', overlayText: 'Follow now' }] } };
+test('call-to-action text field is stripped; in-count payoff overlays survive', async () => {
+  // Real-world shape (experiment 364c3486): slideCount slides, the last one
+  // carrying the story's payoff beat ("average european") — story copy, not
+  // a CTA. Only the cta TEXT FIELD is stripped; the payoff overlay rides
+  // through verbatim onto baseline and candidates.
+  const storySlides = [
+    { role: 'hook', scene: 'A studio', overlayText: 'HOOK WORDS' },
+    { role: 'body', scene: 'A gym', overlayText: 'MIDDLE WORDS' },
+    { role: 'payoff', scene: 'A mirror', overlayText: 'THE PAYOFF' },
+  ];
+  const mk = (i: number, cta = `Swipe to keep ${i}`) => ({ title: `V${i}`, hypothesis: 'h', changedVariables: [{ name: 'hook', value: `Hook ${i}` }], brief: { ...baseBrief, hook: `Hook ${i}`, cta, slides: storySlides } });
+  const baseline = { title: 'B', hypothesis: 'h', changedVariables: [], brief: { ...baseBrief, cta: 'Follow for more', slides: storySlides } };
   const normalized = normalizeBriefCandidates({ baseline, candidates: [mk(1), mk(2)] }, 3);
   expect(normalized.baseline.brief.cta).toBe('');
   expect(normalized.candidates.every(c => c.brief.cta === '')).toBe(true);
-  for (const c of [normalized.baseline, ...normalized.candidates]) {
-    expect(c.brief.slides[c.brief.slides.length - 1]!.overlayText).toBe(''); // no baked-in CTA text
+  expect(normalized.baseline.brief.slides[2]!.overlayText).toBe('THE PAYOFF');
+  for (const c of normalized.candidates) {
+    expect(c.brief.slides[2]!.overlayText).toBe('THE PAYOFF');
   }
 });
 

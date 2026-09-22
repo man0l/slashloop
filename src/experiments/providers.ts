@@ -151,12 +151,15 @@ function fingerprint(p:Proposal):string {
   const b=p.brief;
   return JSON.stringify([b.hook,b.concept,b.character,b.visualStyle,b.caption,b.cta,b.slides]).toLowerCase();
 }
-/** Pad/trim slides, strip baked-in CTAs. Shared by the storyboard and the legacy full-proposal path. */
+/** Pad/trim slides, strip the CTA text field (we never render app CTA copy).
+ * Slide overlays are left verbatim — including the last slide, whose payoff
+ * beat ("average european", "day 30", …) is story copy, not a CTA. The render
+ * prompt's erase-then-render overlay contract prevents source-text leaks; an
+ * empty overlayText means "no text on this slide", never "strip the payoff". */
 export function finishBrief(brief:BriefData,slideCount:number,lockedConstraints:string[]):BriefData {
   const slides=brief.slides.map(s=>({...s}));
   while(slides.length<slideCount&&slides.length)slides.push({...slides[slides.length-1]!});
   const trimmed=slides.slice(0,slideCount);
-  if(trimmed.length)trimmed[trimmed.length-1]={...trimmed[trimmed.length-1]!,overlayText:''};
   return {...brief,slides:trimmed,cta:'',lockedConstraints};
 }
 function storyboardToProposal(s:z.infer<typeof BriefStoryboard>,slideCount:number,lockedConstraints:string[]):Proposal {
@@ -344,7 +347,7 @@ export const renderDeps:RenderDeps={
     // Video-only or evidence-less experiments keep the free-form board.
     const sourceBlock=sourceSlidesBlock(e);
     const boardPrompt=sourceBlock
-      ? `${ctx}\nSOURCE SLIDES (from the analysis — these ARE the carousel being tested; each storyboard slide owns exactly the source slide listed):\n${sourceBlock}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}).\n${SOURCE_ADAPTATION_LOCK}\n- overlayText = the exact words on the image, in the source's own text style. Source slide descriptions quote each slide's words ("on-image text: ...") — when a KEEP UNCHANGED rule pins that copy (the hooks, captions), reuse those exact words verbatim instead of writing new ones. Slide 1 overlay = the hook. Last overlayText empty. No CTA slide. No candidates.`
+      ? `${ctx}\nSOURCE SLIDES (from the analysis — these ARE the carousel being tested; each storyboard slide owns exactly the source slide listed):\n${sourceBlock}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}).\n${SOURCE_ADAPTATION_LOCK}\n- overlayText = the exact words on the image, in the source's own text style. Source slide descriptions quote each slide's words ("on-image text: ...") — when a KEEP UNCHANGED rule pins that copy (the hooks, captions), reuse those exact words verbatim instead of writing new ones. Slide 1 overlay = the hook. The LAST slide keeps its own payoff overlay verbatim (it is the story's final beat, e.g. "average european" — never empty it). No CTA slide. No candidates.`
       : `${ctx}\nProduce a single "baseline" storyboard with exactly ${e.slideCount} story slides ({role,scene,overlayText}). Last overlayText empty. No CTA slide. No candidates.${boardLock}`;
     // Board FIRST, then the delta call with the approved storyboard in hand:
     // candidates that retell (concept) need to see the beats their overlay
@@ -360,17 +363,17 @@ export const renderDeps:RenderDeps={
     // the supporting copy (slides 2..N overlays must fit the baseline beats —
     // scenes stay locked, only words change). Entry 1 is the new hook itself.
     const supportBlock=boardStory.success&&!!e.instructions.varySupportingOverlays&&vary.length===1&&vary[0]==='hook'
-      ? ` hook — "overlayTexts" REQUIRED: exactly ${boardStory.data.slides.length} strings, one overlay per slide in order (entry 1 is your new hook text; entries 2..${boardStory.data.slides.length-1} retell the supporting copy to match the hook's angle while fitting the locked scenes; last entry empty). Never emit "slides" for hook.`
+      ? ` hook — "overlayTexts" REQUIRED: exactly ${boardStory.data.slides.length} strings, one overlay per slide in order (entry 1 is your new hook text; entries 2..${boardStory.data.slides.length} retell the supporting AND payoff copy to match the hook's angle while fitting the locked scenes — the last entry keeps the story's payoff beat, never empty). Never emit "slides" for hook.`
       : ` hook, caption, cta, character or visualStyle — parameters ONLY ({title, hypothesis, mechanism, changedVariables}); emit neither "slides" nor "overlayTexts", change nothing in the storyboard.`;
     const baselineBlock=boardStory.success
-      ? `\nBASELINE STORYBOARD (already approved — code reuses these exact ${boardStory.data.slides.length} slides for every candidate, so NEVER re-emit scenes you must not change):\n${JSON.stringify(boardStory.data.slides)}\nPer-candidate output by changed variable: concept/angle — "overlayTexts" ONLY: exactly ${boardStory.data.slides.length} strings, one overlay per slide in order, retelling the angle (entry 1 repeats the baseline slide-1 overlay verbatim — the hook stays locked; last entry empty). Never emit "slides" for concept. slides — "slides": rewrite the scenes and structure, the full storyboard of exactly ${e.slideCount} {role,scene,overlayText}.${supportBlock}`
-      : `\nFill "slides" according to the changed variable: concept/angle or slides — write the storyboard the angle requires; hook, caption, cta, character or visualStyle — keep slides minimal and neutral.`;
+      ? `\nBASELINE STORYBOARD (already approved — code reuses these exact ${boardStory.data.slides.length} slides for every candidate, so NEVER re-emit scenes you must not change):\n${JSON.stringify(boardStory.data.slides)}\n"Angle" means ONLY the copywriting/story angle — the axis the words argue on (e.g. nationality: american vs european; era: boyhood vs manhood; motive: health vs indulgence). It NEVER means a camera angle, shot framing, tilt, or close-up. A new angle keeps the bad→good (before→after) story effect and the slide beats, but changes the AXIS the copy argues on — including the payoff overlay on the last slide.\nPer-candidate output by changed variable: concept/angle — "overlayTexts" ONLY: exactly ${boardStory.data.slides.length} strings, one overlay per slide in order, retelling the story on a DIFFERENT axis (entry 1 repeats the baseline slide-1 overlay verbatim — the hook stays locked; the LAST entry retells the payoff beat on the new axis, never empty). Never emit "slides" for concept. slides — "slides": rewrite the scenes and structure, the full storyboard of exactly ${e.slideCount} {role,scene,overlayText}.${supportBlock}`
+      : `\n"Angle" means ONLY the copywriting/story angle — the axis the words argue on (e.g. nationality, era, motive). It NEVER means a camera angle or shot framing. concept/angle or slides — write the storyboard the angle requires; hook, caption, cta, character or visualStyle — keep slides minimal and neutral.`;
     // Output stays small unless the structure itself is tested: only a
     // `slides` variable needs room for full storyboards per candidate.
     // Supporting-overlay retells are short strings — the base cap covers them.
     const storyVars=vary.some(v=>v==='concept'||v==='slides');
     const deltaRes=await callOpenRouterText(system,
-      `${ctx}${baselineBlock}\nProduce "candidates": exactly ${needed} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is {title, hypothesis, mechanism, changedVariables:[{name,value}]} plus, ONLY as directed above: "overlayTexts" for concept/angle, "slides" for slides, "overlayTexts" for hook when supporting overlays are enabled, otherwise neither for hook, caption, cta, character or visualStyle. Slide 1 overlay stays the hook pinned by any KEEP UNCHANGED rule; last overlayText empty. name must be one of: ${vary.join(', ')}. Do NOT output noun-swaps of the same claim.`,
+      `${ctx}${baselineBlock}\nProduce "candidates": exactly ${needed} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is {title, hypothesis, mechanism, changedVariables:[{name,value}]} plus, ONLY as directed above: "overlayTexts" for concept/angle, "slides" for slides, "overlayTexts" for hook when supporting overlays are enabled, otherwise neither for hook, caption, cta, character or visualStyle. Slide 1 overlay stays the hook pinned by any KEEP UNCHANGED rule; the last overlayText always keeps the story's payoff beat on the candidate's axis (never empty). name must be one of: ${vary.join(', ')}. Do NOT output noun-swaps of the same claim.`,
       model,{...grokOpts,maxTokens:storyVars?16000:6000,jsonSchema:{name:'brief_deltas',schema:BRIEF_DELTA_JSON_SCHEMA}});
     logAiCost(e.workspaceId,`briefs:${e.id}`,(deltaRes.costUsd??0)+(boardRes.costUsd??0));
     const deltaObj=deltaRes.parsed&&typeof deltaRes.parsed==='object'?deltaRes.parsed as Record<string,unknown>:null;
@@ -551,6 +554,12 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
   const sources=await render.findSources(e.workspaceId,e.inputs.filter(i=>i.status==='ready').map(i=>i.videoId));
   const contract=renderContract(e.instructions.variables,v.changedVariables??[]);
   const expLock=experimentVisualLock(e.instructions.variables);
+  // Concept/angle and hook tests are copy-only A/Bs: the frame is locked, the
+  // request may literally say "change the angle" — which means the story
+  // angle, never the camera. Baseline proposals carry changedVariables=[] but
+  // test nothing visually, so their contract must also lock the picture.
+  const copyOnly=!contract.changeFaces&&!contract.changeStyle&&!contract.changeStory;
+  const baselineCopyLock=!v.changedVariables?.length&&e.generationBasis==='source-referenced';
   const baselineSlide=v.baselineId?e.variants.find(x=>x.id===v.baselineId)?.slides[t.index!]:undefined;
   // The identity plate (lock later slides to this variant's own slide 0) only
   // fits video-only experiments. For source-referenced ones it collapsed the
@@ -565,9 +574,17 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
   const reference=identityFrame??selectSlideReference(e,t.index!,sources);
   const usingIdentity=!!identityFrame;
   const path=`experiments/retained/${e.workspaceId}/${e.id}/${v.id}/r${v.revision}/${t.id}.jpg`;
-  const slideContract=usingIdentity&&expLock.subjectLocked
-    ? {...contract,changeFaces:v.changedVariables?.some(c=>c.name==='character')??false,changeSetting:false,fanout:1,kind:contract.kind==='open'?'hook-text':contract.kind}
-    : contract;
+  // Copy-only A/Bs (baseline, hook, concept/angle) render as TEXT EDITS of the
+  // attached frame — never a "NEW original". A baseline on a source-referenced
+  // experiment carries changedVariables=[] but must still lock the picture:
+  // without this its contract is 'open' and the "change the angle" direction
+  // reads as a camera re-shoot (tilted polaroids) instead of a copy re-angle.
+  const copyLock=(usingIdentity&&expLock.subjectLocked)||copyOnly||baselineCopyLock;
+  const slideContract=copyLock
+    ? {...contract,changeFaces:false,changeSetting:false,changeStory:false,changeStyle:false,changeOverlay:true,fanout:1,kind:'hook-text' as const}
+    : usingIdentity&&expLock.subjectLocked
+      ? {...contract,changeFaces:v.changedVariables?.some(c=>c.name==='character')??false,changeSetting:false,fanout:1,kind:contract.kind==='open'?'hook-text':contract.kind}
+      : contract;
   const fanout=Math.max(1,slideContract.fanout);
   return { units: fanout, execute:async()=>{
     const model=process.env.EXPERIMENT_IMAGE_MODEL?.trim() || RECREATE_IMAGE_MODEL;
