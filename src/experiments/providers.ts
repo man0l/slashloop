@@ -4,11 +4,10 @@ import { db } from '../db.js';
 import { VideoAnalysisDataSchema } from '../analysis/schema.js';
 import { GeminiNativeAnalyzer } from '../analysis/gemini-native.js';
 import { liveGeminiFile } from '../analysis/index.js';
-import { isPhotoPost, resolveSlideshowUrls, signedMediaUrl } from '../lib/media.js';
+import { experimentSourceKeys, isPhotoPost, resolveExperimentSourceUrls, signedMediaUrl } from '../lib/media.js';
 import { callOpenRouterText, extractFirstJson, generateOpenRouterImage, RECREATE_IMAGE_MODEL } from '../lib/openrouter.js';
 import { buildVariantSlidePrompt, effectiveOverlayText, experimentVisualLock, lockCarouselIdentity, renderContract } from './render-prompt.js';
 import { jevPick, jevAsk, type JevQuestion, type JevAnswer } from '../lib/typesafe.js';
-import { slideshowKeysFromRaw } from '../lib/scrapers/tiktok-web.js';
 import { putObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
 import { ExperimentError, Report, VariantProposal, BriefStoryboard, BriefDelta, BRIEF_CANDIDATES, VARIABLE_FIELDS, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type Task } from './schema.js';
 import { deriveStorySlideCount } from './slide-count.js';
@@ -63,14 +62,16 @@ export function observations(raw:unknown, photo:boolean):Input['evidence'] {
   });
 }
 export async function compatibleInput(video:Video):Promise<Input> {
-  const photo=isPhotoPost(video);
+  // A video with a Recreate deck behaves like a slideshow everywhere in the
+  // experiment pipeline — the recreated slides are the visual source.
+  const photo=isPhotoPost(video) || experimentSourceKeys(video.rawJson).length > 0;
   const rows=await db.analysis.findMany({where:{videoId:video.id,schemaVersion:'v3'},orderBy:{createdAt:'desc'},take:10});
   for(const a of rows){
     if(!/^(?:google\/)?gemini-|^x-ai\/grok/.test(a.model) || !['gemini-native','gemini-text','openrouter-video','experiment-gemini','experiment-grok'].includes(a.backend))continue;
     if(!(photo?a.analysisBasis==='slideshow+caption':['video','video+transcript'].includes(a.analysisBasis)))continue;
     let raw:unknown;try{raw=JSON.parse(a.analysisJson);}catch{continue;}
     const evidence=observations(raw,photo);if(!evidence.length)continue;
-    const total=photo?resolveSlideshowUrls(video.rawJson).length:null;
+    const total=photo?experimentSourceKeys(video.rawJson).length:null;
     if(photo && (!total || evidence.length!==total || evidence.some((s,i)=>s.location!==`slide:${i}`)))continue;
     return {videoId:video.id,status:'ready',analysisId:a.id,jobId:null,error:null,coverage:{basis:a.analysisBasis,observed:evidence.length,total,complete:true},evidence};
   }
@@ -100,11 +101,21 @@ export function selectSlideReference(e:Experiment,index:number,videos:Video[]) {
   const originals=e.inputs.filter(i=>i.status==='ready').map(input=>{
     const video=videos.find(v=>v.id===input.videoId);
     if(!video)throw new SafeFailure('reference_source_not_found');
-    if(!isPhotoPost(video))return null;
-    const keys=slideshowKeysFromRaw(video.rawJson);
-    if(!keys.length)throw new SafeFailure('reference_slides_unavailable');
-    const prefix=`${e.workspaceId}/${video.id}/slides/`;
-    if(keys.some(key=>!key.startsWith(prefix)||!/^\d+\.jpg$/.test(key.slice(prefix.length))))throw new SafeFailure('invalid_reference_key');
+    // Recreated decks are valid references too — accept both slides/ and
+    // recreate/ prefixes (experimentSourceKeys prefers the recreation).
+    const keys=experimentSourceKeys(video.rawJson);
+    if(!keys.length) {
+      if(!isPhotoPost(video))return null;
+      throw new SafeFailure('reference_slides_unavailable');
+    }
+    const okPrefix=(key:string)=>{
+      for (const dir of ['slides','recreate']) {
+        const prefix=`${e.workspaceId}/${video.id}/${dir}/`;
+        if(key.startsWith(prefix)&&/^\d+\.jpg$/.test(key.slice(prefix.length)))return true;
+      }
+      return false;
+    };
+    if(keys.some(key=>!okPrefix(key)))throw new SafeFailure('invalid_reference_key');
     return {videoId:video.id,keys};
   }).filter(v=>v!==null);
   if(originals.length){
@@ -213,7 +224,7 @@ export async function resolveStorySlideCount(e:Experiment):Promise<number> {
     }
   }
   const sources=videos.map(v=>{
-    const originalCount=isPhotoPost(v)?resolveSlideshowUrls(v.rawJson).length:null;
+    const originalCount=experimentSourceKeys(v.rawJson).length || null;
     return {originalCount:originalCount||null,analysis:latest.get(v.id)};
   });
   return deriveStorySlideCount(sources)??e.slideCount;
@@ -402,7 +413,10 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     if(!video)throw new SafeFailure('source_not_found');
     const reused=await compatibleInput(video);
     if(reused.status==='ready')return {execute:async()=>reused,free:true};
-    const photo=isPhotoPost(video);const urls=photo?resolveSlideshowUrls(video.rawJson):[(await signedMediaUrl(video)).url].filter((s):s is string=>!!s);
+    // Recreated decks analyze as slideshows, not videos.
+    const sourceUrls=resolveExperimentSourceUrls(video.rawJson);
+    const photo=sourceUrls.length>0 || isPhotoPost(video);
+    const urls=photo?sourceUrls:[(await signedMediaUrl(video)).url].filter((s):s is string=>!!s);
     if(!urls.length){
       const current=e.inputs.find(i=>i.videoId===video.id);
       if(current?.jobId){

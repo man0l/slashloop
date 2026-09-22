@@ -367,6 +367,7 @@ async function buildCardsUncached(
     }
 
     const slideshowImages = resolveSlideshowUrls(v.rawJson);
+    const recreationImages = resolveRecreationUrls(v.rawJson);
     const photo = isPhotoPost(v);
     return {
       id: v.id,
@@ -395,12 +396,17 @@ async function buildCardsUncached(
       analyzedAt: latest ? latest.createdAt.getTime() : null,
       mediaUrl: photo ? null : media[i]!.url,
       slideshowImages,
-      recreationImages: resolveRecreationUrls(v.rawJson),
+      recreationImages,
       isSlideshow: photo,
+      // Experiment eligibility mirrors the server gate (isPhotoPost ||
+      // hasExperimentSlides): a plain video with a finished Recreate deck is
+      // selectable even though it is not a photo post.
+      experimentEligible: photo || slideshowImages.length > 0 || recreationImages.length > 0,
       keyMoments,
       // Only show a scrape error when there is no stored video or slideshow
       // to watch — a video that eventually got stored didn't "fail to scrape".
-      fetchError: (media[i]!.url || slideshowImages.length || photo)
+      // Recreated decks count too: their slides are watchable evidence.
+      fetchError: (media[i]!.url || slideshowImages.length || recreationImages.length || photo)
         ? null
         : (fetchErrors[v.id] ?? null),
       isSelf: Boolean(isSelfBySource.get(v.sourceId)) || selfHandles.has(normalizeQuery('creator', v.creatorHandle)),

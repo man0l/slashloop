@@ -164,6 +164,12 @@ export interface VideoDetailForWorkspace {
   recreationImages: string[];
   /** True when this TikTok is a photo post — never offer MP4 download. */
   isSlideshow: boolean;
+  /**
+   * True when this video can be selected for an experiment: a native photo
+   * carousel OR a plain video with a finished Recreate deck. Mirrors the
+   * server gate (isPhotoPost || hasExperimentSlides).
+   */
+  experimentEligible: boolean;
   recreateJob: { jobId: string; status: string; lastError: string | null } | null;
   creatorHandle: string;
   caption: string;
@@ -215,14 +221,16 @@ export async function getVideoDetailForWorkspace(workspace: Workspace, videoId: 
   const job = await latestReportingJobForVideo(video.id, { newerThan: latest?.createdAt });
   const recreateJob = await latestJobForVideo(video.id, 'recreate');
   const recreationImages = resolveRecreationUrls(video.rawJson);
+  const slideshowImages = resolveSlideshowUrls(video.rawJson);
 
   return {
     id: video.id,
     thumbUrl: resolveThumbUrl(video),
     mediaUrl: media.url,
-    slideshowImages: resolveSlideshowUrls(video.rawJson),
+    slideshowImages,
     recreationImages,
     isSlideshow: photo,
+    experimentEligible: photo || slideshowImages.length > 0 || recreationImages.length > 0,
     recreateJob: recreateJob && (recreateJob.status === 'queued' || recreateJob.status === 'running' || (recreateJob.status === 'failed' && !recreationImages.length))
       ? { jobId: recreateJob.id, status: recreateJob.status, lastError: recreateJob.lastError }
       : null,

@@ -347,6 +347,33 @@ export function resolveRecreationUrls(rawJson: string | null | undefined): strin
   }
 }
 
+/**
+ * Experiment source slides: the AI-recreated slideshow when one exists
+ * (video → slideshow via Recreate, or a restaged photo post), else the
+ * original carousel. Recreated slides are preferred — they are the clean,
+ * overlay-stripped deck the user explicitly generated.
+ */
+export function experimentSourceKeys(rawJson: string | null | undefined): string[] {
+  const recreated = recreationKeysFromRaw(rawJson);
+  if (recreated.length) return recreated;
+  return slideshowKeysFromRaw(rawJson);
+}
+
+export function resolveExperimentSourceUrls(rawJson: string | null | undefined): string[] {
+  const keys = experimentSourceKeys(rawJson);
+  if (!keys.length) return [];
+  try {
+    return keys.map(k => publicUrl(thumbBucket(), k));
+  } catch {
+    return [];
+  }
+}
+
+/** True when an experiment can use this source as a slideshow — either a real photo carousel or a Recreate deck. */
+export function hasExperimentSlides(rawJson: string | null | undefined): boolean {
+  return experimentSourceKeys(rawJson).length > 0;
+}
+
 const RECREATION_MODEL = 'meta/muse-image';
 
 /** Stamp AI-recreated slide keys onto the video's rawJson. Split from

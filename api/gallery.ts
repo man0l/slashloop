@@ -32,11 +32,16 @@
 // Serverless Functions (see api/sources.ts for the same constraint).
 
 import { runWithUser } from '../src/context.js';
+import { requireWorkspace } from '../src/context.js';
 import { buildGalleryHtml, buildCards } from '../src/tools/gallery.js';
 import { buildCreatorPreview } from '../src/lib/creator-preview.js';
 import { verifyGalleryToken, isGalleryLinkEnabled } from '../src/lib/gallery-link.js';
 import { corsPreflight } from '../src/lib/cors.js';
 import { requireWorkspaceAccess, jsonResponse } from '../src/lib/authz.js';
+import { createExperiment, estimate } from '../src/experiments/service.js';
+import { ExperimentError } from '../src/experiments/schema.js';
+import { randomUUID } from 'node:crypto';
+import { ZodError } from 'zod/v4';
 import type { GalleryFilters } from '../src/ui/gallery.js';
 
 /**
@@ -57,6 +62,8 @@ function csp(domains: string[]): string {
     "default-src 'none'",
     `img-src ${media}`,
     `media-src ${media}`,
+    // The experiment survey POSTs its answers back to this same URL.
+    "connect-src 'self'",
     "style-src 'unsafe-inline'",
     "script-src 'unsafe-inline'",
     "base-uri 'none'",
@@ -111,6 +118,72 @@ function analyzedByOf(raw: string | null): GalleryFilters['analyzedBy'] | undefi
 
 export async function OPTIONS(request: Request): Promise<Response> {
   return corsPreflight(request);
+}
+
+/**
+ * POST /gallery?t=<signed token> — create a draft experiment from the
+ * in-page survey (selection + edit/create steps). Same trust model as the
+ * HTML route: the short-lived gallery token authorises exactly this user's
+ * gallery, and the workspace is resolved server-side from the token holder —
+ * the client can never widen what is visible or bill another workspace.
+ * Creates a DRAFT only (no spend); planning/generating stays on the
+ * experiment API. Returns the draft id plus the plan-stage estimate so the
+ * survey can show the cost before anything is spent.
+ */
+async function readSurveyBody(request: Request): Promise<Record<string, unknown>> {
+  const reader = request.body?.getReader();
+  if (!reader) throw new ExperimentError(400, 'body_required');
+  let text = '';
+  let bytes = 0;
+  const decoder = new TextDecoder();
+  try {
+    while (true) {
+      const r = await reader.read();
+      if (r.done) break;
+      bytes += r.value.byteLength;
+      if (bytes > 128000) throw new ExperimentError(413, 'body_too_large');
+      text += decoder.decode(r.value, { stream: true });
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text + decoder.decode());
+  } catch {
+    throw new ExperimentError(400, 'invalid_json');
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ExperimentError(400, 'invalid_body');
+  return value as Record<string, unknown>;
+}
+
+export async function POST(request: Request): Promise<Response> {
+  if (!isGalleryLinkEnabled()) return jsonResponse(500, { error: 'gallery links are not configured' }, request);
+  const url = new URL(request.url);
+  const userId = await verifyGalleryToken(url.searchParams.get('t'));
+  if (!userId) return jsonResponse(401, { error: 'This gallery link has expired' }, request);
+  try {
+    const body = await readSurveyBody(request);
+    const survey = (body.survey ?? body) as Record<string, unknown>;
+    // surveyMode is a UI-only marker (edit vs create steps) — not part of Create.
+    const { surveyMode: _mode, ...fields } = survey;
+    const created = await runWithUser(userId, async () => {
+      const workspace = await requireWorkspace();
+      return createExperiment({ ...fields, workspaceId: workspace.id, idempotencyKey: randomUUID() });
+    });
+    const plan = await estimate(created, 'plan');
+    return jsonResponse(200, {
+      experiment: { id: created.id, status: created.status, slideCount: created.slideCount },
+      estimate: { plan },
+    }, request);
+  } catch (err) {
+    if (err instanceof ExperimentError) return jsonResponse(err.statusCode, { error: err.code, message: err.message }, request);
+    if (err instanceof ZodError) {
+      return jsonResponse(422, { error: 'invalid_survey', message: err.issues[0]?.message ?? 'invalid survey' }, request);
+    }
+    console.error('[gallery] experiment survey failed:', (err as Error).message);
+    return jsonResponse(500, { error: 'survey_failed' }, request);
+  }
 }
 
 const SORT_VALUES = new Set<GalleryFilters['sortBy']>(['outlier_score', 'views', 'newest']);

@@ -5,7 +5,7 @@ import { CREDIT_COSTS, creditBalance } from '../lib/credits.js';
 import * as S from './schema.js';
 import * as store from './store.js';
 import { compatibleInput } from './providers.js';
-import { isPhotoPost, resolveSlideshowUrls } from '../lib/media.js';
+import { experimentSourceKeys, hasExperimentSlides, isPhotoPost } from '../lib/media.js';
 import { effectiveOverlayText } from './render-prompt.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { applyApprovedEstimate } from './budget.js';
@@ -36,11 +36,14 @@ export async function createExperiment(raw: unknown) {
     const v = await db.video.findFirst({ where: { id: videoId, source: { workspaceId: b.workspaceId } } });
     if (!v) throw new S.ExperimentError(404,'video_not_found');
     tags.push(sourceTag(v as { creatorHandle?: string | null; caption?: string | null; views?: number | null }));
-    // Slideshows only: video posts are disabled for selection — the analysis
-    // and render pipeline is carousel-based (slideshow+caption evidence).
-    if (!isPhotoPost(v)) throw new S.ExperimentError(400,'video_not_slideshow','Only slideshows can be selected for experiments.');
+    // Slideshows only: plain video posts are disabled for selection — the
+    // analysis and render pipeline is carousel-based (slideshow+caption
+    // evidence). A video with a Recreate deck counts as a slideshow: the
+    // experiment picks up the recreated slides (preferred) or the original
+    // carousel via experimentSourceKeys().
+    if (!isPhotoPost(v) && !hasExperimentSlides(v.rawJson)) throw new S.ExperimentError(400,'video_not_slideshow','Only slideshows can be selected for experiments.');
     referenced = true;
-    const originalCount = isPhotoPost(v) ? resolveSlideshowUrls(v.rawJson).length : null;
+    const originalCount = experimentSourceKeys(v.rawJson).length || null;
     let analysis: unknown;
     if (originalCount) {
       const row = await db.analysis.findFirst({ where: { videoId: v.id, schemaVersion: 'v3' }, orderBy: { createdAt: 'desc' }, select: { analysisJson: true } });

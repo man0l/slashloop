@@ -34,13 +34,18 @@ test('selects original slides deterministically across variants and rotates sour
   expect(selectSlideReference(e, 7, videos)?.path).toBe('w/b/slides/02.jpg');
   expect(selectSlideReference(e, 1, [...videos].reverse())).toEqual(selectSlideReference(e, 1, videos));
 });
-test('rejects missing sources, missing originals and foreign/recreated keys', () => {
+test('rejects missing sources, missing originals and foreign keys', () => {
   const { e, videos } = fixture();
   expect(() => selectSlideReference(e, 0, [])).toThrow('reference_source_not_found');
-  for (const keys of [[], ['other/a/slides/00.jpg'], ['w/a/recreate/00.jpg'], ['w/a/slides/../00.jpg']]) {
-    videos[0]!.rawJson = JSON.stringify({ slideshowKeys: keys });
+  for (const raw of [{ slideshowKeys: [] }, { slideshowKeys: ['other/a/slides/00.jpg'] }, { slideshowKeys: ['w/a/slides/../00.jpg'] }, { recreationKeys: ['other/a/recreate/00.jpg'] }, { slideshowKeys: ['w/a/slides/00.jpg'], recreationKeys: ['other/a/recreate/00.jpg'] }]) {
+    videos[0]!.rawJson = JSON.stringify(raw);
     expect(() => selectSlideReference(e, 0, videos)).toThrow();
   }
+});
+test('accepts own-workspace recreated decks as slide references', () => {
+  const { e, videos } = fixture();
+  videos[0]!.rawJson = JSON.stringify({ recreationKeys: ['w/a/recreate/00.jpg', 'w/a/recreate/01.jpg'] });
+  expect(selectSlideReference(e, 0, videos)?.path).toBe('w/a/recreate/00.jpg');
 });
 test('video-only sources anchor style with the source thumbnail', () => {
   const { e, videos } = fixture();

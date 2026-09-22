@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { resolveRecreationUrls, resolveSlideshowUrls, resolveThumbUrl, slideshowIsHydrated, slideshowTargetFromNormalized } from './media.js';
+import { experimentSourceKeys, hasExperimentSlides, resolveRecreationUrls, resolveSlideshowUrls, resolveThumbUrl, slideshowIsHydrated, slideshowTargetFromNormalized } from './media.js';
 
 const TIKTOK_COVER =
   'https://p19-common-sign.tiktokcdn-us.com/tos-useast8-p-0068-tx2/x~tplv-tiktokx-origin.image';
@@ -101,6 +101,23 @@ describe('resolveRecreationUrls', () => {
       'https://pub-thumbs.r2.dev/ws-1/vid-1/recreate/00.jpg',
       'https://pub-thumbs.r2.dev/ws-1/vid-1/recreate/01.jpg',
     ]);
+  });
+});
+
+describe('experimentSourceKeys', () => {
+  test('prefers the recreated deck over the original carousel', () => {
+    const raw = JSON.stringify({
+      slideshowKeys: ['ws/v/slides/00.jpg'],
+      recreationKeys: ['ws/v/recreate/00.jpg', 'ws/v/recreate/01.jpg'],
+    });
+    expect(experimentSourceKeys(raw)).toEqual(['ws/v/recreate/00.jpg', 'ws/v/recreate/01.jpg']);
+    expect(hasExperimentSlides(raw)).toBe(true);
+  });
+  test('falls back to the original carousel and rejects plain videos', () => {
+    expect(experimentSourceKeys(JSON.stringify({ slideshowKeys: ['ws/v/slides/00.jpg'] }))).toEqual(['ws/v/slides/00.jpg']);
+    expect(hasExperimentSlides(JSON.stringify({ slideshowKeys: ['ws/v/slides/00.jpg'] }))).toBe(true);
+    expect(hasExperimentSlides('{}')).toBe(false);
+    expect(hasExperimentSlides(null)).toBe(false);
   });
 });
 

@@ -96,12 +96,37 @@ function fakeCard(overrides: Partial<GalleryCard> = {}): GalleryCard {
     slideshowImages: [],
     recreationImages: [],
     isSlideshow: false,
+    experimentEligible: false,
     fetchError: null,
     isSelf: false,
     keyMoments: [],
     ...overrides,
   };
 }
+
+describe('experiment selection', () => {
+  test('a video with a finished Recreate deck is selectable for experiments', () => {
+    const html = renderGallery(
+      [fakeCard({
+        isSlideshow: false,
+        experimentEligible: true,
+        recreationImages: ['https://thumbs.example.com/w/vid-1/recreate/00.jpg', 'https://thumbs.example.com/w/vid-1/recreate/01.jpg'],
+      })],
+      undefined,
+      {},
+    );
+    expect(html).toContain('data-is-slideshow="1"');
+    expect(html).toContain('data-slide-count="2"');
+    expect(html).toContain('data-select-video="vid-1"');
+  });
+
+  test('plain videos stay unselectable for experiments', () => {
+    const html = renderGallery([fakeCard()], undefined, {});
+    expect(html).toContain('data-is-slideshow="0"');
+    expect(html).toContain('data-slide-count="0"');
+    expect(html).not.toContain('data-select-video="vid-1"');
+  });
+});
 
 describe('renderGallery media wiring', () => {
   test('cards carry data-cover-uri and the player carries data-video-uri', () => {
