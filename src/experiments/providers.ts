@@ -154,7 +154,7 @@ function storyboardToProposal(s:z.infer<typeof BriefStoryboard>,slideCount:numbe
     lockedConstraints,slides:s.slides.map(x=>({...x})),
   },slideCount,lockedConstraints)};
 }
-export function expandDelta(baseline:Proposal,delta:z.infer<typeof BriefDelta>,slideCount:number,lockedConstraints:string[],variables?:readonly string[]):Proposal|null {
+export function expandDelta(baseline:Proposal,delta:z.infer<typeof BriefDelta>,slideCount:number,lockedConstraints:string[],variables?:readonly string[],supportRetell=false):Proposal|null {
   if(!delta.changedVariables.length)return null;
   const storyChange=delta.changedVariables.some(c=>c.name==='concept'||c.name==='slides');
   if(delta.changedVariables.some(c=>c.name==='slides'?!delta.slides:false))return null;
@@ -163,6 +163,10 @@ export function expandDelta(baseline:Proposal,delta:z.infer<typeof BriefDelta>,s
   // would render a second copy of the same deck — drop it.
   if(storyChange&&delta.slides&&sameSlides(delta.slides,baseline.brief.slides)&&!delta.overlayTexts)return null;
   if(variables&&delta.changedVariables.some(c=>!variables.includes(c.name)))return null;
+  // Hook tests with varySupportingOverlays may retell slides 2..N overlay
+  // copy (scenes stay locked). Pure hook-param deltas keep riding the
+  // baseline storyboard, as before.
+  const hookRetell=supportRetell&&!storyChange&&delta.changedVariables.length>0&&delta.changedVariables.every(c=>c.name==='hook');
   // Text-only variations must not smuggle storyboard rewrites — adopt delta
   // slides ONLY for concept/slides candidates, or the validator sees an
   // unapproved variable and the whole fan-out fails. Concept candidates may
@@ -170,11 +174,13 @@ export function expandDelta(baseline:Proposal,delta:z.infer<typeof BriefDelta>,s
   // verbatim and only the overlay copy is retold (deltas-only fan-out —
   // the model never re-emits scenes it must not change).
   const usesSlides=storyChange&&!!delta.slides;
-  const usesOverlays=storyChange&&!delta.slides&&!!delta.overlayTexts;
+  const usesOverlays=(storyChange||hookRetell)&&!delta.slides&&!!delta.overlayTexts;
   const mergedOverlays=usesOverlays
     ? baseline.brief.slides.map((s,i)=>({...s,overlayText:delta.overlayTexts![i]??s.overlayText}))
     : null;
-  if(mergedOverlays&&sameSlides(mergedOverlays,baseline.brief.slides))return null;
+  // Identical retells test nothing — except a hook candidate with a new hook
+  // value is still a valid hook test on the shared storyboard.
+  if(mergedOverlays&&sameSlides(mergedOverlays,baseline.brief.slides)&&(!hookRetell||delta.changedVariables.every(c=>baseline.brief[c.name]===c.value)))return null;
   const brief=finishBrief({...baseline.brief,slides:usesSlides?delta.slides!.map(s=>({...s})):mergedOverlays??baseline.brief.slides.map(s=>({...s}))},slideCount,lockedConstraints);
   for(const c of delta.changedVariables){
     if(c.name==='slides')continue;
@@ -231,7 +237,7 @@ export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pic
   if(baseline)seen.add(fingerprint(baseline));
   for(const c of Array.isArray(p?.candidates)?p!.candidates:[]){
     const d=BriefDelta.safeParse(c);
-    const n=d.success&&baseline?expandDelta(baseline,d.data,slideCount,locked,allowed):fromFull(c);
+    const n=d.success&&baseline?expandDelta(baseline,d.data,slideCount,locked,allowed,!!e?.instructions.varySupportingOverlays):fromFull(c);
     if(!n)continue;
     const fp=fingerprint(n);
     if(seen.has(fp))continue;seen.add(fp);candidates.push(n);
@@ -339,14 +345,21 @@ export const renderDeps:RenderDeps={
       model,{...grokOpts,maxTokens:6000,jsonSchema:{name:'brief_board',schema:BRIEF_BOARD_JSON_SCHEMA}});
     const boardObj=boardRes.parsed&&typeof boardRes.parsed==='object'?boardRes.parsed as Record<string,unknown>:null;
     const boardStory=BriefStoryboard.safeParse(boardObj?.baseline??boardObj);
+    // Hook tests with supporting overlays on: each hook candidate also retells
+    // the supporting copy (slides 2..N overlays must fit the baseline beats —
+    // scenes stay locked, only words change). Entry 1 is the new hook itself.
+    const supportBlock=boardStory.success&&!!e.instructions.varySupportingOverlays&&vary.length===1&&vary[0]==='hook'
+      ? ` hook — "overlayTexts" REQUIRED: exactly ${boardStory.data.slides.length} strings, one overlay per slide in order (entry 1 is your new hook text; entries 2..${boardStory.data.slides.length-1} retell the supporting copy to match the hook's angle while fitting the locked scenes; last entry empty). Never emit "slides" for hook.`
+      : ` hook, caption, cta, character or visualStyle — parameters ONLY ({title, hypothesis, mechanism, changedVariables}); emit neither "slides" nor "overlayTexts", change nothing in the storyboard.`;
     const baselineBlock=boardStory.success
-      ? `\nBASELINE STORYBOARD (already approved — code reuses these exact ${boardStory.data.slides.length} slides for every candidate, so NEVER re-emit scenes you must not change):\n${JSON.stringify(boardStory.data.slides)}\nPer-candidate output by changed variable: concept/angle — "overlayTexts" ONLY: exactly ${boardStory.data.slides.length} strings, one overlay per slide in order, retelling the angle (entry 1 repeats the baseline slide-1 overlay verbatim — the hook stays locked; last entry empty). Never emit "slides" for concept. slides — "slides": rewrite the scenes and structure, the full storyboard of exactly ${e.slideCount} {role,scene,overlayText}. hook, caption, cta, character or visualStyle — parameters ONLY ({title, hypothesis, mechanism, changedVariables}); emit neither "slides" nor "overlayTexts", change nothing in the storyboard.`
+      ? `\nBASELINE STORYBOARD (already approved — code reuses these exact ${boardStory.data.slides.length} slides for every candidate, so NEVER re-emit scenes you must not change):\n${JSON.stringify(boardStory.data.slides)}\nPer-candidate output by changed variable: concept/angle — "overlayTexts" ONLY: exactly ${boardStory.data.slides.length} strings, one overlay per slide in order, retelling the angle (entry 1 repeats the baseline slide-1 overlay verbatim — the hook stays locked; last entry empty). Never emit "slides" for concept. slides — "slides": rewrite the scenes and structure, the full storyboard of exactly ${e.slideCount} {role,scene,overlayText}.${supportBlock}`
       : `\nFill "slides" according to the changed variable: concept/angle or slides — write the storyboard the angle requires; hook, caption, cta, character or visualStyle — keep slides minimal and neutral.`;
     // Output stays small unless the structure itself is tested: only a
     // `slides` variable needs room for full storyboards per candidate.
+    // Supporting-overlay retells are short strings — the base cap covers them.
     const storyVars=vary.some(v=>v==='concept'||v==='slides');
     const deltaRes=await callOpenRouterText(system,
-      `${ctx}${baselineBlock}\nProduce "candidates": exactly ${needed} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is {title, hypothesis, mechanism, changedVariables:[{name,value}]} plus, ONLY as directed above: "overlayTexts" for concept/angle, "slides" for slides, neither for hook, caption, cta, character or visualStyle. Slide 1 overlay stays the hook pinned by any KEEP UNCHANGED rule; last overlayText empty. name must be one of: ${vary.join(', ')}. Do NOT output noun-swaps of the same claim.`,
+      `${ctx}${baselineBlock}\nProduce "candidates": exactly ${needed} DISTINCT variations. Each MUST have a unique "mechanism" — a viral tactic that fits THIS experiment (examples of tactic types, not a required list: before/after, status insult, confession, myth-bust, specific number, named enemy, identity, secret). Each is {title, hypothesis, mechanism, changedVariables:[{name,value}]} plus, ONLY as directed above: "overlayTexts" for concept/angle, "slides" for slides, "overlayTexts" for hook when supporting overlays are enabled, otherwise neither for hook, caption, cta, character or visualStyle. Slide 1 overlay stays the hook pinned by any KEEP UNCHANGED rule; last overlayText empty. name must be one of: ${vary.join(', ')}. Do NOT output noun-swaps of the same claim.`,
       model,{...grokOpts,maxTokens:storyVars?16000:6000,jsonSchema:{name:'brief_deltas',schema:BRIEF_DELTA_JSON_SCHEMA}});
     logAiCost(e.workspaceId,`briefs:${e.id}`,(deltaRes.costUsd??0)+(boardRes.costUsd??0));
     const deltaObj=deltaRes.parsed&&typeof deltaRes.parsed==='object'?deltaRes.parsed as Record<string,unknown>:null;

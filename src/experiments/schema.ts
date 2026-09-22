@@ -12,6 +12,11 @@ export const Instructions = z.object({
   goal: text.min(1), brand: text, audience: text, language: z.string().trim().min(1).max(80),
   direction: text, lockedConstraints: constraints,
   variables: z.array(z.union([z.enum(VARIABLE_FIELDS), z.literal('angle')]).transform(v => v === 'angle' ? 'concept' as const : v)).min(1).max(7), mode: z.enum(['controlled', 'exploration']),
+  // Hook-test scope: when true, hook candidates may also retell the supporting
+  // overlay copy (slides 2..N) while scenes stay locked to the baseline.
+  // Optional so older experiments (stored without the key) keep working —
+  // absent/falsy means slide-1-hook-only, as before.
+  varySupportingOverlays: z.boolean().optional(),
 }).strict().superRefine((v, ctx) => {
   if (new Set(v.variables).size !== v.variables.length) ctx.addIssue({ code: 'custom', message: 'Duplicate variables' });
   if (v.mode === 'controlled' && v.variables.some(x => x === 'concept' || x === 'slides')) {
@@ -117,9 +122,15 @@ export function validateVariants(e: Experiment, proposals: Proposal[]) {
   for (let i = 0; i < proposals.length; i++) {
     const p = proposals[i]!; assertBrief(e, p.brief);
     const changed = VARIABLE_FIELDS.filter(k => !same(p.brief[k], baseline.brief[k]));
-    // A concept change retells the storyboard by definition â€” the slides diff
+    // A concept change retells the storyboard by definition — the slides diff
     // is part of that one variable, not a second unapproved one.
-    const effective = changed.includes('concept') ? changed.filter(k => k !== 'slides') : changed;
+    // Same for a hook test with varySupportingOverlays: overlay-only retells
+    // (scenes identical) belong to the hook variable, not to `slides`.
+    const scenesSame = p.brief.slides.length === baseline.brief.slides.length
+      && p.brief.slides.every((s, n) => s.role === baseline.brief.slides[n]!.role && s.scene === baseline.brief.slides[n]!.scene);
+    const supportRetell = !!e.instructions.varySupportingOverlays && changed.includes('hook')
+      && changed.every(k => k === 'hook' || k === 'slides') && scenesSame;
+    const effective = changed.includes('concept') ? changed.filter(k => k !== 'slides') : supportRetell ? changed.filter(k => k !== 'slides') : changed;
     if (i === 0 && p.changedVariables.length) throw new ExperimentError(422, 'baseline_has_changes');
     if (i === 0) continue;
     if (!effective.length || effective.some(k => !e.instructions.variables.includes(k))) throw new ExperimentError(422, 'unapproved_variable');

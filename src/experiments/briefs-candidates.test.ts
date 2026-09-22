@@ -259,6 +259,66 @@ test('concept overlayTexts identical to the baseline are dropped as a copied sto
   expect(() => normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['concept'] } } as never)).toThrow('brief_candidates_invalid');
 });
 
+// Hook tests with varySupportingOverlays: scenes stay locked, slides 2..N overlay copy is retold.
+test('hook + supporting overlays retells slides 2..N while scenes stay locked', () => {
+  const parsed = {
+    baseline: { title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides },
+    candidates: [
+      { title: 'H1', hypothesis: 'h', changedVariables: [{ name: 'hook', value: 'New hook' }], overlayTexts: ['New hook', 'SUPPORT ONE', ''] },
+    ],
+  };
+  const n = normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['hook'], varySupportingOverlays: true } } as never);
+  expect(n.candidates).toHaveLength(1);
+  const brief = n.candidates[0]!.brief;
+  expect(brief.hook).toBe('New hook');
+  expect(brief.slides.map(s => s.scene)).toEqual(n.baseline.brief.slides.map(s => s.scene));
+  expect(brief.slides.map(s => s.overlayText)).toEqual(['New hook', 'SUPPORT ONE', '']);
+});
+
+test('hook overlayTexts are ignored without the flag — slide-1-hook-only stays the default', () => {
+  const parsed = {
+    baseline: { title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides },
+    candidates: [
+      { title: 'H1', hypothesis: 'h', changedVariables: [{ name: 'hook', value: 'New hook' }], overlayTexts: ['New hook', 'SNEAKY', ''] },
+    ],
+  };
+  const n = normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['hook'] } } as never);
+  expect(n.candidates).toHaveLength(1);
+  expect(n.candidates[0]!.brief.hook).toBe('New hook');
+  expect(n.candidates[0]!.brief.slides.map(s => s.overlayText)).toEqual(['', '', '']);
+});
+
+test('hook + supporting overlays still accepts hook-only deltas with no retell', () => {
+  const parsed = {
+    baseline: { title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides },
+    candidates: [
+      { title: 'H1', hypothesis: 'h', changedVariables: [{ name: 'hook', value: 'New hook' }] },
+    ],
+  };
+  const n = normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['hook'], varySupportingOverlays: true } } as never);
+  expect(n.candidates).toHaveLength(1);
+  expect(n.candidates[0]!.brief.slides.map(s => s.scene)).toEqual(n.baseline.brief.slides.map(s => s.scene));
+});
+
+test('hook retell with an unchanged hook and identical overlays tests nothing and is dropped', () => {
+  const parsed = {
+    baseline: { title: 'B', hypothesis: 'h', concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', slides: baseBrief.slides },
+    candidates: [
+      { title: 'Same', hypothesis: 'h', changedVariables: [{ name: 'hook', value: 'Start here' }], overlayTexts: ['', '', ''] },
+    ],
+  };
+  expect(() => normalizeBriefCandidates(parsed, 3, { instructions: { lockedConstraints: [], variables: ['hook'], varySupportingOverlays: true } } as never)).toThrow('brief_candidates_invalid');
+});
+
+test('supporting-overlays proposals validate; rewritten scenes are still rejected', () => {
+  const e = { instructions: { lockedConstraints: [], variables: ['hook'], mode: 'controlled', varySupportingOverlays: true }, variantCount: 2, slideCount: 3 } as never;
+  const base = { title: 'B', hypothesis: 'h', changedVariables: [], brief: { ...baseBrief } };
+  const retold = { title: 'V', hypothesis: 'h', changedVariables: [{ name: 'hook' as const, value: 'New hook' }], brief: { ...baseBrief, hook: 'New hook', slides: [{ role: 'hook', scene: 'A studio', overlayText: 'New hook' }, { role: 'body', scene: 'A gym', overlayText: 'SUPPORT' }, { role: 'cta', scene: 'A mirror', overlayText: '' }] } };
+  expect(() => validateVariants(e, [base, retold])).not.toThrow();
+  const reshot = { ...retold, brief: { ...retold.brief, slides: [{ role: 'hook', scene: 'A different studio', overlayText: 'New hook' }, { role: 'body', scene: 'A gym', overlayText: 'SUPPORT' }, { role: 'cta', scene: 'A mirror', overlayText: '' }] } };
+  expect(() => validateVariants(e, [base, reshot])).toThrow('unapproved_variable');
+});
+
 test('a 10-variant experiment degrades to the 9 deliverable proposals instead of failing', () => {
   const e = { instructions: { lockedConstraints: [], variables: ['hook'], mode: 'controlled' }, variantCount: 10, slideCount: 3 } as never;
   const base = { title: 'B', hypothesis: 'h', changedVariables: [], brief: { ...baseBrief } };
