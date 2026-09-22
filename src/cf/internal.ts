@@ -11,6 +11,17 @@
 // already use. Not in vercel.json (Vercel never served it); Worker-only.
 
 import { rawBatch, type RawStatement } from '../store.js';
+import { CircuitBreaker, CircuitOpenError } from '../lib/circuit-breaker.js';
+
+// Per-isolate circuit breaker: while D1 is timing out, refuse inbound
+// raw-batch traffic fast (503) instead of holding every request against the
+// binding for the full 15s timeout — the 2026-09-22 burst was the VPS
+// containers hammering this endpoint through a ~40s Cloudflare-side slow
+// window. Kept OUTSIDE timedD1 on purpose: that wrapper is stateless by
+// design (a stateful gate deadlocked the Prisma wasm engine 2026-09-01).
+// Only infra failures count — 4xx-shape and application errors never trip it.
+// Module state here is per-isolate, which is exactly the blast radius wanted.
+const batchBreaker = new CircuitBreaker({ name: 'raw-batch', threshold: 3, cooldownMs: 60_000 });
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -47,13 +58,19 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
-    const results = await rawBatch(statements);
+    const results = await batchBreaker.execute(() => rawBatch(statements));
     return json(200, { success: true, results });
   } catch (err) {
+    const e = err as Error;
+    if (e instanceof CircuitOpenError) {
+      // D1 is known-down: fail fast without touching the binding. The VPS
+      // side reads this as an HTTP-5xx infra failure and trips its own
+      // breaker — the cascade is intentional (both tiers go quiet together).
+      return json(503, { success: false, error: e.message });
+    }
     // Logged (not just returned) because provider request logs only capture
     // `POST /internal/raw-batch` — without this line the D1 cause never
     // reaches indiestack. Counts only: statements/params can carry user data.
-    const e = err as Error;
     console.error(
       `[internal/raw-batch] batch failed (${statements.length} statements, ${totalParams} params): ${e.message}${e.stack ? `\n${e.stack}` : ''}`.slice(0, 2000),
     );

@@ -24,6 +24,7 @@
 // directory), not a code rewrite.
 
 import { keepAlive } from './cf/wait-until.js';
+import { CircuitBreaker } from './lib/circuit-breaker.js';
 
 /** Which SQL dialect the raw queries must speak. Set DB_DIALECT=sqlite on Workers. */
 export type Dialect = 'postgres' | 'sqlite';
@@ -388,6 +389,13 @@ function d1HttpParam(value: unknown): unknown {
  * object rows — zip them back.
  */
 function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
+  // Per-executor (per-process) circuit breaker: VPS-only — this executor is
+  // constructed in initStoreD1Http, which never runs on the Worker (the
+  // Worker's rawBatch below goes straight to the binding). After 3
+  // consecutive D1 infra failures the container stops sending requests for
+  // 60s instead of re-ticking into the outage every few seconds; the 2026-09-22
+  // burst was that exact pattern. Application errors (4xx, bad SQL) never trip it.
+  const breaker = new CircuitBreaker({ name: 'd1-batch', threshold: 3, cooldownMs: 60_000 });
   const d1Url = `https://api.cloudflare.com/client/v4/accounts/${params.accountId}/d1/database/${params.databaseId}/raw`;
 
   async function single(sql: string, sqlParams: unknown[]): Promise<Array<Record<string, unknown>>> {
@@ -410,7 +418,7 @@ function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
     return rows.map((vals) => Object.fromEntries(columns.map((c, i) => [c, vals[i]])));
   }
 
-  return async (statements) => {
+  return async (statements) => breaker.execute(async () => {
     // WORKER_INTERNAL_URL is the deployed Worker's public origin (set on the
     // VPS post-cutover) — NOT WORKER_URL, which is a truthy "VPS is active"
     // flag elsewhere in the codebase, not a fetchable address.
@@ -447,7 +455,7 @@ function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
       results.push(await single(s.sql, (s.params ?? []).map(d1HttpParam)));
     }
     return results;
-  };
+  });
 }
 
 /**
