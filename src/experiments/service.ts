@@ -11,15 +11,31 @@ import { deriveStorySlideCount } from './slide-count.js';
 import { applyApprovedEstimate } from './budget.js';
 
 export const fingerprint = (v: unknown): string => createHash('sha256').update(JSON.stringify(v)).digest('hex');
+/** Compact view count for experiment title differentiators: 8200000 -> 8.2M, 75600 -> 75.6k. */
+export function formatCompactViews(n: number): string {
+  if (n >= 1_000_000) return `${Math.round(n / 100_000) / 10}M`;
+  if (n >= 1_000) return `${Math.round(n / 100) / 10}k`.replace(/\.0k$/, 'k');
+  return String(n);
+}
+/** One-line source summary for experiment titles: `@handle · caption snippet (views)`. */
+export function sourceTag(v: { creatorHandle?: string | null; caption?: string | null; views?: number | null }): string {
+  const handle = v.creatorHandle ? `@${v.creatorHandle}` : 'untitled';
+  const flat = String(v.caption ?? '').replace(/\s+/g, ' ').trim();
+  const snippet = flat ? (flat.length > 42 ? flat.slice(0, 42).replace(/\s+\S*$/, '') || flat.slice(0, 42) : flat) : 'untitled';
+  const views = typeof v.views === 'number' ? ` (${formatCompactViews(v.views)})` : '';
+  return `${handle} · ${snippet}${views}`;
+}
 export async function createExperiment(raw: unknown) {
   const b = S.Create.parse(raw);
   const now = new Date().toISOString();
   const inputs: S.Input[] = [];
   let referenced = false;
   const slideSources: Array<{ originalCount: number | null; analysis?: unknown }> = [];
+  const tags: string[] = [];
   for (const videoId of b.videoIds) {
     const v = await db.video.findFirst({ where: { id: videoId, source: { workspaceId: b.workspaceId } } });
     if (!v) throw new S.ExperimentError(404,'video_not_found');
+    tags.push(sourceTag(v as { creatorHandle?: string | null; caption?: string | null; views?: number | null }));
     // Slideshows only: video posts are disabled for selection — the analysis
     // and render pipeline is carousel-based (slideshow+caption evidence).
     if (!isPhotoPost(v)) throw new S.ExperimentError(400,'video_not_slideshow','Only slideshows can be selected for experiments.');
@@ -35,6 +51,22 @@ export async function createExperiment(raw: unknown) {
   }
   const { idempotencyKey, videoIds, workspaceId, slideCount: requestedSlideCount, ...fields } = b;
   const slideCount = deriveStorySlideCount(slideSources) ?? requestedSlideCount;
+  // Each experiment is isolated per slideshow but the goal doubles as the list
+  // title — identical goals are indistinguishable. Suffix a quick source
+  // summary unless the caller already named the source (e.g. re-duplicates).
+  if (tags.length) {
+    const suffix = tags.length === 1
+      ? ` — ${tags[0]}`
+      : ` — ${tags.slice(0, 2).join(' + ')}${tags.length > 2 ? ` +${tags.length - 2} more` : ''}`;
+    const goal = fields.instructions.goal;
+    const alreadyTagged = tags.some(t => {
+      const handle = t.split(' ')[0];
+      return handle && handle.startsWith('@') && goal.includes(handle);
+    });
+    if (!alreadyTagged && !goal.endsWith(suffix) && goal.length + suffix.length <= 2000) {
+      fields.instructions = { ...fields.instructions, goal: `${goal}${suffix}` };
+    }
+  }
   return store.create({ id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,
     creditsCharged:0,report:null,inputs,variants:[],error:null,
     // Slideshow sources are attached as visual references during rendering; video-only stays text-directed.
