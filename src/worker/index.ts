@@ -48,6 +48,9 @@ import { withMeterScope } from '../lib/scrapers/bandwidth.js';
 import { refundCredits } from '../lib/credits.js';
 import { initLogShipping } from './ship-logs.js';
 import { tick as experimentTick } from '../experiments/engine.js';
+import { createKindBreaker } from './kind-breaker.js';
+import { controlEnabled, filterKindsByControl } from '../lib/worker-control.js';
+import { snapshotD1Usage, deltaD1Usage, formatD1Usage, totalD1Usage } from '../lib/d1-usage.js';
 
 // D1 is single-writer with per-request billing: the 3s Postgres poll default
 // would hammer it from every container. In D1 mode (DB_DIALECT=sqlite) the
@@ -88,10 +91,33 @@ const RECLAIM_INTERVAL_MS = (() => {
 // within EXPERIMENT_TICK_MIN_INTERVAL_MS — one tick already chains up to 3
 // steps back-to-back, so provider-bound work progresses near-live instead of
 // waiting on minute-scale cadence or the idle backoff.
+//
+// Single leader: every VPS container runs this loop, but only ONE of them may
+// tick experiments — each tick's steps are Experiment UPDATEs + Workspace
+// debits + ledger INSERTs, so N containers ticking means N× the D1 writes for
+// the same experiment. Default owner is the maintenance (refresh-draining)
+// worker; EXPERIMENT_TICK_ENABLED=1 forces on, =0 forces off.
+function experimentsTickEnabled(): boolean {
+  const raw = (process.env.EXPERIMENT_TICK_ENABLED ?? '').trim().toLowerCase();
+  if (raw === '1' || raw === 'true' || raw === 'yes') return true;
+  if (raw === '0' || raw === 'false' || raw === 'no') return false;
+  return KINDS.includes('refresh');
+}
+const doesExperiments = experimentsTickEnabled();
 const EXPERIMENT_TICK_MIN_INTERVAL_MS = 5_000;
 let lastExperimentTickAt = 0;
 let experimentsActiveUntil = 0;
 let experimentTickInFlight: Promise<unknown> | null = null;
+// Consecutive ticks that wrote nothing (tasks backing off or inside their
+// lease — reads only). After IDLE_TICK_STREAK_MAX of them the loop drops back
+// to the 120s cadence even while an experiment reports active; the next slow
+// tick re-arms fast cadence the moment real work (writes) resumes.
+let idleTickStreak = 0;
+const IDLE_TICK_STREAK_MAX = 3;
+// Last logged step count — the per-tick line is logged only when the count
+// changes or the tick wrote rows, so a steady 5s cadence doesn't crowd real
+// errors out of the 400-entry log shipper.
+let lastTickSteps = -1;
 
 // Which MediaJob kinds this worker claims. WORKER_KINDS is a comma-separated
 // list (e.g. "analyze,fetch" for video-only, or "refresh,rescore" for a
@@ -118,6 +144,20 @@ initLogShipping(KINDS);
 // credits on the periodic stale-score top-up scrape — the video worker
 // (analyze/fetch) must not double that spend.
 const doesMaintenance = KINDS.includes('refresh') || KINDS.includes('rescore');
+
+// Per-kind circuit breaker (Phase 2 write budget): N consecutive failures of
+// one kind park it for a cooldown instead of spending claim→fail cycles
+// proving the outage is still there. Requeued/yielded jobs never count.
+function breakerThreshold(): number {
+  const n = Number(process.env.KIND_BREAKER_THRESHOLD ?? 5);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 5;
+}
+function breakerCooldownMs(): number {
+  const n = Number(process.env.KIND_BREAKER_COOLDOWN_MS ?? 5 * 60_000);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 5 * 60_000;
+}
+const kindBreaker = createKindBreaker({ threshold: breakerThreshold(), cooldownMs: breakerCooldownMs() });
+let lastParkedKey = '';
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
@@ -184,7 +224,7 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   });
 }
 
-console.log(`[worker] started — dialect=${isD1Mode ? 'sqlite(D1)' : 'postgres'} kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms → max ${MAX_IDLE_MS}ms, concurrency ${CONCURRENCY}, rescore every ${Math.round(RESCORE_INTERVAL_MS / 1000)}s`);
+console.log(`[worker] started — dialect=${isD1Mode ? 'sqlite(D1)' : 'postgres'} kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms → max ${MAX_IDLE_MS}ms, concurrency ${CONCURRENCY}, rescore every ${Math.round(RESCORE_INTERVAL_MS / 1000)}s, experiments ${doesExperiments ? 'on' : 'off'}`);
 // Startup stagger so sibling containers (same image, restarted together by a
 // deploy) don't walk the claim/experiment cadence in phase: each container
 // offsets its first loop iteration by a random 0–5s before the while loop.
@@ -215,8 +255,28 @@ function errorBackoffMs(rounds: number): number {
   return Math.round(backoff * (0.85 + Math.random() * 0.3));
 }
 
+// D1 write-budget tripwire (Phase 4): per-container process totals against a
+// warn threshold, at most one line per hour. Totals are PER CONTAINER —
+// multiply by the container count for the account-wide burn rate. When this
+// fires, park burners via the WorkerControl table (jobs.<kind>.enabled=0,
+// experiments.enabled=0, stale_rescrape.enabled=0) instead of redeploying.
+function d1WriteWarnRows(): number {
+  const n = Number(process.env.D1_WRITE_WARN_ROWS ?? 70_000);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 70_000;
+}
+let lastBudgetWarnAt = 0;
+const BUDGET_WARN_EVERY_MS = 60 * 60_000;
+
 while (!shuttingDown) {
   try {
+    const usage = totalD1Usage();
+    if (usage.writes >= d1WriteWarnRows() && Date.now() - lastBudgetWarnAt >= BUDGET_WARN_EVERY_MS) {
+      lastBudgetWarnAt = Date.now();
+      console.error(
+        `[d1-budget] per-container writes ${usage.writes} (reads ${usage.reads}, queries ${usage.queries}) `
+        + `at/above warn threshold ${d1WriteWarnRows()} — park burners via WorkerControl, see src/lib/worker-control.ts`,
+      );
+    }
     // Recovery sweeps — throttled, maintenance-only, staggered across
     // containers by the jittered lastReclaimAt below. BOTH sweeps are
     // whole-queue scans over the D1 HTTP API: running the never-claimed sweep
@@ -225,6 +285,7 @@ while (!shuttingDown) {
     // sweep must not abort the iteration (claiming continues below).
     if (doesMaintenance && Date.now() - lastReclaimAt >= RECLAIM_INTERVAL_MS) {
       lastReclaimAt = Date.now();
+      const sweepSnap = snapshotD1Usage();
       const reclaimed = await reclaimStuckJobs().catch((err) => {
         console.warn(`[worker] stuck-job sweep failed: ${(err as Error).message}`);
         return { requeued: 0, failed: 0, refunded: 0 };
@@ -241,13 +302,22 @@ while (!shuttingDown) {
         console.warn(`[worker] abandoned-queue sweep failed: ${(err as Error).message}`);
         return { failed: 0, refunded: 0, more: false };
       });
+      const sweepUsage = formatD1Usage(deltaD1Usage(sweepSnap));
       if (abandoned.failed) {
         console.warn(
           `[worker] failed ${abandoned.failed} never-claimed job(s), refunded ${abandoned.refunded} `
           + `— the queue was not draining${abandoned.more
             ? ' and is still deep — the sweep hit its 200-row cap, more rows wait for the next sweep'
-            : ''}`,
+            : ''}${sweepUsage}`,
         );
+      } else if (reclaimed.requeued || reclaimed.failed) {
+        console.log(
+          `[worker] sweep requeued=${reclaimed.requeued} failed=${reclaimed.failed}${sweepUsage}`,
+        );
+      } else {
+        // Whole-sweep cost is otherwise invisible in the D1 budget — one
+        // line per sweep interval proves the idle case is cheap.
+        console.log(`[worker] sweep idle${sweepUsage}`);
       }
     }
 
@@ -258,9 +328,18 @@ while (!shuttingDown) {
     // maintenance worker.
     if (doesMaintenance && RESCORE_EVERY > 0 && Date.now() - lastRescoreAt >= RESCORE_INTERVAL_MS) {
       lastRescoreAt = Date.now();
-      await rescoreStaleTooFresh().catch((err) => {
-        console.warn(`[worker] rescoreStaleTooFresh failed: ${(err as Error).message}`);
-      });
+      const rescoreSnap = snapshotD1Usage();
+      await rescoreStaleTooFresh()
+        .then(({ creatorsRescraped, sourcesRescoredOnly }) => {
+          if (creatorsRescraped || sourcesRescoredOnly) {
+            console.log(
+              `[worker] rescoreStaleTooFresh rescraped=${creatorsRescraped} rescored=${sourcesRescoredOnly}${formatD1Usage(deltaD1Usage(rescoreSnap))}`,
+            );
+          }
+        })
+        .catch((err) => {
+          console.warn(`[worker] rescoreStaleTooFresh failed: ${(err as Error).message}`);
+        });
     }
 
     // Experiment engine: drive planning/generation steps on the VPS (no 60s
@@ -268,14 +347,41 @@ while (!shuttingDown) {
     // within 5s (one tick chains up to 3 steps); idle experiments back off to
     // the 120s cadence. MediaJob draining is never blocked: the tick runs
     // single-flight, detached from the claim round below.
+    //
+    // Two gates: doesExperiments (single leader by WORKER_KINDS, Phase 1) and
+    // the experiments.enabled control row (Phase 4 kill switch, cached 60s).
+    const experimentsAllowed =
+      doesExperiments && (await controlEnabled('experiments.enabled').catch(() => true));
     if (!experimentTickInFlight
+      && experimentsAllowed
       && Date.now() >= experimentTickBackoffUntil
       && Date.now() - lastExperimentTickAt >= (Date.now() < experimentsActiveUntil ? EXPERIMENT_TICK_MIN_INTERVAL_MS : 120_000)) {
       lastExperimentTickAt = Date.now();
+      const tickSnap = snapshotD1Usage();
       experimentTickInFlight = experimentTick(120_000)
         .then(({ steps, active }) => {
-          if (steps > 0) console.log(`[worker] experiment tick advanced ${steps} step(s)`);
-          experimentsActiveUntil = active ? Date.now() + 10 * 60_000 : 0;
+          const usage = deltaD1Usage(tickSnap);
+          if (steps > 0 && (steps !== lastTickSteps || usage.writes > 0)) {
+            console.log(`[worker] experiment tick advanced ${steps} step(s)${formatD1Usage(usage)}`);
+          }
+          lastTickSteps = steps;
+          if (active && (steps === 0 || usage.writes > 0)) {
+            // Real work settled (or nothing attempted) — stay fast / re-arm.
+            experimentsActiveUntil = Date.now() + 10 * 60_000;
+            idleTickStreak = 0;
+          } else if (active) {
+            // Active but pure reads several ticks running: backoff/lease
+            // waits, not progress. Park behind the slow cadence; a later
+            // tick with writes re-arms automatically.
+            idleTickStreak++;
+            if (idleTickStreak >= IDLE_TICK_STREAK_MAX) {
+              experimentsActiveUntil = 0;
+              idleTickStreak = 0;
+            }
+          } else {
+            experimentsActiveUntil = 0;
+            idleTickStreak = 0;
+          }
           experimentTickErrorRounds = 0;
           experimentTickBackoffUntil = 0;
         })
@@ -294,7 +400,25 @@ while (!shuttingDown) {
     // Claim up to CONCURRENCY jobs across ALL kinds in ONE statement, priority
     // following the ALL_KINDS order — the old per-kind loop fired one claim
     // query per kind per round (7 queries just to find an empty queue).
-    const jobs = await claimNextJobs(KINDS, CONCURRENCY);
+    // Parked kinds (breaker open after consecutive failures, or disabled via
+    // the WorkerControl table) are excluded so an outage waits out its
+    // cooldown instead of burning claim→fail cycles.
+    const breakerKinds = kindBreaker.filterKinds(KINDS);
+    const claimKinds = await filterKindsByControl(breakerKinds).catch(() => breakerKinds);
+    const parkedKey = KINDS.filter((k) => !claimKinds.includes(k)).join(',');
+    if (parkedKey !== lastParkedKey) {
+      lastParkedKey = parkedKey;
+      console.log(parkedKey ? `[worker] kinds parked: ${parkedKey}` : '[worker] all kinds claimable again');
+    }
+    if (claimKinds.length === 0) {
+      // Every kind cooling or disabled — idle until the next half-open, same
+      // as an empty queue (a claim would only spend rows proving it).
+      idleRounds++;
+      const backoff = Math.min(IDLE_MS * 2 ** idleRounds, MAX_IDLE_MS);
+      await idleSleep(Math.round(backoff * (0.85 + Math.random() * 0.3)));
+      continue;
+    }
+    const jobs = await claimNextJobs(claimKinds, CONCURRENCY);
     // Claim succeeded — D1 answered, whatever the queue depth. Streak resets
     // here (not on a claimed job) so a healthy-but-empty D1 clears the
     // outage backoff too.
@@ -316,6 +440,7 @@ while (!shuttingDown) {
 
     await Promise.all(jobs.map(async (job) => {
       const t = Date.now();
+      const jobSnap = snapshotD1Usage();
       const budgetMs = jobTimeoutMs(job.kind);
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -329,10 +454,16 @@ while (!shuttingDown) {
         console.log(
           `[worker] ${job.kind} job ${job.id.slice(0, 8)} ` +
           `${result.ok ? 'ok' : result.requeued ? 'requeued' : 'FAILED'} in ${secs}s` +
-          `${result.error ? ` — ${result.error.slice(0, 160)}` : ''}`,
+          `${result.error ? ` — ${result.error.slice(0, 160)}` : ''}` +
+          formatD1Usage(deltaD1Usage(jobSnap)),
         );
+        // Breaker input: successes reset, real failures count, requeued
+        // ("never started") is neutral.
+        if (result.ok) kindBreaker.record(job.kind, true);
+        else if (!result.requeued) kindBreaker.record(job.kind, false);
       } catch (err) {
         const message = (err as Error).message;
+        kindBreaker.record(job.kind, false);
         console.error(`[worker] ${job.kind} job ${job.id.slice(0, 8)} threw: ${message}`);
         // An uncaught throw or timeout used to leave the row `running` until
         // reclaimStuckJobs (15 min), which is how one hung scrape stalled the

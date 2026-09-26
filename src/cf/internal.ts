@@ -11,6 +11,7 @@
 // already use. Not in vercel.json (Vercel never served it); Worker-only.
 
 import { rawBatch, type RawStatement } from '../store.js';
+import { takeBatchUsage } from '../lib/d1-usage.js';
 import { CircuitBreaker, CircuitOpenError } from '../lib/circuit-breaker.js';
 
 // Per-isolate circuit breaker: while D1 is timing out, refuse inbound
@@ -59,7 +60,10 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const results = await batchBreaker.execute(() => rawBatch(statements));
-    return json(200, { success: true, results });
+    // Binding-side meta for the VPS caller's write attribution (Phase 0).
+    // Additive fields — older VPS images ignore them.
+    const usage = takeBatchUsage();
+    return json(200, { success: true, results, rowsRead: usage.reads, rowsWritten: usage.writes });
   } catch (err) {
     const e = err as Error;
     if (e instanceof CircuitOpenError) {

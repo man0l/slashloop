@@ -1,0 +1,13 @@
+-- Retry cooldown (Phase 2 write budget): failJob requeues with
+-- availableAt = now + backoff and every claim filters on it, so a job that
+-- fails deterministically-slow (proxy down, provider 5xx) waits minutes
+-- between attempts instead of fail-claim-fail spinning at the 10s poll speed
+-- across 3 containers. NULL (all pre-migration rows) means available now.
+--
+-- No backfill: every existing queued row should stay immediately claimable.
+-- No new index: the claim already ranges over [status, kind, createdAt] and
+-- evaluates availableAt per candidate row (same pattern as the refresh
+-- createdAt hold and the recreate payloadJson guard).
+--
+-- Apply with: wrangler d1 migrations apply slashloop --remote
+ALTER TABLE "MediaJob" ADD COLUMN "availableAt" TIMESTAMP;

@@ -2,6 +2,7 @@ import { db } from './db.js';
 import { D1_PARAM_CHUNK, chunked, dbDialect, rawBatch, type RawStatement } from './store.js';
 import { subHours } from 'date-fns';
 import { enqueueRefreshJob, outstandingJobForSource } from './lib/jobs.js';
+import { controlEnabled } from './lib/worker-control.js';
 import { CREDIT_COSTS, creditBalance } from './lib/credits.js';
 
 // ---------------------------------------------------------------------------
@@ -442,6 +443,15 @@ const STALE_RESCRAPE_LIMIT = 5;
 export const BASELINE_RESCRAPE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
 
 /**
+ * Don't re-mint a refresh the queue just gave up on. A source whose refresh
+ * terminally failed recently (out of credits, cap breach, dead proxy) would
+ * otherwise be re-enqueued by every sweep until the cooldown below expires —
+ * each cycle spending claim + refuse + fail + refund rows to re-prove a
+ * condition only a top-up can clear. Fall back to the free recompute instead.
+ */
+export const RECENT_REFRESH_FAIL_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
+
+/**
  * Videos posted under 48h ago are scored 'too_fresh' with outlierScore 0.
  * Once 48h passes they're eligible for a real score, but a video's own
  * `views` column is frozen at whatever it was when first scraped — almost
@@ -486,6 +496,15 @@ export const BASELINE_RESCRAPE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
  * showing the placeholder even when it can't be paid for right now.
  */
 export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: number; sourcesRescoredOnly: number }> {
+  // Kill switch (Phase 4): park the periodic rescrape without a redeploy.
+  // Fail-open — a control-plane error keeps the old behaviour.
+  try {
+    if (!(await controlEnabled('stale_rescrape.enabled'))) {
+      return { creatorsRescraped: 0, sourcesRescoredOnly: 0 };
+    }
+  } catch {
+    // Fall through to the sweep.
+  }
   const startedAt = Date.now();
   const cutoff = subHours(new Date(), 48);
   const stale = await db.video.findMany({
@@ -586,6 +605,10 @@ export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: numbe
         console.log(
           `[scoring] stale too_fresh: ${creatorHandle} skipped — refresh already ${outstanding.status} on ${sourceId.slice(0, 8)}`,
         );
+      } else if (await recentRefreshFailure(sourceId)) {
+        console.log(
+          `[scoring] stale too_fresh: ${creatorHandle} skipped — refresh failed recently on ${sourceId.slice(0, 8)}, free recompute instead`,
+        );
       } else {
         await enqueueRefreshJob({
           workspaceId,
@@ -619,6 +642,28 @@ export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: numbe
   }
 
   return { creatorsRescraped, sourcesRescoredOnly };
+}
+
+/**
+ * True when a refresh for this source terminally failed within the cooldown.
+ * A best-effort guard, not a correctness gate: a failed read degrades to
+ * "enqueue anyway" (the old behaviour) rather than blocking a rescrape.
+ */
+async function recentRefreshFailure(sourceId: string): Promise<boolean> {
+  try {
+    const failed = await db.mediaJob.findFirst({
+      where: {
+        sourceId,
+        kind: 'refresh',
+        status: 'failed',
+        finishedAt: { gt: new Date(Date.now() - RECENT_REFRESH_FAIL_COOLDOWN_MS) },
+      },
+      select: { id: true },
+    });
+    return Boolean(failed);
+  } catch {
+    return false;
+  }
 }
 
 export async function batchScoreVideos(sourceId: string): Promise<ScoreResult[]> {

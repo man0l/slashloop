@@ -573,6 +573,12 @@ model MediaJob {
   createdAt      DateTime  @default(now())
   startedAt      DateTime?
   finishedAt     DateTime?
+  /// Retry cooldown: a requeued job is not claimable before this. failJob
+  /// sets now + backoff (2min/8min by attempt) so fail-claim-fail cannot spin
+  /// at poll speed; yieldJob sets now + 60s so canonical-lock losers park
+  /// instead of claim→yield looping. NULL (pre-migration rows) = available.
+  /// Enforced in claimNextJobs/claimJobsByIds, not by the DB.
+  availableAt    DateTime?
 
   workspace Workspace @relation(fields: [workspaceId], references: [id])
 
@@ -596,6 +602,18 @@ model MediaJob {
   // WHERE sourceId + status + kind (queued/running refresh). Without this the
   // /api/workspaces fan-out does full MediaJob scans over the D1 HTTP API.
   @@index([sourceId, status, kind])
+}
+
+/// Kill switches for the worker loops (Phase 4 write budget) — read by the
+/// VPS worker and the CF Worker alike, so a runaway can be parked in seconds
+/// without a redeploy. Missing row = enabled (a fresh DB must not park
+/// everything). Known keys: jobs.<kind>.enabled, experiments.enabled,
+/// stale_rescrape.enabled — value "0" disables, anything else enables.
+/// Written via setControl() or plain SQL, never in a hot path.
+model WorkerControl {
+  key       String   @id
+  value     String   @default("")
+  updatedAt DateTime @updatedAt
 }
 
 /// One-row incident marker for the scraping-failure email alert

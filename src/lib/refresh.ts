@@ -139,6 +139,58 @@ interface ApplyResult {
   rescoreQueued: boolean;
 }
 
+/** Stored-video shape the persist diff reads (subset of the Video row). */
+export interface StoredVideoStats {
+  views: number;
+  likes: number;
+  comments: number;
+  shares: number | null;
+  saves: number | null;
+  creatorFollowers: number | null;
+  soundId: string | null;
+  soundTitle: string | null;
+  soundAuthor: string | null;
+  isBaselineSample: boolean;
+}
+
+/**
+ * True when persisting this scrape item would change the stored row. Most
+ * refresh pulls re-see the same videos with identical stats — an UPDATE that
+ * changes nothing still costs a D1 row-write, so the caller skips it (same
+ * idea as pickChangedScores in src/scoring.ts).
+ *
+ * Mirrors the update payload below exactly: sound columns are only compared
+ * when the scrape carried a sound (the update leaves them untouched
+ * otherwise), and the baseline-sample flag flip counts as a change.
+ */
+export function videoStatsChanged(
+  existing: StoredVideoStats,
+  nv: NormalizedVideo,
+  isBaselineOnly: boolean,
+): boolean {
+  if (!isBaselineOnly && existing.isBaselineSample) return true;
+  if (
+    existing.views !== nv.views
+    || existing.likes !== nv.likes
+    || existing.comments !== nv.comments
+    || (existing.shares ?? 0) !== (nv.shares ?? 0)
+    || (existing.saves ?? 0) !== (nv.saves ?? 0)
+    || (existing.creatorFollowers ?? null) !== (nv.creatorFollowers ?? null)
+  ) {
+    return true;
+  }
+  if (nv.sound?.id) {
+    if (
+      (existing.soundId ?? null) !== nv.sound.id
+      || (existing.soundTitle ?? null) !== nv.sound.title
+      || (existing.soundAuthor ?? null) !== nv.sound.author
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Persist/score/thumb a scrape for ONE source. Lookup of existing videos is
  * scoped to this sourceId so multi-tenant fan-out never mutates another
@@ -205,12 +257,27 @@ export async function applyScrapeItems(opts: {
     rawJson: string | null;
     durationSec: number | null;
     thumbnailUrl: string | null;
+    views: number;
+    likes: number;
+    comments: number;
+    shares: number | null;
+    saves: number | null;
+    creatorFollowers: number | null;
+    soundId: string | null;
+    soundTitle: string | null;
+    soundAuthor: string | null;
+    isBaselineSample: boolean;
   }>();
   if (candidates.length > 0) {
     await chunked(candidates.map(c => c.externalId), async (ids) => {
       const existingRows = await db.video.findMany({
         where: { sourceId, externalId: { in: ids } },
-        select: { id: true, platform: true, externalId: true, mediaStatus: true, rawJson: true, durationSec: true, thumbnailUrl: true },
+        select: {
+          id: true, platform: true, externalId: true, mediaStatus: true, rawJson: true,
+          durationSec: true, thumbnailUrl: true, views: true, likes: true, comments: true,
+          shares: true, saves: true, creatorFollowers: true, soundId: true, soundTitle: true,
+          soundAuthor: true, isBaselineSample: true,
+        },
       });
       for (const r of existingRows) existingByKey.set(`${r.platform}|${r.externalId}`, r);
     });
@@ -219,6 +286,16 @@ export async function applyScrapeItems(opts: {
   for (const nv of candidates) {
     const existing = existingByKey.get(`${nv.platform}|${nv.externalId}`);
     if (existing) {
+      // Diff before writing (mirrors pickChangedScores in src/scoring.ts):
+      // most refresh pulls re-see the same videos with identical stats, and an
+      // UPDATE that changes nothing still costs a D1 row-write. Skip it.
+      if (!videoStatsChanged(existing, nv, isBaselineOnly)) {
+        skippedKnown++;
+        if (!isBaselineOnly && isPhotoPost(existing) && !slideshowIsHydrated(existing.rawJson)) {
+          photoFetchIds.push(existing.id);
+        }
+        continue;
+      }
       await db.video.update({
         where: { id: existing.id },
         data: {
@@ -279,9 +356,23 @@ export async function applyScrapeItems(opts: {
       if ((err as { code?: string }).code !== 'P2002') throw err;
       const raced = await db.video.findFirst({
         where: { sourceId, platform: nv.platform, externalId: nv.externalId },
-        select: { id: true, mediaStatus: true, rawJson: true, durationSec: true, thumbnailUrl: true },
+        select: {
+          id: true, mediaStatus: true, rawJson: true, durationSec: true, thumbnailUrl: true,
+          views: true, likes: true, comments: true, shares: true, saves: true,
+          creatorFollowers: true, soundId: true, soundTitle: true, soundAuthor: true,
+          isBaselineSample: true,
+        },
       });
       if (!raced) throw err;
+      // Same no-change skip as the main path: the loser of the race must not
+      // spend a row-write re-applying stats the winner already wrote.
+      if (!videoStatsChanged(raced, nv, isBaselineOnly)) {
+        skippedKnown++;
+        if (!isBaselineOnly && isPhotoPost(raced) && !slideshowIsHydrated(raced.rawJson)) {
+          photoFetchIds.push(raced.id);
+        }
+        continue;
+      }
       await db.video.update({
         where: { id: raced.id },
         data: {
@@ -351,7 +442,7 @@ export async function applyScrapeItems(opts: {
   if (skippedKnown > 0 && modeLabel === 'incremental') {
     errors.push(infoNote(
       `Already known: ${skippedKnown}/${itemsConsidered || items.length} results were existing videos `
-      + `(stats updated; not new outliers)`,
+      + `(stats refreshed where changed; not new outliers)`,
     ));
   }
 

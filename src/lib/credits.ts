@@ -381,6 +381,112 @@ async function refundSqlite(
   return { planCredits, packCredits, total: planCredits + packCredits };
 }
 
+export interface RefundItem {
+  workspaceId: string;
+  credits: number;
+  tool: string;
+  refId: string;
+  reason: 'usage_settlement' | 'call_failed' | 'fetch_failed' | 'adjustment';
+}
+
+/**
+ * Batched refunds for the recovery sweeps (failAbandonedQueuedJobs,
+ * reclaimStuckJobs).
+ *
+ * The per-job path above costs 2 statements per refund (ledger INSERT +
+ * Workspace UPDATE). A 200-row sweep against one workspace would spend 200
+ * Workspace UPDATEs on the same row. This issues the per-item ledger INSERTs
+ * (same refIds as the per-job path, so mixed retries stay idempotent) but ONE
+ * Workspace UPDATE per workspace per chunk — same rows refunded, ~half the
+ * statements, and the single-writer UPDATE hotspot is gone.
+ *
+ * Chunks stay under the /internal/raw-batch 50-statement cap. Each chunk is
+ * atomic: a unique-violation abort (retried refId) applies nothing, and the
+ * chunk falls back to per-item refundCredits, whose duplicate path replays
+ * the balance without double-granting. Never throws — callers count what
+ * came back and move on.
+ */
+export async function refundCreditsBatched(items: RefundItem[]): Promise<{ refunded: number }> {
+  const live = items.filter((it) => it.refId && Math.ceil(it.credits) > 0);
+  if (live.length === 0) return { refunded: 0 };
+
+  if (dbDialect() !== 'sqlite') {
+    // Legacy Postgres path — per-item loop (sweeps run on D1 in production).
+    let refunded = 0;
+    for (const it of live) {
+      try {
+        await refundCredits(it.workspaceId, it.credits, it.tool, it.refId, it.reason);
+        refunded++;
+      } catch (err) {
+        console.warn(`[credits] batched refund failed for ${it.refId}: ${(err as Error).message}`);
+      }
+    }
+    return { refunded };
+  }
+
+  // Resolve billing workspaces once per workspace (not once per item).
+  const billingByWs = new Map<string, string>();
+  const grouped = new Map<string, RefundItem[]>();
+  for (const it of live) {
+    try {
+      let billing = billingByWs.get(it.workspaceId);
+      if (!billing) {
+        billing = await resolveBillingWorkspaceId(it.workspaceId);
+        billingByWs.set(it.workspaceId, billing);
+      }
+      const group = grouped.get(billing) ?? [];
+      group.push(it);
+      grouped.set(billing, group);
+    } catch (err) {
+      console.warn(`[credits] batched refund failed for ${it.refId}: ${(err as Error).message}`);
+    }
+  }
+
+  const now = new Date();
+  let refunded = 0;
+  for (const [billingId, group] of grouped) {
+    // 40 ledger INSERTs + 1 UPDATE = 41 statements, under the 50 cap.
+    for (let i = 0; i < group.length; i += 40) {
+      const chunk = group.slice(i, i + 40);
+      const total = chunk.reduce((n, it) => n + Math.ceil(it.credits), 0);
+      const statements: RawStatement[] = chunk.map((it) => ({
+        sql: `INSERT INTO "CreditLedger" ("id", "workspaceId", "delta", "bucket", "reason", "tool", "balanceAfter", "refId", "createdAt")
+              SELECT ?, ?, ?, 'pack', ?, ?, "planCredits" + "packCredits" + ?, ?, ?
+                FROM "Workspace"
+               WHERE "id" = ?`,
+        params: [randomUUID(), billingId, Math.ceil(it.credits), it.reason, it.tool, Math.ceil(it.credits), now, it.refId, billingId],
+      }));
+      statements.push({
+        sql: `UPDATE "Workspace" SET "packCredits" = "packCredits" + ? WHERE "id" = ?`,
+        params: [total, billingId],
+      });
+      try {
+        await rawBatch(statements);
+        refunded += chunk.length;
+      } catch (err) {
+        if (isUniqueViolation(err)) {
+          // A refId in this chunk was already refunded: the atomic batch
+          // applied nothing, so replay per item — duplicates return the
+          // balance instead of double-granting.
+          for (const it of chunk) {
+            try {
+              await refundCredits(it.workspaceId, it.credits, it.tool, it.refId, it.reason);
+              refunded++;
+            } catch (err2) {
+              console.warn(`[credits] batched refund failed for ${it.refId}: ${(err2 as Error).message}`);
+            }
+          }
+        } else {
+          console.warn(
+            `[credits] batched refund chunk failed (${chunk.length} items): ${(err as Error).message}`,
+          );
+        }
+      }
+    }
+  }
+  return { refunded };
+}
+
 /** Standard shape for the "can't afford this" tool response. Agents can't
  *  open a browser, so give them a working link to hand to their human. */
 export function insufficientCreditsPayload(err: InsufficientCreditsError) {

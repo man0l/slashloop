@@ -24,7 +24,7 @@ import {
 } from '../lib/jobs.js';
 import { ingestThumbnails, type ThumbIngestTarget } from '../lib/media.js';
 import { CREDIT_COSTS, refundCredits } from '../lib/credits.js';
-import { tagJobFailure } from '../lib/gemini-errors.js';
+import { tagJobFailure, classifyGeminiError } from '../lib/gemini-errors.js';
 import { isVideoCeilingError } from '../lib/scrapers/proxy-adapter.js';
 import { failureLines } from '../lib/refresh-notes.js';
 import { db } from '../db.js';
@@ -67,8 +67,18 @@ export async function processClaimedJob(
   // with ~11s of budget left after a 48s scrape. No Apify, no credits, so a
   // retry is free.
   if (job.kind === 'rescore') {
+    let creatorHandle: string | undefined;
     try {
-      const { creatorHandle } = JSON.parse(job.payloadJson || '{}') as { creatorHandle?: string };
+      ({ creatorHandle } = JSON.parse(job.payloadJson || '{}') as { creatorHandle?: string });
+    } catch {
+      creatorHandle = undefined;
+    }
+    // Programming error, not a retryable failure: no retry will grow a target.
+    if (!creatorHandle && !job.sourceId) {
+      await failJob(job.id, 'rescore job has neither creatorHandle nor sourceId', { terminal: true });
+      return { ok: false, error: 'rescore job has neither creatorHandle nor sourceId' };
+    }
+    try {
       const { batchScoreVideos } = await import('../scoring.js');
 
       if (creatorHandle) {
@@ -84,8 +94,7 @@ export async function processClaimedJob(
         // is split — one job per source — so no single invocation has to score
         // every video in the workspace. Doing that inline timed out at ~450
         // videos and applied only partially.
-        if (!job.sourceId) throw new Error('rescore job has neither creatorHandle nor sourceId');
-        await batchScoreVideos(job.sourceId);
+        await batchScoreVideos(job.sourceId!);
       }
       await completeJob(job.id, null);
       return { ok: true };
@@ -103,7 +112,9 @@ export async function processClaimedJob(
   if (job.kind === 'discover') {
     const payload = parseDiscoverJobPayload(job.payloadJson);
     if (!payload.query) {
-      await failJob(job.id, 'discover job has no query');
+      // Programming error: the enqueue path always sets a query. Terminal —
+      // retrying a queryless job three times is pure claim/fail D1 burn.
+      await failJob(job.id, 'discover job has no query', { terminal: true });
       return { ok: false, error: 'no query' };
     }
     try {
@@ -129,7 +140,8 @@ export async function processClaimedJob(
       return { ok: true };
     } catch (err) {
       const message = (err as Error).message;
-      const { terminal } = await failJob(job.id, message);
+      // A deleted workspace will read the same on every retry.
+      const { terminal } = await failJob(job.id, message, message === 'workspace not found' ? { terminal: true } : undefined);
       if (terminal && job.opId) {
         await refundCredits(
           job.workspaceId,
@@ -151,7 +163,8 @@ export async function processClaimedJob(
   // terminally failed, so a requeued attempt stays paid for (G4).
   if (job.kind === 'refresh') {
     if (!job.sourceId) {
-      await failJob(job.id, 'refresh job has no sourceId');
+      // Programming error: refresh rows always carry a sourceId. Terminal.
+      await failJob(job.id, 'refresh job has no sourceId', { terminal: true });
       return { ok: false, error: 'no sourceId' };
     }
     // Do not start a scrape that cannot finish. Unlike analyze, this call is
@@ -405,7 +418,8 @@ export async function processClaimedJob(
   // asserting at each use.
   const videoId = job.videoId;
   if (!videoId) {
-    await failJob(job.id, `${job.kind} job has no videoId`);
+    // Programming error: video-scoped kinds always carry one. Terminal.
+    await failJob(job.id, `${job.kind} job has no videoId`, { terminal: true });
     return { ok: false, error: 'no videoId' };
   }
 
@@ -454,12 +468,12 @@ export async function processClaimedJob(
       return { ok: true };
     } catch (err) {
       const message = (err as Error).message;
-      // The proxy's video-size refusal is deterministic — the same video reads
-      // above the ceiling on every attempt — so fail terminally instead of
-      // requeuing, and surface it at error level (it means a video we want
-      // cannot be fetched under the current spend cap).
-      const videoTooLarge = isVideoCeilingError(message);
-      const { terminal } = await failJob(job.id, message, videoTooLarge ? { terminal: true } : undefined);
+      // Both deterministic: a missing URL won't appear on retry, and an
+      // over-ceiling video reads the same size on every attempt. Terminal
+      // instead of spending all three lives on an unchanging condition.
+      const deterministic =
+        message === 'no downloadable TikTok URL' || isVideoCeilingError(message);
+      const { terminal } = await failJob(job.id, message, deterministic ? { terminal: true } : undefined);
 
       // If the fetch had a pending analysis, refund the pre-debited credits
       // since the analysis will never run. Only refund on terminal failure
@@ -477,7 +491,7 @@ export async function processClaimedJob(
         }
       }
 
-      if (videoTooLarge) console.error(`[worker] fetch job ${job.id} failed (terminal=${terminal}): ${message}`);
+      if (deterministic) console.error(`[worker] fetch job ${job.id} failed (terminal=${terminal}): ${message}`);
       else console.warn(`[worker] fetch job ${job.id} failed (terminal=${terminal}): ${message}`);
       return { ok: false, error: message };
     }
@@ -502,7 +516,12 @@ export async function processClaimedJob(
       return { ok: true };
     } catch (err) {
       const message = (err as Error).message;
-      const { terminal } = await failJob(job.id, message);
+      // A misrouted video-mode row will misroute identically on every retry.
+      const { terminal } = await failJob(
+        job.id,
+        message,
+        message.startsWith('video recreates are built') ? { terminal: true } : undefined,
+      );
       if (terminal && job.opId) {
         await refundCredits(
           job.workspaceId,
@@ -575,7 +594,12 @@ export async function processClaimedJob(
     // endpoint can tell the gallery "Gemini is out of credits" from "this
     // video can't be analyzed" — see src/lib/gemini-errors.ts.
     const message = tagJobFailure(err);
-    const { terminal } = await failJob(job.id, message);
+    // Deterministic provider refusals (bad key, malformed request) read
+    // identically on every attempt: one life, not three. Quota/rate-limit/
+    // server/timeout/unknown stay retryable.
+    const category = classifyGeminiError(err).category;
+    const deterministic = category === 'auth' || category === 'invalid_request';
+    const { terminal } = await failJob(job.id, message, deterministic ? { terminal: true } : undefined);
 
     // The caller was debited at enqueue time, so the refund is owed here — but
     // only once the job has actually given up. A requeued job may still

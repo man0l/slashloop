@@ -19,12 +19,12 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { chunked, coerceRowDates, dbDialect, rawBatch, type RawStatement } from '../store.js';
-import { CREDIT_COSTS, refundCredits } from './credits.js';
+import { CREDIT_COSTS, refundCredits, refundCreditsBatched, type RefundItem } from './credits.js';
 import { classifyFetchError } from './fetch-errors.js';
 import { notifyScrapeFailure, markScrapeSuccess } from './scrape-alert.js';
 
 /** Raw-row date columns, hydrated to Date on SQLite (raw SQL returns strings there). */
-const MEDIA_JOB_DATE_KEYS = ['deadlineAt', 'createdAt', 'startedAt', 'finishedAt'] as const;
+const MEDIA_JOB_DATE_KEYS = ['deadlineAt', 'createdAt', 'startedAt', 'finishedAt', 'availableAt'] as const;
 
 /** Exported for the recreate-video stepper's raw claim (same shape needs). */
 export function toMediaJobRow(row: Record<string, unknown>): MediaJobRow {
@@ -92,6 +92,8 @@ export interface MediaJobRow {
   createdAt: Date;
   startedAt: Date | null;
   finishedAt: Date | null;
+  /** Retry cooldown — not claimable before this (NULL = available). */
+  availableAt: Date | null;
 }
 
 export interface AnalyzeJobPayload {
@@ -591,6 +593,7 @@ export async function claimNextJob(kind = 'analyze'): Promise<MediaJobRow | null
           WHERE "status" = 'queued' AND "kind" = ${kind}
             AND (${kind} <> 'recreate' OR "payloadJson" NOT LIKE '%"mode":"video"%')
             AND "createdAt" <= ${claimableBefore}
+            AND ("availableAt" IS NULL OR "availableAt" <= ${new Date()})
           ORDER BY "createdAt" ASC
           LIMIT 1
        )
@@ -607,6 +610,7 @@ export async function claimNextJob(kind = 'analyze'): Promise<MediaJobRow | null
        SELECT "id" FROM "MediaJob"
         WHERE "status" = 'queued' AND "kind" = ${kind}
           AND "createdAt" <= ${claimableBefore}
+          AND ("availableAt" IS NULL OR "availableAt" <= now())
         ORDER BY "createdAt" ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
@@ -660,6 +664,7 @@ export async function claimNextJobs(kinds: string[], limit: number): Promise<Med
   const priorityCase = kindList.map((k, i) => `WHEN '${k}' THEN ${i}`).join(' ');
   const startedAt = new Date();
   const refreshBefore = new Date(Date.now() - refreshCoalesceMs());
+  const now = new Date();
   const stmt: RawStatement = {
     sql: `UPDATE "MediaJob"
              SET "status" = 'running',
@@ -670,12 +675,13 @@ export async function claimNextJobs(kinds: string[], limit: number): Promise<Med
               WHERE "status" = 'queued'
                 AND "kind" IN (${kindPlaceholders})
                 AND "createdAt" <= CASE "kind" WHEN 'refresh' THEN ? ELSE ? END
+                AND ("availableAt" IS NULL OR "availableAt" <= ?)
                 AND ("kind" <> 'recreate' OR "payloadJson" NOT LIKE '%"mode":"video"%')
               ORDER BY CASE "kind" ${priorityCase} ELSE 99 END, "createdAt" ASC
               LIMIT ?
            )
            RETURNING *`,
-    params: [startedAt, ...kindList, refreshBefore, startedAt, limit],
+    params: [startedAt, ...kindList, refreshBefore, startedAt, now, limit],
   };
   const results = await rawBatch([stmt]);
   return (results[0] ?? []).map((row) => toMediaJobRow(row as Record<string, unknown>));
@@ -874,11 +880,35 @@ export function withScrapeReceipt(payloadJson: string | null | undefined, receip
  * is retried can resume. Best-effort: failing to save a receipt costs money on
  * a retry that may never happen, and must not fail the refresh that just
  * succeeded.
+ *
+ * One rawBatch (not N findUnique+update round-trips): json_patch merges the
+ * receipt into each job's own payload, exactly like withScrapeReceipt below.
+ * Malformed payloads are skipped via json_valid rather than aborting the
+ * batch. Postgres keeps the legacy per-item loop.
  */
 export async function recordScrapeReceipt(
   jobIds: string[],
   receipt: ScrapeReceipt,
 ): Promise<void> {
+  if (jobIds.length === 0) return;
+  if (dbDialect() === 'sqlite') {
+    try {
+      const patch = JSON.stringify({ scrapeReceipt: receipt });
+      const statements: RawStatement[] = jobIds.map((id) => ({
+        sql: `UPDATE "MediaJob" SET "payloadJson" = json_patch("payloadJson", ?)
+               WHERE "id" = ? AND json_valid("payloadJson")`,
+        params: [patch, id],
+      }));
+      // Chunk under the bridge's 50-statement cap — a batch is ≤ peer-cap+1
+      // rows in practice, this is just belt-and-suspenders.
+      for (let i = 0; i < statements.length; i += 40) {
+        await rawBatch(statements.slice(i, i + 40));
+      }
+    } catch (err) {
+      console.warn(`[jobs] could not record scrape receipt: ${(err as Error).message}`);
+    }
+    return;
+  }
   for (const id of jobIds) {
     try {
       const job = await db.mediaJob.findUnique({ where: { id }, select: { payloadJson: true } });
@@ -1003,6 +1033,7 @@ export async function claimJobsByIds(ids: string[]): Promise<MediaJobRow[]> {
          WHERE "id" = (
            SELECT "id" FROM "MediaJob"
             WHERE "id" = ${id} AND "status" = 'queued'
+              AND ("availableAt" IS NULL OR "availableAt" <= ${new Date()})
          )
         RETURNING *
       `;
@@ -1017,6 +1048,7 @@ export async function claimJobsByIds(ids: string[]): Promise<MediaJobRow[]> {
        WHERE "id" = (
          SELECT "id" FROM "MediaJob"
           WHERE "id" = ${id} AND "status" = 'queued'
+            AND ("availableAt" IS NULL OR "availableAt" <= now())
           FOR UPDATE SKIP LOCKED
        )
       RETURNING *
@@ -1046,6 +1078,7 @@ export async function yieldJob(id: string, reason: string): Promise<void> {
          SET "status" = 'queued',
              "startedAt" = NULL,
              "attempts" = MAX(0, "attempts" - 1),
+             "availableAt" = ${new Date(Date.now() + YIELD_COOLDOWN_MS)},
              "lastError" = ${reason.slice(0, 1000)}
        WHERE "id" = ${id}
     `;
@@ -1056,6 +1089,7 @@ export async function yieldJob(id: string, reason: string): Promise<void> {
        SET "status" = 'queued',
            "startedAt" = NULL,
            "attempts" = GREATEST(0, "attempts" - 1),
+           "availableAt" = ${new Date(Date.now() + YIELD_COOLDOWN_MS)},
            "lastError" = ${reason.slice(0, 1000)}
      WHERE "id" = ${id}
   `;
@@ -1097,6 +1131,26 @@ export async function completeJob(
  * a condition nothing short of a top-up can change; the sweeps re-enqueue much
  * later anyway.
  */
+/**
+ * Cooldown before a requeued job becomes claimable again. A failure that will
+ * read identically on the next poll (provider down, proxy exhausted) must not
+ * fail-claim-fail at the 10s poll speed across 3 containers — each cycle is a
+ * claim UPDATE + failJob UPDATE (+ refund rows when terminal). Scales with the
+ * spent attempt: the first retry waits 2min, the second 8min; the third life
+ * is terminal anyway (MAX_ATTEMPTS).
+ */
+export function requeueBackoffMs(attempts: number): number {
+  return (attempts >= 2 ? 8 : 2) * 60_000;
+}
+
+/**
+ * How long a yielded job parks before it is claimable again. yieldJob means
+ * "we did not start" (canonical-scrape lease held elsewhere, no budget left)
+ * — reclaiming instantly would claim→yield loop at poll speed, 2 UPDATEs per
+ * round per container, until the winner finishes minutes later.
+ */
+export const YIELD_COOLDOWN_MS = 60_000;
+
 export async function failJob(
   id: string,
   message: string,
@@ -1113,6 +1167,10 @@ export async function failJob(
       lastError: message.slice(0, 1000),
       finishedAt: terminal ? new Date() : null,
       startedAt: terminal ? job.startedAt : null,
+      // A requeued failure waits out its backoff before any worker may claim
+      // it (see availableAt + the claim filters). Terminal rows leave the
+      // column alone — they are never claimed again.
+      ...(terminal ? {} : { availableAt: new Date(Date.now() + requeueBackoffMs(job.attempts)) }),
     },
   });
   // Fire-and-forget: scrape-outage email (one per outage episode, deduped in
@@ -1161,7 +1219,15 @@ export async function failAbandonedQueuedJobs(
   const abandoned = await db.mediaJob.findMany({
     // startedAt null is the discriminator: a job that has run and been
     // requeued is reclaimStuckJobs' business and may legitimately be old.
-    where: { status: 'queued', createdAt: { lt: cutoff }, startedAt: null },
+    // availableAt in the future exempts backoff-parked retries (failJob sets
+    // now + 2/8min): without this the sweep would terminally fail jobs that
+    // are simply waiting out their cooldown. NULL counts as available.
+    where: {
+      status: 'queued',
+      createdAt: { lt: cutoff },
+      startedAt: null,
+      NOT: { availableAt: { gt: new Date() } },
+    },
     select: {
       id: true, workspaceId: true, opId: true, kind: true, preAuthCredits: true,
       createdAt: true,
@@ -1176,6 +1242,12 @@ export async function failAbandonedQueuedJobs(
 
   let failed = 0;
   let refunded = 0;
+  // Collected for ONE batched refund below: N per-job refunds would be N
+  // Workspace UPDATEs on (usually) one row — the single-writer hotspot.
+  // Same refund contract as reclaimStuckJobs: refund what was actually
+  // pre-authorised, keyed on the job's own opId so credits.ts can make it
+  // idempotent and the two reclaim paths cannot double-refund.
+  const refundItems: RefundItem[] = [];
 
   for (const job of abandoned) {
     const waitedMin = Math.round((Date.now() - +job.createdAt) / 60_000);
@@ -1191,22 +1263,22 @@ export async function failAbandonedQueuedJobs(
     });
     failed++;
 
-    // Same refund contract as reclaimStuckJobs: refund what was actually
-    // pre-authorised, keyed on the job's own opId so credits.ts can make it
-    // idempotent and the two reclaim paths cannot double-refund.
     if (job.opId) {
-      try {
-        await refundCredits(
-          job.workspaceId,
-          job.preAuthCredits ?? CREDIT_COSTS.analyzeVideo,
-          jobCreditTool(job.kind),
-          `${job.opId}:fail`,
-          'call_failed',
-        );
-        refunded++;
-      } catch (err) {
-        console.warn(`[jobs] refund on abandoned-queue sweep failed for ${job.id}: ${(err as Error).message}`);
-      }
+      refundItems.push({
+        workspaceId: job.workspaceId,
+        credits: job.preAuthCredits ?? CREDIT_COSTS.analyzeVideo,
+        tool: jobCreditTool(job.kind),
+        refId: `${job.opId}:fail`,
+        reason: 'call_failed',
+      });
+    }
+  }
+
+  if (refundItems.length > 0) {
+    try {
+      refunded = (await refundCreditsBatched(refundItems)).refunded;
+    } catch (err) {
+      console.warn(`[jobs] batched refund on abandoned-queue sweep failed: ${(err as Error).message}`);
     }
   }
 
@@ -1242,6 +1314,7 @@ export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: nu
   let requeued = 0;
   let failed = 0;
   let refunded = 0;
+  const reclaimRefundItems: RefundItem[] = [];
 
   for (const job of stuck) {
     // A refresh whose scrape actually landed must never be retried.
@@ -1315,23 +1388,26 @@ export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: nu
     // Refund what was actually pre-authorised. preAuthCredits is written at
     // enqueue; the fallback covers analyze rows created before that column
     // existed. Assuming the analyze price for every kind would refund the wrong
-    // amount the moment a second priced kind joined the queue.
+    // amount the moment a second priced kind joined the queue. Collected for
+    // one batched refund after the loop (see the abandoned sweep above).
     if (exhausted && job.opId) {
-      try {
-        await refundCredits(
-          job.workspaceId,
-          job.preAuthCredits ?? CREDIT_COSTS.analyzeVideo,
-          jobCreditTool(job.kind),
-          `${job.opId}:fail`,
-          'call_failed',
-        );
-        refunded++;
-      } catch (err) {
-        console.warn(`[jobs] refund on reclaim failed for ${job.id}: ${(err as Error).message}`);
-      }
+      reclaimRefundItems.push({
+        workspaceId: job.workspaceId,
+        credits: job.preAuthCredits ?? CREDIT_COSTS.analyzeVideo,
+        tool: jobCreditTool(job.kind),
+        refId: `${job.opId}:fail`,
+        reason: 'call_failed',
+      });
     }
 
     if (exhausted) failed++; else requeued++;
+  }
+  if (reclaimRefundItems.length > 0) {
+    try {
+      refunded += (await refundCreditsBatched(reclaimRefundItems)).refunded;
+    } catch (err) {
+      console.warn(`[jobs] batched refund on reclaim failed: ${(err as Error).message}`);
+    }
   }
   return { requeued, failed, refunded };
 }

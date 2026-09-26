@@ -397,7 +397,14 @@ exports.Prisma.MediaJobScalarFieldEnum = {
   analysisId: 'analysisId',
   createdAt: 'createdAt',
   startedAt: 'startedAt',
-  finishedAt: 'finishedAt'
+  finishedAt: 'finishedAt',
+  availableAt: 'availableAt'
+};
+
+exports.Prisma.WorkerControlScalarFieldEnum = {
+  key: 'key',
+  value: 'value',
+  updatedAt: 'updatedAt'
 };
 
 exports.Prisma.ScrapeAlertStateScalarFieldEnum = {
@@ -442,6 +449,7 @@ exports.Prisma.ModelName = {
   RefreshRun: 'RefreshRun',
   AutoAnalyzeRun: 'AutoAnalyzeRun',
   MediaJob: 'MediaJob',
+  WorkerControl: 'WorkerControl',
   ScrapeAlertState: 'ScrapeAlertState'
 };
 

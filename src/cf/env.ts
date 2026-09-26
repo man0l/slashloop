@@ -15,6 +15,7 @@
 import { PrismaClient } from '../generated/sqlite/wasm.js';
 import { PrismaD1 } from '@prisma/adapter-d1';
 import { d1BindParam, setActiveClient, type AppPrismaClient, type RawExecutor } from '../store.js';
+import { recordD1Usage, recordBatchUsage } from '../lib/d1-usage.js';
 import { setR2Bindings } from '../lib/storage-bindings.js';
 import { timedD1 } from './serialize-d1.js';
 import { setShardDirectory } from './kv.js';
@@ -58,6 +59,21 @@ export function d1BindingRawExecutor(d1: D1Database): RawExecutor {
         : d1.prepare(s.sql),
     );
     const results = await d1.batch(prepared);
+    // Binding-side meta for the /internal/raw-batch bridge (src/cf/internal.ts
+    // reports it back so the VPS caller can attribute writes). Best-effort.
+    try {
+      let reads = 0;
+      let writes = 0;
+      for (const r of results) {
+        const meta = (r as { meta?: { rows_read?: number; rows_written?: number } })?.meta;
+        if (typeof meta?.rows_read === 'number') reads += meta.rows_read;
+        if (typeof meta?.rows_written === 'number') writes += meta.rows_written;
+      }
+      recordBatchUsage(reads, writes);
+      recordD1Usage(reads, writes, results.length);
+    } catch {
+      // Meta is advisory; never break the batch.
+    }
     return results.map((r) => (r.results ?? []) as unknown[]);
   };
 }

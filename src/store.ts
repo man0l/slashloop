@@ -25,6 +25,7 @@
 
 import { keepAlive } from './cf/wait-until.js';
 import { CircuitBreaker } from './lib/circuit-breaker.js';
+import { recordD1Usage } from './lib/d1-usage.js';
 
 /** Which SQL dialect the raw queries must speak. Set DB_DIALECT=sqlite on Workers. */
 export type Dialect = 'postgres' | 'sqlite';
@@ -409,10 +410,18 @@ function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
       signal: AbortSignal.timeout(25_000),
     });
     const body = res.ok
-      ? (await res.json()) as { success?: boolean; errors?: Array<{ message?: string }>; result?: Array<{ results?: { columns?: string[]; rows?: unknown[][] } }> }
+      ? (await res.json()) as { success?: boolean; errors?: Array<{ message?: string }>; result?: Array<{ results?: { columns?: string[]; rows?: unknown[][] }; meta?: { rows_read?: number; rows_written?: number } }> }
       : { success: false as const, errors: [{ message: `HTTP ${res.status}` }] };
     if (body.success === false) {
       throw new Error(`D1 HTTP statement failed: ${body.errors?.map((e) => e.message ?? String(e)).join('; ') ?? 'unknown error'}`);
+    }
+    // Attribution (Phase 0 write budget): every statement's meta feeds the
+    // process counters snapshot around each job/tick in src/worker/index.ts.
+    try {
+      const meta = body.result?.[0]?.meta;
+      if (meta) recordD1Usage(meta.rows_read ?? 0, meta.rows_written ?? 0, 1);
+    } catch {
+      // Meta is advisory; never break the query.
     }
     const { columns = [], rows = [] } = body.result?.[0]?.results ?? {};
     return rows.map((vals) => Object.fromEntries(columns.map((c, i) => [c, vals[i]])));
@@ -438,9 +447,18 @@ function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
         signal: AbortSignal.timeout(25_000),
       });
       const body = res.ok
-        ? (await res.json()) as { success?: boolean; error?: string; results?: Array<Array<Record<string, unknown>>> }
+        ? (await res.json()) as { success?: boolean; error?: string; results?: Array<Array<Record<string, unknown>>>; rowsRead?: number; rowsWritten?: number }
         : { success: false as const, error: `HTTP ${res.status}` };
       if (body.success === false) throw new Error(`D1 batch via worker failed: ${body.error ?? res.status}`);
+      // Binding-side meta reported back by /internal/raw-batch (see
+      // src/cf/internal.ts) — attribute the whole batch at once.
+      try {
+        if (body.rowsRead || body.rowsWritten) {
+          recordD1Usage(body.rowsRead ?? 0, body.rowsWritten ?? 0, statements.length);
+        }
+      } catch {
+        // Meta is advisory; never break the batch.
+      }
       return body.results ?? [];
     }
 
@@ -459,6 +477,70 @@ function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
 }
 
 /**
+ * Attribute Prisma-ORM-over-D1-HTTP calls (db.video.create, db.mediaJob.update,
+ * …) to the write budget. The official adapter talks to the D1 REST API with
+ * the global fetch, so a thin wrapper tees each D1 response's meta into the
+ * process counters without touching the consumer's body (clone + async parse,
+ * never awaited). VPS-only, idempotent, fail-open; disable with
+ * D1_USAGE_TRACK=0.
+ *
+ * The /raw endpoint is excluded: d1HttpRawExecutor.single() records its own
+ * meta synchronously (async clone parsing would race the per-job snapshots).
+ */
+const globalForD1Fetch = globalThis as unknown as { __slashloopD1FetchTracked?: boolean };
+
+function installD1FetchTracker(): void {
+  if (globalForD1Fetch.__slashloopD1FetchTracked) return;
+  globalForD1Fetch.__slashloopD1FetchTracked = true;
+  if ((process.env.D1_USAGE_TRACK ?? '1') === '0') return;
+  try {
+    const original = globalThis.fetch.bind(globalThis);
+    const tracked = async (input: unknown, init?: unknown): Promise<Response> => {
+      let url = '';
+      try {
+        url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.href
+              : ((input as { url?: unknown })?.url as string) ?? '';
+      } catch {
+        url = '';
+      }
+      const isD1Query =
+        typeof url === 'string' && url.includes('/d1/database/') && !url.includes('/raw');
+      const res = await (original as (...args: [unknown, unknown?]) => Promise<Response>)(input, init);
+      if (isD1Query) {
+        try {
+          void res
+            .clone()
+            .json()
+            .then((body) => {
+              const results = (body as { result?: unknown })?.result;
+              if (!Array.isArray(results)) return;
+              let reads = 0;
+              let writes = 0;
+              for (const q of results) {
+                const meta = (q as { meta?: { rows_read?: unknown; rows_written?: unknown } })?.meta;
+                if (typeof meta?.rows_read === 'number') reads += meta.rows_read;
+                if (typeof meta?.rows_written === 'number') writes += meta.rows_written;
+              }
+              recordD1Usage(reads, writes, results.length);
+            })
+            .catch(() => {});
+        } catch {
+          // Teeing must never break the query.
+        }
+      }
+      return res;
+    };
+    globalThis.fetch = tracked as typeof fetch;
+  } catch {
+    // Tracking is advisory; a failed install just undercounts ORM calls.
+  }
+}
+
+/**
  * Node/Bun bootstrap for the post-cutover VPS worker: the SQLite client
  * (library-engine build of the same generated package the Worker uses) over
  * the official D1 HTTP adapter — no tunnel, no shim. Synchronous on purpose,
@@ -466,6 +548,7 @@ function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
  */
 export function initStoreD1Http(params: D1HttpParams): AppPrismaClient {
   if (globalForStore.__slashloopStore) return globalForStore.__slashloopStore.client;
+  installD1FetchTracker();
   const nodeRequire = createRequire(import.meta.url);
   const { PrismaClient } = nodeRequire('./generated/sqlite/index.js') as typeof import('./generated/sqlite/index.js');
   const { PrismaD1 } = nodeRequire('@prisma/adapter-d1') as typeof import('@prisma/adapter-d1');

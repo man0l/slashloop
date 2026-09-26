@@ -13,12 +13,15 @@ type JobRow = {
   opId: string | null; preAuthCredits: number | null;
   attempts: number;
   createdAt: Date; startedAt: Date | null; finishedAt: Date | null;
+  availableAt?: Date | null;
   lastError: string | null;
 };
 
 let jobs: JobRow[] = [];
 const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
 const refunds: Array<{ workspaceId: string; amount: number; kind: string; refId: string }> = [];
+const batchedRefunds: Array<{ workspaceId: string; amount: number; kind: string; refId: string }> = [];
+const executeRawCalls: unknown[][] = [];
 const findManyCalls: Array<{ take?: number; orderBy?: unknown }> = [];
 
 const realCredits = await import('./credits.js');
@@ -29,14 +32,17 @@ mock.module('../db.js', () => ({
       findMany: async (args: any) => {
         findManyCalls.push({ take: args?.take, orderBy: args?.orderBy });
         const { where } = args;
+        const notAvail = where.NOT?.availableAt?.gt as Date | undefined;
         return jobs.filter(j =>
           j.status === where.status
           && (where.createdAt?.lt ? j.createdAt < where.createdAt.lt : true)
-          && (where.startedAt === null ? j.startedAt === null : true));
+          && (where.startedAt === null ? j.startedAt === null : true)
+          && (notAvail ? (j as any).availableAt == null || (j as any).availableAt <= notAvail : true));
       },
       update: async ({ where, data }: any) => { updates.push({ id: where.id, data }); return {}; },
       findUnique: async ({ where }: any) => jobs.find(j => j.id === where.id) ?? null,
     },
+    $executeRaw: async (...args: any[]) => { executeRawCalls.push(args); return 1; },
   },
 }));
 
@@ -46,11 +52,15 @@ mock.module('./credits.js', () => ({
     refunds.push({ workspaceId, amount, kind, refId });
     return { total: 100 };
   },
+  refundCreditsBatched: async (items: Array<{ workspaceId: string; credits: number; tool: string; refId: string }>) => {
+    for (const it of items) batchedRefunds.push({ workspaceId: it.workspaceId, amount: it.credits, kind: it.tool, refId: it.refId });
+    return { refunded: items.length };
+  },
   debitCredits: async () => ({ planCredits: 100, packCredits: 0, total: 100 }),
   creditBalance: async () => ({ planCredits: 100, packCredits: 0, total: 100 }),
 }));
 
-const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds, jobTimeoutMs, QUEUE_SWEEP_TAKE, failJob, MAX_ATTEMPTS } = await import('./jobs.js');
+const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds, jobTimeoutMs, QUEUE_SWEEP_TAKE, failJob, yieldJob, requeueBackoffMs, MAX_ATTEMPTS } = await import('./jobs.js');
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
 
@@ -68,6 +78,8 @@ beforeEach(() => {
   jobs = [];
   updates.length = 0;
   refunds.length = 0;
+  batchedRefunds.length = 0;
+  executeRawCalls.length = 0;
   findManyCalls.length = 0;
 });
 
@@ -79,7 +91,9 @@ describe('failAbandonedQueuedJobs — jobs no worker ever took', () => {
     expect(res.refunded).toBe(1);
     expect(res.more).toBe(false);
     expect(updates[0]!.data.status).toBe('failed');
-    expect(refunds[0]).toMatchObject({ workspaceId: 'ws-1', amount: 8, kind: 'refresh_source' });
+    // One batched refund carrying the per-job refId (same idempotency as before).
+    expect(batchedRefunds).toHaveLength(1);
+    expect(batchedRefunds[0]).toMatchObject({ workspaceId: 'ws-1', amount: 8, kind: 'refresh_source' });
   });
 
   test('the findMany is capped at QUEUE_SWEEP_TAKE, oldest first', async () => {
@@ -101,7 +115,7 @@ describe('failAbandonedQueuedJobs — jobs no worker ever took', () => {
   test('a discover job is refunded under discover_mine, not analyze_video', async () => {
     jobs = [job({ kind: 'discover' })];
     await failAbandonedQueuedJobs();
-    expect(refunds[0]).toMatchObject({ kind: 'discover_mine', amount: 8 });
+    expect(batchedRefunds[0]).toMatchObject({ kind: 'discover_mine', amount: 8 });
   });
 
   test('the refund is the job\'s ACTUAL pre-auth, not a fixed price', async () => {
@@ -109,14 +123,23 @@ describe('failAbandonedQueuedJobs — jobs no worker ever took', () => {
     // price would refund the wrong amount in both directions.
     jobs = [job({ preAuthCredits: 150 })];
     await failAbandonedQueuedJobs();
-    expect(refunds[0]!.amount).toBe(150);
+    expect(batchedRefunds[0]!.amount).toBe(150);
   });
 
   test('the refund is keyed on the job opId so reclaim paths cannot double-refund', async () => {
     jobs = [job()];
     await failAbandonedQueuedJobs();
     // Same refId reclaimStuckJobs uses — credits.ts makes it idempotent.
-    expect(refunds[0]!.refId).toBe('op-1:fail');
+    expect(batchedRefunds[0]!.refId).toBe('op-1:fail');
+  });
+
+  test('a backoff-parked retry is exempt from the abandoned sweep', async () => {
+    // failJob requeues with availableAt in the future — the sweep must not
+    // terminally fail a job that is simply waiting out its cooldown.
+    jobs = [job({ availableAt: new Date(Date.now() + 5 * 60_000) })];
+    const res = await failAbandonedQueuedJobs();
+    expect(res.failed).toBe(0);
+    expect(updates).toHaveLength(0);
   });
 
   test('a merely BACKLOGGED job is left alone', async () => {
@@ -237,6 +260,36 @@ describe('failJob — forced terminal for deterministic refusals', () => {
     const res = await failJob('job-1', 'scrape died');
     expect(res.terminal).toBe(false);
     expect(updates[0]!.data.status).toBe('queued');
+  });
+
+  test('a requeued failure parks behind availableAt (2min on first life)', async () => {
+    jobs = [job({ status: 'running', attempts: 1 })];
+    await failJob('job-1', 'scrape died');
+    const availableAt = updates[0]!.data.availableAt as Date;
+    expect(availableAt).toBeInstanceOf(Date);
+    expect(availableAt.getTime()).toBeGreaterThan(Date.now() + 60_000);
+    expect(availableAt.getTime()).toBeLessThanOrEqual(Date.now() + requeueBackoffMs(1) + 5_000);
+  });
+
+  test('a terminal failure leaves availableAt alone', async () => {
+    jobs = [job({ status: 'running', attempts: MAX_ATTEMPTS })];
+    await failJob('job-1', 'scrape died');
+    expect(updates[0]!.data.status).toBe('failed');
+    expect('availableAt' in (updates[0]!.data as object)).toBe(false);
+  });
+
+  test('requeue backoff scales with the spent attempt', () => {
+    expect(requeueBackoffMs(1)).toBe(2 * 60_000);
+    expect(requeueBackoffMs(2)).toBe(8 * 60_000);
+  });
+
+  test('yieldJob parks the row for the contention cooldown without spending an attempt', async () => {
+    await yieldJob('job-1', 'another worker is scraping');
+    expect(executeRawCalls.length).toBeGreaterThan(0);
+    const values = executeRawCalls.flat(2);
+    const cooldown = values.find((v) => v instanceof Date) as Date | undefined;
+    expect(cooldown).toBeInstanceOf(Date);
+    expect(cooldown!.getTime()).toBeGreaterThan(Date.now());
   });
 
   test('attempts exhaustion alone still terminates, flag or not', async () => {

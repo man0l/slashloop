@@ -165,6 +165,16 @@ export type AutoAnalyzeRun = $Result.DefaultSelection<Prisma.$AutoAnalyzeRunPayl
  */
 export type MediaJob = $Result.DefaultSelection<Prisma.$MediaJobPayload>
 /**
+ * Model WorkerControl
+ * Kill switches for the worker loops (Phase 4 write budget) — read by the
+ * VPS worker and the CF Worker alike, so a runaway can be parked in seconds
+ * without a redeploy. Missing row = enabled (a fresh DB must not park
+ * everything). Known keys: jobs.<kind>.enabled, experiments.enabled,
+ * stale_rescrape.enabled — value "0" disables, anything else enables.
+ * Written via setControl() or plain SQL, never in a hot path.
+ */
+export type WorkerControl = $Result.DefaultSelection<Prisma.$WorkerControlPayload>
+/**
  * Model ScrapeAlertState
  * One-row incident marker for the scraping-failure email alert
  * (src/lib/scrape-alert.ts). Written only via raw SQL so the
@@ -524,6 +534,16 @@ export class PrismaClient<
     * ```
     */
   get mediaJob(): Prisma.MediaJobDelegate<ExtArgs, ClientOptions>;
+
+  /**
+   * `prisma.workerControl`: Exposes CRUD operations for the **WorkerControl** model.
+    * Example usage:
+    * ```ts
+    * // Fetch zero or more WorkerControls
+    * const workerControls = await prisma.workerControl.findMany()
+    * ```
+    */
+  get workerControl(): Prisma.WorkerControlDelegate<ExtArgs, ClientOptions>;
 
   /**
    * `prisma.scrapeAlertState`: Exposes CRUD operations for the **ScrapeAlertState** model.
@@ -998,6 +1018,7 @@ export namespace Prisma {
     RefreshRun: 'RefreshRun',
     AutoAnalyzeRun: 'AutoAnalyzeRun',
     MediaJob: 'MediaJob',
+    WorkerControl: 'WorkerControl',
     ScrapeAlertState: 'ScrapeAlertState'
   };
 
@@ -1017,7 +1038,7 @@ export namespace Prisma {
       omit: GlobalOmitOptions
     }
     meta: {
-      modelProps: "user" | "workspace" | "workspaceMember" | "creditLedger" | "stripeEvent" | "suggestionDismissal" | "source" | "video" | "experiment" | "canonicalScrapeLock" | "baseline" | "score" | "analysis" | "hook" | "board" | "swipeEntry" | "idea" | "script" | "brief" | "usageLog" | "refreshRun" | "autoAnalyzeRun" | "mediaJob" | "scrapeAlertState"
+      modelProps: "user" | "workspace" | "workspaceMember" | "creditLedger" | "stripeEvent" | "suggestionDismissal" | "source" | "video" | "experiment" | "canonicalScrapeLock" | "baseline" | "score" | "analysis" | "hook" | "board" | "swipeEntry" | "idea" | "script" | "brief" | "usageLog" | "refreshRun" | "autoAnalyzeRun" | "mediaJob" | "workerControl" | "scrapeAlertState"
       txIsolationLevel: Prisma.TransactionIsolationLevel
     }
     model: {
@@ -2723,6 +2744,80 @@ export namespace Prisma {
           }
         }
       }
+      WorkerControl: {
+        payload: Prisma.$WorkerControlPayload<ExtArgs>
+        fields: Prisma.WorkerControlFieldRefs
+        operations: {
+          findUnique: {
+            args: Prisma.WorkerControlFindUniqueArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$WorkerControlPayload> | null
+          }
+          findUniqueOrThrow: {
+            args: Prisma.WorkerControlFindUniqueOrThrowArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$WorkerControlPayload>
+          }
+          findFirst: {
+            args: Prisma.WorkerControlFindFirstArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$WorkerControlPayload> | null
+          }
+          findFirstOrThrow: {
+            args: Prisma.WorkerControlFindFirstOrThrowArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$WorkerControlPayload>
+          }
+          findMany: {
+            args: Prisma.WorkerControlFindManyArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$WorkerControlPayload>[]
+          }
+          create: {
+            args: Prisma.WorkerControlCreateArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$WorkerControlPayload>
+          }
+          createMany: {
+            args: Prisma.WorkerControlCreateManyArgs<ExtArgs>
+            result: BatchPayload
+          }
+          createManyAndReturn: {
+            args: Prisma.WorkerControlCreateManyAndReturnArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$WorkerControlPayload>[]
+          }
+          delete: {
+            args: Prisma.WorkerControlDeleteArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$WorkerControlPayload>
+          }
+          update: {
+            args: Prisma.WorkerControlUpdateArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$WorkerControlPayload>
+          }
+          deleteMany: {
+            args: Prisma.WorkerControlDeleteManyArgs<ExtArgs>
+            result: BatchPayload
+          }
+          updateMany: {
+            args: Prisma.WorkerControlUpdateManyArgs<ExtArgs>
+            result: BatchPayload
+          }
+          updateManyAndReturn: {
+            args: Prisma.WorkerControlUpdateManyAndReturnArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$WorkerControlPayload>[]
+          }
+          upsert: {
+            args: Prisma.WorkerControlUpsertArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$WorkerControlPayload>
+          }
+          aggregate: {
+            args: Prisma.WorkerControlAggregateArgs<ExtArgs>
+            result: $Utils.Optional<AggregateWorkerControl>
+          }
+          groupBy: {
+            args: Prisma.WorkerControlGroupByArgs<ExtArgs>
+            result: $Utils.Optional<WorkerControlGroupByOutputType>[]
+          }
+          count: {
+            args: Prisma.WorkerControlCountArgs<ExtArgs>
+            result: $Utils.Optional<WorkerControlCountAggregateOutputType> | number
+          }
+        }
+      }
       ScrapeAlertState: {
         payload: Prisma.$ScrapeAlertStatePayload<ExtArgs>
         fields: Prisma.ScrapeAlertStateFieldRefs
@@ -2916,6 +3011,7 @@ export namespace Prisma {
     refreshRun?: RefreshRunOmit
     autoAnalyzeRun?: AutoAnalyzeRunOmit
     mediaJob?: MediaJobOmit
+    workerControl?: WorkerControlOmit
     scrapeAlertState?: ScrapeAlertStateOmit
   }
 
@@ -28648,6 +28744,7 @@ export namespace Prisma {
     createdAt: Date | null
     startedAt: Date | null
     finishedAt: Date | null
+    availableAt: Date | null
   }
 
   export type MediaJobMaxAggregateOutputType = {
@@ -28667,6 +28764,7 @@ export namespace Prisma {
     createdAt: Date | null
     startedAt: Date | null
     finishedAt: Date | null
+    availableAt: Date | null
   }
 
   export type MediaJobCountAggregateOutputType = {
@@ -28686,6 +28784,7 @@ export namespace Prisma {
     createdAt: number
     startedAt: number
     finishedAt: number
+    availableAt: number
     _all: number
   }
 
@@ -28717,6 +28816,7 @@ export namespace Prisma {
     createdAt?: true
     startedAt?: true
     finishedAt?: true
+    availableAt?: true
   }
 
   export type MediaJobMaxAggregateInputType = {
@@ -28736,6 +28836,7 @@ export namespace Prisma {
     createdAt?: true
     startedAt?: true
     finishedAt?: true
+    availableAt?: true
   }
 
   export type MediaJobCountAggregateInputType = {
@@ -28755,6 +28856,7 @@ export namespace Prisma {
     createdAt?: true
     startedAt?: true
     finishedAt?: true
+    availableAt?: true
     _all?: true
   }
 
@@ -28861,6 +28963,7 @@ export namespace Prisma {
     createdAt: Date
     startedAt: Date | null
     finishedAt: Date | null
+    availableAt: Date | null
     _count: MediaJobCountAggregateOutputType | null
     _avg: MediaJobAvgAggregateOutputType | null
     _sum: MediaJobSumAggregateOutputType | null
@@ -28899,6 +29002,7 @@ export namespace Prisma {
     createdAt?: boolean
     startedAt?: boolean
     finishedAt?: boolean
+    availableAt?: boolean
     workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
   }, ExtArgs["result"]["mediaJob"]>
 
@@ -28919,6 +29023,7 @@ export namespace Prisma {
     createdAt?: boolean
     startedAt?: boolean
     finishedAt?: boolean
+    availableAt?: boolean
     workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
   }, ExtArgs["result"]["mediaJob"]>
 
@@ -28939,6 +29044,7 @@ export namespace Prisma {
     createdAt?: boolean
     startedAt?: boolean
     finishedAt?: boolean
+    availableAt?: boolean
     workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
   }, ExtArgs["result"]["mediaJob"]>
 
@@ -28959,9 +29065,10 @@ export namespace Prisma {
     createdAt?: boolean
     startedAt?: boolean
     finishedAt?: boolean
+    availableAt?: boolean
   }
 
-  export type MediaJobOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "videoId" | "sourceId" | "kind" | "deadlineAt" | "preAuthCredits" | "status" | "attempts" | "lastError" | "payloadJson" | "opId" | "analysisId" | "createdAt" | "startedAt" | "finishedAt", ExtArgs["result"]["mediaJob"]>
+  export type MediaJobOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "videoId" | "sourceId" | "kind" | "deadlineAt" | "preAuthCredits" | "status" | "attempts" | "lastError" | "payloadJson" | "opId" | "analysisId" | "createdAt" | "startedAt" | "finishedAt" | "availableAt", ExtArgs["result"]["mediaJob"]>
   export type MediaJobInclude<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
     workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
   }
@@ -29031,6 +29138,14 @@ export namespace Prisma {
       createdAt: Date
       startedAt: Date | null
       finishedAt: Date | null
+      /**
+       * Retry cooldown: a requeued job is not claimable before this. failJob
+       * sets now + backoff (2min/8min by attempt) so fail-claim-fail cannot spin
+       * at poll speed; yieldJob sets now + 60s so canonical-lock losers park
+       * instead of claim→yield looping. NULL (pre-migration rows) = available.
+       * Enforced in claimNextJobs/claimJobsByIds, not by the DB.
+       */
+      availableAt: Date | null
     }, ExtArgs["result"]["mediaJob"]>
     composites: {}
   }
@@ -29471,6 +29586,7 @@ export namespace Prisma {
     readonly createdAt: FieldRef<"MediaJob", 'DateTime'>
     readonly startedAt: FieldRef<"MediaJob", 'DateTime'>
     readonly finishedAt: FieldRef<"MediaJob", 'DateTime'>
+    readonly availableAt: FieldRef<"MediaJob", 'DateTime'>
   }
     
 
@@ -29880,6 +29996,973 @@ export namespace Prisma {
      * Choose, which related nodes to fetch as well
      */
     include?: MediaJobInclude<ExtArgs> | null
+  }
+
+
+  /**
+   * Model WorkerControl
+   */
+
+  export type AggregateWorkerControl = {
+    _count: WorkerControlCountAggregateOutputType | null
+    _min: WorkerControlMinAggregateOutputType | null
+    _max: WorkerControlMaxAggregateOutputType | null
+  }
+
+  export type WorkerControlMinAggregateOutputType = {
+    key: string | null
+    value: string | null
+    updatedAt: Date | null
+  }
+
+  export type WorkerControlMaxAggregateOutputType = {
+    key: string | null
+    value: string | null
+    updatedAt: Date | null
+  }
+
+  export type WorkerControlCountAggregateOutputType = {
+    key: number
+    value: number
+    updatedAt: number
+    _all: number
+  }
+
+
+  export type WorkerControlMinAggregateInputType = {
+    key?: true
+    value?: true
+    updatedAt?: true
+  }
+
+  export type WorkerControlMaxAggregateInputType = {
+    key?: true
+    value?: true
+    updatedAt?: true
+  }
+
+  export type WorkerControlCountAggregateInputType = {
+    key?: true
+    value?: true
+    updatedAt?: true
+    _all?: true
+  }
+
+  export type WorkerControlAggregateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Filter which WorkerControl to aggregate.
+     */
+    where?: WorkerControlWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of WorkerControls to fetch.
+     */
+    orderBy?: WorkerControlOrderByWithRelationInput | WorkerControlOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the start position
+     */
+    cursor?: WorkerControlWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` WorkerControls from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` WorkerControls.
+     */
+    skip?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Count returned WorkerControls
+    **/
+    _count?: true | WorkerControlCountAggregateInputType
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Select which fields to find the minimum value
+    **/
+    _min?: WorkerControlMinAggregateInputType
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Select which fields to find the maximum value
+    **/
+    _max?: WorkerControlMaxAggregateInputType
+  }
+
+  export type GetWorkerControlAggregateType<T extends WorkerControlAggregateArgs> = {
+        [P in keyof T & keyof AggregateWorkerControl]: P extends '_count' | 'count'
+      ? T[P] extends true
+        ? number
+        : GetScalarType<T[P], AggregateWorkerControl[P]>
+      : GetScalarType<T[P], AggregateWorkerControl[P]>
+  }
+
+
+
+
+  export type WorkerControlGroupByArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    where?: WorkerControlWhereInput
+    orderBy?: WorkerControlOrderByWithAggregationInput | WorkerControlOrderByWithAggregationInput[]
+    by: WorkerControlScalarFieldEnum[] | WorkerControlScalarFieldEnum
+    having?: WorkerControlScalarWhereWithAggregatesInput
+    take?: number
+    skip?: number
+    _count?: WorkerControlCountAggregateInputType | true
+    _min?: WorkerControlMinAggregateInputType
+    _max?: WorkerControlMaxAggregateInputType
+  }
+
+  export type WorkerControlGroupByOutputType = {
+    key: string
+    value: string
+    updatedAt: Date
+    _count: WorkerControlCountAggregateOutputType | null
+    _min: WorkerControlMinAggregateOutputType | null
+    _max: WorkerControlMaxAggregateOutputType | null
+  }
+
+  type GetWorkerControlGroupByPayload<T extends WorkerControlGroupByArgs> = Prisma.PrismaPromise<
+    Array<
+      PickEnumerable<WorkerControlGroupByOutputType, T['by']> &
+        {
+          [P in ((keyof T) & (keyof WorkerControlGroupByOutputType))]: P extends '_count'
+            ? T[P] extends boolean
+              ? number
+              : GetScalarType<T[P], WorkerControlGroupByOutputType[P]>
+            : GetScalarType<T[P], WorkerControlGroupByOutputType[P]>
+        }
+      >
+    >
+
+
+  export type WorkerControlSelect<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
+    key?: boolean
+    value?: boolean
+    updatedAt?: boolean
+  }, ExtArgs["result"]["workerControl"]>
+
+  export type WorkerControlSelectCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
+    key?: boolean
+    value?: boolean
+    updatedAt?: boolean
+  }, ExtArgs["result"]["workerControl"]>
+
+  export type WorkerControlSelectUpdateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
+    key?: boolean
+    value?: boolean
+    updatedAt?: boolean
+  }, ExtArgs["result"]["workerControl"]>
+
+  export type WorkerControlSelectScalar = {
+    key?: boolean
+    value?: boolean
+    updatedAt?: boolean
+  }
+
+  export type WorkerControlOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"key" | "value" | "updatedAt", ExtArgs["result"]["workerControl"]>
+
+  export type $WorkerControlPayload<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    name: "WorkerControl"
+    objects: {}
+    scalars: $Extensions.GetPayloadResult<{
+      key: string
+      value: string
+      updatedAt: Date
+    }, ExtArgs["result"]["workerControl"]>
+    composites: {}
+  }
+
+  type WorkerControlGetPayload<S extends boolean | null | undefined | WorkerControlDefaultArgs> = $Result.GetResult<Prisma.$WorkerControlPayload, S>
+
+  type WorkerControlCountArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> =
+    Omit<WorkerControlFindManyArgs, 'select' | 'include' | 'distinct' | 'omit'> & {
+      select?: WorkerControlCountAggregateInputType | true
+    }
+
+  export interface WorkerControlDelegate<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs, GlobalOmitOptions = {}> {
+    [K: symbol]: { types: Prisma.TypeMap<ExtArgs>['model']['WorkerControl'], meta: { name: 'WorkerControl' } }
+    /**
+     * Find zero or one WorkerControl that matches the filter.
+     * @param {WorkerControlFindUniqueArgs} args - Arguments to find a WorkerControl
+     * @example
+     * // Get one WorkerControl
+     * const workerControl = await prisma.workerControl.findUnique({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findUnique<T extends WorkerControlFindUniqueArgs>(args: SelectSubset<T, WorkerControlFindUniqueArgs<ExtArgs>>): Prisma__WorkerControlClient<$Result.GetResult<Prisma.$WorkerControlPayload<ExtArgs>, T, "findUnique", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find one WorkerControl that matches the filter or throw an error with `error.code='P2025'`
+     * if no matches were found.
+     * @param {WorkerControlFindUniqueOrThrowArgs} args - Arguments to find a WorkerControl
+     * @example
+     * // Get one WorkerControl
+     * const workerControl = await prisma.workerControl.findUniqueOrThrow({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findUniqueOrThrow<T extends WorkerControlFindUniqueOrThrowArgs>(args: SelectSubset<T, WorkerControlFindUniqueOrThrowArgs<ExtArgs>>): Prisma__WorkerControlClient<$Result.GetResult<Prisma.$WorkerControlPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find the first WorkerControl that matches the filter.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {WorkerControlFindFirstArgs} args - Arguments to find a WorkerControl
+     * @example
+     * // Get one WorkerControl
+     * const workerControl = await prisma.workerControl.findFirst({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findFirst<T extends WorkerControlFindFirstArgs>(args?: SelectSubset<T, WorkerControlFindFirstArgs<ExtArgs>>): Prisma__WorkerControlClient<$Result.GetResult<Prisma.$WorkerControlPayload<ExtArgs>, T, "findFirst", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find the first WorkerControl that matches the filter or
+     * throw `PrismaKnownClientError` with `P2025` code if no matches were found.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {WorkerControlFindFirstOrThrowArgs} args - Arguments to find a WorkerControl
+     * @example
+     * // Get one WorkerControl
+     * const workerControl = await prisma.workerControl.findFirstOrThrow({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findFirstOrThrow<T extends WorkerControlFindFirstOrThrowArgs>(args?: SelectSubset<T, WorkerControlFindFirstOrThrowArgs<ExtArgs>>): Prisma__WorkerControlClient<$Result.GetResult<Prisma.$WorkerControlPayload<ExtArgs>, T, "findFirstOrThrow", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find zero or more WorkerControls that matches the filter.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {WorkerControlFindManyArgs} args - Arguments to filter and select certain fields only.
+     * @example
+     * // Get all WorkerControls
+     * const workerControls = await prisma.workerControl.findMany()
+     * 
+     * // Get first 10 WorkerControls
+     * const workerControls = await prisma.workerControl.findMany({ take: 10 })
+     * 
+     * // Only select the `key`
+     * const workerControlWithKeyOnly = await prisma.workerControl.findMany({ select: { key: true } })
+     * 
+     */
+    findMany<T extends WorkerControlFindManyArgs>(args?: SelectSubset<T, WorkerControlFindManyArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$WorkerControlPayload<ExtArgs>, T, "findMany", GlobalOmitOptions>>
+
+    /**
+     * Create a WorkerControl.
+     * @param {WorkerControlCreateArgs} args - Arguments to create a WorkerControl.
+     * @example
+     * // Create one WorkerControl
+     * const WorkerControl = await prisma.workerControl.create({
+     *   data: {
+     *     // ... data to create a WorkerControl
+     *   }
+     * })
+     * 
+     */
+    create<T extends WorkerControlCreateArgs>(args: SelectSubset<T, WorkerControlCreateArgs<ExtArgs>>): Prisma__WorkerControlClient<$Result.GetResult<Prisma.$WorkerControlPayload<ExtArgs>, T, "create", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Create many WorkerControls.
+     * @param {WorkerControlCreateManyArgs} args - Arguments to create many WorkerControls.
+     * @example
+     * // Create many WorkerControls
+     * const workerControl = await prisma.workerControl.createMany({
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     *     
+     */
+    createMany<T extends WorkerControlCreateManyArgs>(args?: SelectSubset<T, WorkerControlCreateManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
+
+    /**
+     * Create many WorkerControls and returns the data saved in the database.
+     * @param {WorkerControlCreateManyAndReturnArgs} args - Arguments to create many WorkerControls.
+     * @example
+     * // Create many WorkerControls
+     * const workerControl = await prisma.workerControl.createManyAndReturn({
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * 
+     * // Create many WorkerControls and only return the `key`
+     * const workerControlWithKeyOnly = await prisma.workerControl.createManyAndReturn({
+     *   select: { key: true },
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * 
+     */
+    createManyAndReturn<T extends WorkerControlCreateManyAndReturnArgs>(args?: SelectSubset<T, WorkerControlCreateManyAndReturnArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$WorkerControlPayload<ExtArgs>, T, "createManyAndReturn", GlobalOmitOptions>>
+
+    /**
+     * Delete a WorkerControl.
+     * @param {WorkerControlDeleteArgs} args - Arguments to delete one WorkerControl.
+     * @example
+     * // Delete one WorkerControl
+     * const WorkerControl = await prisma.workerControl.delete({
+     *   where: {
+     *     // ... filter to delete one WorkerControl
+     *   }
+     * })
+     * 
+     */
+    delete<T extends WorkerControlDeleteArgs>(args: SelectSubset<T, WorkerControlDeleteArgs<ExtArgs>>): Prisma__WorkerControlClient<$Result.GetResult<Prisma.$WorkerControlPayload<ExtArgs>, T, "delete", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Update one WorkerControl.
+     * @param {WorkerControlUpdateArgs} args - Arguments to update one WorkerControl.
+     * @example
+     * // Update one WorkerControl
+     * const workerControl = await prisma.workerControl.update({
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: {
+     *     // ... provide data here
+     *   }
+     * })
+     * 
+     */
+    update<T extends WorkerControlUpdateArgs>(args: SelectSubset<T, WorkerControlUpdateArgs<ExtArgs>>): Prisma__WorkerControlClient<$Result.GetResult<Prisma.$WorkerControlPayload<ExtArgs>, T, "update", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Delete zero or more WorkerControls.
+     * @param {WorkerControlDeleteManyArgs} args - Arguments to filter WorkerControls to delete.
+     * @example
+     * // Delete a few WorkerControls
+     * const { count } = await prisma.workerControl.deleteMany({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     * 
+     */
+    deleteMany<T extends WorkerControlDeleteManyArgs>(args?: SelectSubset<T, WorkerControlDeleteManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
+
+    /**
+     * Update zero or more WorkerControls.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {WorkerControlUpdateManyArgs} args - Arguments to update one or more rows.
+     * @example
+     * // Update many WorkerControls
+     * const workerControl = await prisma.workerControl.updateMany({
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: {
+     *     // ... provide data here
+     *   }
+     * })
+     * 
+     */
+    updateMany<T extends WorkerControlUpdateManyArgs>(args: SelectSubset<T, WorkerControlUpdateManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
+
+    /**
+     * Update zero or more WorkerControls and returns the data updated in the database.
+     * @param {WorkerControlUpdateManyAndReturnArgs} args - Arguments to update many WorkerControls.
+     * @example
+     * // Update many WorkerControls
+     * const workerControl = await prisma.workerControl.updateManyAndReturn({
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * 
+     * // Update zero or more WorkerControls and only return the `key`
+     * const workerControlWithKeyOnly = await prisma.workerControl.updateManyAndReturn({
+     *   select: { key: true },
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * 
+     */
+    updateManyAndReturn<T extends WorkerControlUpdateManyAndReturnArgs>(args: SelectSubset<T, WorkerControlUpdateManyAndReturnArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$WorkerControlPayload<ExtArgs>, T, "updateManyAndReturn", GlobalOmitOptions>>
+
+    /**
+     * Create or update one WorkerControl.
+     * @param {WorkerControlUpsertArgs} args - Arguments to update or create a WorkerControl.
+     * @example
+     * // Update or create a WorkerControl
+     * const workerControl = await prisma.workerControl.upsert({
+     *   create: {
+     *     // ... data to create a WorkerControl
+     *   },
+     *   update: {
+     *     // ... in case it already exists, update
+     *   },
+     *   where: {
+     *     // ... the filter for the WorkerControl we want to update
+     *   }
+     * })
+     */
+    upsert<T extends WorkerControlUpsertArgs>(args: SelectSubset<T, WorkerControlUpsertArgs<ExtArgs>>): Prisma__WorkerControlClient<$Result.GetResult<Prisma.$WorkerControlPayload<ExtArgs>, T, "upsert", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+
+    /**
+     * Count the number of WorkerControls.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {WorkerControlCountArgs} args - Arguments to filter WorkerControls to count.
+     * @example
+     * // Count the number of WorkerControls
+     * const count = await prisma.workerControl.count({
+     *   where: {
+     *     // ... the filter for the WorkerControls we want to count
+     *   }
+     * })
+    **/
+    count<T extends WorkerControlCountArgs>(
+      args?: Subset<T, WorkerControlCountArgs>,
+    ): Prisma.PrismaPromise<
+      T extends $Utils.Record<'select', any>
+        ? T['select'] extends true
+          ? number
+          : GetScalarType<T['select'], WorkerControlCountAggregateOutputType>
+        : number
+    >
+
+    /**
+     * Allows you to perform aggregations operations on a WorkerControl.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {WorkerControlAggregateArgs} args - Select which aggregations you would like to apply and on what fields.
+     * @example
+     * // Ordered by age ascending
+     * // Where email contains prisma.io
+     * // Limited to the 10 users
+     * const aggregations = await prisma.user.aggregate({
+     *   _avg: {
+     *     age: true,
+     *   },
+     *   where: {
+     *     email: {
+     *       contains: "prisma.io",
+     *     },
+     *   },
+     *   orderBy: {
+     *     age: "asc",
+     *   },
+     *   take: 10,
+     * })
+    **/
+    aggregate<T extends WorkerControlAggregateArgs>(args: Subset<T, WorkerControlAggregateArgs>): Prisma.PrismaPromise<GetWorkerControlAggregateType<T>>
+
+    /**
+     * Group by WorkerControl.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {WorkerControlGroupByArgs} args - Group by arguments.
+     * @example
+     * // Group by city, order by createdAt, get count
+     * const result = await prisma.user.groupBy({
+     *   by: ['city', 'createdAt'],
+     *   orderBy: {
+     *     createdAt: true
+     *   },
+     *   _count: {
+     *     _all: true
+     *   },
+     * })
+     * 
+    **/
+    groupBy<
+      T extends WorkerControlGroupByArgs,
+      HasSelectOrTake extends Or<
+        Extends<'skip', Keys<T>>,
+        Extends<'take', Keys<T>>
+      >,
+      OrderByArg extends True extends HasSelectOrTake
+        ? { orderBy: WorkerControlGroupByArgs['orderBy'] }
+        : { orderBy?: WorkerControlGroupByArgs['orderBy'] },
+      OrderFields extends ExcludeUnderscoreKeys<Keys<MaybeTupleToUnion<T['orderBy']>>>,
+      ByFields extends MaybeTupleToUnion<T['by']>,
+      ByValid extends Has<ByFields, OrderFields>,
+      HavingFields extends GetHavingFields<T['having']>,
+      HavingValid extends Has<ByFields, HavingFields>,
+      ByEmpty extends T['by'] extends never[] ? True : False,
+      InputErrors extends ByEmpty extends True
+      ? `Error: "by" must not be empty.`
+      : HavingValid extends False
+      ? {
+          [P in HavingFields]: P extends ByFields
+            ? never
+            : P extends string
+            ? `Error: Field "${P}" used in "having" needs to be provided in "by".`
+            : [
+                Error,
+                'Field ',
+                P,
+                ` in "having" needs to be provided in "by"`,
+              ]
+        }[HavingFields]
+      : 'take' extends Keys<T>
+      ? 'orderBy' extends Keys<T>
+        ? ByValid extends True
+          ? {}
+          : {
+              [P in OrderFields]: P extends ByFields
+                ? never
+                : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
+            }[OrderFields]
+        : 'Error: If you provide "take", you also need to provide "orderBy"'
+      : 'skip' extends Keys<T>
+      ? 'orderBy' extends Keys<T>
+        ? ByValid extends True
+          ? {}
+          : {
+              [P in OrderFields]: P extends ByFields
+                ? never
+                : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
+            }[OrderFields]
+        : 'Error: If you provide "skip", you also need to provide "orderBy"'
+      : ByValid extends True
+      ? {}
+      : {
+          [P in OrderFields]: P extends ByFields
+            ? never
+            : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
+        }[OrderFields]
+    >(args: SubsetIntersection<T, WorkerControlGroupByArgs, OrderByArg> & InputErrors): {} extends InputErrors ? GetWorkerControlGroupByPayload<T> : Prisma.PrismaPromise<InputErrors>
+  /**
+   * Fields of the WorkerControl model
+   */
+  readonly fields: WorkerControlFieldRefs;
+  }
+
+  /**
+   * The delegate class that acts as a "Promise-like" for WorkerControl.
+   * Why is this prefixed with `Prisma__`?
+   * Because we want to prevent naming conflicts as mentioned in
+   * https://github.com/prisma/prisma-client-js/issues/707
+   */
+  export interface Prisma__WorkerControlClient<T, Null = never, ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs, GlobalOmitOptions = {}> extends Prisma.PrismaPromise<T> {
+    readonly [Symbol.toStringTag]: "PrismaPromise"
+    /**
+     * Attaches callbacks for the resolution and/or rejection of the Promise.
+     * @param onfulfilled The callback to execute when the Promise is resolved.
+     * @param onrejected The callback to execute when the Promise is rejected.
+     * @returns A Promise for the completion of which ever callback is executed.
+     */
+    then<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | undefined | null, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null): $Utils.JsPromise<TResult1 | TResult2>
+    /**
+     * Attaches a callback for only the rejection of the Promise.
+     * @param onrejected The callback to execute when the Promise is rejected.
+     * @returns A Promise for the completion of the callback.
+     */
+    catch<TResult = never>(onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null): $Utils.JsPromise<T | TResult>
+    /**
+     * Attaches a callback that is invoked when the Promise is settled (fulfilled or rejected). The
+     * resolved value cannot be modified from the callback.
+     * @param onfinally The callback to execute when the Promise is settled (fulfilled or rejected).
+     * @returns A Promise for the completion of the callback.
+     */
+    finally(onfinally?: (() => void) | undefined | null): $Utils.JsPromise<T>
+  }
+
+
+
+
+  /**
+   * Fields of the WorkerControl model
+   */
+  interface WorkerControlFieldRefs {
+    readonly key: FieldRef<"WorkerControl", 'String'>
+    readonly value: FieldRef<"WorkerControl", 'String'>
+    readonly updatedAt: FieldRef<"WorkerControl", 'DateTime'>
+  }
+    
+
+  // Custom InputTypes
+  /**
+   * WorkerControl findUnique
+   */
+  export type WorkerControlFindUniqueArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the WorkerControl
+     */
+    select?: WorkerControlSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the WorkerControl
+     */
+    omit?: WorkerControlOmit<ExtArgs> | null
+    /**
+     * Filter, which WorkerControl to fetch.
+     */
+    where: WorkerControlWhereUniqueInput
+  }
+
+  /**
+   * WorkerControl findUniqueOrThrow
+   */
+  export type WorkerControlFindUniqueOrThrowArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the WorkerControl
+     */
+    select?: WorkerControlSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the WorkerControl
+     */
+    omit?: WorkerControlOmit<ExtArgs> | null
+    /**
+     * Filter, which WorkerControl to fetch.
+     */
+    where: WorkerControlWhereUniqueInput
+  }
+
+  /**
+   * WorkerControl findFirst
+   */
+  export type WorkerControlFindFirstArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the WorkerControl
+     */
+    select?: WorkerControlSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the WorkerControl
+     */
+    omit?: WorkerControlOmit<ExtArgs> | null
+    /**
+     * Filter, which WorkerControl to fetch.
+     */
+    where?: WorkerControlWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of WorkerControls to fetch.
+     */
+    orderBy?: WorkerControlOrderByWithRelationInput | WorkerControlOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the position for searching for WorkerControls.
+     */
+    cursor?: WorkerControlWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` WorkerControls from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` WorkerControls.
+     */
+    skip?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}
+     * 
+     * Filter by unique combinations of WorkerControls.
+     */
+    distinct?: WorkerControlScalarFieldEnum | WorkerControlScalarFieldEnum[]
+  }
+
+  /**
+   * WorkerControl findFirstOrThrow
+   */
+  export type WorkerControlFindFirstOrThrowArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the WorkerControl
+     */
+    select?: WorkerControlSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the WorkerControl
+     */
+    omit?: WorkerControlOmit<ExtArgs> | null
+    /**
+     * Filter, which WorkerControl to fetch.
+     */
+    where?: WorkerControlWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of WorkerControls to fetch.
+     */
+    orderBy?: WorkerControlOrderByWithRelationInput | WorkerControlOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the position for searching for WorkerControls.
+     */
+    cursor?: WorkerControlWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` WorkerControls from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` WorkerControls.
+     */
+    skip?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}
+     * 
+     * Filter by unique combinations of WorkerControls.
+     */
+    distinct?: WorkerControlScalarFieldEnum | WorkerControlScalarFieldEnum[]
+  }
+
+  /**
+   * WorkerControl findMany
+   */
+  export type WorkerControlFindManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the WorkerControl
+     */
+    select?: WorkerControlSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the WorkerControl
+     */
+    omit?: WorkerControlOmit<ExtArgs> | null
+    /**
+     * Filter, which WorkerControls to fetch.
+     */
+    where?: WorkerControlWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of WorkerControls to fetch.
+     */
+    orderBy?: WorkerControlOrderByWithRelationInput | WorkerControlOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the position for listing WorkerControls.
+     */
+    cursor?: WorkerControlWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` WorkerControls from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` WorkerControls.
+     */
+    skip?: number
+    distinct?: WorkerControlScalarFieldEnum | WorkerControlScalarFieldEnum[]
+  }
+
+  /**
+   * WorkerControl create
+   */
+  export type WorkerControlCreateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the WorkerControl
+     */
+    select?: WorkerControlSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the WorkerControl
+     */
+    omit?: WorkerControlOmit<ExtArgs> | null
+    /**
+     * The data needed to create a WorkerControl.
+     */
+    data: XOR<WorkerControlCreateInput, WorkerControlUncheckedCreateInput>
+  }
+
+  /**
+   * WorkerControl createMany
+   */
+  export type WorkerControlCreateManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * The data used to create many WorkerControls.
+     */
+    data: WorkerControlCreateManyInput | WorkerControlCreateManyInput[]
+  }
+
+  /**
+   * WorkerControl createManyAndReturn
+   */
+  export type WorkerControlCreateManyAndReturnArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the WorkerControl
+     */
+    select?: WorkerControlSelectCreateManyAndReturn<ExtArgs> | null
+    /**
+     * Omit specific fields from the WorkerControl
+     */
+    omit?: WorkerControlOmit<ExtArgs> | null
+    /**
+     * The data used to create many WorkerControls.
+     */
+    data: WorkerControlCreateManyInput | WorkerControlCreateManyInput[]
+  }
+
+  /**
+   * WorkerControl update
+   */
+  export type WorkerControlUpdateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the WorkerControl
+     */
+    select?: WorkerControlSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the WorkerControl
+     */
+    omit?: WorkerControlOmit<ExtArgs> | null
+    /**
+     * The data needed to update a WorkerControl.
+     */
+    data: XOR<WorkerControlUpdateInput, WorkerControlUncheckedUpdateInput>
+    /**
+     * Choose, which WorkerControl to update.
+     */
+    where: WorkerControlWhereUniqueInput
+  }
+
+  /**
+   * WorkerControl updateMany
+   */
+  export type WorkerControlUpdateManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * The data used to update WorkerControls.
+     */
+    data: XOR<WorkerControlUpdateManyMutationInput, WorkerControlUncheckedUpdateManyInput>
+    /**
+     * Filter which WorkerControls to update
+     */
+    where?: WorkerControlWhereInput
+    /**
+     * Limit how many WorkerControls to update.
+     */
+    limit?: number
+  }
+
+  /**
+   * WorkerControl updateManyAndReturn
+   */
+  export type WorkerControlUpdateManyAndReturnArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the WorkerControl
+     */
+    select?: WorkerControlSelectUpdateManyAndReturn<ExtArgs> | null
+    /**
+     * Omit specific fields from the WorkerControl
+     */
+    omit?: WorkerControlOmit<ExtArgs> | null
+    /**
+     * The data used to update WorkerControls.
+     */
+    data: XOR<WorkerControlUpdateManyMutationInput, WorkerControlUncheckedUpdateManyInput>
+    /**
+     * Filter which WorkerControls to update
+     */
+    where?: WorkerControlWhereInput
+    /**
+     * Limit how many WorkerControls to update.
+     */
+    limit?: number
+  }
+
+  /**
+   * WorkerControl upsert
+   */
+  export type WorkerControlUpsertArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the WorkerControl
+     */
+    select?: WorkerControlSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the WorkerControl
+     */
+    omit?: WorkerControlOmit<ExtArgs> | null
+    /**
+     * The filter to search for the WorkerControl to update in case it exists.
+     */
+    where: WorkerControlWhereUniqueInput
+    /**
+     * In case the WorkerControl found by the `where` argument doesn't exist, create a new WorkerControl with this data.
+     */
+    create: XOR<WorkerControlCreateInput, WorkerControlUncheckedCreateInput>
+    /**
+     * In case the WorkerControl was found with the provided `where` argument, update it with this data.
+     */
+    update: XOR<WorkerControlUpdateInput, WorkerControlUncheckedUpdateInput>
+  }
+
+  /**
+   * WorkerControl delete
+   */
+  export type WorkerControlDeleteArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the WorkerControl
+     */
+    select?: WorkerControlSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the WorkerControl
+     */
+    omit?: WorkerControlOmit<ExtArgs> | null
+    /**
+     * Filter which WorkerControl to delete.
+     */
+    where: WorkerControlWhereUniqueInput
+  }
+
+  /**
+   * WorkerControl deleteMany
+   */
+  export type WorkerControlDeleteManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Filter which WorkerControls to delete
+     */
+    where?: WorkerControlWhereInput
+    /**
+     * Limit how many WorkerControls to delete.
+     */
+    limit?: number
+  }
+
+  /**
+   * WorkerControl without action
+   */
+  export type WorkerControlDefaultArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the WorkerControl
+     */
+    select?: WorkerControlSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the WorkerControl
+     */
+    omit?: WorkerControlOmit<ExtArgs> | null
   }
 
 
@@ -31219,10 +32302,20 @@ export namespace Prisma {
     analysisId: 'analysisId',
     createdAt: 'createdAt',
     startedAt: 'startedAt',
-    finishedAt: 'finishedAt'
+    finishedAt: 'finishedAt',
+    availableAt: 'availableAt'
   };
 
   export type MediaJobScalarFieldEnum = (typeof MediaJobScalarFieldEnum)[keyof typeof MediaJobScalarFieldEnum]
+
+
+  export const WorkerControlScalarFieldEnum: {
+    key: 'key',
+    value: 'value',
+    updatedAt: 'updatedAt'
+  };
+
+  export type WorkerControlScalarFieldEnum = (typeof WorkerControlScalarFieldEnum)[keyof typeof WorkerControlScalarFieldEnum]
 
 
   export const ScrapeAlertStateScalarFieldEnum: {
@@ -33045,6 +34138,7 @@ export namespace Prisma {
     createdAt?: DateTimeFilter<"MediaJob"> | Date | string
     startedAt?: DateTimeNullableFilter<"MediaJob"> | Date | string | null
     finishedAt?: DateTimeNullableFilter<"MediaJob"> | Date | string | null
+    availableAt?: DateTimeNullableFilter<"MediaJob"> | Date | string | null
     workspace?: XOR<WorkspaceScalarRelationFilter, WorkspaceWhereInput>
   }
 
@@ -33065,6 +34159,7 @@ export namespace Prisma {
     createdAt?: SortOrder
     startedAt?: SortOrderInput | SortOrder
     finishedAt?: SortOrderInput | SortOrder
+    availableAt?: SortOrderInput | SortOrder
     workspace?: WorkspaceOrderByWithRelationInput
   }
 
@@ -33088,6 +34183,7 @@ export namespace Prisma {
     createdAt?: DateTimeFilter<"MediaJob"> | Date | string
     startedAt?: DateTimeNullableFilter<"MediaJob"> | Date | string | null
     finishedAt?: DateTimeNullableFilter<"MediaJob"> | Date | string | null
+    availableAt?: DateTimeNullableFilter<"MediaJob"> | Date | string | null
     workspace?: XOR<WorkspaceScalarRelationFilter, WorkspaceWhereInput>
   }, "id">
 
@@ -33108,6 +34204,7 @@ export namespace Prisma {
     createdAt?: SortOrder
     startedAt?: SortOrderInput | SortOrder
     finishedAt?: SortOrderInput | SortOrder
+    availableAt?: SortOrderInput | SortOrder
     _count?: MediaJobCountOrderByAggregateInput
     _avg?: MediaJobAvgOrderByAggregateInput
     _max?: MediaJobMaxOrderByAggregateInput
@@ -33135,6 +34232,49 @@ export namespace Prisma {
     createdAt?: DateTimeWithAggregatesFilter<"MediaJob"> | Date | string
     startedAt?: DateTimeNullableWithAggregatesFilter<"MediaJob"> | Date | string | null
     finishedAt?: DateTimeNullableWithAggregatesFilter<"MediaJob"> | Date | string | null
+    availableAt?: DateTimeNullableWithAggregatesFilter<"MediaJob"> | Date | string | null
+  }
+
+  export type WorkerControlWhereInput = {
+    AND?: WorkerControlWhereInput | WorkerControlWhereInput[]
+    OR?: WorkerControlWhereInput[]
+    NOT?: WorkerControlWhereInput | WorkerControlWhereInput[]
+    key?: StringFilter<"WorkerControl"> | string
+    value?: StringFilter<"WorkerControl"> | string
+    updatedAt?: DateTimeFilter<"WorkerControl"> | Date | string
+  }
+
+  export type WorkerControlOrderByWithRelationInput = {
+    key?: SortOrder
+    value?: SortOrder
+    updatedAt?: SortOrder
+  }
+
+  export type WorkerControlWhereUniqueInput = Prisma.AtLeast<{
+    key?: string
+    AND?: WorkerControlWhereInput | WorkerControlWhereInput[]
+    OR?: WorkerControlWhereInput[]
+    NOT?: WorkerControlWhereInput | WorkerControlWhereInput[]
+    value?: StringFilter<"WorkerControl"> | string
+    updatedAt?: DateTimeFilter<"WorkerControl"> | Date | string
+  }, "key">
+
+  export type WorkerControlOrderByWithAggregationInput = {
+    key?: SortOrder
+    value?: SortOrder
+    updatedAt?: SortOrder
+    _count?: WorkerControlCountOrderByAggregateInput
+    _max?: WorkerControlMaxOrderByAggregateInput
+    _min?: WorkerControlMinOrderByAggregateInput
+  }
+
+  export type WorkerControlScalarWhereWithAggregatesInput = {
+    AND?: WorkerControlScalarWhereWithAggregatesInput | WorkerControlScalarWhereWithAggregatesInput[]
+    OR?: WorkerControlScalarWhereWithAggregatesInput[]
+    NOT?: WorkerControlScalarWhereWithAggregatesInput | WorkerControlScalarWhereWithAggregatesInput[]
+    key?: StringWithAggregatesFilter<"WorkerControl"> | string
+    value?: StringWithAggregatesFilter<"WorkerControl"> | string
+    updatedAt?: DateTimeWithAggregatesFilter<"WorkerControl"> | Date | string
   }
 
   export type ScrapeAlertStateWhereInput = {
@@ -35105,6 +36245,7 @@ export namespace Prisma {
     createdAt?: Date | string
     startedAt?: Date | string | null
     finishedAt?: Date | string | null
+    availableAt?: Date | string | null
     workspace: WorkspaceCreateNestedOneWithoutMediaJobsInput
   }
 
@@ -35125,6 +36266,7 @@ export namespace Prisma {
     createdAt?: Date | string
     startedAt?: Date | string | null
     finishedAt?: Date | string | null
+    availableAt?: Date | string | null
   }
 
   export type MediaJobUpdateInput = {
@@ -35143,6 +36285,7 @@ export namespace Prisma {
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     startedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     finishedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    availableAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     workspace?: WorkspaceUpdateOneRequiredWithoutMediaJobsNestedInput
   }
 
@@ -35163,6 +36306,7 @@ export namespace Prisma {
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     startedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     finishedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    availableAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   }
 
   export type MediaJobCreateManyInput = {
@@ -35182,6 +36326,7 @@ export namespace Prisma {
     createdAt?: Date | string
     startedAt?: Date | string | null
     finishedAt?: Date | string | null
+    availableAt?: Date | string | null
   }
 
   export type MediaJobUpdateManyMutationInput = {
@@ -35200,6 +36345,7 @@ export namespace Prisma {
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     startedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     finishedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    availableAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   }
 
   export type MediaJobUncheckedUpdateManyInput = {
@@ -35219,6 +36365,49 @@ export namespace Prisma {
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     startedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     finishedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    availableAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  }
+
+  export type WorkerControlCreateInput = {
+    key: string
+    value?: string
+    updatedAt?: Date | string
+  }
+
+  export type WorkerControlUncheckedCreateInput = {
+    key: string
+    value?: string
+    updatedAt?: Date | string
+  }
+
+  export type WorkerControlUpdateInput = {
+    key?: StringFieldUpdateOperationsInput | string
+    value?: StringFieldUpdateOperationsInput | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+  }
+
+  export type WorkerControlUncheckedUpdateInput = {
+    key?: StringFieldUpdateOperationsInput | string
+    value?: StringFieldUpdateOperationsInput | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+  }
+
+  export type WorkerControlCreateManyInput = {
+    key: string
+    value?: string
+    updatedAt?: Date | string
+  }
+
+  export type WorkerControlUpdateManyMutationInput = {
+    key?: StringFieldUpdateOperationsInput | string
+    value?: StringFieldUpdateOperationsInput | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+  }
+
+  export type WorkerControlUncheckedUpdateManyInput = {
+    key?: StringFieldUpdateOperationsInput | string
+    value?: StringFieldUpdateOperationsInput | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type ScrapeAlertStateCreateInput = {
@@ -36654,6 +37843,7 @@ export namespace Prisma {
     createdAt?: SortOrder
     startedAt?: SortOrder
     finishedAt?: SortOrder
+    availableAt?: SortOrder
   }
 
   export type MediaJobAvgOrderByAggregateInput = {
@@ -36678,6 +37868,7 @@ export namespace Prisma {
     createdAt?: SortOrder
     startedAt?: SortOrder
     finishedAt?: SortOrder
+    availableAt?: SortOrder
   }
 
   export type MediaJobMinOrderByAggregateInput = {
@@ -36697,11 +37888,30 @@ export namespace Prisma {
     createdAt?: SortOrder
     startedAt?: SortOrder
     finishedAt?: SortOrder
+    availableAt?: SortOrder
   }
 
   export type MediaJobSumOrderByAggregateInput = {
     preAuthCredits?: SortOrder
     attempts?: SortOrder
+  }
+
+  export type WorkerControlCountOrderByAggregateInput = {
+    key?: SortOrder
+    value?: SortOrder
+    updatedAt?: SortOrder
+  }
+
+  export type WorkerControlMaxOrderByAggregateInput = {
+    key?: SortOrder
+    value?: SortOrder
+    updatedAt?: SortOrder
+  }
+
+  export type WorkerControlMinOrderByAggregateInput = {
+    key?: SortOrder
+    value?: SortOrder
+    updatedAt?: SortOrder
   }
 
   export type ScrapeAlertStateCountOrderByAggregateInput = {
@@ -38337,6 +39547,7 @@ export namespace Prisma {
     createdAt?: Date | string
     startedAt?: Date | string | null
     finishedAt?: Date | string | null
+    availableAt?: Date | string | null
   }
 
   export type MediaJobUncheckedCreateWithoutWorkspaceInput = {
@@ -38355,6 +39566,7 @@ export namespace Prisma {
     createdAt?: Date | string
     startedAt?: Date | string | null
     finishedAt?: Date | string | null
+    availableAt?: Date | string | null
   }
 
   export type MediaJobCreateOrConnectWithoutWorkspaceInput = {
@@ -38603,6 +39815,7 @@ export namespace Prisma {
     createdAt?: DateTimeFilter<"MediaJob"> | Date | string
     startedAt?: DateTimeNullableFilter<"MediaJob"> | Date | string | null
     finishedAt?: DateTimeNullableFilter<"MediaJob"> | Date | string | null
+    availableAt?: DateTimeNullableFilter<"MediaJob"> | Date | string | null
   }
 
   export type SuggestionDismissalUpsertWithWhereUniqueWithoutWorkspaceInput = {
@@ -42275,6 +43488,7 @@ export namespace Prisma {
     createdAt?: Date | string
     startedAt?: Date | string | null
     finishedAt?: Date | string | null
+    availableAt?: Date | string | null
   }
 
   export type SuggestionDismissalCreateManyWorkspaceInput = {
@@ -42478,6 +43692,7 @@ export namespace Prisma {
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     startedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     finishedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    availableAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   }
 
   export type MediaJobUncheckedUpdateWithoutWorkspaceInput = {
@@ -42496,6 +43711,7 @@ export namespace Prisma {
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     startedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     finishedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    availableAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   }
 
   export type MediaJobUncheckedUpdateManyWithoutWorkspaceInput = {
@@ -42514,6 +43730,7 @@ export namespace Prisma {
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     startedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     finishedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    availableAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   }
 
   export type SuggestionDismissalUpdateWithoutWorkspaceInput = {
