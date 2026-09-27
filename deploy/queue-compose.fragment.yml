@@ -1,0 +1,163 @@
+# ===========================================================================
+# SLA-14 Phase 1 — queue-db + queue-api compose fragment (DEPLOYABLE ONLY).
+#
+# This file is NOT auto-applied: it is merged into the Contabo compose
+# project (Salonease docker-compose.prod.yml, same app-network + Traefik)
+# by the ingress rollout issue (SLA-15). Nothing here runs in this issue,
+# and no production producer/worker points at it yet.
+#
+# Merge: docker compose -f docker-compose.prod.yml \
+#          -f slashloop/deploy/queue-compose.fragment.yml up -d queue-db
+#
+# Requirements honored (plan rev 4 §VPS deployment):
+# - Postgres port is NOT published (no `ports:` on queue-db).
+# - Both services join the existing internal app-network.
+# - queue-api waits for a HEALTHY queue-db (depends_on condition).
+# - CPU/memory limits so queue backlog/PG maintenance cannot starve Salonease.
+# - Secrets via env file / compose secrets — never baked into the image.
+# - Bounded retention runs inside queue-api (maintenance tick); nightly
+#   pg_dump runs in queue-backup with copies kept off-host (see script).
+# - Traefik: SNI/Host match on queue.slashloop.dev ONLY, TLS via the existing
+#   certresolver, body-size + rate-limit middleware on the queue paths.
+# ===========================================================================
+
+networks:
+  app-network:
+    external: true
+
+volumes:
+  slashloop_queue_pgdata:
+    driver: local
+  slashloop_queue_backups:
+    driver: local
+
+services:
+  queue-db:
+    image: postgres:17
+    restart: unless-stopped
+    # NO ports: section on purpose — Postgres stays on the internal network.
+    expose:
+      - "5432"
+    environment:
+      POSTGRES_DB: slashloop_queue
+      POSTGRES_USER: slashloop_queue
+      POSTGRES_PASSWORD_FILE: /run/secrets/slashloop_queue_db_password
+    secrets:
+      - slashloop_queue_db_password
+    volumes:
+      - slashloop_queue_pgdata:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U slashloop_queue -d slashloop_queue"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  queue-api:
+    build:
+      context: ../..
+      dockerfile: slashloop/deploy/queue-api.Dockerfile
+    image: slashloop-queue-api:phase1
+    restart: unless-stopped
+    depends_on:
+      queue-db:
+        condition: service_healthy
+    # NO ports: section — reachable only through Traefik on the internal net.
+    expose:
+      - "4100"
+    environment:
+      QUEUE_API_PORT: "4100"
+      QUEUE_DATABASE_URL: postgresql://slashloop_queue:${SLASHLOOP_QUEUE_DB_PASSWORD:?missing SLASHLOOP_QUEUE_DB_PASSWORD}@queue-db:5432/slashloop_queue
+      QUEUE_API_KEY_ACTIVE_ID: ${SLASHLOOP_QUEUE_KEY_ACTIVE_ID:?missing SLASHLOOP_QUEUE_KEY_ACTIVE_ID}
+      QUEUE_API_KEY_ACTIVE_SECRET: ${SLASHLOOP_QUEUE_HMAC_SECRET:?missing SLASHLOOP_QUEUE_HMAC_SECRET}
+      QUEUE_API_KEY_RETIRING_ID: ${SLASHLOOP_QUEUE_KEY_RETIRING_ID:-}
+      QUEUE_API_KEY_RETIRING_SECRET: ${SLASHLOOP_QUEUE_KEY_RETIRING_SECRET:-}
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e \"fetch('http://localhost:4100/readyz').then(r=>{if(!r.ok)process.exit(1)})\" || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "traefik.enable=true"
+      # SNI/Host allowlist: ONLY queue.slashloop.dev routes here.
+      - "traefik.http.routers.queue-api.rule=Host(`queue.slashloop.dev`) && (Path(`/healthz`) || PathPrefix(`/v1/jobs`))"
+      - "traefik.http.routers.queue-api.entrypoints=websecure"
+      - "traefik.http.routers.queue-api.tls.certresolver=myresolver"
+      - "traefik.http.routers.queue-api.middlewares=queue-body-limit@docker,queue-ratelimit@docker"
+      - "traefik.http.services.queue-api.loadbalancer.server.port=4100"
+      - "traefik.http.services.queue-api.loadbalancer.passHostHeader=true"
+      # Body cap mirrors QUEUE_BODY_MAX_BYTES (64 KiB) at the edge.
+      - "traefik.http.middlewares.queue-body-limit.buffering.maxRequestBodyBytes=65536"
+      # Outer rate limit: 60/min sustained, 120 burst, per source IP.
+      # The app enforces finer per-key/workspace/kind budgets behind this.
+      - "traefik.http.middlewares.queue-ratelimit.ratelimit.average=1"
+      - "traefik.http.middlewares.queue-ratelimit.ratelimit.burst=120"
+      - "traefik.http.middlewares.queue-ratelimit.ratelimit.period=1s"
+
+  queue-backup:
+    image: postgres:17
+    restart: unless-stopped
+    depends_on:
+      queue-db:
+        condition: service_healthy
+    environment:
+      PGHOST: queue-db
+      PGDATABASE: slashloop_queue
+      PGUSER: slashloop_queue
+      PGPASSWORD_FILE: /run/secrets/slashloop_queue_db_password
+      BACKUP_RETENTION_DAYS: "14"
+    secrets:
+      - slashloop_queue_db_password
+    volumes:
+      - slashloop_queue_backups:/backups
+      - ./queue-backup.sh:/usr/local/bin/queue-backup.sh:ro
+    networks:
+      - app-network
+    # Nightly pg_dump (custom format) + local retention. Off-host copy is a
+    # host cron rsync (documented in the Phase 0 baseline — backup age alert
+    # fires when the newest dump goes stale).
+    command: >
+      sh -c "echo '0 3 * * * /usr/local/bin/queue-backup.sh' | crontab - && crond -f"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  slashloop_queue_db_password:
+    file: ${SLASHLOOP_QUEUE_DB_PASSWORD_FILE:?missing SLASHLOOP_QUEUE_DB_PASSWORD_FILE}

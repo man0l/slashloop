@@ -1,0 +1,96 @@
+# ===========================================================================
+# SLA-14 Phase 1 — Prometheus alert rules for the PG queue (plan rev 4
+# §Monitoring gates). Wire into the existing Salonease Prometheus/Alertmanager
+# in the ingress rollout (SLA-15); thresholds below seed from the Phase 0
+# baseline doc and are tuned after the producer canary, not before.
+#
+# Signals covered: queue depth + oldest age by kind, retries/lease expiry,
+# API auth/rejection rates, projection lag, backup age, restore-test state.
+# ===========================================================================
+
+groups:
+  - name: slashloop-queue
+    interval: 1m
+    rules:
+      # -- queue depth / oldest age ---------------------------------------
+      - alert: QueueDepthHigh
+        expr: sum(slashloop_queue_depth{state="queued"}) > 500
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "PG queue depth above Phase 0 baseline threshold"
+
+      - alert: QueueOldestTooOld
+        expr: max(slashloop_queue_oldest_age_seconds) > 1800
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Oldest queued job exceeds its kind SLA (30m)"
+
+      # -- retries / leases -------------------------------------------------
+      - alert: QueueLeasesExpiring
+        expr: slashloop_queue_expired_leases_total > 5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Lease-expiry rate spike — workers may be crashing"
+
+      - alert: QueueRunningStuck
+        expr: slashloop_queue_running_total > 50
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Too many running jobs — check worker health/leases"
+
+      # -- producer API auth / rejections ------------------------------------
+      - alert: QueueApiAuthRejectsSpike
+        expr: rate(slashloop_queue_api_rejects_total{cause="auth"}[5m]) > 0.1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Producer authentication rejects increasing"
+
+      - alert: QueueApiRejectsSpike
+        expr: >
+          sum(rate(slashloop_queue_api_rejects_total[5m])) by (cause) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Producer rejection rate spike (replay/rate-limit/validation)"
+
+      - alert: QueueApiDown
+        expr: up{job="queue-api"} == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "queue-api health check failing"
+
+      - alert: QueueDbDown
+        expr: up{job="queue-db"} == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "queue-db health check failing"
+
+      # -- projection lag (Phase 2+; fires only once D1 projection exists) ---
+      - alert: QueueProjectionLag
+        expr: slashloop_queue_projection_lag_seconds > 300
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "D1 compatibility projection lag growing"
+
+      # -- backups / restore tests -------------------------------------------
+      - alert: QueueBackupStale
+        expr: slashloop_queue_backup_age_seconds > 93600
+        for: 1h
+        labels: { severity: critical }
+        annotations:
+          summary: "Nightly queue-db backup is stale (>26h)"
+
+      - alert: QueueRestoreTestStale
+        expr: slashloop_queue_restore_test_age_seconds > 2592000
+        for: 24h
+        labels: { severity: warning }
+        annotations:
+          summary: "Queue restore test older than 30 days — rehearse again"
