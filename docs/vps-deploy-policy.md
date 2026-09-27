@@ -30,3 +30,11 @@ rejected — the model below is the ONLY way.
 7. **Proving it still works after any compose change:** `config --quiet`,
    container health, `GET /healthz` → 200, unsigned `POST /v1/jobs` → 401.
    Full signed-enqueue gate only when auth/env changed.
+8. **Enforcement (not just convention):** salonease
+   `.github/workflows/validate-compose.yml` + `.github/scripts/assert-compose.py`
+   run on every compose edit (PR or master push) and fail on: published
+   queue ports, non-GHCR queue-api image, changed router rule, missing
+   secret file, volumes, healthchecks, or memory budgets. A green check
+   on the commit is the "will it work" answer — VPS pulls only green
+   master. Residual risk it does NOT cover: VPS-local drift (missing
+   secret files, untracked edits) — `git status` on the VPS before pull.
