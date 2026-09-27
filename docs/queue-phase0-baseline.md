@@ -44,8 +44,11 @@ in `src/lib/d1-usage.ts` via `recordD1Usage`):
   `slashloop-worker-scraper` (refresh,thumb, proxy provider, idle 5s).
 - queue-db/queue-api budgets (fragment): db 1 CPU / 1G RAM, api 0.5 CPU / 512M.
 - Volumes: new `slashloop_queue_pgdata` (queue state ONLY — not the Salonease DB).
-- BLOCKER (owner: CEO/ops): record actual VPS CPU/RAM/disk headroom, volume
-  usage, and the off-host backup destination before SLA-15 merge.
+- Validated 2026-09-27 via SSH (root@vmi2233745): disk 17% used (309G
+  avail), RAM 5.8G total / 2.1G available — fits queue-db (1G) + queue-api
+  (512M) budgets. Live compose project is `/root/salonease/
+  docker-compose.prod.yml` (`/root/salonease-new` is NOT live — do not
+  touch it). Off-host backup destination still to confirm (owner: CEO).
 
 ## 4. Queue hostname / network inventory
 
