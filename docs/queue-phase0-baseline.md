@@ -58,7 +58,9 @@ in `src/lib/d1-usage.ts` via `recordD1Usage`):
   with a valid Let's Encrypt cert, `https://zenmanager.eu/` → 200).
 - DNS plan: `A queue` → `157.173.195.4`, TTL 300, DNS-only (grey cloud)
   first. `AAAA` only after a stable IPv6 is tested. No wildcard.
-  (Record not yet created — needs Cloudflare zone write, owner: CEO.)
+  (Record created 2026-09-27 by SLA-15 via Cloudflare API: record id
+  `0187848d0602272c8bfb3daf4a0c22e5`, content `157.173.195.4`, TTL 300,
+  proxied=false. DoH confirms only this A, no AAAA.)
 - Certificate: reuse existing Traefik `myresolver` (TLS-ALPN challenge,
   already active for `zenmanager.eu`) for the exact hostname; no TCP/80
   window needed.
@@ -69,6 +71,13 @@ in `src/lib/d1-usage.ts` via `recordD1Usage`):
   `5432` refusal check.
 - Rollback owner + step: CEO; remove the `queue` DNS record and the
   `queue-api` Traefik router/compose merge only — Salonease routes untouched.
+  Exact rollback (change plan, SLA-15): `DELETE
+  /client/v4/zones/fcb381ba3a654b5dede906b62de4ed1a/dns_records/0187848d0602272c8bfb3daf4a0c22e5`
+  then `cd /root/salonease && docker compose -f docker-compose.prod.yml
+  -f slashloop-queue/docker-compose.queue.yml down` (removes the 3 queue
+  containers; volumes `slashloop_queue_pgdata`/`slashloop_queue_backups`
+  survive unless `-v` is passed; Traefik drops the queue router
+  automatically).
 - BLOCKER (owner: CEO): VPS shell access for the compose-fragment merge
   (no SSH credential or `.env` found in the agent environment — searched
   workspaces and home; only `known_hosts` present) and the Cloudflare zone
@@ -126,3 +135,37 @@ No Cloudflare DNS records, no firewall changes, no VPS deploy, no production
 kind assigned to PG (`queue.transport.*` untouched; `QUEUE_BACKEND` default
 unchanged; D1 `queueOwner` marker NOT added yet — that is Phase 2). No
 production producer/worker points at `queue-api` after this issue.
+
+## 9. SLA-15 rollout record (prod, 2026-09-27)
+
+- DNS: `A queue → 157.173.195.4`, TTL 300, DNS-only (record
+  `0187848d…`), via Cloudflare API with the CEO-injected `cf_api_token`.
+- VPS merge: `/root/salonease/slashloop-queue/docker-compose.queue.yml`
+  (derived from `deploy/queue-compose.fragment.yml`: queue-api runs the
+  CI GHCR image `:master` with `pull_policy: always`; secret file is the
+  absolute host path; `app-network` is external name
+  `salonease_app-network`). Secrets (`db_password` 40ch alnum,
+  `qk-prod-01` HMAC keypair) minted ON the host (`chmod 600`), never
+  committed, never left the VPS.
+- Schema: `queue/postgres/001_queue_foundation.sql` applied with
+  `ON_ERROR_STOP=1`, zero errors; `queue_jobs` starts at 0 rows.
+- Cert: Let's Encrypt via existing Traefik `myresolver` (TLS-ALPN, no
+  TCP/80 window), issued within minutes of the router appearing
+  (`CN=queue.slashloop.dev`, 2026-09-27 → 2026-12-26).
+- External gate (all PASS): DoH A-only `157.173.195.4`, no AAAA; valid
+  TLS; `GET /healthz` → 200 `{"ok":true}`; unsigned `POST /v1/jobs` →
+  401 `unauthenticated`; signed `POST /v1/jobs` → 202 (probe job, then
+  deleted — `queue_jobs`/`producer_nonces` back to 0/0); `/` → 404;
+  `zenmanager.eu/healthz` serves the Salonease SPA (not queue-api);
+  `zenmanager.eu/v1/jobs` → 405 from Salonease (queue-api unreachable via
+  other hostnames); external TCP/5432 → connection refused; internal PG
+  proven via `/readyz` + a real `pg_dump` (dump
+  `queue-20260927-145734.dump`, 14,172 bytes, restorable-listable).
+- Fragment drift fixed back in repo (SLA-15): stock `postgres:17` has no
+  cron (backup sidecar crashed 127) → override installs Debian cron at
+  start; relative `./queue-backup.sh` mount resolves from the FIRST `-f`
+  dir (mounted as an empty directory) → documented + absolute path on
+  VPS. Manual backup run + `crontab -l` (`0 3 * * *`) confirm the sidecar.
+- Still open (owner: CEO): OFF-HOST backup copy destination (dumps are
+  local-only in `slashloop_queue_backups` until this lands); no prod
+  queue kind assigned to PG (Phase 2).

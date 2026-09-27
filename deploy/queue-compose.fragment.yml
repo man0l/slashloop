@@ -9,6 +9,14 @@
 # Merge: docker compose -f docker-compose.prod.yml \
 #          -f slashloop/deploy/queue-compose.fragment.yml up -d queue-db
 #
+# NOTE (SLA-15 prod): the VPS has no repo checkout at the build context, so
+# production runs queue-api from the CI-built GHCR image
+# (ghcr.io/man0l/slashloop-queue-api:master, pull_policy: always) instead of
+# the `build:` block below, with the secret file at the absolute host path
+# /root/salonease/slashloop-queue/db_password and the app-network declared
+# as external name salonease_app-network. Keep both paths working: local
+# build for staging, GHCR image for prod.
+#
 # Requirements honored (plan rev 4 §VPS deployment):
 # - Postgres port is NOT published (no `ports:` on queue-db).
 # - Both services join the existing internal app-network.
@@ -139,14 +147,23 @@ services:
       - slashloop_queue_db_password
     volumes:
       - slashloop_queue_backups:/backups
+      # NOTE (SLA-15): a relative bind-mount source resolves from the FIRST
+      # -f file's directory, not this fragment's. Either co-locate this
+      # fragment + script next to docker-compose.prod.yml, or switch this to
+      # the absolute host path (VPS uses
+      # /root/salonease/slashloop-queue/queue-backup.sh). A missing source
+      # mounts as an empty DIRECTORY and the script fails at 03:00.
       - ./queue-backup.sh:/usr/local/bin/queue-backup.sh:ro
     networks:
       - app-network
     # Nightly pg_dump (custom format) + local retention. Off-host copy is a
     # host cron rsync (documented in the Phase 0 baseline — backup age alert
     # fires when the newest dump goes stale).
+    # NOTE (SLA-15 rollout lesson): stock postgres:17 ships NO cron binaries,
+    # so install Debian cron at container start, then run the same 03:00
+    # schedule. Script + retention unchanged.
     command: >
-      sh -c "echo '0 3 * * * /usr/local/bin/queue-backup.sh' | crontab - && crond -f"
+      sh -c "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cron >/dev/null 2>&1 && echo '0 3 * * * /usr/local/bin/queue-backup.sh' | crontab - && cron -f"
     deploy:
       resources:
         limits:
