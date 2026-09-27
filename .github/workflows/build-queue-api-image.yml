@@ -1,0 +1,74 @@
+name: build-queue-api-image
+
+# Auto-build the queue-api Docker image on changes, and push it to
+# GitHub Container Registry (ghcr.io/man0l/slashloop-queue-api).
+#
+# Mirrors build-worker-image.yml conventions (repo-root context,
+# oven/bun base via deploy/queue-api.Dockerfile, :master + :sha tags,
+# public GHCR package so the VPS can pull without a docker login).
+#
+# Deliberate difference: NO .env is baked into this image. queue-api takes
+# all secrets at runtime via env (QUEUE_DATABASE_URL, QUEUE_API_KEY_* — see
+# deploy/queue-compose.fragment.yml), so there is nothing to assemble here.
+#
+# Run the workflow manually (Actions -> build-queue-api-image ->
+# Run workflow) to force a rebuild.
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'src/queue/**'
+      - 'deploy/queue-api.Dockerfile'
+      - 'package.json'
+      - 'bun.lock'
+      - '.github/workflows/build-queue-api-image.yml'
+  workflow_dispatch: {}
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push queue-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/queue-api.Dockerfile
+          push: true
+          tags: |
+            ghcr.io/man0l/slashloop-queue-api:master
+            ghcr.io/man0l/slashloop-queue-api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Make the GHCR package PUBLIC so the VPS can pull
+      # ghcr.io/man0l/slashloop-queue-api:master with no docker login.
+      # Same caveat as the worker workflow: for personal-account packages
+      # GITHUB_TOKEN cannot manage visibility (404); a WRITE_PACKAGES_TOKEN
+      # PAT (write:packages) repo secret is used when configured.
+      - name: Make GHCR package public
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WRITE_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          curl -s -X PUT "https://api.github.com/user/packages/container/slashloop-queue-api/visibility" \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" -d '{"visibility":"public"}' -o /tmp/v1.json -w "user-scoped: %{http_code}\n"
+          curl -s -X PUT "https://api.github.com/repos/man0l/slashloop/packages/container/slashloop-queue-api/visibility" \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" -d '{"visibility":"public"}' -o /tmp/v2.json -w "repo-scoped: %{http_code}\n"
+          cat /tmp/v1.json /tmp/v2.json | head -c 300 | tr '\n' ' '; echo
