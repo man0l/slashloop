@@ -11,8 +11,10 @@
 //                             fronts it on queue.slashloop.dev)
 //   QUEUE_DATABASE_URL        node-postgres connection string for queue-db
 //   QUEUE_API_KEYS_JSON       [{"keyId","secret","state","workspaceIds"?}]
-//   QUEUE_KEY_ACTIVE_ID / QUEUE_KEY_RETIRING_ID + matching _SECRET vars
-//                             (alternative to the JSON blob; rotation-friendly)
+//   QUEUE_API_KEY_ACTIVE_ID / QUEUE_API_KEY_ACTIVE_SECRET (+ _RETIRING_* pair)
+//                             (alternative to the JSON blob; rotation-friendly.
+//                             Producer side mirrors with QUEUE_API_URL,
+//                             QUEUE_API_KEY_ID, QUEUE_API_KEY_SECRET.)
 // Metrics: GET /metrics (bind to 127.0.0.1 or the internal network ONLY).
 // ---------------------------------------------------------------------------
 

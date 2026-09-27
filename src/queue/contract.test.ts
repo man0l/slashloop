@@ -87,14 +87,17 @@ describe('expandQueueKinds parity with expandWorkerKinds', () => {
 });
 
 describe('validateJobTargets matrix', () => {
-  test('discover null/null; refresh source-only; others video-only', () => {
+  test('discover null/null; refresh+rescore source-only; others video-only', () => {
     expect(validateJobTargets('discover', null, null)).toBeNull();
     expect(validateJobTargets('discover', 'v', null)).not.toBeNull();
     expect(validateJobTargets('discover', null, 's')).not.toBeNull();
-    expect(validateJobTargets('refresh', null, 's')).toBeNull();
-    expect(validateJobTargets('refresh', 'v', 's')).not.toBeNull();
-    expect(validateJobTargets('refresh', null, null)).not.toBeNull();
-    for (const kind of ['fetch', 'analyze', 'recreate', 'thumb', 'rescore']) {
+    for (const kind of ['refresh', 'rescore']) {
+      expect(validateJobTargets(kind, null, 's')).toBeNull();
+      expect(validateJobTargets(kind, 'v', 's')).not.toBeNull();
+      expect(validateJobTargets(kind, null, null)).not.toBeNull();
+      expect(validateJobTargets(kind, 'v', null)).not.toBeNull();
+    }
+    for (const kind of ['fetch', 'analyze', 'recreate', 'thumb']) {
       expect(validateJobTargets(kind, 'v', null)).toBeNull();
       expect(validateJobTargets(kind, null, 's')).not.toBeNull();
       expect(validateJobTargets(kind, null, null)).not.toBeNull();

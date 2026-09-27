@@ -19,9 +19,113 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { chunked, coerceRowDates, dbDialect, rawBatch, type RawStatement } from '../store.js';
+import { loadProducerConfig, publishJobHttp } from '../queue/producer.js';
+import { QueuePublisher } from '../queue/publisher.js';
 import { CREDIT_COSTS, refundCredits, refundCreditsBatched, type RefundItem } from './credits.js';
 import { classifyFetchError } from './fetch-errors.js';
 import { notifyScrapeFailure, markScrapeSuccess } from './scrape-alert.js';
+
+// ---------------------------------------------------------------------------
+// Routed enqueue (SLA-16 Phase 2b): every enqueue*Job below funnels through
+// enqueueRouted, which publishes via QueuePublisher. Transport resolves per
+// kind (queue.transport.<kind>, QUEUE_BACKEND default); while every kind is
+// D1-owned the write is byte-identical to the legacy direct create.
+// Business validation lives in the callers and is unchanged here.
+// ---------------------------------------------------------------------------
+
+let routedPublisher: QueuePublisher | null = null;
+let routedPublisherKey = '';
+
+function routedQueuePublisher(): QueuePublisher {
+  const cfg = loadProducerConfig();
+  const fallbackEnabled = (process.env.QUEUE_FALLBACK_ENABLED ?? '0') === '1';
+  const key = cfg
+    ? `${cfg.baseUrl}|${cfg.keyId}|${cfg.timeoutMs}|fb:${fallbackEnabled ? '1' : '0'}`
+    : `d1|fb:${fallbackEnabled ? '1' : '0'}`;
+  if (!routedPublisher || routedPublisherKey !== key) {
+    routedPublisher = new QueuePublisher({
+      d1: {
+        createOwnedJob: async (input) => {
+          const row = (await db.mediaJob.create({
+            data: {
+              ...(input.id ? { id: input.id } : {}),
+              workspaceId: input.workspaceId,
+              videoId: input.videoId,
+              sourceId: input.sourceId,
+              kind: input.kind,
+              status: input.status ?? 'queued',
+              payloadJson: input.payloadJson,
+              deadlineAt: input.deadlineAt,
+              opId: input.opId,
+              preAuthCredits: input.preAuthCredits,
+              analysisId: input.analysisId,
+              queueOwner: input.queueOwner,
+            },
+          })) as unknown as MediaJobRow;
+          return { id: row.id };
+        },
+        markD1ProjectionPg: async (d1JobId) => {
+          // The PG row already carries d1_job_id (shared id, 1:1 link); the
+          // D1 side needs no extra column — projection sync of terminal
+          // states arrives with PG worker consumption (Phase 3).
+          await db.mediaJob.update({
+            where: { id: d1JobId },
+            data: { queueOwner: 'pg', status: 'queued' },
+          });
+        },
+      },
+      pg: cfg
+        ? {
+            publish: async (input) => publishJobHttp(cfg, { ...input, payload: input.payload }),
+          }
+        : undefined,
+      fallbackEnabled,
+    });
+    routedPublisherKey = key;
+  }
+  return routedPublisher;
+}
+
+/** Test seam — drop the cached publisher (env/secret rotation in tests). */
+export function resetRoutedPublisherForTests(): void {
+  routedPublisher = null;
+  routedPublisherKey = '';
+}
+
+/**
+ * Single choke point for all enqueues. Returns the D1 row (legacy row on the
+ * D1 transport, compatibility projection on the PG transport) in MediaJobRow
+ * shape. opId/preAuthCredits arrive pre-minted from the caller and pass
+ * through verbatim — never re-minted here.
+ */
+async function enqueueRouted(opts: {
+  kind: string;
+  workspaceId: string;
+  videoId: string | null;
+  sourceId: string | null;
+  payload: unknown;
+  opId: string | null;
+  preAuthCredits: number | null;
+  deadlineAt?: Date | null;
+  dedupeKey?: string | null;
+  analysisId?: string | null;
+}): Promise<MediaJobRow> {
+  const ref = await routedQueuePublisher().publish({
+    kind: opts.kind,
+    workspaceId: opts.workspaceId,
+    videoId: opts.videoId,
+    sourceId: opts.sourceId,
+    payload: opts.payload,
+    opId: opts.opId,
+    preAuthCredits: opts.preAuthCredits,
+    deadlineAt: opts.deadlineAt ?? null,
+    dedupeKey: opts.dedupeKey ?? null,
+    analysisId: opts.analysisId ?? null,
+  });
+  const row = await db.mediaJob.findUnique({ where: { id: ref.d1JobId } });
+  if (!row) throw new Error(`queue publisher lost D1 row ${ref.d1JobId}`);
+  return row as unknown as MediaJobRow;
+}
 
 /** Raw-row date columns, hydrated to Date on SQLite (raw SQL returns strings there). */
 const MEDIA_JOB_DATE_KEYS = ['deadlineAt', 'createdAt', 'startedAt', 'finishedAt', 'availableAt'] as const;
@@ -131,18 +235,15 @@ export async function enqueueRecreateJob(opts: {
   /** 'video' when the target is an MP4 (slide plan + ffmpeg extraction). */
   payload?: { mode?: 'photo' | 'video' };
 }): Promise<MediaJobRow> {
-  return db.mediaJob.create({
-    data: {
-      workspaceId: opts.workspaceId,
-      videoId: opts.videoId,
-      kind: 'recreate',
-      status: 'queued',
-      queueOwner: 'd1',
-      payloadJson: JSON.stringify(opts.payload ?? {}),
-      opId: opts.opId,
-      preAuthCredits: opts.preAuthCredits,
-    },
-  }) as unknown as Promise<MediaJobRow>;
+  return enqueueRouted({
+    kind: 'recreate',
+    workspaceId: opts.workspaceId,
+    videoId: opts.videoId,
+    sourceId: null,
+    payload: opts.payload ?? {},
+    opId: opts.opId,
+    preAuthCredits: opts.preAuthCredits,
+  });
 }
 
 export async function enqueueFetchJob(opts: {
@@ -150,19 +251,17 @@ export async function enqueueFetchJob(opts: {
   videoId: string;
   payload?: FetchJobPayload;
 }): Promise<MediaJobRow> {
-  return db.mediaJob.create({
-    data: {
-      workspaceId: opts.workspaceId,
-      videoId: opts.videoId,
-      kind: 'fetch',
-      status: 'queued',
-      queueOwner: 'd1',
-      payloadJson: JSON.stringify(opts.payload ?? {}),
-      // Copy the analyze pre-auth opId onto the row so reclaim/refund and the
-      // fetch→analyze chain can see it without re-parsing payloadJson.
-      opId: opts.payload?.opId ?? null,
-    },
-  }) as unknown as Promise<MediaJobRow>;
+  return enqueueRouted({
+    kind: 'fetch',
+    workspaceId: opts.workspaceId,
+    videoId: opts.videoId,
+    sourceId: null,
+    payload: opts.payload ?? {},
+    // Copy the analyze pre-auth opId onto the row so reclaim/refund and the
+    // fetch→analyze chain can see it without re-parsing payloadJson.
+    opId: opts.payload?.opId ?? null,
+    preAuthCredits: null,
+  });
 }
 
 /**
@@ -213,16 +312,15 @@ export async function enqueueThumbJob(opts: {
   videoId: string;
   payload?: ThumbJobPayload;
 }): Promise<MediaJobRow> {
-  return db.mediaJob.create({
-    data: {
-      workspaceId: opts.workspaceId,
-      videoId: opts.videoId,
-      kind: 'thumb',
-      status: 'queued',
-      queueOwner: 'd1',
-      payloadJson: JSON.stringify(opts.payload ?? {}),
-    },
-  }) as unknown as Promise<MediaJobRow>;
+  return enqueueRouted({
+    kind: 'thumb',
+    workspaceId: opts.workspaceId,
+    videoId: opts.videoId,
+    sourceId: null,
+    payload: opts.payload ?? {},
+    opId: null,
+    preAuthCredits: null,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -235,17 +333,15 @@ export async function enqueueAnalyzeJob(opts: {
   payload: AnalyzeJobPayload;
   opId: string;
 }): Promise<MediaJobRow> {
-  return db.mediaJob.create({
-    data: {
-      workspaceId: opts.workspaceId,
-      videoId: opts.videoId,
-      kind: 'analyze',
-      status: 'queued',
-      queueOwner: 'd1',
-      payloadJson: JSON.stringify(opts.payload ?? {}),
-      opId: opts.opId,
-    },
-  }) as unknown as Promise<MediaJobRow>;
+  return enqueueRouted({
+    kind: 'analyze',
+    workspaceId: opts.workspaceId,
+    videoId: opts.videoId,
+    sourceId: null,
+    payload: opts.payload ?? {},
+    opId: opts.opId,
+    preAuthCredits: null,
+  });
 }
 
 /**
@@ -369,26 +465,22 @@ export async function enqueueDiscoverJob(opts: {
   preAuthCredits: number;
   deadlineAt: Date;
 }): Promise<MediaJobRow> {
-  return db.mediaJob.create({
-    data: {
-      workspaceId: opts.workspaceId,
-      videoId: null,
-      sourceId: null,
-      kind: 'discover',
-      status: 'queued',
-      queueOwner: 'd1',
-      payloadJson: JSON.stringify({
-        sourceType: opts.payload.sourceType,
-        query: opts.payload.query,
-        rationale: opts.payload.rationale,
-        origin: opts.payload.origin,
-        alreadyTracked: opts.payload.alreadyTracked ?? false,
-      }),
-      deadlineAt: opts.deadlineAt,
-      opId: opts.opId,
-      preAuthCredits: opts.preAuthCredits,
+  return enqueueRouted({
+    kind: 'discover',
+    workspaceId: opts.workspaceId,
+    videoId: null,
+    sourceId: null,
+    payload: {
+      sourceType: opts.payload.sourceType,
+      query: opts.payload.query,
+      rationale: opts.payload.rationale,
+      origin: opts.payload.origin,
+      alreadyTracked: opts.payload.alreadyTracked ?? false,
     },
-  }) as unknown as Promise<MediaJobRow>;
+    deadlineAt: opts.deadlineAt,
+    opId: opts.opId,
+    preAuthCredits: opts.preAuthCredits,
+  });
 }
 
 export async function enqueueRefreshJob(opts: {
@@ -404,19 +496,16 @@ export async function enqueueRefreshJob(opts: {
 }): Promise<MediaJobRow> {
   const opId = randomUUID();
   const preAuthCredits = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * opts.videoLimit);
-  return db.mediaJob.create({
-    data: {
-      workspaceId: opts.workspaceId,
-      sourceId: opts.sourceId,
-      kind: 'refresh',
-      status: 'queued',
-      queueOwner: 'd1',
-      payloadJson: JSON.stringify(opts.payload ?? {}),
-      deadlineAt: opts.deadlineAt,
-      opId,
-      preAuthCredits,
-    },
-  }) as unknown as Promise<MediaJobRow>;
+  return enqueueRouted({
+    kind: 'refresh',
+    workspaceId: opts.workspaceId,
+    videoId: null,
+    sourceId: opts.sourceId,
+    payload: opts.payload ?? {},
+    deadlineAt: opts.deadlineAt,
+    opId,
+    preAuthCredits,
+  });
 }
 
 /**
@@ -446,16 +535,15 @@ export async function enqueueRescoreJob(opts: {
   sourceId: string;
   payload: RescoreJobPayload;
 }): Promise<MediaJobRow> {
-  return db.mediaJob.create({
-    data: {
-      workspaceId: opts.workspaceId,
-      sourceId: opts.sourceId,
-      kind: 'rescore',
-      status: 'queued',
-      queueOwner: 'd1',
-      payloadJson: JSON.stringify(opts.payload),
-    },
-  }) as unknown as Promise<MediaJobRow>;
+  return enqueueRouted({
+    kind: 'rescore',
+    workspaceId: opts.workspaceId,
+    videoId: null,
+    sourceId: opts.sourceId,
+    payload: opts.payload,
+    opId: null,
+    preAuthCredits: null,
+  });
 }
 
 /**

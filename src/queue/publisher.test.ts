@@ -5,9 +5,11 @@
 // - PG dedupe returns the same job with no duplicate work;
 // - fallback rows reuse the original opId and reconcile one-way with
 //   dedupeKey d1:<MediaJob.id>;
-// - PG failure without fallback throws retryable (no unowned dual-queue row).
+// - PG failure without fallback throws retryable (no unowned dual-queue row);
+// - the PG body matches the queue-api EnqueueBody contract (required
+//   dedupeKey, record payload, credits only with opId, shared d1JobId).
 import { describe, expect, test } from 'bun:test';
-import { QueuePublisher, QueuePublishError, type PublisherD1, type PublisherPg } from './publisher.js';
+import { deriveDedupeKey, QueuePublisher, QueuePublishError, type PublisherD1, type PublisherPg } from './publisher.js';
 import { QUEUE_FALLBACK_STATUS } from './transport.js';
 
 interface FakeD1Row {
@@ -31,8 +33,21 @@ function makeD1() {
   let n = 0;
   const d1: PublisherD1 = {
     createOwnedJob: async (input) => {
-      const id = `d1-${++n}`;
-      rows.set(id, { ...input, id, deadlineAt: input.deadlineAt, status: input.status ?? 'queued' });
+      const id = input.id ?? `d1-${++n}`;
+      rows.set(id, {
+        kind: input.kind,
+        workspaceId: input.workspaceId,
+        videoId: input.videoId,
+        sourceId: input.sourceId,
+        payloadJson: input.payloadJson,
+        opId: input.opId,
+        preAuthCredits: input.preAuthCredits,
+        deadlineAt: input.deadlineAt,
+        analysisId: input.analysisId,
+        queueOwner: input.queueOwner,
+        id,
+        status: input.status ?? 'queued',
+      });
       return { id };
     },
     markD1ProjectionPg: async (d1JobId, pgJobId) => {
@@ -47,14 +62,16 @@ function makeD1() {
   return { d1, rows };
 }
 
+type PgCall = Parameters<PublisherPg['publish']>[0];
+
 function makePg(opts?: { fail?: boolean }) {
   const byDedupe = new Map<string, string>();
   let n = 0;
-  const calls: Array<{ dedupeKey: string; opId: string | null }> = [];
+  const calls: PgCall[] = [];
   const pg: PublisherPg = {
     publish: async (input) => {
       if (opts?.fail) throw new Error('queue_unavailable');
-      calls.push({ dedupeKey: input.dedupeKey, opId: input.opId });
+      calls.push(input);
       const existing = byDedupe.get(input.dedupeKey);
       if (existing) return { pgJobId: existing, deduped: true };
       const pgJobId = `pg-${++n}`;
@@ -107,7 +124,21 @@ describe('QueuePublisher', () => {
     const row = rows.get(ref.d1JobId)!;
     expect(row.queueOwner).toBe('pg');
     expect(row.opId).toBe('op-stable-1');
-    expect(calls[0].opId).toBe('op-stable-1');
+    // API body contract: shared id, record payload, credits carry the opId.
+    expect(calls[0].d1JobId).toBe(ref.d1JobId);
+    expect(calls[0].payload).toEqual({ thumbnailUrl: 'https://cdn/x.jpg' });
+    expect(calls[0].credits).toEqual({ opId: 'op-stable-1', preAuthCredits: 0 });
+  });
+
+  test('pg publish sends credits only when opId is set', async () => {
+    const { d1 } = makeD1();
+    const { pg, calls } = makePg();
+    const pub = new QueuePublisher({ d1, pg, resolveTransport: async () => 'pg' });
+    await pub.publish({ ...baseReq, opId: 'op-9', preAuthCredits: 5 });
+    expect(calls[0].credits).toEqual({ opId: 'op-9', preAuthCredits: 5 });
+    // Free kinds (thumb/fetch) carry no opId — credits omitted entirely.
+    await pub.publish({ ...baseReq, opId: null, preAuthCredits: null, dedupeKey: 'thumb:video:other' });
+    expect(calls[1].credits).toBeNull();
   });
 
   test('same-key pg replay dedupes with no duplicate work', async () => {
@@ -150,7 +181,7 @@ describe('QueuePublisher', () => {
 
   test('reconciliation is one-way with dedupeKey d1:<id> and the original opId', async () => {
     const { d1, rows } = makeD1();
-    const { pg, calls } = makePg({ fail: true });
+    const { pg } = makePg({ fail: true });
     const pub = new QueuePublisher({
       d1,
       pg,
@@ -159,10 +190,10 @@ describe('QueuePublisher', () => {
     });
     const ref = await pub.publish({ ...baseReq });
     // PG recovers; reconcile the fallback row.
-    const { pg: pg2 } = makePg();
+    const { pg: pg2, calls: calls2 } = makePg();
     const pub2 = new QueuePublisher({ d1, pg: pg2, resolveTransport: async () => 'pg' });
     const row = rows.get(ref.d1JobId)!;
-    const done = await pub2.reconcileFallbackRow({
+    const asRow = {
       id: row.id,
       kind: row.kind,
       workspaceId: row.workspaceId,
@@ -172,24 +203,26 @@ describe('QueuePublisher', () => {
       opId: row.opId,
       preAuthCredits: row.preAuthCredits,
       deadlineAt: row.deadlineAt,
-    });
+    };
+    const done = await pub2.reconcileFallbackRow(asRow);
     expect(done.transport).toBe('pg');
+    expect(calls2[0].dedupeKey).toBe(`d1:${row.id}`);
+    expect(calls2[0].credits).toEqual({ opId: 'op-stable-1', preAuthCredits: 0 });
+    expect(calls2[0].d1JobId).toBe(row.id);
     expect(row.queueOwner).toBe('pg');
     expect(row.status).toBe('queued');
     // Reconciling again dedupes onto the same PG job — never a second row.
-    const again = await pub2.reconcileFallbackRow({
-      id: row.id,
-      kind: row.kind,
-      workspaceId: row.workspaceId,
-      videoId: row.videoId,
-      sourceId: row.sourceId,
-      payloadJson: row.payloadJson,
-      opId: row.opId,
-      preAuthCredits: row.preAuthCredits,
-      deadlineAt: row.deadlineAt,
-    });
+    const again = await pub2.reconcileFallbackRow(asRow);
     expect(again.pgJobId).toBe(done.pgJobId);
     expect(again.deduped).toBe(true);
-    expect(calls.length).toBe(0); // failing client never got a call through
+  });
+
+  test('discover dedupe binds to opId, never the shared empty key', async () => {
+    expect(
+      deriveDedupeKey({ kind: 'discover', videoId: null, sourceId: null, opId: 'op-d1' }),
+    ).toBe('discover:op:op-d1');
+    const minted = deriveDedupeKey({ kind: 'discover', videoId: null, sourceId: null, opId: null });
+    expect(minted.startsWith('discover:run:')).toBe(true);
+    expect(minted.length).toBeGreaterThan('discover:run:'.length);
   });
 });

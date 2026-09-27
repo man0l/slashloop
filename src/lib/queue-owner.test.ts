@@ -4,10 +4,16 @@
 // selected by D1 workers.
 import { describe, expect, mock, test } from 'bun:test';
 
-const seen: { rawSql: string[]; batchSql: string[]; creates: Array<Record<string, unknown>> } = {
+const seen: {
+  rawSql: string[];
+  batchSql: string[];
+  creates: Array<Record<string, unknown>>;
+  lastCreated: Record<string, unknown> | null;
+} = {
   rawSql: [],
   batchSql: [],
   creates: [],
+  lastCreated: null,
 };
 
 mock.module('../db.js', () => ({
@@ -21,8 +27,11 @@ mock.module('../db.js', () => ({
     mediaJob: {
       create: async ({ data }: { data: Record<string, unknown> }) => {
         seen.creates.push(data);
-        return { id: 'job-1', ...data };
+        seen.lastCreated = { id: 'job-1', ...data };
+        return seen.lastCreated;
       },
+      findUnique: async () => seen.lastCreated,
+      update: async ({ data }: { data: Record<string, unknown> }) => ({ ...seen.lastCreated, ...data }),
       findFirst: async () => null,
       findMany: async () => [],
     },
@@ -55,7 +64,9 @@ import {
   enqueueRefreshJob,
   enqueueRescoreJob,
   enqueueThumbJob,
+  resetRoutedPublisherForTests,
 } from './jobs.js';
+import { resetTransportCacheForTests } from '../queue/transport.js';
 
 describe('single-owner D1 claims', () => {
   test('claimNextJob filters to d1-owned rows', async () => {
@@ -80,6 +91,8 @@ describe('single-owner D1 claims', () => {
   });
 
   test('every enqueue writes queueOwner d1', async () => {
+    resetRoutedPublisherForTests();
+    resetTransportCacheForTests();
     seen.creates.length = 0;
     const ws = 'ws-1';
     await enqueueRecreateJob({ workspaceId: ws, videoId: 'v', opId: 'op', preAuthCredits: 1 });
@@ -104,6 +117,24 @@ describe('single-owner D1 claims', () => {
     expect(seen.creates.length).toBe(7);
     for (const data of seen.creates) {
       expect(data.queueOwner).toBe('d1');
+    }
+  });
+
+  test('pg transport without producer config fails retryable and writes nothing', async () => {
+    // Single-owner: a kind resolving to pg must never silently fall back to
+    // a D1 dual-write. Without queue-api credentials the enqueue fails
+    // retryable so the caller retries instead of forking queue state.
+    resetRoutedPublisherForTests();
+    resetTransportCacheForTests();
+    process.env.QUEUE_BACKEND = 'pg';
+    try {
+      seen.creates.length = 0;
+      await expect(enqueueThumbJob({ workspaceId: 'ws-1', videoId: 'v' })).rejects.toThrow();
+      expect(seen.creates.length).toBe(0);
+    } finally {
+      delete process.env.QUEUE_BACKEND;
+      resetRoutedPublisherForTests();
+      resetTransportCacheForTests();
     }
   });
 });

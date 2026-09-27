@@ -18,11 +18,12 @@
 //   canary the publisher throws a retryable error on PG failure instead of
 //   writing an unowned dual-queue row (plan §Producer fallback).
 //
-// All persistence is injected so this module is unit-testable without a DB.
-// lib/jobs.ts supplies the real D1 closures; the queue-api client supplies
-// the real PG closure when a kind is cut over (no prod kind is PG yet).
+// The PG transport speaks the queue-api EnqueueBody shape (see producer.ts
+// for the signed HTTP client, api.ts for the server side). All persistence
+// is injected so this module is unit-testable without a DB.
 // ---------------------------------------------------------------------------
 
+import { randomUUID } from 'node:crypto';
 import {
   dedupeKeyFor,
   fallbackDedupeKey,
@@ -46,6 +47,8 @@ export interface PublishRequest {
   /** Caller-supplied dedupe key (fallback reconciliation passes d1:<id>). */
   dedupeKey?: string | null;
   analysisId?: string | null;
+  /** Pre-allocated D1 projection id (wired by lib/jobs.ts; else minted). */
+  d1Id?: string | null;
 }
 
 export interface PublishedJobRef {
@@ -54,13 +57,15 @@ export interface PublishedJobRef {
   /** PG job id when the PG transport accepted the publish. */
   pgJobId: string | null;
   transport: PublishTransport;
-  /** True when the PG dedupe key already existed — no new work created. */
+  /** True when the PG dedupe key already existed — no new work was created. */
   deduped: boolean;
 }
 
 /** D1 persistence supplied by lib/jobs.ts (or an in-memory fake in tests). */
 export interface PublisherD1 {
   createOwnedJob(input: {
+    /** Pre-allocated id for the PG projection link (else generated). */
+    id?: string;
     kind: string;
     workspaceId: string;
     videoId: string | null;
@@ -78,7 +83,7 @@ export interface PublisherD1 {
   markD1ProjectionPg(d1JobId: string, pgJobId: string): Promise<void>;
 }
 
-/** PG publish supplied by the queue-api client (or a fake in tests). */
+/** PG publish — the queue-api EnqueueBody shape (producer.ts posts it). */
 export interface PublisherPg {
   publish(input: {
     kind: string;
@@ -86,11 +91,9 @@ export interface PublisherPg {
     videoId: string | null;
     sourceId: string | null;
     dedupeKey: string;
-    payload: unknown;
-    opId: string | null;
-    preAuthCredits: number | null;
-    deadlineAt: Date | null;
-    analysisId: string | null;
+    deadlineAt: string | null;
+    payload: Record<string, unknown>;
+    credits: { opId: string; preAuthCredits: number } | null;
     d1JobId: string | null;
   }): Promise<{ pgJobId: string; deduped: boolean }>;
 }
@@ -102,8 +105,6 @@ export interface PublisherDeps {
   resolveTransport?: (kind: string) => Promise<QueueTransport>;
   /** Default false: PG failure throws retryable instead of fallback rows. */
   fallbackEnabled?: boolean;
-  /** Stable D1 id pre-allocated for the fallback row (uuid in prod). */
-  mintD1Id?: () => string;
 }
 
 export class QueuePublishError extends Error {
@@ -118,6 +119,45 @@ export class QueuePublishError extends Error {
 
 function toPayloadJson(payload: unknown): string {
   return typeof payload === 'string' ? payload : JSON.stringify(payload ?? {});
+}
+
+/** Coerce to the API's record shape (the server's Zod requires an object). */
+function toPayloadRecord(payload: unknown): Record<string, unknown> {
+  if (payload != null && typeof payload === 'object' && !Array.isArray(payload)) {
+    return payload as Record<string, unknown>;
+  }
+  if (typeof payload === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(payload || '{}');
+      if (parsed != null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Fall through to {} — a corrupt payload must not 422 a paid job into
+      // a retry loop; the worker reports the shape problem instead.
+    }
+  }
+  return {};
+}
+
+/**
+ * Derive the required PG dedupe key. `discover` has no natural target key:
+ * bind it to the stable opId when present (same logical probe dedupes),
+ * else a fresh run id (never collide two unrelated probes — the server
+ * treats '' as one shared key, which would wrongly dedupe).
+ */
+export function deriveDedupeKey(req: {
+  kind: string;
+  videoId: string | null;
+  sourceId: string | null;
+  opId: string | null;
+  dedupeKey?: string | null;
+}): string {
+  if (req.dedupeKey) return req.dedupeKey;
+  if (req.kind === 'discover') {
+    return req.opId ? `discover:op:${req.opId}` : `discover:run:${randomUUID()}`;
+  }
+  return dedupeKeyFor(req.kind, req.videoId, req.sourceId);
 }
 
 export class QueuePublisher {
@@ -142,6 +182,7 @@ export class QueuePublisher {
 
     if (transport === 'd1') {
       const row = await this.deps.d1.createOwnedJob({
+        id: req.d1Id ?? undefined,
         kind: req.kind,
         workspaceId: req.workspaceId,
         videoId: req.videoId,
@@ -158,32 +199,33 @@ export class QueuePublisher {
     }
 
     // -- PG transport -------------------------------------------------------
-    const dedupeKey =
-      req.dedupeKey ?? (req.kind === 'discover' ? null : dedupeKeyFor(req.kind, req.videoId, req.sourceId));
-    if (!this.deps.pg || !dedupeKey) {
+    if (!this.deps.pg) {
       throw new QueuePublishError(
         'pg_unavailable',
         `PG transport selected for kind "${req.kind}" but no PG publisher is configured`,
         true,
       );
     }
+    // Pre-allocate the D1 projection id BEFORE the POST so the PG row can
+    // carry it as d1_job_id — the two rows share one id, 1:1, no second key.
+    const d1Id = req.d1Id ?? randomUUID();
     try {
       const accepted = await this.deps.pg.publish({
         kind: req.kind,
         workspaceId: req.workspaceId,
         videoId: req.videoId,
         sourceId: req.sourceId,
-        dedupeKey,
-        payload: req.payload,
-        opId: req.opId,
-        preAuthCredits: req.preAuthCredits,
-        deadlineAt,
-        analysisId: req.analysisId ?? null,
-        d1JobId: null,
+        dedupeKey: deriveDedupeKey(req),
+        deadlineAt: deadlineAt ? deadlineAt.toISOString() : null,
+        payload: toPayloadRecord(req.payload),
+        credits:
+          req.opId != null ? { opId: req.opId, preAuthCredits: req.preAuthCredits ?? 0 } : null,
+        d1JobId: d1Id,
       });
-      // D1 compatibility projection: same opId/credits, queueOwner='pg'.
+      // D1 compatibility projection: same id/opId/credits, queueOwner='pg'.
       // UI readers keep working; legacy D1 claims ignore the row.
       const projection = await this.deps.d1.createOwnedJob({
+        id: d1Id,
         kind: req.kind,
         workspaceId: req.workspaceId,
         videoId: req.videoId,
@@ -259,11 +301,10 @@ export class QueuePublisher {
       videoId: row.videoId,
       sourceId: row.sourceId,
       dedupeKey: fallbackDedupeKey(row.id),
-      payload: row.payloadJson,
-      opId: row.opId,
-      preAuthCredits: row.preAuthCredits,
-      deadlineAt: row.deadlineAt,
-      analysisId: row.analysisId ?? null,
+      deadlineAt: row.deadlineAt ? row.deadlineAt.toISOString() : null,
+      payload: toPayloadRecord(row.payloadJson),
+      credits:
+        row.opId != null ? { opId: row.opId, preAuthCredits: row.preAuthCredits ?? 0 } : null,
       d1JobId: row.id,
     });
     await this.deps.d1.markD1ProjectionPg(row.id, accepted.pgJobId);

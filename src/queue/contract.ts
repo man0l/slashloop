@@ -179,9 +179,13 @@ export function toMediaJobShape(row: PgQueueJobRow): MediaJobShape {
 }
 
 /**
- * Target invariants (plan rev 4 §Producer API):
+ * Target invariants (plan rev 4 §Producer API, corrected for rescore):
  * - discover: videoId = null AND sourceId = null
- * - refresh:  sourceId set AND videoId = null
+ * - refresh, rescore: sourceId set AND videoId = null. Rescore is a
+ *   source-scoped tail of a refresh (enqueueRescoreJob takes sourceId, never
+ *   videoId — every call site in tools/baselines, lib/refresh,
+ *   lib/sources-service, and the reclaim tail proves it). The plan text lists
+ *   rescore under "video-only kinds", which would 422 the rescore canary.
  * - all others: videoId set AND sourceId = null
  * Returns an error string, or null when valid.
  */
@@ -194,8 +198,8 @@ export function validateJobTargets(
     if (videoId != null || sourceId != null) return 'discover requires videoId=null and sourceId=null';
     return null;
   }
-  if (kind === 'refresh') {
-    if (sourceId == null || videoId != null) return 'refresh requires sourceId and forbids videoId';
+  if (kind === 'refresh' || kind === 'rescore') {
+    if (sourceId == null || videoId != null) return `${kind} requires sourceId and forbids videoId`;
     return null;
   }
   if (videoId == null || sourceId != null) return `${kind} requires videoId and forbids sourceId`;

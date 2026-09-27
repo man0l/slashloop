@@ -56,6 +56,10 @@ const enqueueSchema = z.object({
     })
     .nullable()
     .optional(),
+  // Pre-allocated D1 projection id (SLA-16 Phase 2b): stored as d1_job_id so
+  // the D1 compatibility row and the PG row share one id. Optional — older
+  // producers omit it and the server behaves exactly as before.
+  d1JobId: z.string().uuid().nullable().optional(),
 });
 
 export type EnqueueBody = z.infer<typeof enqueueSchema>;
@@ -329,6 +333,7 @@ export async function handleQueueRequest(
       payload: body.payload ?? {},
       opId: body.credits?.opId ?? null,
       preAuthCredits: body.credits?.preAuthCredits ?? null,
+      d1JobId: body.d1JobId ?? null,
     });
     deps.onPublish?.({
       keyId: auth.key.keyId,
