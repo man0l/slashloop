@@ -3,6 +3,11 @@
 // idempotent re-invites, and removal. No D1, no Resend.
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
+// Spread the real module: mock.module replaces the registry entry shared with
+// cache.test.ts, and a full fake (pass-through getOrFill) poisoned it once bun
+// 1.4 started pairing the two files in the same test worker.
+import * as realCache from './cache.js';
+
 type MemberRow = { id: string; workspaceId: string; email: string; invitedBy: string; createdAt: Date };
 
 let members: MemberRow[] = [];
@@ -51,9 +56,8 @@ mock.module('./email.js', () => ({
 }));
 
 mock.module('./cache.js', () => ({
+  ...realCache,
   invalidateWorkspaceList: () => {},
-  cacheKey: (...parts: unknown[]) => parts.join('|'),
-  getOrFill: async (_key: string, _ttl: number, fill: () => unknown) => fill(),
 }));
 
 const { inviteMember, inviteMemberToAllWorkspaces, listTeamRoster, removeMember, removeMemberFromAllWorkspaces, listMembers, MAX_MEMBERS_PER_WORKSPACE, TeamError } = await import('./team.js');
