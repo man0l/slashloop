@@ -49,6 +49,7 @@ import { refundCredits } from '../lib/credits.js';
 import { initLogShipping } from './ship-logs.js';
 import { tick as experimentTick } from '../experiments/engine.js';
 import { createKindBreaker } from './kind-breaker.js';
+import { experimentsTickEnabled } from './experiment-tick.js';
 import { controlEnabled, filterKindsByControl } from '../lib/worker-control.js';
 import { snapshotD1Usage, deltaD1Usage, formatD1Usage, totalD1Usage } from '../lib/d1-usage.js';
 
@@ -83,6 +84,29 @@ const RECLAIM_INTERVAL_MS = (() => {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 5 * 60_000;
 })();
 
+// Which MediaJob kinds this worker claims. WORKER_KINDS is a comma-separated
+// list (e.g. "analyze,fetch" for video-only, or "refresh,rescore" for a
+// maintenance worker). Unset = drain everything
+// (fetch,analyze,thumb,discover,rescore,refresh).
+// Order is priority: `thumb` sits just after analyze because it is cheap, fast,
+// and time-sensitive — the cover must be ingested before the source CDN URL
+// expires, so a backlog clears ahead of the slower rescore/refresh kinds.
+// discover sits ahead of refresh (user is waiting on the Discover screen) and
+// is claimed by any proxy refresh worker via expandWorkerKinds — no compose
+// WORKER_KINDS change required.
+//
+// Declared BEFORE the experiments block below on purpose: doesExperiments is
+// evaluated at module load and reads KINDS — declaring it later is a TDZ
+// ReferenceError that crash-loops every container at startup (observed live
+// 2026-09-27). experiment-tick.test.ts pins this ordering.
+const ALL_KINDS = ['fetch', 'analyze', 'recreate', 'thumb', 'discover', 'rescore', 'refresh'] as const;
+function workerKinds(): string[] {
+  const raw = (process.env.WORKER_KINDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  const kinds = raw.length ? raw : [...ALL_KINDS];
+  return expandWorkerKinds(kinds);
+}
+const KINDS = workerKinds();
+
 // Experiments advance on this loop (moved off the CF */2 cron: workerd's
 // fetch context broke experiment media preparation — the VPS runs the same
 // code fine). No extra cron trigger is consumed (Free plan cap). The tick is
@@ -97,13 +121,7 @@ const RECLAIM_INTERVAL_MS = (() => {
 // debits + ledger INSERTs, so N containers ticking means N× the D1 writes for
 // the same experiment. Default owner is the maintenance (refresh-draining)
 // worker; EXPERIMENT_TICK_ENABLED=1 forces on, =0 forces off.
-function experimentsTickEnabled(): boolean {
-  const raw = (process.env.EXPERIMENT_TICK_ENABLED ?? '').trim().toLowerCase();
-  if (raw === '1' || raw === 'true' || raw === 'yes') return true;
-  if (raw === '0' || raw === 'false' || raw === 'no') return false;
-  return KINDS.includes('refresh');
-}
-const doesExperiments = experimentsTickEnabled();
+const doesExperiments = experimentsTickEnabled(KINDS);
 const EXPERIMENT_TICK_MIN_INTERVAL_MS = 5_000;
 let lastExperimentTickAt = 0;
 let experimentsActiveUntil = 0;
@@ -119,23 +137,8 @@ const IDLE_TICK_STREAK_MAX = 3;
 // errors out of the 400-entry log shipper.
 let lastTickSteps = -1;
 
-// Which MediaJob kinds this worker claims. WORKER_KINDS is a comma-separated
-// list (e.g. "analyze,fetch" for video-only, or "refresh,rescore" for a
-// maintenance worker). Unset = drain everything
-// (fetch,analyze,thumb,discover,rescore,refresh).
-// Order is priority: `thumb` sits just after analyze because it is cheap, fast,
-// and time-sensitive — the cover must be ingested before the source CDN URL
-// expires, so a backlog clears ahead of the slower rescore/refresh kinds.
-// discover sits ahead of refresh (user is waiting on the Discover screen) and
-// is claimed by any proxy refresh worker via expandWorkerKinds — no compose
-// WORKER_KINDS change required.
-const ALL_KINDS = ['fetch', 'analyze', 'recreate', 'thumb', 'discover', 'rescore', 'refresh'] as const;
-function workerKinds(): string[] {
-  const raw = (process.env.WORKER_KINDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
-  const kinds = raw.length ? raw : [...ALL_KINDS];
-  return expandWorkerKinds(kinds);
-}
-const KINDS = workerKinds();
+// Which MediaJob kinds this worker claims — see the KINDS block above (kept
+// before the experiments block: module-load evaluation order matters).
 // Ship console output to indiestack in the background (no-op unless
 // INDIESTACK_LOG_URL is set; never throws, never blocks the loop). Installed
 // before the first log line so startup is captured too.
