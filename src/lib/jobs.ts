@@ -31,7 +31,7 @@ export function toMediaJobRow(row: Record<string, unknown>): MediaJobRow {
   return coerceRowDates(row, MEDIA_JOB_DATE_KEYS) as unknown as MediaJobRow;
 }
 
-export type JobStatus = 'queued' | 'running' | 'done' | 'failed';
+export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'queued_remote';
 
 /**
  * Give up after this many attempts.
@@ -84,6 +84,8 @@ export interface MediaJobRow {
   preAuthCredits: number | null;
   kind: string;
   status: string;
+  /** Single-owner transport marker: 'd1' | 'pg' | 'fallback_d1' (SLA-16). */
+  queueOwner?: string | null;
   attempts: number;
   lastError: string | null;
   payloadJson: string;
@@ -135,6 +137,7 @@ export async function enqueueRecreateJob(opts: {
       videoId: opts.videoId,
       kind: 'recreate',
       status: 'queued',
+      queueOwner: 'd1',
       payloadJson: JSON.stringify(opts.payload ?? {}),
       opId: opts.opId,
       preAuthCredits: opts.preAuthCredits,
@@ -153,6 +156,7 @@ export async function enqueueFetchJob(opts: {
       videoId: opts.videoId,
       kind: 'fetch',
       status: 'queued',
+      queueOwner: 'd1',
       payloadJson: JSON.stringify(opts.payload ?? {}),
       // Copy the analyze pre-auth opId onto the row so reclaim/refund and the
       // fetch→analyze chain can see it without re-parsing payloadJson.
@@ -215,6 +219,7 @@ export async function enqueueThumbJob(opts: {
       videoId: opts.videoId,
       kind: 'thumb',
       status: 'queued',
+      queueOwner: 'd1',
       payloadJson: JSON.stringify(opts.payload ?? {}),
     },
   }) as unknown as Promise<MediaJobRow>;
@@ -236,6 +241,7 @@ export async function enqueueAnalyzeJob(opts: {
       videoId: opts.videoId,
       kind: 'analyze',
       status: 'queued',
+      queueOwner: 'd1',
       payloadJson: JSON.stringify(opts.payload ?? {}),
       opId: opts.opId,
     },
@@ -370,6 +376,7 @@ export async function enqueueDiscoverJob(opts: {
       sourceId: null,
       kind: 'discover',
       status: 'queued',
+      queueOwner: 'd1',
       payloadJson: JSON.stringify({
         sourceType: opts.payload.sourceType,
         query: opts.payload.query,
@@ -403,6 +410,7 @@ export async function enqueueRefreshJob(opts: {
       sourceId: opts.sourceId,
       kind: 'refresh',
       status: 'queued',
+      queueOwner: 'd1',
       payloadJson: JSON.stringify(opts.payload ?? {}),
       deadlineAt: opts.deadlineAt,
       opId,
@@ -444,6 +452,7 @@ export async function enqueueRescoreJob(opts: {
       sourceId: opts.sourceId,
       kind: 'rescore',
       status: 'queued',
+      queueOwner: 'd1',
       payloadJson: JSON.stringify(opts.payload),
     },
   }) as unknown as Promise<MediaJobRow>;
@@ -583,6 +592,9 @@ export async function claimNextJob(kind = 'analyze'): Promise<MediaJobRow | null
     // Recreate video-mode rows (payloadJson mode:'video') are NEVER claimed
     // here: the ffmpeg path is gone and those state machines are stepped by
     // the Cloudflare Worker's video-recreate cron (recreate-video-stream.ts).
+    // Single-owner (SLA-16): only D1-owned rows are claimable here. PG
+    // projection ('pg') and fallback ('fallback_d1') rows are never selected
+    // by legacy D1 claims.
     const rows = await db.$queryRaw<Record<string, unknown>[]>`
       UPDATE "MediaJob"
          SET "status" = 'running',
@@ -591,6 +603,7 @@ export async function claimNextJob(kind = 'analyze'): Promise<MediaJobRow | null
        WHERE "id" = (
          SELECT "id" FROM "MediaJob"
           WHERE "status" = 'queued' AND "kind" = ${kind}
+            AND "queueOwner" = 'd1'
             AND (${kind} <> 'recreate' OR "payloadJson" NOT LIKE '%"mode":"video"%')
             AND "createdAt" <= ${claimableBefore}
             AND ("availableAt" IS NULL OR "availableAt" <= ${new Date()})
@@ -609,6 +622,7 @@ export async function claimNextJob(kind = 'analyze'): Promise<MediaJobRow | null
      WHERE "id" = (
        SELECT "id" FROM "MediaJob"
         WHERE "status" = 'queued' AND "kind" = ${kind}
+          AND "queueOwner" = 'd1'
           AND "createdAt" <= ${claimableBefore}
           AND ("availableAt" IS NULL OR "availableAt" <= now())
         ORDER BY "createdAt" ASC
@@ -660,6 +674,8 @@ export async function claimNextJobs(kinds: string[], limit: number): Promise<Med
 
   // Kinds are internal enum-ish strings validated by the regex above, so they
   // can inline into the priority CASE; everything user-shaped stays bound.
+  // Single-owner (SLA-16): "queueOwner" = 'd1' keeps PG-projection and
+  // fallback rows out of legacy D1 claims.
   const kindPlaceholders = kindList.map(() => '?').join(', ');
   const priorityCase = kindList.map((k, i) => `WHEN '${k}' THEN ${i}`).join(' ');
   const startedAt = new Date();
@@ -673,6 +689,7 @@ export async function claimNextJobs(kinds: string[], limit: number): Promise<Med
            WHERE "id" IN (
              SELECT "id" FROM "MediaJob"
               WHERE "status" = 'queued'
+                AND "queueOwner" = 'd1'
                 AND "kind" IN (${kindPlaceholders})
                 AND "createdAt" <= CASE "kind" WHEN 'refresh' THEN ? ELSE ? END
                 AND ("availableAt" IS NULL OR "availableAt" <= ?)
@@ -990,6 +1007,7 @@ export async function claimRefreshPeersForCanonical(opts: {
       FROM "MediaJob" mj
       JOIN "Source" s ON s."id" = mj."sourceId"
      WHERE mj."status" = 'queued'
+       AND mj."queueOwner" = 'd1'
        AND mj."kind" = 'refresh'
        AND mj."id" <> ${opts.excludeJobId}
        AND s."platform" = ${opts.platform}
@@ -1033,6 +1051,7 @@ export async function claimJobsByIds(ids: string[]): Promise<MediaJobRow[]> {
          WHERE "id" = (
            SELECT "id" FROM "MediaJob"
             WHERE "id" = ${id} AND "status" = 'queued'
+              AND "queueOwner" = 'd1'
               AND ("availableAt" IS NULL OR "availableAt" <= ${new Date()})
          )
         RETURNING *
@@ -1048,6 +1067,7 @@ export async function claimJobsByIds(ids: string[]): Promise<MediaJobRow[]> {
        WHERE "id" = (
          SELECT "id" FROM "MediaJob"
           WHERE "id" = ${id} AND "status" = 'queued'
+            AND "queueOwner" = 'd1'
             AND ("availableAt" IS NULL OR "availableAt" <= now())
           FOR UPDATE SKIP LOCKED
        )
@@ -1224,6 +1244,10 @@ export async function failAbandonedQueuedJobs(
     // are simply waiting out their cooldown. NULL counts as available.
     where: {
       status: 'queued',
+      // Single-owner (SLA-16): recovery only touches D1-owned rows. PG
+      // projection ('pg') rows are owned by queue-db; fallback rows wait for
+      // the one-way reconciler, not the abandoned-queue sweep.
+      queueOwner: 'd1',
       createdAt: { lt: cutoff },
       startedAt: null,
       NOT: { availableAt: { gt: new Date() } },
@@ -1297,7 +1321,9 @@ export async function failAbandonedQueuedJobs(
 export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: number; refunded: number }> {
   const cutoff = new Date(Date.now() - STUCK_AFTER_MINUTES * 60_000);
   const stuck = await db.mediaJob.findMany({
-    where: { status: 'running', startedAt: { lt: cutoff } },
+    // Single-owner (SLA-16): only D1-owned running rows. PG-owned work is
+    // reclaimed by the PG lease sweep (src/queue/pg.ts), never here.
+    where: { status: 'running', queueOwner: 'd1', startedAt: { lt: cutoff } },
     select: {
       id: true, attempts: true, workspaceId: true, opId: true, kind: true,
       preAuthCredits: true, sourceId: true, startedAt: true,
@@ -1356,6 +1382,7 @@ export async function reclaimStuckJobs(): Promise<{ requeued: number; failed: nu
               sourceId: job.sourceId,
               kind: 'rescore',
               status: 'queued',
+              queueOwner: 'd1',
               payloadJson: '{}',
             },
           });

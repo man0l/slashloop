@@ -557,8 +557,16 @@ model MediaJob {
   /// than assuming the analyze price — a refresh pre-auth scales with
   /// videoLimit, so a fixed refund would be wrong in both directions.
   preAuthCredits Int?
-  /// queued | running | done | failed
+  /// queued | running | done | failed (+ queued_remote for PG fallback rows,
+  /// which are non-claimable until the reconciler publishes them to PG).
   status         String    @default("queued")
+  /// Single-owner transport marker (SLA-10 rev 4 Phase 2): 'd1' (legacy D1
+  /// queue), 'pg' (D1 compatibility projection of a PG-owned job — legacy
+  /// D1 workers must ignore it), 'fallback_d1' (PG publish failed; reconciler
+  /// republishes with dedupeKey d1:<MediaJob.id> and the original opId).
+  /// Legacy D1 claims filter queueOwner = 'd1'. Default keeps every existing
+  /// row D1-owned, so the migration is backward-compatible.
+  queueOwner     String    @default("d1")
   attempts       Int       @default(0)
   lastError      String?
   /// Call options captured at enqueue time (e.g. forceBackend), applied by the
@@ -601,6 +609,10 @@ model MediaJob {
   // WHERE sourceId + status + kind (queued/running refresh). Without this the
   // /api/workspaces fan-out does full MediaJob scans over the D1 HTTP API.
   @@index([sourceId, status, kind])
+  // Single-owner claim filter (SLA-16 Phase 2): legacy D1 claims add
+  // queueOwner = 'd1' so PG-projection ('pg') and fallback ('fallback_d1')
+  // rows are never selected by D1 workers.
+  @@index([status, kind, queueOwner, createdAt])
 }
 
 /// Kill switches for the worker loops (Phase 4 write budget) — read by the
@@ -608,6 +620,9 @@ model MediaJob {
 /// without a redeploy. Missing row = enabled (a fresh DB must not park
 /// everything). Known keys: jobs.<kind>.enabled, experiments.enabled,
 /// stale_rescrape.enabled — value "0" disables, anything else enables.
+/// Transport keys (SLA-16 Phase 2): queue.transport.<kind> = 'd1' | 'pg'.
+/// Missing/invalid transport inherits QUEUE_BACKEND (default 'd1');
+/// QUEUE_BACKEND=d1 is the emergency override that forces D1 for all kinds.
 /// Written via setControl() or plain SQL, never in a hot path.
 model WorkerControl {
   key       String   @id

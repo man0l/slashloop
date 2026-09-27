@@ -171,6 +171,9 @@ export type MediaJob = $Result.DefaultSelection<Prisma.$MediaJobPayload>
  * without a redeploy. Missing row = enabled (a fresh DB must not park
  * everything). Known keys: jobs.<kind>.enabled, experiments.enabled,
  * stale_rescrape.enabled — value "0" disables, anything else enables.
+ * Transport keys (SLA-16 Phase 2): queue.transport.<kind> = 'd1' | 'pg'.
+ * Missing/invalid transport inherits QUEUE_BACKEND (default 'd1');
+ * QUEUE_BACKEND=d1 is the emergency override that forces D1 for all kinds.
  * Written via setControl() or plain SQL, never in a hot path.
  */
 export type WorkerControl = $Result.DefaultSelection<Prisma.$WorkerControlPayload>
@@ -28736,6 +28739,7 @@ export namespace Prisma {
     deadlineAt: Date | null
     preAuthCredits: number | null
     status: string | null
+    queueOwner: string | null
     attempts: number | null
     lastError: string | null
     payloadJson: string | null
@@ -28756,6 +28760,7 @@ export namespace Prisma {
     deadlineAt: Date | null
     preAuthCredits: number | null
     status: string | null
+    queueOwner: string | null
     attempts: number | null
     lastError: string | null
     payloadJson: string | null
@@ -28776,6 +28781,7 @@ export namespace Prisma {
     deadlineAt: number
     preAuthCredits: number
     status: number
+    queueOwner: number
     attempts: number
     lastError: number
     payloadJson: number
@@ -28808,6 +28814,7 @@ export namespace Prisma {
     deadlineAt?: true
     preAuthCredits?: true
     status?: true
+    queueOwner?: true
     attempts?: true
     lastError?: true
     payloadJson?: true
@@ -28828,6 +28835,7 @@ export namespace Prisma {
     deadlineAt?: true
     preAuthCredits?: true
     status?: true
+    queueOwner?: true
     attempts?: true
     lastError?: true
     payloadJson?: true
@@ -28848,6 +28856,7 @@ export namespace Prisma {
     deadlineAt?: true
     preAuthCredits?: true
     status?: true
+    queueOwner?: true
     attempts?: true
     lastError?: true
     payloadJson?: true
@@ -28955,6 +28964,7 @@ export namespace Prisma {
     deadlineAt: Date | null
     preAuthCredits: number | null
     status: string
+    queueOwner: string
     attempts: number
     lastError: string | null
     payloadJson: string
@@ -28994,6 +29004,7 @@ export namespace Prisma {
     deadlineAt?: boolean
     preAuthCredits?: boolean
     status?: boolean
+    queueOwner?: boolean
     attempts?: boolean
     lastError?: boolean
     payloadJson?: boolean
@@ -29015,6 +29026,7 @@ export namespace Prisma {
     deadlineAt?: boolean
     preAuthCredits?: boolean
     status?: boolean
+    queueOwner?: boolean
     attempts?: boolean
     lastError?: boolean
     payloadJson?: boolean
@@ -29036,6 +29048,7 @@ export namespace Prisma {
     deadlineAt?: boolean
     preAuthCredits?: boolean
     status?: boolean
+    queueOwner?: boolean
     attempts?: boolean
     lastError?: boolean
     payloadJson?: boolean
@@ -29057,6 +29070,7 @@ export namespace Prisma {
     deadlineAt?: boolean
     preAuthCredits?: boolean
     status?: boolean
+    queueOwner?: boolean
     attempts?: boolean
     lastError?: boolean
     payloadJson?: boolean
@@ -29068,7 +29082,7 @@ export namespace Prisma {
     availableAt?: boolean
   }
 
-  export type MediaJobOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "videoId" | "sourceId" | "kind" | "deadlineAt" | "preAuthCredits" | "status" | "attempts" | "lastError" | "payloadJson" | "opId" | "analysisId" | "createdAt" | "startedAt" | "finishedAt" | "availableAt", ExtArgs["result"]["mediaJob"]>
+  export type MediaJobOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "videoId" | "sourceId" | "kind" | "deadlineAt" | "preAuthCredits" | "status" | "queueOwner" | "attempts" | "lastError" | "payloadJson" | "opId" | "analysisId" | "createdAt" | "startedAt" | "finishedAt" | "availableAt", ExtArgs["result"]["mediaJob"]>
   export type MediaJobInclude<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
     workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
   }
@@ -29116,9 +29130,19 @@ export namespace Prisma {
        */
       preAuthCredits: number | null
       /**
-       * queued | running | done | failed
+       * queued | running | done | failed (+ queued_remote for PG fallback rows,
+       * which are non-claimable until the reconciler publishes them to PG).
        */
       status: string
+      /**
+       * Single-owner transport marker (SLA-10 rev 4 Phase 2): 'd1' (legacy D1
+       * queue), 'pg' (D1 compatibility projection of a PG-owned job — legacy
+       * D1 workers must ignore it), 'fallback_d1' (PG publish failed; reconciler
+       * republishes with dedupeKey d1:<MediaJob.id> and the original opId).
+       * Legacy D1 claims filter queueOwner = 'd1'. Default keeps every existing
+       * row D1-owned, so the migration is backward-compatible.
+       */
+      queueOwner: string
       attempts: number
       lastError: string | null
       /**
@@ -29578,6 +29602,7 @@ export namespace Prisma {
     readonly deadlineAt: FieldRef<"MediaJob", 'DateTime'>
     readonly preAuthCredits: FieldRef<"MediaJob", 'Int'>
     readonly status: FieldRef<"MediaJob", 'String'>
+    readonly queueOwner: FieldRef<"MediaJob", 'String'>
     readonly attempts: FieldRef<"MediaJob", 'Int'>
     readonly lastError: FieldRef<"MediaJob", 'String'>
     readonly payloadJson: FieldRef<"MediaJob", 'String'>
@@ -32295,6 +32320,7 @@ export namespace Prisma {
     deadlineAt: 'deadlineAt',
     preAuthCredits: 'preAuthCredits',
     status: 'status',
+    queueOwner: 'queueOwner',
     attempts: 'attempts',
     lastError: 'lastError',
     payloadJson: 'payloadJson',
@@ -34130,6 +34156,7 @@ export namespace Prisma {
     deadlineAt?: DateTimeNullableFilter<"MediaJob"> | Date | string | null
     preAuthCredits?: IntNullableFilter<"MediaJob"> | number | null
     status?: StringFilter<"MediaJob"> | string
+    queueOwner?: StringFilter<"MediaJob"> | string
     attempts?: IntFilter<"MediaJob"> | number
     lastError?: StringNullableFilter<"MediaJob"> | string | null
     payloadJson?: StringFilter<"MediaJob"> | string
@@ -34151,6 +34178,7 @@ export namespace Prisma {
     deadlineAt?: SortOrderInput | SortOrder
     preAuthCredits?: SortOrderInput | SortOrder
     status?: SortOrder
+    queueOwner?: SortOrder
     attempts?: SortOrder
     lastError?: SortOrderInput | SortOrder
     payloadJson?: SortOrder
@@ -34175,6 +34203,7 @@ export namespace Prisma {
     deadlineAt?: DateTimeNullableFilter<"MediaJob"> | Date | string | null
     preAuthCredits?: IntNullableFilter<"MediaJob"> | number | null
     status?: StringFilter<"MediaJob"> | string
+    queueOwner?: StringFilter<"MediaJob"> | string
     attempts?: IntFilter<"MediaJob"> | number
     lastError?: StringNullableFilter<"MediaJob"> | string | null
     payloadJson?: StringFilter<"MediaJob"> | string
@@ -34196,6 +34225,7 @@ export namespace Prisma {
     deadlineAt?: SortOrderInput | SortOrder
     preAuthCredits?: SortOrderInput | SortOrder
     status?: SortOrder
+    queueOwner?: SortOrder
     attempts?: SortOrder
     lastError?: SortOrderInput | SortOrder
     payloadJson?: SortOrder
@@ -34224,6 +34254,7 @@ export namespace Prisma {
     deadlineAt?: DateTimeNullableWithAggregatesFilter<"MediaJob"> | Date | string | null
     preAuthCredits?: IntNullableWithAggregatesFilter<"MediaJob"> | number | null
     status?: StringWithAggregatesFilter<"MediaJob"> | string
+    queueOwner?: StringWithAggregatesFilter<"MediaJob"> | string
     attempts?: IntWithAggregatesFilter<"MediaJob"> | number
     lastError?: StringNullableWithAggregatesFilter<"MediaJob"> | string | null
     payloadJson?: StringWithAggregatesFilter<"MediaJob"> | string
@@ -36237,6 +36268,7 @@ export namespace Prisma {
     deadlineAt?: Date | string | null
     preAuthCredits?: number | null
     status?: string
+    queueOwner?: string
     attempts?: number
     lastError?: string | null
     payloadJson?: string
@@ -36258,6 +36290,7 @@ export namespace Prisma {
     deadlineAt?: Date | string | null
     preAuthCredits?: number | null
     status?: string
+    queueOwner?: string
     attempts?: number
     lastError?: string | null
     payloadJson?: string
@@ -36277,6 +36310,7 @@ export namespace Prisma {
     deadlineAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     preAuthCredits?: NullableIntFieldUpdateOperationsInput | number | null
     status?: StringFieldUpdateOperationsInput | string
+    queueOwner?: StringFieldUpdateOperationsInput | string
     attempts?: IntFieldUpdateOperationsInput | number
     lastError?: NullableStringFieldUpdateOperationsInput | string | null
     payloadJson?: StringFieldUpdateOperationsInput | string
@@ -36298,6 +36332,7 @@ export namespace Prisma {
     deadlineAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     preAuthCredits?: NullableIntFieldUpdateOperationsInput | number | null
     status?: StringFieldUpdateOperationsInput | string
+    queueOwner?: StringFieldUpdateOperationsInput | string
     attempts?: IntFieldUpdateOperationsInput | number
     lastError?: NullableStringFieldUpdateOperationsInput | string | null
     payloadJson?: StringFieldUpdateOperationsInput | string
@@ -36318,6 +36353,7 @@ export namespace Prisma {
     deadlineAt?: Date | string | null
     preAuthCredits?: number | null
     status?: string
+    queueOwner?: string
     attempts?: number
     lastError?: string | null
     payloadJson?: string
@@ -36337,6 +36373,7 @@ export namespace Prisma {
     deadlineAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     preAuthCredits?: NullableIntFieldUpdateOperationsInput | number | null
     status?: StringFieldUpdateOperationsInput | string
+    queueOwner?: StringFieldUpdateOperationsInput | string
     attempts?: IntFieldUpdateOperationsInput | number
     lastError?: NullableStringFieldUpdateOperationsInput | string | null
     payloadJson?: StringFieldUpdateOperationsInput | string
@@ -36357,6 +36394,7 @@ export namespace Prisma {
     deadlineAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     preAuthCredits?: NullableIntFieldUpdateOperationsInput | number | null
     status?: StringFieldUpdateOperationsInput | string
+    queueOwner?: StringFieldUpdateOperationsInput | string
     attempts?: IntFieldUpdateOperationsInput | number
     lastError?: NullableStringFieldUpdateOperationsInput | string | null
     payloadJson?: StringFieldUpdateOperationsInput | string
@@ -37835,6 +37873,7 @@ export namespace Prisma {
     deadlineAt?: SortOrder
     preAuthCredits?: SortOrder
     status?: SortOrder
+    queueOwner?: SortOrder
     attempts?: SortOrder
     lastError?: SortOrder
     payloadJson?: SortOrder
@@ -37860,6 +37899,7 @@ export namespace Prisma {
     deadlineAt?: SortOrder
     preAuthCredits?: SortOrder
     status?: SortOrder
+    queueOwner?: SortOrder
     attempts?: SortOrder
     lastError?: SortOrder
     payloadJson?: SortOrder
@@ -37880,6 +37920,7 @@ export namespace Prisma {
     deadlineAt?: SortOrder
     preAuthCredits?: SortOrder
     status?: SortOrder
+    queueOwner?: SortOrder
     attempts?: SortOrder
     lastError?: SortOrder
     payloadJson?: SortOrder
@@ -39539,6 +39580,7 @@ export namespace Prisma {
     deadlineAt?: Date | string | null
     preAuthCredits?: number | null
     status?: string
+    queueOwner?: string
     attempts?: number
     lastError?: string | null
     payloadJson?: string
@@ -39558,6 +39600,7 @@ export namespace Prisma {
     deadlineAt?: Date | string | null
     preAuthCredits?: number | null
     status?: string
+    queueOwner?: string
     attempts?: number
     lastError?: string | null
     payloadJson?: string
@@ -39807,6 +39850,7 @@ export namespace Prisma {
     deadlineAt?: DateTimeNullableFilter<"MediaJob"> | Date | string | null
     preAuthCredits?: IntNullableFilter<"MediaJob"> | number | null
     status?: StringFilter<"MediaJob"> | string
+    queueOwner?: StringFilter<"MediaJob"> | string
     attempts?: IntFilter<"MediaJob"> | number
     lastError?: StringNullableFilter<"MediaJob"> | string | null
     payloadJson?: StringFilter<"MediaJob"> | string
@@ -43480,6 +43524,7 @@ export namespace Prisma {
     deadlineAt?: Date | string | null
     preAuthCredits?: number | null
     status?: string
+    queueOwner?: string
     attempts?: number
     lastError?: string | null
     payloadJson?: string
@@ -43684,6 +43729,7 @@ export namespace Prisma {
     deadlineAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     preAuthCredits?: NullableIntFieldUpdateOperationsInput | number | null
     status?: StringFieldUpdateOperationsInput | string
+    queueOwner?: StringFieldUpdateOperationsInput | string
     attempts?: IntFieldUpdateOperationsInput | number
     lastError?: NullableStringFieldUpdateOperationsInput | string | null
     payloadJson?: StringFieldUpdateOperationsInput | string
@@ -43703,6 +43749,7 @@ export namespace Prisma {
     deadlineAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     preAuthCredits?: NullableIntFieldUpdateOperationsInput | number | null
     status?: StringFieldUpdateOperationsInput | string
+    queueOwner?: StringFieldUpdateOperationsInput | string
     attempts?: IntFieldUpdateOperationsInput | number
     lastError?: NullableStringFieldUpdateOperationsInput | string | null
     payloadJson?: StringFieldUpdateOperationsInput | string
@@ -43722,6 +43769,7 @@ export namespace Prisma {
     deadlineAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     preAuthCredits?: NullableIntFieldUpdateOperationsInput | number | null
     status?: StringFieldUpdateOperationsInput | string
+    queueOwner?: StringFieldUpdateOperationsInput | string
     attempts?: IntFieldUpdateOperationsInput | number
     lastError?: NullableStringFieldUpdateOperationsInput | string | null
     payloadJson?: StringFieldUpdateOperationsInput | string

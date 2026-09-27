@@ -390,6 +390,7 @@ exports.Prisma.MediaJobScalarFieldEnum = {
   deadlineAt: 'deadlineAt',
   preAuthCredits: 'preAuthCredits',
   status: 'status',
+  queueOwner: 'queueOwner',
   attempts: 'attempts',
   lastError: 'lastError',
   payloadJson: 'payloadJson',
