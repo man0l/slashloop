@@ -50,8 +50,26 @@ in `src/lib/d1-usage.ts` via `recordD1Usage`):
 ## 4. Queue hostname / network inventory
 
 - Hostname: `queue.slashloop.dev` (producer ingress; workers use internal `queue-db:5432`).
-- BLOCKER (owner: CEO — Cloudflare zone authority): VPS public IPv4/IPv6,
-  `A` (and optional `AAAA`) record values, TTL 300, DNS-only (grey cloud) first.
+- Destination VPS: `157.173.195.4` (approved by CEO 2026-09-27; validated
+  externally same day: TCP/22 + TCP/443 open, 443 serves `zenmanager.eu`
+  with a valid Let's Encrypt cert, `https://zenmanager.eu/` → 200).
+- DNS plan: `A queue` → `157.173.195.4`, TTL 300, DNS-only (grey cloud)
+  first. `AAAA` only after a stable IPv6 is tested. No wildcard.
+  (Record not yet created — needs Cloudflare zone write, owner: CEO.)
+- Certificate: reuse existing Traefik `myresolver` (TLS-ALPN challenge,
+  already active for `zenmanager.eu`) for the exact hostname; no TCP/80
+  window needed.
+- Edge/firewall: Traefik IS the edge (CEO 2026-09-27: no separate firewall
+  layer). TCP/443 already published to Traefik; `queue-db` publishes no
+  ports (compose fragment). TCP/5432 + admin ports stay closed externally
+  by virtue of no published ports — verified post-deploy via external
+  `5432` refusal check.
+- Rollback owner + step: CEO; remove the `queue` DNS record and the
+  `queue-api` Traefik router/compose merge only — Salonease routes untouched.
+- BLOCKER (owner: CEO): VPS shell access for the compose-fragment merge
+  (no SSH credential or `.env` found in the agent environment — searched
+  workspaces and home; only `known_hosts` present) and the Cloudflare zone
+  write (no API token in the agent environment).
 - Certificate: reuse existing Traefik `myresolver` for the exact hostname;
   DNS-01 preferred (no TCP/80 window); HTTP-01 only in a documented window.
 - Firewall: TCP/443 to Traefik only; TCP/5432 + all admin ports denied
