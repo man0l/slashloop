@@ -169,3 +169,13 @@ production producer/worker points at `queue-api` after this issue.
 - Still open (owner: CEO): OFF-HOST backup copy destination (dumps are
   local-only in `slashloop_queue_backups` until this lands); no prod
   queue kind assigned to PG (Phase 2).
+- Post-rollout correction (CEO, same day): the side-override file
+  (`slashloop-queue/docker-compose.queue.yml` + `-f` merge) is NOT the
+  deploy model. Migrated to the sanctioned model — queue services
+  committed into `salonease/docker-compose.prod.yml` (commit `a5bfffc`,
+  GHCR image ref, no build), VPS pulled (`524ddd1..a5bfffc`) and
+  reconciled with zero recreates / zero data loss; side files deleted
+  (secrets + `queue-backup.sh` stay on host). Re-verified post-migration:
+  `/healthz` 200, unsigned `/v1/jobs` 401. Standing policy saved in
+  `docs/vps-deploy-policy.md`: compose-prod + GH Actions only, VPS does
+  `git pull` + `.env`.
