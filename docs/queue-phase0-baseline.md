@@ -93,8 +93,11 @@ in `src/lib/d1-usage.ts` via `recordD1Usage`):
 
 | Date | Exercise | Dump / key ids | Result |
 |---|---|---|---|
-| _pending_ | `pg_dump -Fc` + `pg_restore` into fresh container, `/readyz` on restored DB | — | BLOCKER (owner: Builder + QA): run before SLA-15 |
-| _pending_ | Key rotation: active→retiring→revoked overlap, old-nonce replay 409 | — | BLOCKER (owner: Builder): run before SLA-15 |
+| 2026-09-27 | Restore-test pre-check (local, static): migration idempotency guard audit | `queue/postgres/001_queue_foundation.sql` | PASS — every `CREATE` uses `IF NOT EXISTS` (15×) or `OR REPLACE` (1×: `queue_prune_retention`); zero unguarded `CREATE` statements, so re-running after `pg_restore` is safe. Live `pg_dump -Fc`/`pg_restore` + `/readyz` still staging-only (see BLOCKER below) |
+| 2026-09-27 | Key-rotation logic rehearsal (local, real `src/queue/auth.ts` + `api.ts`, in-memory QueueDb stub, synthetic secrets) | old=`rk-rehearsal-old-01` (retiring) / new=`rk-rehearsal-new-02` (active) | 8/8 PASS — retiring-kid `POST /v1/jobs` → 202; active-kid → 202; replayed nonce → 409 `replay_detected` with no duplicate job (2 jobs); revoked old-kid → 401; new-kid still 202 post-revocation; `GET /readyz` → 200. Staging run against real queue-api + PG still required (see BLOCKER below) |
+| 2026-09-27 | Transport isolation check (repo grep, commit `9e807ac`) | — | PASS — zero references to `PgQueue`, `QUEUE_DATABASE_URL`, `QUEUE_API_KEYS_JSON`, or `QUEUE_KEY_*` outside `src/queue/`, `deploy/queue-*`, `queue/postgres/`; no production producer/worker points at `queue-api` |
+| _pending_ | `pg_dump -Fc` + `pg_restore` into fresh container, `/readyz` on restored DB | — | BLOCKER (owner: CEO/ops — staging VPS + `SLASHLOOP_QUEUE_DB_PASSWORD` access): run before SLA-15 |
+| _pending_ | Key rotation: active→retiring→revoked overlap, old-nonce replay 409 (staging, real queue-api + PG) | — | BLOCKER (owner: CEO/ops — staging VPS + key-mint access): run before SLA-15 |
 
 ## 8. Explicit non-goals of SLA-14
 
