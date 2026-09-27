@@ -13,7 +13,10 @@ rejected — the model below is the ONLY way.
 2. **The only "deploy" job on the VPS is `git pull` (+ `.env` vars if
    needed).** Commit the change to the repo, push, then on the VPS:
    `git pull --ff-only`, then
-   `docker compose --env-file <svc>.env -f docker-compose.prod.yml up -d <services>`.
+   `docker compose -f docker-compose.prod.yml up -d <services>`.
+   Interpolation vars live in the project `.env` (`/root/salonease/.env`,
+   mode 600, never committed) — never pass `--env-file`: it shadows
+   `.env` and breaks other services' interpolation.
 3. **Before pulling, check `git status`:** the VPS working tree can hold
    legitimate server edits (precedent: `paperclip/codex-home` mount).
    Preserve them — fold into the repo commit first, then pull.
