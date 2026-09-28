@@ -19,11 +19,12 @@ test.each([2, 0, 5])('SQLite refunds restore original buckets with %i plan credi
   const next = { id: 'e', version: 1, writeToken: 'receipt-1' } as Experiment & { writeToken: string };
   db.run('INSERT INTO Experiment VALUES (?,?)', ['e',JSON.stringify(next)]);
   function apply(charge: number) {
-    db.transaction(() => {
-      for (const s of creditStatements(e,next,'w',charge,'attempt-1')) {
-        db.query(s.sql).all(...(s.params ?? []).map(v => v instanceof Date ? v.toISOString() : v) as any[]);
-      }
-    })();
+    // Sequential statements, no db.transaction(): bun:sqlite 1.4.2 on CI
+    // rejects db.query() inside a transaction callback (prepareOwned) when
+    // the full suite runs files concurrently.
+    for (const s of creditStatements(e, next, 'w', charge, 'attempt-1', 'sqlite')) {
+      db.query(s.sql).all(...(s.params ?? []).map((v) => (v instanceof Date ? v.toISOString() : v)) as any[]);
+    }
   }
   db.run('UPDATE Experiment SET dataJson=?', [JSON.stringify({...next,writeToken:'another-writer'})]);
   apply(5);
@@ -60,10 +61,12 @@ test('engine rejection atomically restores SQL balances while unknown outcomes r
       save: async (e,charge=0,ref) => {
         if(e.version!==row.version)return false;
         const next={...e,writeToken:crypto.randomUUID(),version:e.version+1,creditsCharged:e.creditsCharged+charge};
-        db.transaction(() => {
-          db.run('UPDATE Experiment SET dataJson=? WHERE id=?',[JSON.stringify(next),e.id]);
-          if(charge)for(const s of creditStatements(e,next,'w',charge,ref!)) db.query(s.sql).all(...(s.params??[]).map(v=>v instanceof Date?v.toISOString():v) as any[]);
-        })();
+        db.run('UPDATE Experiment SET dataJson=? WHERE id=?',[JSON.stringify(next),e.id]);
+        if (charge) {
+          for (const s of creditStatements(e, next, 'w', charge, ref!, 'sqlite')) {
+            db.query(s.sql).all(...(s.params ?? []).map((v) => (v instanceof Date ? v.toISOString() : v)) as any[]);
+          }
+        }
         row=structuredClone(next);Object.assign(e,next);return true;
       },
     };

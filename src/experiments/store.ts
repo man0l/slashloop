@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { db, dbDialect, rawBatch, type RawStatement } from '../store.js';
+import { db, dbDialect, rawBatch, type Dialect, type RawStatement } from '../store.js';
 import { resolveBillingWorkspace, InsufficientCreditsError } from '../lib/credits.js';
 import { ExperimentError, type Experiment } from './schema.js';
 import { encodeExperiment } from './document-budget.js';
@@ -46,12 +46,19 @@ export async function create(e: Experiment, key: string): Promise<Experiment> {
  * deltas under each bucket ref + ':refund' — the deterministic ids make a duplicate
  * refund violate the ledger primary key instead of double-crediting.
  */
-export function creditStatements(e: Experiment, next: Experiment & { writeToken: string }, billingId: string, charge: number, ref: string): RawStatement[] {
-  const token = dbDialect() === 'sqlite' ? `json_extract("dataJson", '$.writeToken')` : `("dataJson"::jsonb ->> 'writeToken')`;
+export function creditStatements(
+  e: Experiment,
+  next: Experiment & { writeToken: string },
+  billingId: string,
+  charge: number,
+  ref: string,
+  dialect: Dialect = dbDialect(),
+): RawStatement[] {
+  const token = dialect === 'sqlite' ? `json_extract("dataJson", '$.writeToken')` : `("dataJson"::jsonb ->> 'writeToken')`;
   const predicate = `EXISTS (SELECT 1 FROM "Experiment" WHERE "id"=? AND ${token}=?)`;
   const proof = [e.id, next.writeToken];
-  const min = dbDialect() === 'sqlite' ? 'MIN' : 'LEAST';
-  const max = dbDialect() === 'sqlite' ? 'MAX' : 'GREATEST';
+  const min = dialect === 'sqlite' ? 'MIN' : 'LEAST';
+  const max = dialect === 'sqlite' ? 'MAX' : 'GREATEST';
   if (charge < 0) {
     const amount = -charge;
     return [
