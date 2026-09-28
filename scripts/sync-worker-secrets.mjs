@@ -37,8 +37,6 @@ const MANIFEST = {
   OPENROUTER_API_KEY: 'OPENROUTER_API_KEY',
   APIFY_API_KEY: 'APIFY_API_KEY',
   SCRAPER_PROXY_URL: 'SCRAPER_PROXY_URL',
-  PROXY_CHEAP_API_KEY: 'PROXY_CHEAP_API_KEY',
-  PROXY_CHEAP_API_SECRET: 'PROXY_CHEAP_API_SECRET',
   R2_ACCESS_KEY_ID: 'R2_ACCESS_KEY_ID',
   R2_SECRET_ACCESS_KEY: 'R2_SECRET_ACCESS_KEY',
   CRON_SECRET: 'CRON_SECRET',
@@ -81,6 +79,11 @@ const MANIFEST = {
   WORKER_URL: 'WORKER_URL',
   SITE_URL: 'SITE_URL',
   PUBLIC_URL: 'PUBLIC_URL',
+  // PG producer HMAC (SLA-16). URL has a code default; only id/secret need
+  // bindings. PROXY_CHEAP_* stay on the VPS image, not this Worker — Free
+  // accounts cap secrets+text at 64 and the Worker never scrapes.
+  QUEUE_API_KEY_ID: 'QUEUE_API_KEY_ID',
+  QUEUE_API_KEY_SECRET: 'QUEUE_API_KEY_SECRET',
 };
 
 // Values that mean "placeholder, not configured" — never pushed.

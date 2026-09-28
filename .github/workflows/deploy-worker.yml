@@ -40,7 +40,9 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # Pin: bun@latest broke bun:sqlite db.query() inside db.transaction()
+          # (credit-sql.test.ts prepareOwned). 1.4.2 is the last known-good.
+          bun-version: "1.4.2"
 
       - name: Install dependencies (generates both Prisma clients)
         run: bun install --frozen-lockfile
@@ -70,7 +72,9 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # Pin: bun@latest broke bun:sqlite db.query() inside db.transaction()
+          # (credit-sql.test.ts prepareOwned). 1.4.2 is the last known-good.
+          bun-version: "1.4.2"
 
       - name: Install dependencies (generates both Prisma clients)
         run: |
@@ -91,8 +95,8 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           APIFY_API_KEY: ${{ secrets.APIFY_API_KEY }}
           SCRAPER_PROXY_URL: ${{ secrets.SCRAPER_PROXY_URL }}
-          PROXY_CHEAP_API_KEY: ${{ secrets.PROXY_CHEAP_API_KEY }}
-          PROXY_CHEAP_API_SECRET: ${{ secrets.PROXY_CHEAP_API_SECRET }}
+          QUEUE_API_KEY_ID: ${{ secrets.QUEUE_API_KEY_ID }}
+          QUEUE_API_KEY_SECRET: ${{ secrets.QUEUE_API_KEY_SECRET }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
