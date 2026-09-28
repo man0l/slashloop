@@ -165,14 +165,17 @@ export class PgQueue {
     const allowed = normalizeKindList([input.kind]);
     if (allowed.length === 0) throw new Error(`unknown kind "${input.kind}"`);
     const payloadJson = JSON.stringify(input.payload ?? {});
+    // Shared id with the D1 projection when the producer pre-allocates one
+    // (SLA-16 1:1 link). Otherwise Postgres mints job_id.
     const res = await this.db.query<PgQueueJobRow>(
       `INSERT INTO queue_jobs
-         (dedupe_key, kind, workspace_id, video_id, source_id, payload,
+         (job_id, dedupe_key, kind, workspace_id, video_id, source_id, payload,
           op_id, pre_auth_credits, deadline_at, max_attempts, analysis_id, d1_job_id)
-       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12)
+       VALUES (COALESCE($1::uuid, gen_random_uuid()),$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13)
        ON CONFLICT (dedupe_key) DO NOTHING
        RETURNING ${CLAIM_ROW}`,
       [
+        input.d1JobId ?? null,
         input.dedupeKey,
         input.kind,
         input.workspaceId,

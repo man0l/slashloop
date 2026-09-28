@@ -51,6 +51,36 @@ describe('buildClaimQuery (no DB)', () => {
   });
 });
 
+describe('enqueue shared D1/PG id (no DB)', () => {
+  test('d1JobId is inserted as job_id and d1_job_id', async () => {
+    const calls: { text: string; values: unknown[] }[] = [];
+    const id = '92f63d01-2daa-425a-a570-7bcf27e6f054';
+    const db: QueueDb = {
+      query: async (text, values) => {
+        calls.push({ text, values: values ?? [] });
+        return {
+          rows: [{ job_id: id, d1_job_id: id, kind: 'thumb', state: 'queued' } as never],
+          rowCount: 1,
+        };
+      },
+    };
+    const queue = new PgQueue(db);
+    const { row, deduped } = await queue.enqueue({
+      kind: 'thumb',
+      workspaceId: 'ws',
+      videoId: 'v',
+      sourceId: null,
+      dedupeKey: 'thumb:video:v',
+      d1JobId: id,
+    });
+    expect(deduped).toBe(false);
+    expect(row.job_id).toBe(id);
+    expect(calls[0].text).toContain('COALESCE($1::uuid, gen_random_uuid())');
+    expect(calls[0].values[0]).toBe(id);
+    expect(calls[0].values[12]).toBe(id);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Integration: ephemeral real Postgres.
 // Run: QUEUE_TEST_DATABASE_URL=postgresql://... bun test src/queue/pg.test.ts
