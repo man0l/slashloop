@@ -72,6 +72,89 @@ export function resetFallbackCacheForTests(): void {
   fallbackCache.at = 0;
 }
 
+/**
+ * How a PG-owned job is mirrored onto the D1 MediaJob row the UI/API reads
+ * (`await_job`, `get_job_status`, discover).
+ *
+ * - `terminal` (default): write the projection only when the job reaches
+ *   `done` or a terminal `failed`. Yield and non-terminal requeue are
+ *   redundant — PG claims never set the D1 row to `running`, so it stays
+ *   `queued` from enqueue until that terminal write, which is what pollers
+ *   wait on.
+ * - `full`: also mirror yield and non-terminal fail, and keep running the
+ *   D1 recovery sweeps after every kind has moved to PG (pre-Phase-4).
+ * - `off`: skip every lifecycle mirror. The enqueue projection remains.
+ *   Pollers sit on `queued`. Emergency only.
+ *
+ * WorkerControl `queue.d1.projection`. Env `QUEUE_D1_PROJECTION` wins.
+ * Missing or invalid values resolve to `terminal`.
+ */
+export const QUEUE_D1_PROJECTION_CONTROL_KEY = 'queue.d1.projection';
+export const QUEUE_D1_PROJECTION_MODES = ['terminal', 'full', 'off'] as const;
+export type QueueD1ProjectionMode = (typeof QUEUE_D1_PROJECTION_MODES)[number];
+export type D1LifecycleEvent = 'complete' | 'fail' | 'yield';
+
+const projectionCache: { value: QueueD1ProjectionMode | null; at: number } = { value: null, at: 0 };
+
+export function parseQueueD1ProjectionMode(raw: string | null | undefined): QueueD1ProjectionMode | null {
+  const v = (raw ?? '').trim().toLowerCase();
+  return v === 'terminal' || v === 'full' || v === 'off' ? v : null;
+}
+
+export async function getQueueD1ProjectionMode(opts?: {
+  now?: number;
+  env?: NodeJS.ProcessEnv;
+}): Promise<QueueD1ProjectionMode> {
+  const env = opts?.env ?? process.env;
+  const fromEnv = parseQueueD1ProjectionMode(env.QUEUE_D1_PROJECTION);
+  if (fromEnv) return fromEnv;
+  const now = opts?.now ?? Date.now();
+  if (projectionCache.value !== null && now - projectionCache.at < CONTROL_CACHE_MS) {
+    return projectionCache.value;
+  }
+  try {
+    const row = await db.workerControl.findUnique({ where: { key: QUEUE_D1_PROJECTION_CONTROL_KEY } });
+    const value = parseQueueD1ProjectionMode(row?.value) ?? 'terminal';
+    projectionCache.value = value;
+    projectionCache.at = now;
+    return value;
+  } catch {
+    return projectionCache.value ?? 'terminal';
+  }
+}
+
+export function resetProjectionCacheForTests(): void {
+  projectionCache.value = null;
+  projectionCache.at = 0;
+}
+
+/** True when this PG lifecycle transition should UPDATE the D1 projection. */
+export function shouldMirrorLifecycleToD1(
+  mode: QueueD1ProjectionMode,
+  event: D1LifecycleEvent,
+  terminal = false,
+): boolean {
+  if (mode === 'off') return false;
+  if (mode === 'full') return true;
+  if (event === 'complete') return true;
+  if (event === 'fail') return terminal;
+  return false;
+}
+
+/**
+ * D1 reclaim + abandoned-queue sweeps. Still required while any kind is
+ * D1-owned. Once every kind is on PG they only scan historical rows;
+ * `full` keeps them (rollback). `terminal` and `off` skip them.
+ * Fallback reconcile is a different sweep and is not gated here.
+ */
+export function shouldRunD1RecoverySweeps(
+  mode: QueueD1ProjectionMode,
+  d1OwnedKindCount: number,
+): boolean {
+  if (d1OwnedKindCount > 0) return true;
+  return mode === 'full';
+}
+
 /** WorkerControl key for one kind's transport. */
 export function queueTransportKey(kind: string): string {
   return `queue.transport.${kind}`;
@@ -156,4 +239,5 @@ export async function partitionKindsByTransport(
 export function resetTransportCacheForTests(): void {
   transportCache.clear();
   resetFallbackCacheForTests();
+  resetProjectionCacheForTests();
 }

@@ -21,6 +21,7 @@ mock.module('../db.js', () => ({
 
 import {
   defaultQueueTransport,
+  getQueueD1ProjectionMode,
   getQueueFallbackEnabled,
   getQueueTransport,
   isEmergencyD1Override,
@@ -28,6 +29,8 @@ import {
   partitionKindsByTransport,
   queueTransportKey,
   resetTransportCacheForTests,
+  shouldMirrorLifecycleToD1,
+  shouldRunD1RecoverySweeps,
 } from './transport.js';
 
 function reset(env: Record<string, string | undefined>, rows: Record<string, string | undefined>) {
@@ -88,6 +91,38 @@ describe('queue transport controls', () => {
     expect(await getQueueFallbackEnabled({ env: envOff as NodeJS.ProcessEnv })).toBe(false);
     const envOn = reset({ QUEUE_FALLBACK_ENABLED: '1' }, {});
     expect(await getQueueFallbackEnabled({ env: envOn as NodeJS.ProcessEnv })).toBe(true);
+  });
+
+  test('D1 projection defaults to terminal and env wins over the control row', async () => {
+    const env = reset({ QUEUE_D1_PROJECTION: undefined }, {});
+    expect(await getQueueD1ProjectionMode({ env: env as NodeJS.ProcessEnv })).toBe('terminal');
+    const row = reset({ QUEUE_D1_PROJECTION: undefined }, { 'queue.d1.projection': 'full' });
+    expect(await getQueueD1ProjectionMode({ env: row as NodeJS.ProcessEnv })).toBe('full');
+    const off = reset({ QUEUE_D1_PROJECTION: undefined }, { 'queue.d1.projection': 'off' });
+    expect(await getQueueD1ProjectionMode({ env: off as NodeJS.ProcessEnv })).toBe('off');
+    const bogus = reset({ QUEUE_D1_PROJECTION: undefined }, { 'queue.d1.projection': 'sometimes' });
+    expect(await getQueueD1ProjectionMode({ env: bogus as NodeJS.ProcessEnv })).toBe('terminal');
+    const override = reset({ QUEUE_D1_PROJECTION: 'full' }, { 'queue.d1.projection': 'off' });
+    expect(await getQueueD1ProjectionMode({ env: override as NodeJS.ProcessEnv })).toBe('full');
+  });
+
+  test('terminal projection keeps done/failed and drops yield plus non-terminal fail', () => {
+    expect(shouldMirrorLifecycleToD1('terminal', 'complete', true)).toBe(true);
+    expect(shouldMirrorLifecycleToD1('terminal', 'fail', true)).toBe(true);
+    expect(shouldMirrorLifecycleToD1('terminal', 'fail', false)).toBe(false);
+    expect(shouldMirrorLifecycleToD1('terminal', 'yield', false)).toBe(false);
+    expect(shouldMirrorLifecycleToD1('full', 'yield', false)).toBe(true);
+    expect(shouldMirrorLifecycleToD1('full', 'fail', false)).toBe(true);
+    expect(shouldMirrorLifecycleToD1('off', 'complete', true)).toBe(false);
+    expect(shouldMirrorLifecycleToD1('off', 'fail', true)).toBe(false);
+  });
+
+  test('D1 recovery sweeps run for a d1 kind or when projection mode is full', () => {
+    expect(shouldRunD1RecoverySweeps('terminal', 0)).toBe(false);
+    expect(shouldRunD1RecoverySweeps('off', 0)).toBe(false);
+    expect(shouldRunD1RecoverySweeps('full', 0)).toBe(true);
+    expect(shouldRunD1RecoverySweeps('terminal', 1)).toBe(true);
+    expect(shouldRunD1RecoverySweeps('off', 2)).toBe(true);
   });
 
   test('partitionKindsByTransport splits per-kind ownership', async () => {

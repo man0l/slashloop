@@ -179,3 +179,54 @@ production producer/worker points at `queue-api` after this issue.
   `/healthz` 200, unsigned `/v1/jobs` 401. Standing policy saved in
   `docs/vps-deploy-policy.md`: compose-prod + GH Actions only, VPS does
   `git pull` + `.env`.
+
+## 10. SLA-35 Phase 4 — D1 write comparison (2026-09-28)
+
+Measured with Cloudflare GraphQL `d1AnalyticsAdaptiveGroups` on D1 database
+`slashloop` (`e1caee8f-3962-42a1-84d3-9d17eb3cab34`). Phase 0 never signed a
+numeric daily write target (§6.10); the quantitative anchor in §1 is the
+2026-09-16 claim-poll count.
+
+### Account totals
+
+| Day | read queries | write queries | rows read | rows written | Notes |
+|---|---:|---:|---:|---:|---|
+| 2026-09-16 (Phase 0 anchor) | 108,939 | 5,750 | 4,509,588 | 73,609 | Same day as the 64,446 claim polls → 1,880 claims in §1 |
+| 2026-09-18 – 09-22, 09-25 (uncapped) | 13k–41k (09-23/25 spiked to ~110–130k) | 2,625–4,753 | — | 7,416–21,415 | Ordinary pre-cutover days. 09-16 was a heavy outlier |
+| 2026-09-26 | 109,821 | 37 | 511,841 | 182 | Write cap (Cloudflare 7500). Reads continued |
+| 2026-09-27 | 95,404 | 8 | 525,602 | 14 | Same cap. Afternoon hours were 0 writes |
+| 2026-09-28 00:00Z | 779 | 12 | 55,980 | 8,826 | Cap reset. Migration `0014` rewrote 8,750 `MediaJob` rows |
+| 2026-09-28 01:00Z | 866 | 13 | 65,737 | 62 | Thumb/rescore/fetch canaries. Most kinds still D1 but idle |
+| 2026-09-28 02:00Z | 902 | 24 | 120,447 | 110 | Analyze + recreate canaries |
+| 2026-09-28 03:00Z | 826 | 37 | 37,048 | 160 | Discover, refresh, fallback proof. All kinds on PG by 03:24Z |
+| 2026-09-28 04:00Z (first ~5 min) | 56 | 0 | 83 | 0 | Idle after cutover. No lifecycle writes while nothing is queued |
+
+Hourly read queries after the cap reset are ~800–900, against ~4,500/hour on
+2026-09-16. Empty D1 claim UPDATEs are already skipped once a kind resolves
+to `pg` (`partitionKindsByTransport` → `claimNextJobs` only for D1 kinds).
+
+### What Phase 4 drops, per PG job
+
+UI/API pollers (`await_job`, `get_job_status`, discover) read the D1 row.
+They stop on `done` / `failed` and treat `queued` as still running. PG claims
+never set that row to `running`, so intermediate mirrors do not change what
+pollers do.
+
+| D1 write | Before | After (`queue.d1.projection=terminal`, the default) |
+|---|---|---|
+| Enqueue projection | INSERT `queueOwner=pg` + UPDATE of the same columns | INSERT only. UI still has the row |
+| `complete` | UPDATE `done` | kept (pollers need it, including discover payload) |
+| terminal `fail` | UPDATE | kept, with the terminal bit taken from PG (D1 `attempts` is not incremented) |
+| non-terminal `fail` | UPDATE back to `queued` | skipped. Row stays `queued` |
+| `yield` | UPDATE back to `queued` | skipped |
+| Empty claim poll | already 0 for PG kinds | unchanged |
+| D1 reclaim + abandoned sweeps | 2 scans / 5 min on the maintenance worker | skipped while every kind is PG |
+| Fallback reconcile | unchanged | unchanged. Fallback stays enabled |
+
+`queue.d1.projection=full` restores yield/non-terminal mirrors and the D1
+recovery scans. `=off` skips terminal mirrors too (pollers stay on `queued`);
+that is emergency-only and is not set. `QUEUE_D1_PROJECTION` overrides the
+WorkerControl row. Kinds stay on PG. Fallback stays on.
+
+Domain writes (videos, scores, credits, canonical locks, scrape receipts)
+are not queue-lifecycle writes and are unchanged.

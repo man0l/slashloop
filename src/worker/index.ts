@@ -42,7 +42,11 @@ import {
   claimNextJobs, reclaimStuckJobs, failAbandonedQueuedJobs, reconcileFallbackJobs, expandWorkerKinds,
   failJob, jobTimeoutMs, jobCreditTool,
 } from '../lib/jobs.js';
-import { partitionKindsByTransport } from '../queue/transport.js';
+import {
+  getQueueD1ProjectionMode,
+  partitionKindsByTransport,
+  shouldRunD1RecoverySweeps,
+} from '../queue/transport.js';
 import { claimPgJobs, connectPgQueue } from './pg-runtime.js';
 import { processClaimedJob } from './process-job.js';
 import { rescoreStaleTooFresh } from '../scoring.js';
@@ -282,6 +286,9 @@ function d1WriteWarnRows(): number {
 }
 let lastBudgetWarnAt = 0;
 const BUDGET_WARN_EVERY_MS = 60 * 60_000;
+// One line when Phase 4 skips the D1 reclaim/abandoned scans (all kinds on PG
+// and projection mode is not `full`). Reset when the sweeps run again.
+let d1RecoverySkippedLogged = false;
 
 while (!shuttingDown) {
   try {
@@ -302,10 +309,24 @@ while (!shuttingDown) {
     if (doesMaintenance && Date.now() - lastReclaimAt >= RECLAIM_INTERVAL_MS) {
       lastReclaimAt = Date.now();
       const sweepSnap = snapshotD1Usage();
-      const reclaimed = await reclaimStuckJobs().catch((err) => {
-        console.warn(`[worker] stuck-job sweep failed: ${(err as Error).message}`);
-        return { requeued: 0, failed: 0, refunded: 0 };
-      });
+      // Phase 4: once every kind is on PG, the D1 reclaim/abandoned scans
+      // match nothing (they select queueOwner='d1' only) but still hit D1
+      // every interval. Claim polls are already skipped below when d1Kinds
+      // is empty. Fallback reconcile stays — it is the live fallback path.
+      // A control-plane miss fail-opens to D1 ownership inside
+      // partitionKindsByTransport, so an outage still runs the sweeps.
+      const projectionMode = await getQueueD1ProjectionMode().catch(() => 'terminal' as const);
+      const ownership = await partitionKindsByTransport([...ALL_KINDS]).catch(() => ({
+        d1: [...ALL_KINDS],
+        pg: [] as string[],
+      }));
+      const runD1Recovery = shouldRunD1RecoverySweeps(projectionMode, ownership.d1.length);
+      const reclaimed = runD1Recovery
+        ? await reclaimStuckJobs().catch((err) => {
+            console.warn(`[worker] stuck-job sweep failed: ${(err as Error).message}`);
+            return { requeued: 0, failed: 0, refunded: 0 };
+          })
+        : { requeued: 0, failed: 0, refunded: 0 };
       if (reclaimed.requeued || reclaimed.failed) {
         console.log(`[worker] reclaimed stuck: requeued=${reclaimed.requeued} failed=${reclaimed.failed} refunded=${reclaimed.refunded}`);
       }
@@ -314,10 +335,20 @@ while (!shuttingDown) {
       // it is a whole-queue sweep with a 90-minute threshold, and having every
       // container race to do it every idle period would multiply the work
       // without changing the outcome.
-      const abandoned = await failAbandonedQueuedJobs().catch((err) => {
-        console.warn(`[worker] abandoned-queue sweep failed: ${(err as Error).message}`);
-        return { failed: 0, refunded: 0, more: false };
-      });
+      const abandoned = runD1Recovery
+        ? await failAbandonedQueuedJobs().catch((err) => {
+            console.warn(`[worker] abandoned-queue sweep failed: ${(err as Error).message}`);
+            return { failed: 0, refunded: 0, more: false };
+          })
+        : { failed: 0, refunded: 0, more: false };
+      if (!runD1Recovery && !d1RecoverySkippedLogged) {
+        d1RecoverySkippedLogged = true;
+        console.log(
+          `[worker] D1 recovery sweeps skipped (projection=${projectionMode}, no d1-owned kinds)`,
+        );
+      } else if (runD1Recovery) {
+        d1RecoverySkippedLogged = false;
+      }
       const fallback = await reconcileFallbackJobs().catch((err) => {
         console.warn(`[worker] fallback reconcile sweep failed: ${(err as Error).message}`);
         return { reconciled: 0, failed: 0, more: false };

@@ -67,9 +67,10 @@ function routedQueuePublisher(): QueuePublisher {
           return { id: row.id };
         },
         markD1ProjectionPg: async (d1JobId) => {
-          // The PG row already carries d1_job_id (shared id, 1:1 link); the
-          // D1 side needs no extra column — projection sync of terminal
-          // states arrives with PG worker consumption (Phase 3).
+          // Fallback promotion only. Fresh PG publishes insert queueOwner='pg'
+          // themselves; this UPDATE is how a fallback_d1 / queued_remote row
+          // becomes the claimable-by-nobody projection pollers already read.
+          // The PG row shares this id (d1_job_id), so there is no second key.
           await db.mediaJob.update({
             where: { id: d1JobId },
             data: { queueOwner: 'pg', status: 'queued' },
@@ -1186,7 +1187,8 @@ export async function claimJobsByIds(ids: string[]): Promise<MediaJobRow[]> {
  * Optional PG lifecycle intercept (VPS worker). Cloudflare never sets this, so
  * the Worker bundle does not import `pg`. A sink that returns false/null falls
  * through to the D1 implementation. `forceD1` is the projection write after a
- * PG terminal transition (same id, queueOwner=pg).
+ * PG transition (same id, queueOwner=pg). The PG sink calls it only for the
+ * states queue.d1.projection still mirrors (default: terminal done/failed).
  */
 export interface JobLifecycleSink {
   completeJob(id: string, analysisId: string | null, payloadJson?: string): Promise<boolean>;

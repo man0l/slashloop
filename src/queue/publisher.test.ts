@@ -31,6 +31,7 @@ interface FakeD1Row {
 function makeD1() {
   const rows = new Map<string, FakeD1Row>();
   let n = 0;
+  const markCalls: string[] = [];
   const d1: PublisherD1 = {
     createOwnedJob: async (input) => {
       const id = input.id ?? `d1-${++n}`;
@@ -51,6 +52,7 @@ function makeD1() {
       return { id };
     },
     markD1ProjectionPg: async (d1JobId, pgJobId) => {
+      markCalls.push(d1JobId);
       const row = rows.get(d1JobId);
       if (row) {
         row.queueOwner = 'pg';
@@ -59,7 +61,7 @@ function makeD1() {
       }
     },
   };
-  return { d1, rows };
+  return { d1, rows, markCalls };
 }
 
 type PgCall = Parameters<PublisherPg['publish']>[0];
@@ -115,7 +117,7 @@ describe('QueuePublisher', () => {
   });
 
   test('pg publish projects to D1 with queueOwner pg and keeps opId', async () => {
-    const { d1, rows } = makeD1();
+    const { d1, rows, markCalls } = makeD1();
     const { pg, calls } = makePg();
     const pub = new QueuePublisher({ d1, pg, resolveTransport: async () => 'pg' });
     const ref = await pub.publish({ ...baseReq });
@@ -123,7 +125,10 @@ describe('QueuePublisher', () => {
     expect(ref.pgJobId).not.toBeNull();
     const row = rows.get(ref.d1JobId)!;
     expect(row.queueOwner).toBe('pg');
+    expect(row.status).toBe('queued');
     expect(row.opId).toBe('op-stable-1');
+    // The INSERT is the projection. No second UPDATE of the same columns.
+    expect(markCalls).toEqual([]);
     // API body contract: shared id, record payload, credits carry the opId.
     expect(calls[0].d1JobId).toBe(ref.d1JobId);
     expect(calls[0].payload).toEqual({ thumbnailUrl: 'https://cdn/x.jpg' });
@@ -182,7 +187,7 @@ describe('QueuePublisher', () => {
   });
 
   test('reconciliation is one-way with dedupeKey d1:<id> and the original opId', async () => {
-    const { d1, rows } = makeD1();
+    const { d1, rows, markCalls } = makeD1();
     const { pg } = makePg({ fail: true });
     const pub = new QueuePublisher({
       d1,
@@ -208,6 +213,7 @@ describe('QueuePublisher', () => {
     };
     const done = await pub2.reconcileFallbackRow(asRow);
     expect(done.transport).toBe('pg');
+    expect(markCalls).toEqual([row.id]);
     expect(calls2[0].dedupeKey).toBe(`d1:${row.id}`);
     expect(calls2[0].credits).toEqual({ opId: 'op-stable-1', preAuthCredits: 0 });
     expect(calls2[0].d1JobId).toBe(row.id);

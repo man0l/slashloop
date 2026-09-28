@@ -79,7 +79,11 @@ export interface PublisherD1 {
     /** Defaults to 'queued'; fallback rows use 'queued_remote'. */
     status?: string;
   }): Promise<{ id: string }>;
-  /** Point the D1 projection at an accepted PG job (queueOwner='pg'). */
+  /**
+   * Promote an existing D1 row to the PG projection (queueOwner='pg',
+   * status='queued'). Used by fallback reconciliation. Fresh PG publishes
+   * insert that projection directly and do not call this.
+   */
   markD1ProjectionPg(d1JobId: string, pgJobId: string): Promise<void>;
 }
 
@@ -233,8 +237,11 @@ export class QueuePublisher {
           deduped: true,
         };
       }
-      // D1 compatibility projection: same id/opId/credits, queueOwner='pg'.
-      // UI readers keep working; legacy D1 claims ignore the row.
+      // D1 compatibility projection: one INSERT, already queueOwner='pg' and
+      // status='queued'. A follow-up UPDATE would rewrite the same columns
+      // (markD1ProjectionPg stores no extra PG id — the rows share `id`).
+      // That second write stays on the fallback reconciler, which promotes
+      // an existing fallback_d1 / queued_remote row.
       const projection = await this.deps.d1.createOwnedJob({
         id: d1Id,
         kind: req.kind,
@@ -249,7 +256,6 @@ export class QueuePublisher {
         queueOwner: 'pg',
         status: 'queued',
       });
-      await this.deps.d1.markD1ProjectionPg(projection.id, accepted.pgJobId);
       return {
         d1JobId: projection.id,
         pgJobId: accepted.pgJobId,
