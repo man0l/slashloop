@@ -222,6 +222,15 @@ export class QueuePublisher {
           req.opId != null ? { opId: req.opId, preAuthCredits: req.preAuthCredits ?? 0 } : null,
         d1JobId: d1Id,
       });
+      if (accepted.deduped) {
+        // Existing PG row (shared id). Do not insert a second D1 projection.
+        return {
+          d1JobId: accepted.pgJobId,
+          pgJobId: accepted.pgJobId,
+          transport: 'pg',
+          deduped: true,
+        };
+      }
       // D1 compatibility projection: same id/opId/credits, queueOwner='pg'.
       // UI readers keep working; legacy D1 claims ignore the row.
       const projection = await this.deps.d1.createOwnedJob({

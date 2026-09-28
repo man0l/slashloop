@@ -124,6 +124,7 @@ async function enqueueRouted(opts: {
   });
   const row = await db.mediaJob.findUnique({ where: { id: ref.d1JobId } });
   if (!row) throw new Error(`queue publisher lost D1 row ${ref.d1JobId}`);
+  // On PG dedupe, ref.d1JobId is the original shared id (no second projection).
   return row as unknown as MediaJobRow;
 }
 

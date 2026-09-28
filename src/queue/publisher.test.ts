@@ -74,7 +74,7 @@ function makePg(opts?: { fail?: boolean }) {
       calls.push(input);
       const existing = byDedupe.get(input.dedupeKey);
       if (existing) return { pgJobId: existing, deduped: true };
-      const pgJobId = `pg-${++n}`;
+      const pgJobId = input.d1JobId ?? `pg-${++n}`;
       byDedupe.set(input.dedupeKey, pgJobId);
       return { pgJobId, deduped: false };
     },
@@ -142,7 +142,7 @@ describe('QueuePublisher', () => {
   });
 
   test('same-key pg replay dedupes with no duplicate work', async () => {
-    const { d1 } = makeD1();
+    const { d1, rows } = makeD1();
     const { pg } = makePg();
     const pub = new QueuePublisher({ d1, pg, resolveTransport: async () => 'pg' });
     const first = await pub.publish({ ...baseReq, dedupeKey: 'thumb:video:vid-1' });
@@ -150,6 +150,8 @@ describe('QueuePublisher', () => {
     expect(first.deduped).toBe(false);
     expect(second.deduped).toBe(true);
     expect(second.pgJobId).toBe(first.pgJobId);
+    expect(second.d1JobId).toBe(first.d1JobId);
+    expect(rows.size).toBe(1);
   });
 
   test('pg failure without fallback throws retryable, writes nothing', async () => {
