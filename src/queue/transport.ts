@@ -101,6 +101,20 @@ export function isKnownQueueKind(kind: string): kind is QueueJobKind {
   return (QUEUE_KINDS as readonly string[]).includes(kind);
 }
 
+/** Split a kind list into D1-owned vs PG-owned. Order preserved. */
+export async function partitionKindsByTransport(
+  kinds: readonly string[],
+  opts?: { now?: number; env?: NodeJS.ProcessEnv },
+): Promise<{ d1: string[]; pg: string[] }> {
+  const d1: string[] = [];
+  const pg: string[] = [];
+  for (const kind of kinds) {
+    if (await isPgTransport(kind, opts)) pg.push(kind);
+    else d1.push(kind);
+  }
+  return { d1, pg };
+}
+
 /** Test seam — clear the transport read cache. */
 export function resetTransportCacheForTests(): void {
   transportCache.clear();

@@ -24,6 +24,7 @@ import {
   getQueueTransport,
   isEmergencyD1Override,
   isKnownQueueKind,
+  partitionKindsByTransport,
   queueTransportKey,
   resetTransportCacheForTests,
 } from './transport.js';
@@ -75,5 +76,14 @@ describe('queue transport controls', () => {
   test('kind vocabulary matches the contract', () => {
     expect(isKnownQueueKind('refresh')).toBe(true);
     expect(isKnownQueueKind('bogus')).toBe(false);
+  });
+
+  test('partitionKindsByTransport splits per-kind ownership', async () => {
+    const env = reset({ QUEUE_BACKEND: undefined }, { 'queue.transport.thumb': 'pg' });
+    const { d1, pg } = await partitionKindsByTransport(['thumb', 'fetch', 'rescore'], {
+      env: env as NodeJS.ProcessEnv,
+    });
+    expect(pg).toEqual(['thumb']);
+    expect(d1).toEqual(['fetch', 'rescore']);
   });
 });

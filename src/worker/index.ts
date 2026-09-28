@@ -42,6 +42,8 @@ import {
   claimNextJobs, reclaimStuckJobs, failAbandonedQueuedJobs, expandWorkerKinds,
   failJob, jobTimeoutMs, jobCreditTool,
 } from '../lib/jobs.js';
+import { partitionKindsByTransport } from '../queue/transport.js';
+import { claimPgJobs, connectPgQueue } from './pg-runtime.js';
 import { processClaimedJob } from './process-job.js';
 import { rescoreStaleTooFresh } from '../scoring.js';
 import { withMeterScope } from '../lib/scrapers/bandwidth.js';
@@ -214,6 +216,17 @@ function assertWorkerEnv(): void {
 }
 assertWorkerEnv();
 
+let pgQueue: Awaited<ReturnType<typeof connectPgQueue>> = null;
+try {
+  pgQueue = await connectPgQueue();
+  if (pgQueue) console.log('[worker] PG queue runtime connected');
+} catch (err) {
+  console.error(
+    `[worker] PG queue runtime failed to connect: ${(err as Error).message} — claiming D1 kinds only`,
+  );
+  pgQueue = null;
+}
+
 let shuttingDown = false;
 let sigName = '';
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
@@ -305,6 +318,21 @@ while (!shuttingDown) {
         console.warn(`[worker] abandoned-queue sweep failed: ${(err as Error).message}`);
         return { failed: 0, refunded: 0, more: false };
       });
+      if (pgQueue) {
+        const pgStuck = await pgQueue.recoverExpiredLeases().catch((err) => {
+          console.warn(`[worker] PG stuck-job sweep failed: ${(err as Error).message}`);
+          return { requeued: 0, failed: 0, more: false };
+        });
+        const pgAbandoned = await pgQueue.failAbandonedQueued().catch((err) => {
+          console.warn(`[worker] PG abandoned-queue sweep failed: ${(err as Error).message}`);
+          return { failed: 0, more: false };
+        });
+        if (pgStuck.requeued || pgStuck.failed || pgAbandoned.failed) {
+          console.log(
+            `[worker] PG sweep requeued=${pgStuck.requeued} failed=${pgStuck.failed} abandoned=${pgAbandoned.failed}`,
+          );
+        }
+      }
       const sweepUsage = formatD1Usage(deltaD1Usage(sweepSnap));
       if (abandoned.failed) {
         console.warn(
@@ -408,20 +436,27 @@ while (!shuttingDown) {
     // cooldown instead of burning claim→fail cycles.
     const breakerKinds = kindBreaker.filterKinds(KINDS);
     const claimKinds = await filterKindsByControl(breakerKinds).catch(() => breakerKinds);
-    const parkedKey = KINDS.filter((k) => !claimKinds.includes(k)).join(',');
+    const { d1: d1Kinds, pg: pgKinds } = await partitionKindsByTransport(claimKinds);
+    const pgUnconfigured = pgKinds.length > 0 && !pgQueue ? pgKinds.join(',') : '';
+    const parkedKey = [
+      KINDS.filter((k) => !claimKinds.includes(k)).join(','),
+      pgUnconfigured ? `pg-unconfigured:${pgUnconfigured}` : '',
+    ].filter(Boolean).join(',');
     if (parkedKey !== lastParkedKey) {
       lastParkedKey = parkedKey;
       console.log(parkedKey ? `[worker] kinds parked: ${parkedKey}` : '[worker] all kinds claimable again');
     }
-    if (claimKinds.length === 0) {
-      // Every kind cooling or disabled — idle until the next half-open, same
-      // as an empty queue (a claim would only spend rows proving it).
+    if (claimKinds.length === 0 || (d1Kinds.length === 0 && (!pgQueue || pgKinds.length === 0))) {
+      // Every kind cooling, disabled, or PG-owned without QUEUE_DATABASE_URL.
       idleRounds++;
       const backoff = Math.min(IDLE_MS * 2 ** idleRounds, MAX_IDLE_MS);
       await idleSleep(Math.round(backoff * (0.85 + Math.random() * 0.3)));
       continue;
     }
-    const jobs = await claimNextJobs(claimKinds, CONCURRENCY);
+    const d1Jobs = d1Kinds.length ? await claimNextJobs(d1Kinds, CONCURRENCY) : [];
+    const pgJobs =
+      pgQueue && pgKinds.length ? await claimPgJobs(pgQueue, pgKinds, CONCURRENCY) : [];
+    const jobs = [...d1Jobs, ...pgJobs];
     // Claim succeeded — D1 answered, whatever the queue depth. Streak resets
     // here (not on a claimed job) so a healthy-but-empty D1 clears the
     // outage backoff too.

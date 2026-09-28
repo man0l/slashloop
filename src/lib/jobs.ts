@@ -1178,7 +1178,36 @@ export async function claimJobsByIds(ids: string[]): Promise<MediaJobRow[]> {
  * Only for "we did not start": no Apify call, no credits moved, nothing
  * persisted. The retry limit still bounds real failures.
  */
-export async function yieldJob(id: string, reason: string): Promise<void> {
+/**
+ * Optional PG lifecycle intercept (VPS worker). Cloudflare never sets this, so
+ * the Worker bundle does not import `pg`. A sink that returns false/null falls
+ * through to the D1 implementation. `forceD1` is the projection write after a
+ * PG terminal transition (same id, queueOwner=pg).
+ */
+export interface JobLifecycleSink {
+  completeJob(id: string, analysisId: string | null, payloadJson?: string): Promise<boolean>;
+  failJob(
+    id: string,
+    message: string,
+    opts?: { terminal?: boolean },
+  ): Promise<{ terminal: boolean } | null>;
+  yieldJob(id: string, reason: string): Promise<boolean>;
+}
+
+let jobLifecycleSink: JobLifecycleSink | null = null;
+
+export function setJobLifecycleSink(sink: JobLifecycleSink | null): void {
+  jobLifecycleSink = sink;
+}
+
+export async function yieldJob(
+  id: string,
+  reason: string,
+  flags?: { forceD1?: boolean },
+): Promise<void> {
+  if (jobLifecycleSink && !flags?.forceD1) {
+    if (await jobLifecycleSink.yieldJob(id, reason)) return;
+  }
   if (dbDialect() === 'sqlite') {
     // SQLite scalar max() stands in for Postgres GREATEST.
     await db.$executeRaw`
@@ -1208,7 +1237,11 @@ export async function completeJob(
   analysisId: string | null,
   /** Optional payload rewrite — discover jobs stash the mine result here. */
   payloadJson?: string,
+  flags?: { forceD1?: boolean },
 ): Promise<void> {
+  if (jobLifecycleSink && !flags?.forceD1) {
+    if (await jobLifecycleSink.completeJob(id, analysisId, payloadJson)) return;
+  }
   const job = await db.mediaJob.update({
     where: { id },
     data: {
@@ -1262,8 +1295,12 @@ export const YIELD_COOLDOWN_MS = 60_000;
 export async function failJob(
   id: string,
   message: string,
-  opts?: { terminal?: boolean },
+  opts?: { terminal?: boolean; forceD1?: boolean },
 ): Promise<{ terminal: boolean }> {
+  if (jobLifecycleSink && !opts?.forceD1) {
+    const handled = await jobLifecycleSink.failJob(id, message, opts);
+    if (handled) return handled;
+  }
   const job = await db.mediaJob.findUnique({ where: { id } });
   if (!job) return { terminal: false };
 
