@@ -21,6 +21,7 @@ import { db } from '../db.js';
 import { chunked, coerceRowDates, dbDialect, rawBatch, type RawStatement } from '../store.js';
 import { loadProducerConfig, publishJobHttp } from '../queue/producer.js';
 import { QueuePublisher } from '../queue/publisher.js';
+import { QUEUE_FALLBACK_STATUS } from '../queue/transport.js';
 import { CREDIT_COSTS, refundCredits, refundCreditsBatched, type RefundItem } from './credits.js';
 import { classifyFetchError } from './fetch-errors.js';
 import { notifyScrapeFailure, markScrapeSuccess } from './scrape-alert.js';
@@ -1436,6 +1437,64 @@ export async function failAbandonedQueuedJobs(
   // this batch — callers (the VPS worker loop) log that the queue stayed deep
   // and a later sweep will continue. False means the whole backlog drained.
   return { failed, refunded, more: abandoned.length >= QUEUE_SWEEP_TAKE };
+}
+
+/**
+ * One-way fallback reconciliation (SLA-16). Picks D1 rows parked as
+ * queueOwner='fallback_d1' status queued_remote (PG publish failed) and
+ * republishes them with dedupeKey d1:<MediaJob.id> and the ORIGINAL opId.
+ * Legacy D1 claims never select these rows; this sweep is what unparks them.
+ */
+export async function reconcileFallbackJobs(opts?: {
+  take?: number;
+  publisher?: QueuePublisher;
+}): Promise<{ reconciled: number; failed: number; more: boolean }> {
+  const take = opts?.take ?? QUEUE_SWEEP_TAKE;
+  const rows = await db.mediaJob.findMany({
+    where: { queueOwner: 'fallback_d1', status: QUEUE_FALLBACK_STATUS },
+    orderBy: { createdAt: 'asc' },
+    take: take + 1,
+    select: {
+      id: true,
+      kind: true,
+      workspaceId: true,
+      videoId: true,
+      sourceId: true,
+      payloadJson: true,
+      opId: true,
+      preAuthCredits: true,
+      deadlineAt: true,
+      analysisId: true,
+    },
+  });
+  const more = rows.length > take;
+  const batch = more ? rows.slice(0, take) : rows;
+  if (batch.length === 0) return { reconciled: 0, failed: 0, more: false };
+
+  const pub = opts?.publisher ?? routedQueuePublisher();
+  let reconciled = 0;
+  let failed = 0;
+  for (const row of batch) {
+    try {
+      await pub.reconcileFallbackRow({
+        id: row.id,
+        kind: row.kind,
+        workspaceId: row.workspaceId,
+        videoId: row.videoId,
+        sourceId: row.sourceId,
+        payloadJson: row.payloadJson,
+        opId: row.opId,
+        preAuthCredits: row.preAuthCredits,
+        deadlineAt: row.deadlineAt,
+        analysisId: row.analysisId,
+      });
+      reconciled++;
+    } catch (err) {
+      failed++;
+      console.warn(`[jobs] fallback reconcile failed for ${row.id}: ${(err as Error).message}`);
+    }
+  }
+  return { reconciled, failed, more };
 }
 
 /**

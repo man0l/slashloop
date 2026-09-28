@@ -88,7 +88,8 @@
     // Account id for the Stream API (video-recreate stepper). The token that
     // goes with it is a secret: CLOUDFLARE_STREAM_TOKEN (Stream:Edit) or a
     // CLOUDFLARE_API_TOKEN whose scope covers Stream.
-    "CLOUDFLARE_ACCOUNT_ID": "efaa72fe64b9d2798df1388b15c7674a"
+    "CLOUDFLARE_ACCOUNT_ID": "efaa72fe64b9d2798df1388b15c7674a",
+    "QUEUE_FALLBACK_ENABLED": "1"
   }
   // Secrets (SUPABASE_URL, CRON_SECRET, STRIPE_*, RESEND_API_KEY, GEMINI_API_KEY,
   // APIFY_*, R2_* S3 keys for the VPS path, etc.) are set with

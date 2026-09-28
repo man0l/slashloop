@@ -39,7 +39,7 @@
 // ---------------------------------------------------------------------------
 
 import {
-  claimNextJobs, reclaimStuckJobs, failAbandonedQueuedJobs, expandWorkerKinds,
+  claimNextJobs, reclaimStuckJobs, failAbandonedQueuedJobs, reconcileFallbackJobs, expandWorkerKinds,
   failJob, jobTimeoutMs, jobCreditTool,
 } from '../lib/jobs.js';
 import { partitionKindsByTransport } from '../queue/transport.js';
@@ -318,6 +318,16 @@ while (!shuttingDown) {
         console.warn(`[worker] abandoned-queue sweep failed: ${(err as Error).message}`);
         return { failed: 0, refunded: 0, more: false };
       });
+      const fallback = await reconcileFallbackJobs().catch((err) => {
+        console.warn(`[worker] fallback reconcile sweep failed: ${(err as Error).message}`);
+        return { reconciled: 0, failed: 0, more: false };
+      });
+      if (fallback.reconciled || fallback.failed) {
+        console.log(
+          `[worker] fallback reconcile reconciled=${fallback.reconciled} failed=${fallback.failed}`
+          + (fallback.more ? ' (more remain)' : ''),
+        );
+      }
       if (pgQueue) {
         const pgStuck = await pgQueue.recoverExpiredLeases().catch((err) => {
           console.warn(`[worker] PG stuck-job sweep failed: ${(err as Error).message}`);
