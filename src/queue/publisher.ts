@@ -105,6 +105,8 @@ export interface PublisherDeps {
   resolveTransport?: (kind: string) => Promise<QueueTransport>;
   /** Default false: PG failure throws retryable instead of fallback rows. */
   fallbackEnabled?: boolean;
+  /** Runtime lookup (WorkerControl queue.fallback.enabled) when the boolean is unset. */
+  resolveFallbackEnabled?: () => Promise<boolean>;
 }
 
 export class QueuePublishError extends Error {
@@ -255,7 +257,9 @@ export class QueuePublisher {
         deduped: accepted.deduped,
       };
     } catch (err) {
-      if (!this.deps.fallbackEnabled) {
+      const fallbackOn = this.deps.fallbackEnabled
+        ?? (this.deps.resolveFallbackEnabled ? await this.deps.resolveFallbackEnabled() : false);
+      if (!fallbackOn) {
         throw new QueuePublishError(
           'pg_failed',
           `PG publish failed for kind "${req.kind}": ${(err as Error).message}`,

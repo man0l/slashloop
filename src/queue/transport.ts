@@ -35,6 +35,43 @@ export type QueueOwner = (typeof QUEUE_OWNERS)[number];
 /** Fallback rows use this status: non-claimable by D1 and PG workers. */
 export const QUEUE_FALLBACK_STATUS = 'queued_remote';
 
+/** WorkerControl key: '1' enables D1 fallback on PG publish failure. Default off. */
+export const QUEUE_FALLBACK_CONTROL_KEY = 'queue.fallback.enabled';
+
+const fallbackCache: { value: boolean | null; at: number } = { value: null, at: 0 };
+
+/**
+ * Fallback is off unless QUEUE_FALLBACK_ENABLED=1 or WorkerControl
+ * queue.fallback.enabled=1. Explicit env 0 wins (emergency disable).
+ */
+export async function getQueueFallbackEnabled(opts?: {
+  now?: number;
+  env?: NodeJS.ProcessEnv;
+}): Promise<boolean> {
+  const env = opts?.env ?? process.env;
+  const raw = (env.QUEUE_FALLBACK_ENABLED ?? '').trim();
+  if (raw === '1') return true;
+  if (raw === '0') return false;
+  const now = opts?.now ?? Date.now();
+  if (fallbackCache.value !== null && now - fallbackCache.at < CONTROL_CACHE_MS) {
+    return fallbackCache.value;
+  }
+  try {
+    const row = await db.workerControl.findUnique({ where: { key: QUEUE_FALLBACK_CONTROL_KEY } });
+    const value = (row?.value ?? '').trim() === '1';
+    fallbackCache.value = value;
+    fallbackCache.at = now;
+    return value;
+  } catch {
+    return fallbackCache.value ?? false;
+  }
+}
+
+export function resetFallbackCacheForTests(): void {
+  fallbackCache.value = null;
+  fallbackCache.at = 0;
+}
+
 /** WorkerControl key for one kind's transport. */
 export function queueTransportKey(kind: string): string {
   return `queue.transport.${kind}`;
@@ -118,4 +155,5 @@ export async function partitionKindsByTransport(
 /** Test seam — clear the transport read cache. */
 export function resetTransportCacheForTests(): void {
   transportCache.clear();
+  resetFallbackCacheForTests();
 }

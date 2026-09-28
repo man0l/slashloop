@@ -21,6 +21,7 @@ mock.module('../db.js', () => ({
 
 import {
   defaultQueueTransport,
+  getQueueFallbackEnabled,
   getQueueTransport,
   isEmergencyD1Override,
   isKnownQueueKind,
@@ -76,6 +77,17 @@ describe('queue transport controls', () => {
   test('kind vocabulary matches the contract', () => {
     expect(isKnownQueueKind('refresh')).toBe(true);
     expect(isKnownQueueKind('bogus')).toBe(false);
+  });
+
+  test('fallback defaults off and WorkerControl 1 enables it', async () => {
+    const env = reset({ QUEUE_FALLBACK_ENABLED: undefined }, {});
+    expect(await getQueueFallbackEnabled({ env: env as NodeJS.ProcessEnv })).toBe(false);
+    const on = reset({ QUEUE_FALLBACK_ENABLED: undefined }, { 'queue.fallback.enabled': '1' });
+    expect(await getQueueFallbackEnabled({ env: on as NodeJS.ProcessEnv })).toBe(true);
+    const envOff = reset({ QUEUE_FALLBACK_ENABLED: '0' }, { 'queue.fallback.enabled': '1' });
+    expect(await getQueueFallbackEnabled({ env: envOff as NodeJS.ProcessEnv })).toBe(false);
+    const envOn = reset({ QUEUE_FALLBACK_ENABLED: '1' }, {});
+    expect(await getQueueFallbackEnabled({ env: envOn as NodeJS.ProcessEnv })).toBe(true);
   });
 
   test('partitionKindsByTransport splits per-kind ownership', async () => {

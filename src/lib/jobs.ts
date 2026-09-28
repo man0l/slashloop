@@ -21,7 +21,7 @@ import { db } from '../db.js';
 import { chunked, coerceRowDates, dbDialect, rawBatch, type RawStatement } from '../store.js';
 import { loadProducerConfig, publishJobHttp } from '../queue/producer.js';
 import { QueuePublisher } from '../queue/publisher.js';
-import { QUEUE_FALLBACK_STATUS } from '../queue/transport.js';
+import { QUEUE_FALLBACK_STATUS, getQueueFallbackEnabled } from '../queue/transport.js';
 import { CREDIT_COSTS, refundCredits, refundCreditsBatched, type RefundItem } from './credits.js';
 import { classifyFetchError } from './fetch-errors.js';
 import { notifyScrapeFailure, markScrapeSuccess } from './scrape-alert.js';
@@ -39,10 +39,11 @@ let routedPublisherKey = '';
 
 function routedQueuePublisher(): QueuePublisher {
   const cfg = loadProducerConfig();
-  const fallbackEnabled = (process.env.QUEUE_FALLBACK_ENABLED ?? '0') === '1';
+  const envFb = (process.env.QUEUE_FALLBACK_ENABLED ?? '').trim();
+  const fallbackEnabled = envFb === '1' ? true : envFb === '0' ? false : undefined;
   const key = cfg
-    ? `${cfg.baseUrl}|${cfg.keyId}|${cfg.timeoutMs}|fb:${fallbackEnabled ? '1' : '0'}`
-    : `d1|fb:${fallbackEnabled ? '1' : '0'}`;
+    ? `${cfg.baseUrl}|${cfg.keyId}|${cfg.timeoutMs}|fb:${envFb || 'ctrl'}`
+    : `d1|fb:${envFb || 'ctrl'}`;
   if (!routedPublisher || routedPublisherKey !== key) {
     routedPublisher = new QueuePublisher({
       d1: {
@@ -81,6 +82,7 @@ function routedQueuePublisher(): QueuePublisher {
           }
         : undefined,
       fallbackEnabled,
+      resolveFallbackEnabled: getQueueFallbackEnabled,
     });
     routedPublisherKey = key;
   }
