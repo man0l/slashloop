@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { experimentsTickEnabled } from './experiment-tick.js';
+import { describeExperimentTickGate, experimentsTickEnabled } from './experiment-tick.js';
 
 describe('experimentsTickEnabled', () => {
   test('explicit env wins over kinds', () => {
@@ -28,6 +28,27 @@ describe('experimentsTickEnabled', () => {
   });
 });
 
+describe('describeExperimentTickGate', () => {
+  test('reason names the exact gate so the startup banner explains a parked tick', () => {
+    expect(describeExperimentTickGate(['refresh'], { EXPERIMENT_TICK_ENABLED: '0' } as NodeJS.ProcessEnv))
+      .toEqual({ enabled: false, reason: 'EXPERIMENT_TICK_ENABLED=0 (forced off)' });
+    expect(describeExperimentTickGate(['analyze'], { EXPERIMENT_TICK_ENABLED: '1' } as NodeJS.ProcessEnv))
+      .toEqual({ enabled: true, reason: 'EXPERIMENT_TICK_ENABLED=1 (forced on)' });
+    expect(describeExperimentTickGate(['refresh', 'discover'], {} as NodeJS.ProcessEnv))
+      .toEqual({ enabled: true, reason: 'default leader (drains refresh)' });
+    const off = describeExperimentTickGate(['analyze'], {} as NodeJS.ProcessEnv);
+    expect(off.enabled).toBe(false);
+    expect(off.reason).toContain('not the leader');
+    // enabled flag always agrees with experimentsTickEnabled.
+    for (const kinds of [['refresh'], ['analyze'], [], ['rescore']]) {
+      for (const env of [{}, { EXPERIMENT_TICK_ENABLED: '0' }, { EXPERIMENT_TICK_ENABLED: '1' }]) {
+        expect(describeExperimentTickGate(kinds, env as NodeJS.ProcessEnv).enabled)
+          .toBe(experimentsTickEnabled(kinds, env as NodeJS.ProcessEnv));
+      }
+    }
+  });
+});
+
 describe('worker entry evaluation order', () => {
   test('KINDS is initialized before its first module-load use', () => {
     // Static guard: index.ts has a top-level drain loop, so it cannot be
@@ -38,10 +59,10 @@ describe('worker entry evaluation order', () => {
     const src = readFileSync(join(here, 'index.ts'), 'utf8');
     const kindsDecl = src.indexOf('const KINDS = workerKinds();');
     expect(kindsDecl).toBeGreaterThan(-1);
-    const firstUse = src.indexOf('experimentsTickEnabled(KINDS)');
+    const firstUse = src.indexOf('describeExperimentTickGate(KINDS)');
     expect(firstUse).toBeGreaterThan(-1);
     expect(kindsDecl).toBeLessThan(firstUse);
     // And no zero-arg call that could close over a later global.
-    expect(src).not.toContain('experimentsTickEnabled()');
+    expect(src).not.toContain('describeExperimentTickGate()');
   });
 });

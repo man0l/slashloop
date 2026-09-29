@@ -52,3 +52,22 @@ test('standalone ticks remain capped even without Worker accounting', async () =
   const h=harness();
   expect(await tick(120000,h.deps)).toEqual({steps:3,active:true});
 });
+
+test('a dead candidate does not consume the shared attempt budget', async () => {
+  // Regression: 2026-09-29, one failed/zombie row at the head of the
+  // candidates list absorbed every tick's 3 attempts (steps+=wave before
+  // checking results) and silently starved all newer experiments.
+  const calls: string[] = [];
+  const deps = {
+    candidates: async () => [{id:'dead', workspaceId:'w'}, {id:'live', workspaceId:'w'}],
+    step: async (workspaceId: string, id: string) => {
+      calls.push(id);
+      return id === 'live';
+    },
+    remaining: () => Infinity,
+    now: () => 0,
+  };
+  expect(await tick(120000, deps)).toEqual({steps:3,active:true});
+  expect(calls.filter((id) => id === 'dead').length).toBeLessThanOrEqual(3);
+  expect(calls).toContain('live');
+});

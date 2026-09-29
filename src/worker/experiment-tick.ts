@@ -19,8 +19,25 @@ export function experimentsTickEnabled(
   kinds: string[],
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
+  return describeExperimentTickGate(kinds, env).enabled;
+}
+
+/**
+ * Why the experiment tick is on or off on this container — surfaced in the
+ * worker startup banner so a parked experiment is visible in the logs instead
+ * of silent (2026-09-28: EXPERIMENT_TICK_ENABLED=0 on every container froze
+ * all experiments with no log line saying why).
+ */
+export function describeExperimentTickGate(
+  kinds: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): { enabled: boolean; reason: string } {
   const raw = (env.EXPERIMENT_TICK_ENABLED ?? '').trim().toLowerCase();
-  if (raw === '1' || raw === 'true' || raw === 'yes') return true;
-  if (raw === '0' || raw === 'false' || raw === 'no') return false;
-  return kinds.includes('refresh');
+  if (raw === '1' || raw === 'true' || raw === 'yes')
+    return { enabled: true, reason: 'EXPERIMENT_TICK_ENABLED=1 (forced on)' };
+  if (raw === '0' || raw === 'false' || raw === 'no')
+    return { enabled: false, reason: 'EXPERIMENT_TICK_ENABLED=0 (forced off)' };
+  if (kinds.includes('refresh'))
+    return { enabled: true, reason: 'default leader (drains refresh)' };
+  return { enabled: false, reason: `not the leader (kinds=[${kinds.join(', ')}], no refresh)` };
 }

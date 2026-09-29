@@ -55,7 +55,7 @@ import { refundCredits } from '../lib/credits.js';
 import { initLogShipping } from './ship-logs.js';
 import { tick as experimentTick } from '../experiments/engine.js';
 import { createKindBreaker } from './kind-breaker.js';
-import { experimentsTickEnabled } from './experiment-tick.js';
+import { describeExperimentTickGate } from './experiment-tick.js';
 import { controlEnabled, filterKindsByControl } from '../lib/worker-control.js';
 import { snapshotD1Usage, deltaD1Usage, formatD1Usage, totalD1Usage } from '../lib/d1-usage.js';
 
@@ -127,7 +127,8 @@ const KINDS = workerKinds();
 // debits + ledger INSERTs, so N containers ticking means N× the D1 writes for
 // the same experiment. Default owner is the maintenance (refresh-draining)
 // worker; EXPERIMENT_TICK_ENABLED=1 forces on, =0 forces off.
-const doesExperiments = experimentsTickEnabled(KINDS);
+const experimentGate = describeExperimentTickGate(KINDS);
+const doesExperiments = experimentGate.enabled;
 const EXPERIMENT_TICK_MIN_INTERVAL_MS = 5_000;
 let lastExperimentTickAt = 0;
 let experimentsActiveUntil = 0;
@@ -142,6 +143,11 @@ const IDLE_TICK_STREAK_MAX = 3;
 // changes or the tick wrote rows, so a steady 5s cadence doesn't crowd real
 // errors out of the 400-entry log shipper.
 let lastTickSteps = -1;
+// Experiment gate visibility: log every transition, and re-log hourly while
+// the tick is gated off so a parked fleet stays visible instead of silent.
+let lastGateState = '';
+let lastGateLogAt = 0;
+const GATE_REMIND_EVERY_MS = 3_600_000;
 
 // Which MediaJob kinds this worker claims — see the KINDS block above (kept
 // before the experiments block: module-load evaluation order matters).
@@ -244,7 +250,7 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   });
 }
 
-console.log(`[worker] started — dialect=${isD1Mode ? 'sqlite(D1)' : 'postgres'} kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms → max ${MAX_IDLE_MS}ms, concurrency ${CONCURRENCY}, rescore every ${Math.round(RESCORE_INTERVAL_MS / 1000)}s, experiments ${doesExperiments ? 'on' : 'off'}`);
+console.log(`[worker] started — dialect=${isD1Mode ? 'sqlite(D1)' : 'postgres'} kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms → max ${MAX_IDLE_MS}ms, concurrency ${CONCURRENCY}, rescore every ${Math.round(RESCORE_INTERVAL_MS / 1000)}s, experiments ${doesExperiments ? 'on' : 'off'} (${experimentGate.reason})`);
 // Startup stagger so sibling containers (same image, restarted together by a
 // deploy) don't walk the claim/experiment cadence in phase: each container
 // offsets its first loop iteration by a random 0–5s before the while loop.
@@ -422,8 +428,19 @@ while (!shuttingDown) {
     //
     // Two gates: doesExperiments (single leader by WORKER_KINDS, Phase 1) and
     // the experiments.enabled control row (Phase 4 kill switch, cached 60s).
-    const experimentsAllowed =
-      doesExperiments && (await controlEnabled('experiments.enabled').catch(() => true));
+    // Both are logged on every transition (and hourly while off) so a parked
+    // experiment is distinguishable from a healthy idle one in the logs.
+    const controlOn = await controlEnabled('experiments.enabled').catch(() => true);
+    const experimentsAllowed = doesExperiments && controlOn;
+    const gateState = experimentsAllowed
+      ? 'on'
+      : `off (env tick ${doesExperiments ? 'on' : 'off'} [${experimentGate.reason}], control experiments.enabled=${controlOn ? 'on' : 'off'})`;
+    if (gateState !== lastGateState
+      || (!experimentsAllowed && Date.now() - lastGateLogAt >= GATE_REMIND_EVERY_MS)) {
+      lastGateState = gateState;
+      lastGateLogAt = Date.now();
+      console.log(`[worker] experiment tick gate: ${gateState}`);
+    }
     if (!experimentTickInFlight
       && experimentsAllowed
       && Date.now() >= experimentTickBackoffUntil
@@ -447,6 +464,9 @@ while (!shuttingDown) {
             // tick with writes re-arms automatically.
             idleTickStreak++;
             if (idleTickStreak >= IDLE_TICK_STREAK_MAX) {
+              console.warn(
+                `[worker] experiment STALLED? still active after ${idleTickStreak} consecutive read-only ticks (no writes) — parked to slow cadence. Check EXPERIMENT_TICK_ENABLED / experiments.enabled and stuck experiment rows.`,
+              );
               experimentsActiveUntil = 0;
               idleTickStreak = 0;
             }
