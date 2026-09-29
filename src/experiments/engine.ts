@@ -234,8 +234,13 @@ export async function tick(wallBudgetMs=120000, deps = { candidates: store.candi
       const headroom=deps.remaining()-STEP_QUERY_RESERVE;
       const wave=Math.max(1,Math.min(maxSteps-steps,PARALLEL_SLIDES,1+Math.floor(headroom/STEP_QUERY_COST)));
       const results=await Promise.all(Array.from({length:wave},()=>deps.step(e.workspaceId,e.id)));
-      steps+=wave;
+      // A candidate with nothing actionable (failed/zombie rows, tasks all
+      // leased or parked) must not eat the shared attempt budget: skip to the
+      // next candidate uncounted. Observed live 2026-09-29 — one dead row
+      // ahead of the queue absorbed every tick's 3 attempts and starved all
+      // newer experiments silently.
       if(!results.some(Boolean))break;
+      steps+=wave;
     }
     if(deps.now()>=deadline||steps>=maxSteps||deps.remaining()<STEP_QUERY_RESERVE)break;
   }
