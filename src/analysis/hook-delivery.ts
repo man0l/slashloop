@@ -138,8 +138,40 @@ export function hookFailurePayload(args: {
     creditsCharged: 0,
     creditsRemaining: args.creditsRemaining,
     note: args.batchId
-      ? 'The batch id was reserved before this failure. An identical generate_hook_variations replay uses that id and does not charge again. The charge was refunded.'
+      ? 'The batch id was reserved before this failure. list_hook_variations returns this id. The charge was refunded.'
       : 'No batch row was reserved.',
+  };
+}
+
+export interface HookBatchListItem {
+  id: string;
+  batchId: string;
+  videoId: string;
+  analysisId: string | null;
+  createdAt: string;
+  status: StoredHookBatch['status'];
+  variations: SavedHookVariation[] | null;
+  error: string | null;
+}
+
+/** Free list_hook_variations row. Ready batches include the saved variations. */
+export function toHookBatchListItem(row: {
+  id: string;
+  videoId: string;
+  analysisId: string | null;
+  createdAt: Date;
+  text: string;
+}): HookBatchListItem {
+  const stored = readStoredHookBatch(row.text);
+  return {
+    id: row.id,
+    batchId: row.id,
+    videoId: row.videoId,
+    analysisId: row.analysisId,
+    createdAt: row.createdAt.toISOString(),
+    status: stored.status,
+    variations: stored.status === 'ready' ? stored.variations : null,
+    error: stored.status === 'failed' ? stored.error : null,
   };
 }
 
@@ -160,7 +192,7 @@ export function hookGeneratingPayload(args: {
     creditsCharged: args.creditsCharged,
     creditsRemaining: args.creditsRemaining,
     replayed: args.replayed,
-    note: 'An identical generate_hook_variations replay uses this id and does not charge again. list_hooks with hookType "batch" returns the reservation row.',
+    note: 'If this response is lost, list_hook_variations returns this id. An identical generate_hook_variations replay uses this id and does not charge again.',
   };
 }
 
