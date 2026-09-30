@@ -130,3 +130,13 @@ export function callModelText(
 ): Promise<TextModelResult> {
   return createTextClient().call(systemPrompt, userMessage, model, options);
 }
+
+/**
+ * The JSON the model emitted. `callModelText` returns a token envelope
+ * (`{ parsed, inputTokens, outputTokens }`). Validating that envelope as a
+ * brief or script always fails, which burned a second model call and held
+ * the MCP request open until the edge answered 502.
+ */
+export function modelJson(result: TextModelResult): unknown {
+  return result.parsed;
+}

@@ -6,7 +6,7 @@
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { chunked } from '../store.js';
-import { callModelText } from '../lib/llm.js';
+import { callModelText, modelJson } from '../lib/llm.js';
 
 const HOOK_GEN_SYSTEM = `You are Gemini, a viral content strategist who generates hook variations. Given source hooks, create NEW variations preserving the MECHANISM (psychological principle) but using completely different words/framing.
 
@@ -43,9 +43,9 @@ export async function generateHookVariations(
 
   const userMessage = `## Source Hooks\n\n${hookList}\n\n## Product / Brand\n${productDescription}\n\nGenerate 5-10 hook variations.`;
 
-  const parsed = await callModelText(HOOK_GEN_SYSTEM, userMessage, model);
+  const envelope = await callModelText(HOOK_GEN_SYSTEM, userMessage, model);
   const schema = z.array(z.object({ text: z.string(), sourceIndex: z.number(), type: z.string(), mechanism: z.string() }));
-  const result = schema.safeParse(parsed);
+  const result = schema.safeParse(modelJson(envelope));
   if (!result.success) throw new Error('Failed to parse hook variations');
 
   // Optionally save generated hooks back to vault
