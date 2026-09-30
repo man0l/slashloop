@@ -85,7 +85,7 @@ export type StoredHookBatch =
   | { status: 'failed'; error: string }
   | { status: 'unreadable' };
 
-export function generatingBatchJson(sourceHookIds: string[], since = new Date().toISOString()): string {
+export function generatingBatchJson(since = new Date().toISOString(), sourceHookIds: string[] = []): string {
   return JSON.stringify({ batch: true, status: 'generating', since, sourceHookIds });
 }
 
@@ -93,11 +93,11 @@ export function failedBatchJson(error: string, sourceHookIds: string[] = []): st
   return JSON.stringify({ batch: true, status: 'failed', error, sourceHookIds });
 }
 
-export function readyBatchJson(variations: SavedHookVariation[], sourceHookIds: string[]): string {
+export function readyBatchJson(variations: SavedHookVariation[], sourceHookIds: string[] = []): string {
   return JSON.stringify({ batch: true, status: 'ready', variations, sourceHookIds });
 }
 
-/** Quoted id as it appears inside batch JSON. Stays under D1's 50-byte LIKE cap. */
+/** Quoted id as stored in batch JSON. Stays under D1's 50-byte LIKE cap. */
 export function hookIdContainsToken(hookId: string): string {
   return `"${hookId}"`;
 }
@@ -156,14 +156,47 @@ export function hookFailurePayload(args: {
     creditsCharged: 0,
     creditsRemaining: args.creditsRemaining,
     note: args.batchId
-      ? 'The batch id was reserved before this failure. list_hook_variations by a source hookId returns this id. An identical generate_hook_variations replay uses that id and does not charge again. The charge was refunded.'
+      ? 'The batch id was reserved before this failure. list_hook_variations by a source hookId returns this id. The charge was refunded.'
       : 'No batch row was reserved.',
+  };
+}
+
+export interface HookBatchListItem {
+  id: string;
+  batchId: string;
+  videoId: string;
+  analysisId: string | null;
+  createdAt: string;
+  status: StoredHookBatch['status'];
+  sourceHookIds: string[];
+  variations: SavedHookVariation[] | null;
+  error: string | null;
+}
+
+/** Free list_hook_variations row. Ready batches include the saved variations. */
+export function toHookBatchListItem(row: {
+  id: string;
+  videoId: string;
+  analysisId: string | null;
+  createdAt: Date;
+  text: string;
+}): HookBatchListItem {
+  const stored = readStoredHookBatch(row.text);
+  return {
+    id: row.id,
+    batchId: row.id,
+    videoId: row.videoId,
+    analysisId: row.analysisId,
+    createdAt: row.createdAt.toISOString(),
+    status: stored.status,
+    sourceHookIds: sourceHookIdsFromBatch(row.text),
+    variations: stored.status === 'ready' ? stored.variations : null,
+    error: stored.status === 'failed' ? stored.error : null,
   };
 }
 
 export function hookGeneratingPayload(args: {
   id: string;
-  sourceHookId: string;
   creditsCharged: number;
   creditsRemaining: number;
   replayed: boolean;
@@ -179,41 +212,7 @@ export function hookGeneratingPayload(args: {
     creditsCharged: args.creditsCharged,
     creditsRemaining: args.creditsRemaining,
     replayed: args.replayed,
-    recovery: {
-      tool: 'list_hook_variations',
-      args: { hookId: args.sourceHookId },
-    },
     note: 'If this response is lost, list_hook_variations by a source hookId returns this id. An identical generate_hook_variations replay uses this id and does not charge again.',
-  };
-}
-
-export interface HookVariationListItem {
-  id: string;
-  batchId: string;
-  status: StoredHookBatch['status'];
-  sourceHookIds: string[];
-  createdAt: string;
-  videoId: string;
-  variations: SavedHookVariation[] | null;
-  error: string | null;
-}
-
-export function toHookVariationListItem(row: {
-  id: string;
-  text: string;
-  createdAt: Date;
-  videoId: string;
-}): HookVariationListItem {
-  const stored = readStoredHookBatch(row.text);
-  return {
-    id: row.id,
-    batchId: row.id,
-    status: stored.status,
-    sourceHookIds: sourceHookIdsFromBatch(row.text),
-    createdAt: row.createdAt.toISOString(),
-    videoId: row.videoId,
-    variations: stored.status === 'ready' ? stored.variations : null,
-    error: stored.status === 'failed' ? stored.error : null,
   };
 }
 
@@ -324,7 +323,7 @@ export async function deliverHookVariations(opts: {
     }
     await db.hook.update({
       where: { id: opts.id },
-      data: { text: generatingBatchJson(orderedIds) },
+      data: { text: generatingBatchJson(new Date().toISOString(), orderedIds) },
     });
   } else {
     try {
@@ -333,7 +332,7 @@ export async function deliverHookVariations(opts: {
           id: opts.id,
           videoId: anchor.videoId,
           analysisId: anchor.analysisId,
-          text: generatingBatchJson(orderedIds),
+          text: generatingBatchJson(new Date().toISOString(), orderedIds),
           hookType: HOOK_BATCH_TYPE,
           placement: 'batch',
           origin: 'generated',
