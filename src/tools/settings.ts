@@ -12,7 +12,7 @@ import { getApifyCapStatus, getApifySpendBreakdown, decodeApifyRefId } from '../
 import { activeProviderFor, formatProxyCheap, listScrapers, proxyCheapBandwidth, scrapeCapKind, trafficStatus } from '../lib/scrapers/index.js';
 import { proxyConfig } from '../lib/scrapers/proxy-http.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance, resolveBillingWorkspace } from '../lib/credits.js';
-import { reconcileWallet } from '../lib/credit-reconcile.js';
+import { normalizeLedgerColumns, reconcileWallet, type LedgerEntry } from '../lib/credit-reconcile.js';
 import { retentionCeiling, validateRetentionDays } from '../lib/retention.js';
 import { costBlock } from '../lib/next-steps.js';
 import { failureLines, infoLines } from '../lib/refresh-notes.js';
@@ -84,21 +84,48 @@ export function registerSettingsTools(server: McpServer) {
       // (the table is the audit trail; the wallet is its running total) and
       // keep a short recent window so a debit with no UsageLog row is visible
       // in this same payload.
-      const [ledgerRecent, ledgerSum] = await Promise.all([
-        db.creditLedger.findMany({
-          where: { workspaceId: billingWorkspace.id },
-          orderBy: { createdAt: 'desc' },
-          take: 20,
-          select: { delta: true, reason: true, tool: true, balanceAfter: true, refId: true, createdAt: true },
-        }),
-        db.creditLedger.aggregate({
-          where: { workspaceId: billingWorkspace.id },
-          _sum: { delta: true },
-        }),
+      // Raw text, not creditLedger.findMany. A slice of historical rows stores
+      // the idempotency key in createdAt (see normalizeLedgerColumns). Prisma's
+      // DateTime decoder rejects that string and fails the whole tool. CAST
+      // keeps the column a string so the decoder never sees it.
+      const [ledgerRaw, ledgerSumRows] = await Promise.all([
+        db.$queryRaw<Array<{
+          delta: number;
+          reason: string;
+          tool: string | null;
+          balanceAfter: number;
+          refId: string;
+          createdAt: string;
+        }>>`
+          SELECT "delta", "reason", "tool", "balanceAfter", "refId",
+                 CAST("createdAt" AS TEXT) AS "createdAt"
+            FROM "CreditLedger"
+           WHERE "workspaceId" = ${billingWorkspace.id}
+           ORDER BY CASE
+             WHEN "createdAt" LIKE '20%' THEN "createdAt"
+             WHEN "refId" LIKE '20%' THEN "refId"
+             ELSE "createdAt"
+           END DESC
+           LIMIT 20
+        `,
+        db.$queryRaw<Array<{ sumDelta: number | bigint | null }>>`
+          SELECT COALESCE(SUM("delta"), 0) AS "sumDelta"
+            FROM "CreditLedger"
+           WHERE "workspaceId" = ${billingWorkspace.id}
+        `,
       ]);
+      const ledgerRecent: LedgerEntry[] = ledgerRaw.map((row) => normalizeLedgerColumns({
+        delta: Number(row.delta),
+        reason: row.reason,
+        tool: row.tool,
+        balanceAfter: Number(row.balanceAfter),
+        refId: row.refId,
+        createdAt: row.createdAt,
+      }));
+      const sumOfLedgerDeltas = Number(ledgerSumRows[0]?.sumDelta ?? 0);
       const reconciliation = reconcileWallet({
         creditsTotal: credits.total,
-        sumOfLedgerDeltas: ledgerSum._sum.delta ?? 0,
+        sumOfLedgerDeltas,
         latestLedgerBalance: ledgerRecent[0]?.balanceAfter ?? null,
         usageLogCostCents: totalCost,
         ledgerRows: ledgerRecent,
