@@ -85,16 +85,34 @@ export type StoredHookBatch =
   | { status: 'failed'; error: string }
   | { status: 'unreadable' };
 
-export function generatingBatchJson(since = new Date().toISOString()): string {
-  return JSON.stringify({ batch: true, status: 'generating', since });
+export function generatingBatchJson(sourceHookIds: string[], since = new Date().toISOString()): string {
+  return JSON.stringify({ batch: true, status: 'generating', since, sourceHookIds });
 }
 
-export function failedBatchJson(error: string): string {
-  return JSON.stringify({ batch: true, status: 'failed', error });
+export function failedBatchJson(error: string, sourceHookIds: string[] = []): string {
+  return JSON.stringify({ batch: true, status: 'failed', error, sourceHookIds });
 }
 
-export function readyBatchJson(variations: SavedHookVariation[]): string {
-  return JSON.stringify({ batch: true, status: 'ready', variations });
+export function readyBatchJson(variations: SavedHookVariation[], sourceHookIds: string[]): string {
+  return JSON.stringify({ batch: true, status: 'ready', variations, sourceHookIds });
+}
+
+/** Quoted id as it appears inside batch JSON. Stays under D1's 50-byte LIKE cap. */
+export function hookIdContainsToken(hookId: string): string {
+  return `"${hookId}"`;
+}
+
+export function sourceHookIdsFromBatch(text: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== 'object') return [];
+  const ids = (parsed as { sourceHookIds?: unknown }).sourceHookIds;
+  if (!Array.isArray(ids)) return [];
+  return ids.filter((id): id is string => typeof id === 'string' && id.length > 0);
 }
 
 export function readStoredHookBatch(text: string): StoredHookBatch {
@@ -138,13 +156,14 @@ export function hookFailurePayload(args: {
     creditsCharged: 0,
     creditsRemaining: args.creditsRemaining,
     note: args.batchId
-      ? 'The batch id was reserved before this failure. An identical generate_hook_variations replay uses that id and does not charge again. The charge was refunded.'
+      ? 'The batch id was reserved before this failure. list_hook_variations by a source hookId returns this id. An identical generate_hook_variations replay uses that id and does not charge again. The charge was refunded.'
       : 'No batch row was reserved.',
   };
 }
 
 export function hookGeneratingPayload(args: {
   id: string;
+  sourceHookId: string;
   creditsCharged: number;
   creditsRemaining: number;
   replayed: boolean;
@@ -160,7 +179,41 @@ export function hookGeneratingPayload(args: {
     creditsCharged: args.creditsCharged,
     creditsRemaining: args.creditsRemaining,
     replayed: args.replayed,
-    note: 'An identical generate_hook_variations replay uses this id and does not charge again. list_hooks with hookType "batch" returns the reservation row.',
+    recovery: {
+      tool: 'list_hook_variations',
+      args: { hookId: args.sourceHookId },
+    },
+    note: 'If this response is lost, list_hook_variations by a source hookId returns this id. An identical generate_hook_variations replay uses this id and does not charge again.',
+  };
+}
+
+export interface HookVariationListItem {
+  id: string;
+  batchId: string;
+  status: StoredHookBatch['status'];
+  sourceHookIds: string[];
+  createdAt: string;
+  videoId: string;
+  variations: SavedHookVariation[] | null;
+  error: string | null;
+}
+
+export function toHookVariationListItem(row: {
+  id: string;
+  text: string;
+  createdAt: Date;
+  videoId: string;
+}): HookVariationListItem {
+  const stored = readStoredHookBatch(row.text);
+  return {
+    id: row.id,
+    batchId: row.id,
+    status: stored.status,
+    sourceHookIds: sourceHookIdsFromBatch(row.text),
+    createdAt: row.createdAt.toISOString(),
+    videoId: row.videoId,
+    variations: stored.status === 'ready' ? stored.variations : null,
+    error: stored.status === 'failed' ? stored.error : null,
   };
 }
 
@@ -180,10 +233,10 @@ function generatingAgeMs(stored: StoredHookBatch, createdAt: Date): number {
   return Date.now() - createdAt.getTime();
 }
 
-async function markBatchFailed(id: string, error: unknown): Promise<void> {
+async function markBatchFailed(id: string, error: unknown, sourceHookIds: string[]): Promise<void> {
   await db.hook.update({
     where: { id },
-    data: { text: failedBatchJson(errorText(error)) },
+    data: { text: failedBatchJson(errorText(error), sourceHookIds) },
   }).catch(() => {});
 }
 
@@ -191,6 +244,7 @@ async function persistGeneratedHooks(
   batchId: string,
   hooks: SourceHook[],
   variations: HookVariation[],
+  sourceHookIds: string[],
 ): Promise<SavedHookVariation[]> {
   const saved: SavedHookVariation[] = [];
   for (let index = 0; index < variations.length; index++) {
@@ -227,7 +281,7 @@ async function persistGeneratedHooks(
   if (saved.length === 0) throw new Error('Failed to parse hook variations');
   await db.hook.update({
     where: { id: batchId },
-    data: { text: readyBatchJson(saved) },
+    data: { text: readyBatchJson(saved, sourceHookIds) },
   });
   return saved;
 }
@@ -270,7 +324,7 @@ export async function deliverHookVariations(opts: {
     }
     await db.hook.update({
       where: { id: opts.id },
-      data: { text: generatingBatchJson() },
+      data: { text: generatingBatchJson(orderedIds) },
     });
   } else {
     try {
@@ -279,7 +333,7 @@ export async function deliverHookVariations(opts: {
           id: opts.id,
           videoId: anchor.videoId,
           analysisId: anchor.analysisId,
-          text: generatingBatchJson(),
+          text: generatingBatchJson(orderedIds),
           hookType: HOOK_BATCH_TYPE,
           placement: 'batch',
           origin: 'generated',
@@ -298,7 +352,7 @@ export async function deliverHookVariations(opts: {
         opts.productDescription,
         opts.model ?? 'gemini-3.5-flash',
       );
-      const saved = await persistGeneratedHooks(opts.id, hooks, variations);
+      const saved = await persistGeneratedHooks(opts.id, hooks, variations, orderedIds);
       return { ok: true as const, saved };
     } catch (error) {
       return { ok: false as const, error };
@@ -308,7 +362,7 @@ export async function deliverHookVariations(opts: {
   const raced = await raceBudget(work, opts.budgetMs ?? HOOK_INLINE_BUDGET_MS);
   if (raced.kind === 'done') {
     if (!raced.value.ok) {
-      await markBatchFailed(opts.id, raced.value.error);
+      await markBatchFailed(opts.id, raced.value.error, orderedIds);
       throw new HookGenerationError(errorText(raced.value.error), opts.id);
     }
     return { delivery: 'ready', id: opts.id, variations: raced.value.saved, replayed: false };
@@ -318,7 +372,7 @@ export async function deliverHookVariations(opts: {
     keepAlive(work.then(async (settled) => {
       if (settled.ok) return;
       try {
-        await markBatchFailed(opts.id, settled.error);
+        await markBatchFailed(opts.id, settled.error, orderedIds);
         await opts.onLateFailure?.(opts.id, settled.error);
       } catch (err) {
         console.error(`generate_hook_variations late failure ${opts.id}: ${errorText(err)}`);
@@ -329,7 +383,7 @@ export async function deliverHookVariations(opts: {
 
   const settled = await work;
   if (!settled.ok) {
-    await markBatchFailed(opts.id, settled.error);
+    await markBatchFailed(opts.id, settled.error, orderedIds);
     throw new HookGenerationError(errorText(settled.error), opts.id);
   }
   return { delivery: 'ready', id: opts.id, variations: settled.saved, replayed: false };

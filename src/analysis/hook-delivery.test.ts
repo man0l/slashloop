@@ -3,10 +3,12 @@ import { readFileSync } from 'node:fs';
 import {
   failedBatchJson,
   generatingBatchJson,
+  hookIdContainsToken,
   logicalGeneratedHookId,
   logicalHookBatchId,
   readStoredHookBatch,
   readyBatchJson,
+  toHookVariationListItem,
 } from './hook-delivery.js';
 
 const base = {
@@ -34,13 +36,18 @@ describe('logicalHookBatchId', () => {
   });
 });
 
+const sourceIds = [
+  '11111111-1111-4111-8111-111111111111',
+  '22222222-2222-4222-8222-222222222222',
+];
+
 describe('readStoredHookBatch', () => {
   test('parses the reservation sentinels and a ready payload', () => {
-    expect(readStoredHookBatch(generatingBatchJson('2026-09-30T11:00:00.000Z'))).toEqual({
+    expect(readStoredHookBatch(generatingBatchJson(sourceIds, '2026-09-30T11:00:00.000Z'))).toEqual({
       status: 'generating',
       since: '2026-09-30T11:00:00.000Z',
     });
-    expect(readStoredHookBatch(failedBatchJson('model down'))).toEqual({
+    expect(readStoredHookBatch(failedBatchJson('model down', sourceIds))).toEqual({
       status: 'failed',
       error: 'model down',
     });
@@ -51,9 +58,38 @@ describe('readStoredHookBatch', () => {
       type: 'curiosity_gap',
       mechanism: 'names the pain',
     }];
-    expect(readStoredHookBatch(readyBatchJson(variations))).toEqual({ status: 'ready', variations });
+    expect(readStoredHookBatch(readyBatchJson(variations, sourceIds))).toEqual({ status: 'ready', variations });
     expect(readStoredHookBatch('not-json').status).toBe('unreadable');
     expect(readStoredHookBatch(JSON.stringify({ status: 'ready', variations })).status).toBe('unreadable');
+  });
+
+  test('embeds each source hook id so list_hook_variations can find the batch', () => {
+    const variations = [{
+      id: 'h1',
+      text: 'Your notes are the bottleneck',
+      sourceIndex: 0,
+      type: 'curiosity_gap',
+      mechanism: 'names the pain',
+    }];
+    for (const json of [
+      generatingBatchJson(sourceIds, '2026-09-30T11:00:00.000Z'),
+      failedBatchJson('model down', sourceIds),
+      readyBatchJson(variations, sourceIds),
+    ]) {
+      expect(json).toContain(hookIdContainsToken(sourceIds[0]!));
+      expect(json).toContain(hookIdContainsToken(sourceIds[1]!));
+      expect(hookIdContainsToken(sourceIds[0]!).length).toBeLessThanOrEqual(50);
+    }
+    const item = toHookVariationListItem({
+      id: 'batch-1',
+      text: readyBatchJson(variations, sourceIds),
+      createdAt: new Date('2026-09-30T11:00:00.000Z'),
+      videoId: 'v',
+    });
+    expect(item.id).toBe('batch-1');
+    expect(item.batchId).toBe('batch-1');
+    expect(item.sourceHookIds).toEqual(sourceIds);
+    expect(item.status).toBe('ready');
   });
 });
 
@@ -65,5 +101,11 @@ test('generate_hook_variations reserves one batch id and replays it', () => {
   expect(body).toContain('readOnlyHint: false');
   expect(body).toContain('idempotencyKey: batchId');
   expect(body).toContain('logicalHookBatchId');
+  expect(body).toContain('`${batchId}:fail`');
+  expect(body).toContain('creditsCharged');
+  expect(body).toContain('cost: costBlock');
   expect(src).toContain('not: HOOK_BATCH_TYPE');
+  expect(src).toContain("server.tool('list_hook_variations'");
+  expect(src).toContain('hookIdContainsToken(hookId)');
+  expect(src).not.toContain('throw err');
 });
