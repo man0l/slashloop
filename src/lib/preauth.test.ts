@@ -56,7 +56,10 @@ test('an aborted call refunds and does not keep the debit when the model call la
     },
   }, d);
   expect(result.ok).toBe(false);
-  if (!result.ok) expect(result.aborted).toBe(true);
+  if (!result.ok) {
+    expect(result.aborted).toBe(true);
+    expect(result.value).toEqual({ id: 'brief-orphaned' });
+  }
   expect(result.creditsCharged).toBe(0);
   expect(d.refunds).toEqual(['fetch_failed']);
 });
