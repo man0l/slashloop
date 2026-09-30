@@ -30,7 +30,39 @@ const SHELL = (title: string, body: string) => `<!doctype html>
   #auth button[type="submit"] { background:#FF4D00 !important; }
 </style>
 </head>
-<body><div class="card">${body}</div></body></html>`;
+  <body><div class="card">${body}</div></body></html>`;
+
+/**
+ * Testable mirrors of the redirect logic embedded in loginPage()'s browser
+ * script above. The script is the runtime source of truth (it runs against
+ * the live `location`); these exist so bun tests can pin the same semantics
+ * without executing browser JS. Keep both sides in sync.
+ */
+
+/** Same-origin relative paths only; anything else falls back. */
+export function safeRedirectTarget(value: unknown, fallback = '/'): string {
+  if (typeof value !== 'string') return fallback;
+  if (value.charAt(0) !== '/') return fallback;
+  if (value.charAt(1) === '/' || value.charAt(1) === '\\') return fallback;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)) return fallback;
+  return value;
+}
+
+/**
+ * Resolve the post-login target for a login/authorize page visit.
+ * Explicit ?redirect= wins (validated by safeRedirectTarget); OAuth entry
+ * points (client_id/redirect_uri present) default to the full current
+ * request so the authorize params survive the Supabase handoff; direct
+ * visits fall back to '/'.
+ */
+export function defaultLoginRedirect(search: string, pathname: string): string {
+  const query = search ? (search.startsWith('?') ? search : `?${search}`) : '';
+  const params = new URLSearchParams(query);
+  const explicit = params.get('redirect');
+  if (explicit) return explicit;
+  if (params.get('client_id') || params.get('redirect_uri')) return `${pathname}${query}`;
+  return '/';
+}
 
 export function loginPage(): string {
   return SHELL('Sign in', `
@@ -61,17 +93,71 @@ export function loginPage(): string {
 
       const supabase = createClient(${JSON.stringify(SU)}, ${JSON.stringify(ANON)});
       const params = new URLSearchParams(location.search);
-      const redirect = params.get('redirect') || '/';
+      const selfUrl = location.pathname + location.search;
+      // MCP OAuth clients send standard params (client_id/redirect_uri/...)
+      // and no ?redirect=. Default to the full current authorize request so
+      // it survives the Supabase redirectTo handoff; direct (non-OAuth)
+      // visits keep the old '/' fallback. (Keep in sync with
+      // defaultLoginRedirect() in this module.)
+      function defaultRedirect() {
+        const explicit = params.get('redirect');
+        if (explicit) return explicit;
+        if (params.get('client_id') || params.get('redirect_uri')) return selfUrl;
+        return '/';
+      }
+      // Same-origin relative paths only — absolute, protocol-relative and
+      // backslash-smuggled values fall back. (Keep in sync with
+      // safeRedirectTarget() in this module.)
+      function safeRedirect(value, fallback) {
+        if (typeof value !== 'string') return fallback;
+        if (value.charAt(0) !== '/') return fallback;
+        if (value.charAt(1) === '/' || value.charAt(1) === '\\\\') return fallback;
+        if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)) return fallback;
+        return value;
+      }
+      const redirect = safeRedirect(defaultRedirect(), '/');
       const redirectTo = location.origin + '/login?redirect=' + encodeURIComponent(redirect);
       const errEl = document.getElementById('err');
 
+      // Signed in on the authorize URL itself: the provider can only mint
+      // the code server-side, so POST the original query with the Supabase
+      // access token and follow the returned client redirect_uri. A plain
+      // location.href = redirect here would reload this same page forever.
+      async function completeAuthorize() {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session && session.access_token;
+        if (!token) { location.href = redirect; return; }
+        try {
+          const res = await fetch('/api/oauth/authorize/complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+            body: JSON.stringify({ query: location.search }),
+          });
+          const data = await res.json().catch(function () { return {}; });
+          if (res.ok && data && typeof data.redirectTo === 'string' && data.redirectTo) {
+            location.href = data.redirectTo;
+            return;
+          }
+          errEl.textContent = (data && data.error) || 'Authorization failed. Please reconnect from your app.';
+        } catch (e) {
+          errEl.textContent = 'Authorization failed. Please reconnect from your app.';
+        }
+      }
+
       // Already signed in (including return from Google OAuth).
       const { data: { user } } = await supabase.auth.getUser();
-      if (user) { location.href = redirect; }
+      if (user) {
+        if (redirect === selfUrl) { await completeAuthorize(); }
+        else { location.href = redirect; }
+      }
 
       supabase.auth.onAuthStateChange((event, session) => {
         if (session && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED')) {
-          if (event === 'SIGNED_IN') location.href = redirect;
+          if (event === 'SIGNED_IN') {
+            const now = location.pathname + location.search;
+            if (redirect === now) { completeAuthorize(); }
+            else { location.href = redirect; }
+          }
         }
       });
 
