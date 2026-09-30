@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ancestorCompare, selectFailedAncestors } from './deploy-lineage.mjs';
+import { ancestorCompare, selectFailedAncestors, selectUnshippedFailures } from './deploy-lineage.mjs';
 
 const runs = [
   { id: 183, run_number: 183, head_sha: 'descendant', conclusion: 'success', created_at: '2026-09-30T12:16:00Z' },
@@ -34,6 +34,17 @@ describe('selectFailedAncestors', () => {
     ];
     const { failed } = selectFailedAncestors(rerun, { headSha: 'head', runId: 190 });
     expect(failed).toEqual([]);
+  });
+});
+
+describe('selectUnshippedFailures', () => {
+  test('keeps a failed sha that a later descendant publish already covered', () => {
+    const later = [
+      { id: 185, run_number: 185, head_sha: 'head', conclusion: 'success', created_at: '2026-09-30T12:40:00Z' },
+      ...runs,
+    ];
+    const failed = selectUnshippedFailures(later, { headSha: 'head', runId: 185 });
+    expect(failed.map((run) => run.head_sha)).toEqual(['failed-fix', 'old-failure']);
   });
 });
 

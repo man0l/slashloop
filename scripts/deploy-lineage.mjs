@@ -26,6 +26,27 @@ const PUBLISHED = 'cloudflare-worker/published';
 const SHIPPED_VIA = 'cloudflare-worker/shipped-via';
 const TAG = process.env.WORKER_LIVE_TAG || 'worker-live';
 
+// Failures whose own SHA never has a successful deploy-worker run.
+// Unlike selectFailedAncestors, this ignores the previous-success floor so
+// the first publish after this script ships can still mark older holes
+// (run 182) that a later green run had already covered.
+export function selectUnshippedFailures(runs, { headSha, runId }) {
+  const list = (Array.isArray(runs) ? runs : [])
+    .filter((run) => run && String(run.id) !== String(runId) && run.head_sha && run.head_sha !== headSha);
+  const publishedShas = new Set(
+    list.filter((run) => run.conclusion === 'success').map((run) => run.head_sha),
+  );
+  const seen = new Set();
+  const failed = [];
+  for (const run of list.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))) {
+    if (run.conclusion !== 'failure') continue;
+    if (publishedShas.has(run.head_sha) || seen.has(run.head_sha)) continue;
+    seen.add(run.head_sha);
+    failed.push(run);
+  }
+  return failed;
+}
+
 export function selectFailedAncestors(runs, { headSha, runId }) {
   const previous = (Array.isArray(runs) ? runs : [])
     .filter((run) => run && String(run.id) !== String(runId) && run.head_sha && run.head_sha !== headSha)
@@ -143,6 +164,12 @@ async function isAncestor(repo, base, head) {
   return ancestorCompare(result.data?.status);
 }
 
+async function statusContexts(repo, sha) {
+  const result = await github('GET', `/repos/${repo}/commits/${sha}/status`);
+  if (result.status >= 300) throw new Error(`read status ${sha.slice(0, 7)} -> HTTP ${result.status}`);
+  return new Set((result.data?.statuses ?? []).map((status) => status.context));
+}
+
 async function main() {
   const repo = process.env.GITHUB_REPOSITORY;
   const sha = process.env.GITHUB_SHA;
@@ -198,10 +225,35 @@ async function main() {
 
     try {
       const runs = await listRuns(repo, branch);
-      const { prevSuccess, failed } = selectFailedAncestors(runs, { headSha: sha, runId });
+      const { prevSuccess, failed: windowFailed } = selectFailedAncestors(runs, { headSha: sha, runId });
+      const windowIds = new Set(windowFailed.map((run) => String(run.id)));
       const shipped = [];
-      for (const run of failed) {
+      let statusReads = true;
+      for (const run of selectUnshippedFailures(runs, { headSha: sha, runId })) {
         if (!(await isAncestor(repo, run.head_sha, sha))) continue;
+        let contexts = null;
+        if (statusReads) {
+          try {
+            contexts = await statusContexts(repo, run.head_sha);
+          } catch (error) {
+            // One read failure is enough. Keep marking the open window;
+            // historical holes wait until statuses are readable.
+            statusReads = false;
+            errors.push(error.message);
+          }
+        }
+        if (!statusReads && !windowIds.has(String(run.id))) continue;
+        if (contexts?.has(SHIPPED_VIA)) continue;
+        if (!contexts?.has(PUBLISHED)) {
+          await postStatus(
+            repo,
+            run.head_sha,
+            PUBLISHED,
+            'failure',
+            `Not published by deploy-worker run ${run.run_number}. Own run failed before a later publish.`,
+            targetUrl,
+          );
+        }
         await postStatus(
           repo,
           run.head_sha,
