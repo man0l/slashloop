@@ -34,6 +34,7 @@ import type { Env } from './env.js';
 import { loginPage, consentPage } from '../../remote/pages.js';
 import { AUTHORIZATION_SERVER } from '../../remote/mcp-server.js';
 import { corsHeaders } from '../lib/cors.js';
+import { healthBody } from './health.js';
 
 type HandlerModule = Record<string, unknown>;
 
@@ -79,15 +80,7 @@ function servePage(page: NonNullable<Route['page']>, url: URL): Response {
       return new Response('Not Found', { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
     case 'health':
     default:
-      return jsonResponse({
-        ok: true,
-        service: 'slashloop',
-        mode: 'remote',
-        public_url: origin,
-        as: AUTHORIZATION_SERVER,
-        tools: 'full',
-        db: 'parallel',
-      });
+      return jsonResponse(healthBody(origin, AUTHORIZATION_SERVER));
   }
 }
 
