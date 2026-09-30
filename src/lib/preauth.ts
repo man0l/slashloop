@@ -51,7 +51,15 @@ const defaultDeps: PreauthDeps = { debitCredits, refundCredits, creditBalance, k
 
 export type PreauthResult<T> =
   | { ok: true; value: T; balance: CreditBalance; creditsCharged: number }
-  | { ok: false; aborted: boolean; error: unknown; balance: CreditBalance; creditsCharged: 0 };
+  | {
+      ok: false;
+      aborted: boolean;
+      error: unknown;
+      balance: CreditBalance;
+      creditsCharged: 0;
+      /** Set when `run` finished and the client had already disconnected. */
+      value?: T;
+    };
 
 /**
  * Debit `credits`, run `run`, refund the same amount on throw or abort.
@@ -100,7 +108,9 @@ export async function runPreauthed<T>(
     const value = await opts.run();
     if (signal?.aborted || refundPromise) {
       const balance = await closeWithRefund('fetch_failed');
-      return { ok: false, aborted: true, error: signal?.reason, balance, creditsCharged: 0 };
+      // The artifact may already exist. Hand it back so the tool can put the
+      // id in the body instead of answering with an empty failure.
+      return { ok: false, aborted: true, error: signal?.reason, balance, creditsCharged: 0, value };
     }
     committed = true;
     const balance = await deps.creditBalance(opts.workspaceId);

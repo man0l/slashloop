@@ -6,12 +6,44 @@ import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { chunked } from '../store.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
-import { generateBrief } from '../analysis/briefs.js';
+import { BriefGenerationError, deliverBrief, type BriefDelivery } from '../analysis/briefs.js';
+import {
+  briefFailurePayload,
+  briefGeneratingPayload,
+  indexLatestBriefs,
+  readStoredBrief,
+  toBriefListItem,
+} from '../analysis/brief-delivery.js';
 import { generateScript } from '../analysis/scripts.js';
-import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload } from '../lib/credits.js';
+import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload, refundCredits } from '../lib/credits.js';
 import { mergedAbortSignal, runPreauthed } from '../lib/preauth.js';
 import { costBlock, withNextSteps } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+
+function reservedBriefId(error: unknown, value: unknown): string | null {
+  if (error instanceof BriefGenerationError && error.briefId) return error.briefId;
+  if (!value || typeof value !== 'object') return null;
+  const delivery = value as Partial<BriefDelivery>;
+  if (delivery.delivery === 'generating' && typeof delivery.id === 'string') return delivery.id;
+  if (delivery.delivery === 'ready' && delivery.result && typeof delivery.result.id === 'string') return delivery.result.id;
+  return null;
+}
+
+function briefToolError(message: string, briefId: string | null, creditsRemaining: number | null) {
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        ...briefFailurePayload({ message, briefId, creditsRemaining }),
+        cost: costBlock(0, {
+          ...(creditsRemaining != null ? { remaining: creditsRemaining } : {}),
+          note: 'Call failed — pre-auth refunded, nothing charged.',
+        }),
+      }, null, 2),
+    }],
+    isError: true as const,
+  };
+}
 
 export function registerCreativeTools(server: McpServer) {
 
@@ -223,7 +255,7 @@ export function registerCreativeTools(server: McpServer) {
   // ============ IDEAS ============
 
   server.tool('list_ideas',
-    'List idea cards. Filter by status.',
+    'List idea cards. Filter by status. Each card includes briefId and briefStatus for its latest brief, if one exists.',
     {
       workspaceId: workspaceIdField,
       status: z.enum(['new', 'briefed', 'tested', 'archived']).optional(),
@@ -242,7 +274,21 @@ export function registerCreativeTools(server: McpServer) {
         orderBy: { createdAt: 'desc' },
         take: limit,
       });
-      return { content: [{ type: 'text' as const, text: JSON.stringify(ideas, null, 2) }] };
+      const analysisIds = ideas.flatMap((idea) => idea.analysisId ? [idea.analysisId] : []);
+      const refs = analysisIds.length === 0 ? new Map() : indexLatestBriefs(await db.brief.findMany({
+        where: { analysisId: { in: analysisIds } },
+        select: { id: true, analysisId: true, createdAt: true, briefJson: true },
+        orderBy: { createdAt: 'desc' },
+      }));
+      const withBriefs = ideas.map((idea) => {
+        const ref = idea.analysisId ? refs.get(idea.analysisId) : undefined;
+        return {
+          ...idea,
+          briefId: ref?.briefId ?? null,
+          briefStatus: ref?.briefStatus ?? null,
+        };
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(withBriefs, null, 2) }] };
     });
 
   server.tool('get_idea_queue',
@@ -371,7 +417,7 @@ export function registerCreativeTools(server: McpServer) {
   // ============ BRIEFS ============
 
   server.tool('create_brief',
-    'Generate a UGC/ad brief from an analysis. Includes concept, hook, talking points, visual beats, and deliverable specs. Costs 2 credits.',
+    'Generate a UGC/ad brief from an analysis. Includes concept, hook, talking points, visual beats, and deliverable specs. Costs 2 credits. The brief id is reserved before the model call and is in every response. If the response is lost, list_briefs by analysisId. A slow model returns status "generating"; poll get_brief.',
     {
       workspaceId: workspaceIdField,
       analysisId: z.string(),
@@ -393,32 +439,46 @@ export function registerCreativeTools(server: McpServer) {
           credits: CREDIT_COSTS.createBrief,
           tool: 'create_brief',
           signal: mergedAbortSignal(extra),
-          run: () => generateBrief(analysisId, brandContext),
+          run: () => deliverBrief({
+            analysisId,
+            workspaceId: workspace.id,
+            brandContext,
+            onLateFailure: async (briefId) => {
+              await refundCredits(workspace.id, CREDIT_COSTS.createBrief, 'create_brief', `${briefId}:fail`, 'call_failed');
+            },
+          }),
         });
       } catch (err) {
         if (err instanceof InsufficientCreditsError) {
           return { content: [{ type: 'text' as const, text: JSON.stringify(insufficientCreditsPayload(err), null, 2) }], isError: true };
         }
-        throw err;
+        const briefId = reservedBriefId(err, null);
+        const message = err instanceof Error ? err.message : 'Brief generation failed';
+        return briefToolError(message, briefId, null);
       }
       if (!metered.ok) {
         const failed = metered.error instanceof Error ? metered.error.message : 'Call aborted';
+        return briefToolError(failed, reservedBriefId(metered.error, metered.value), metered.balance.total);
+      }
+      if (metered.value.delivery === 'generating') {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
-            error: 'Brief generation failed',
-            message: failed,
-            creditsCharged: 0,
-            creditsRemaining: metered.balance.total,
-            cost: costBlock(0, { remaining: metered.balance.total, note: 'Call failed — pre-auth refunded, nothing charged.' }),
-          }) }],
-          isError: true,
+            ...briefGeneratingPayload({
+              id: metered.value.id,
+              creditsCharged: metered.creditsCharged,
+              creditsRemaining: metered.balance.total,
+            }),
+            cost: costBlock(metered.creditsCharged, { remaining: metered.balance.total }),
+          }, null, 2) }],
         };
       }
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           message: 'Brief generated',
-          id: metered.value.id,
-          brief: metered.value.brief,
+          id: metered.value.result.id,
+          briefId: metered.value.result.id,
+          status: 'ready',
+          brief: metered.value.result.brief,
           creditsCharged: metered.creditsCharged,
           creditsRemaining: metered.balance.total,
           cost: costBlock(metered.creditsCharged, { remaining: metered.balance.total }),
@@ -437,7 +497,53 @@ export function registerCreativeTools(server: McpServer) {
       });
       if (!brief) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Brief not found' }) }], isError: true };
 
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ ...brief, brief: JSON.parse(brief.briefJson) }, null, 2) }] };
+      const stored = readStoredBrief(brief.briefJson);
+      return { content: [{ type: 'text' as const, text: JSON.stringify({
+        ...brief,
+        status: stored.status,
+        brief: stored.status === 'ready' ? stored.brief : null,
+        ...(stored.status === 'failed' ? { error: stored.error } : {}),
+      }, null, 2) }] };
+    });
+
+  server.tool('list_briefs',
+    'List creative briefs in this workspace, newest first. Free. Use this to recover a brief id when create_brief was charged but the response was lost. Filter by analysisId or videoId.',
+    {
+      workspaceId: workspaceIdField,
+      analysisId: z.string().optional(),
+      videoId: z.string().optional(),
+      limit: z.number().min(1).max(100).default(30),
+    },
+    async ({ workspaceId, analysisId, videoId, limit }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const briefs = await db.brief.findMany({
+        where: {
+          ...(analysisId ? { analysisId } : {}),
+          analysis: {
+            ...(videoId ? { videoId } : {}),
+            video: { source: { workspaceId: workspace.id } },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        select: {
+          id: true,
+          analysisId: true,
+          ideaId: true,
+          briefJson: true,
+          createdAt: true,
+          analysis: { select: { videoId: true } },
+        },
+      });
+      const items = briefs.map((row) => toBriefListItem({
+        id: row.id,
+        analysisId: row.analysisId,
+        ideaId: row.ideaId,
+        createdAt: row.createdAt,
+        videoId: row.analysis?.videoId ?? null,
+        briefJson: row.briefJson,
+      }));
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ briefs: items, count: items.length }, null, 2) }] };
     });
 
   server.tool('export_brief',
@@ -450,7 +556,20 @@ export function registerCreativeTools(server: McpServer) {
       });
       if (!brief) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Brief not found' }) }], isError: true };
 
-      const b = JSON.parse(brief.briefJson);
+      const stored = readStoredBrief(brief.briefJson);
+      if (stored.status !== 'ready') {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            error: stored.status === 'generating' ? 'Brief is still generating' : 'Brief is not ready',
+            id: brief.id,
+            briefId: brief.id,
+            status: stored.status,
+            ...(stored.status === 'failed' ? { message: stored.error } : {}),
+          }) }],
+          isError: true,
+        };
+      }
+      const b = stored.brief;
       let md = `# Creative Brief\n\n`;
       md += `## Concept\n${b.concept}\n\n`;
       md += `## Hook\n${b.hook}\n\n`;
