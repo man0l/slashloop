@@ -28,6 +28,8 @@ import { getUiCapability } from '@modelcontextprotocol/ext-apps/server';
 import { buildRemoteMcp } from '../../remote/mcp-server.js';
 import { verifySupabaseJwt } from '../../remote/auth.js';
 import { runWithUser } from '../context.js';
+import { runWithRequestSignal } from '../lib/preauth.js';
+import { runWithWaitUntil } from './wait-until.js';
 import { ensureStore, type Env } from './env.js';
 
 export interface McpAuthProps {
@@ -101,7 +103,12 @@ export async function handleMcpRequest(request: Request, opts: HandleOptions = {
     ({ waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext);
 
   let response!: Response;
-  await runWithUser(sub, async () => {
+  // Request abort must be visible to metered tools, and ctx.waitUntil must be
+  // installed on this path: OAuthProvider apiHandlers do not inherit the outer
+  // fetch ALS. A client disconnect otherwise cancels the tool promise without
+  // rejecting it, leaving a preauth debit in place.
+  const waitUntil = opts.ctx ? (p: Promise<unknown>) => { opts.ctx!.waitUntil(p); } : undefined;
+  await runWithWaitUntil(waitUntil, () => runWithRequestSignal(request.signal, () => runWithUser(sub, async () => {
     // NOTE: do NOT hoist this out of the request — SDK >=1.26 throws when an
     // already-connected server instance is connected to a second transport.
     const mcp = createServer({ sub, email, client_id: clientId });
@@ -118,7 +125,7 @@ export async function handleMcpRequest(request: Request, opts: HandleOptions = {
     } else if (mcp.server.getClientCapabilities() !== undefined) {
       console.log(`mcp-apps host=${JSON.stringify(mcp.server.getClientVersion()?.name ?? '?')} ui=false (no io.modelcontextprotocol/ui at initialize — gallery will not render inline; /gallery link is the path)`);
     }
-  }, email ?? undefined);
+  }, email ?? undefined)));
   return response;
 }
 

@@ -12,6 +12,7 @@ import { getApifyCapStatus, getApifySpendBreakdown, decodeApifyRefId } from '../
 import { activeProviderFor, formatProxyCheap, listScrapers, proxyCheapBandwidth, scrapeCapKind, trafficStatus } from '../lib/scrapers/index.js';
 import { proxyConfig } from '../lib/scrapers/proxy-http.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance, resolveBillingWorkspace } from '../lib/credits.js';
+import { reconcileWallet } from '../lib/credit-reconcile.js';
 import { retentionCeiling, validateRetentionDays } from '../lib/retention.js';
 import { costBlock } from '../lib/next-steps.js';
 import { failureLines, infoLines } from '../lib/refresh-notes.js';
@@ -79,6 +80,31 @@ export function registerSettingsTools(server: McpServer) {
       const budgetRemaining = workspace.monthlyBudgetCents - totalCost;
       const credits = { planCredits: billingWorkspace.planCredits, packCredits: billingWorkspace.packCredits, total: billingWorkspace.planCredits + billingWorkspace.packCredits };
 
+      // CreditLedger, not UsageLog, is the wallet's own log. Sum every delta
+      // (the table is the audit trail; the wallet is its running total) and
+      // keep a short recent window so a debit with no UsageLog row is visible
+      // in this same payload.
+      const [ledgerRecent, ledgerSum] = await Promise.all([
+        db.creditLedger.findMany({
+          where: { workspaceId: billingWorkspace.id },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+          select: { delta: true, reason: true, tool: true, balanceAfter: true, refId: true, createdAt: true },
+        }),
+        db.creditLedger.aggregate({
+          where: { workspaceId: billingWorkspace.id },
+          _sum: { delta: true },
+        }),
+      ]);
+      const reconciliation = reconcileWallet({
+        creditsTotal: credits.total,
+        sumOfLedgerDeltas: ledgerSum._sum.delta ?? 0,
+        latestLedgerBalance: ledgerRecent[0]?.balanceAfter ?? null,
+        usageLogCostCents: totalCost,
+        ledgerRows: ledgerRecent,
+        usageRows: logs,
+      });
+
       // Where to buy more, surfaced BEFORE the balance runs out rather than
       // only in the insufficient-credits error. By the time a call fails the
       // user has already been interrupted mid-task.
@@ -105,6 +131,10 @@ export function registerSettingsTools(server: McpServer) {
           // src/lib/credits.ts). monthlyBudgetCents/budget* below is COGS
           // (what we pay Apify/Google) and is informational only now.
           credits,
+          // credits.total is the remaining wallet. It matches sum(CreditLedger.delta),
+          // not sum(UsageLog.costCents). recentLogs below stays provider COGS.
+          reconciliation,
+          recentCreditLedger: ledgerRecent,
           billing: {
             stripeMode,
             topUpUrl,

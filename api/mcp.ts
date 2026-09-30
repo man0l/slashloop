@@ -7,6 +7,7 @@
 import { verifySupabaseJwt } from '../remote/auth.js';
 import { buildRemoteMcp, type Claims } from '../remote/mcp-server.js';
 import { runWithUser } from '../src/context.js';
+import { runWithRequestSignal } from '../src/lib/preauth.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getUiCapability } from '@modelcontextprotocol/ext-apps/server';
 import { trackAIBotResponse } from 'indiestack-ai-bots';
@@ -54,7 +55,7 @@ export async function POST(request: Request): Promise<Response> {
   // it. The server/transport are GC'd once the stream completes.
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   let response!: Response;
-  await runWithUser(claims.sub, async () => {
+  await runWithRequestSignal(request.signal, () => runWithUser(claims.sub, async () => {
     const mcp = buildRemoteMcp(claims!);
     await mcp.connect(transport);
 
@@ -84,7 +85,7 @@ export async function POST(request: Request): Promise<Response> {
     } else if (mcp.server.getClientCapabilities() !== undefined) {
       console.log(`mcp-apps host=${JSON.stringify(mcp.server.getClientVersion()?.name ?? '?')} ui=false (no io.modelcontextprotocol/ui at initialize — gallery will not render inline; /gallery link is the path)`);
     }
-  }, typeof claims.email === 'string' ? claims.email : undefined);
+  }, typeof claims.email === 'string' ? claims.email : undefined));
   await trackAIBotResponse(request, response, undefined, { websiteId: AIBOT_WEBSITE_ID });
   return response;
 }

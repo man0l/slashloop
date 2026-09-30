@@ -2,14 +2,14 @@
 // MCP Tools: Swipe Boards, Ideas, Briefs
 // ---------------------------------------------------------------------------
 
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { chunked } from '../store.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { generateBrief } from '../analysis/briefs.js';
 import { generateScript } from '../analysis/scripts.js';
-import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../lib/credits.js';
+import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload } from '../lib/credits.js';
+import { mergedAbortSignal, runPreauthed } from '../lib/preauth.js';
 import { costBlock, withNextSteps } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -157,7 +157,7 @@ export function registerCreativeTools(server: McpServer) {
       appDescription: z.string().describe('The user\'s app — what it does and for whom. This is what the script promotes.'),
       durationSec: z.number().min(10).max(60).optional().describe('Target runtime in seconds (default 20).'),
     },
-    async ({ workspaceId, analysisId, format, appDescription, durationSec }) => {
+    async ({ workspaceId, analysisId, format, appDescription, durationSec }, extra) => {
       const workspace = await resolveToolWorkspace({ workspaceId });
       const scoped = await db.analysis.findFirst({
         where: { id: analysisId, video: { source: { workspaceId: workspace.id } } },
@@ -166,42 +166,44 @@ export function registerCreativeTools(server: McpServer) {
       if (!scoped) {
         return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Analysis not found' }) }], isError: true };
       }
-      const opId = randomUUID();
+      let metered;
       try {
-        await debitCredits(workspace.id, CREDIT_COSTS.generateScript, 'generate_script', `${opId}:preauth`);
+        metered = await runPreauthed({
+          workspaceId: workspace.id,
+          credits: CREDIT_COSTS.generateScript,
+          tool: 'generate_script',
+          signal: mergedAbortSignal(extra),
+          run: () => generateScript(analysisId, { format, appDescription, durationSec }),
+        });
       } catch (err) {
         if (err instanceof InsufficientCreditsError) {
           return { content: [{ type: 'text' as const, text: JSON.stringify(insufficientCreditsPayload(err), null, 2) }], isError: true };
         }
         throw err;
       }
-
-      try {
-        const result = await generateScript(analysisId, { format, appDescription, durationSec });
-        const balance = await creditBalance(workspace.id);
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({
-            message: `Script generated (${format})`,
-            id: result.id,
-            script: result.script,
-            creditsCharged: CREDIT_COSTS.generateScript,
-            creditsRemaining: balance.total,
-            cost: costBlock(CREDIT_COSTS.generateScript, { remaining: balance.total }),
-          }, null, 2) }],
-        };
-      } catch (err) {
-        const balance = await refundCredits(workspace.id, CREDIT_COSTS.generateScript, 'generate_script', `${opId}:fail`, 'call_failed');
+      if (!metered.ok) {
+        const failed = metered.error instanceof Error ? metered.error.message : 'Call aborted';
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
             error: 'Script generation failed',
-            message: (err as Error).message,
+            message: failed,
             creditsCharged: 0,
-            creditsRemaining: balance.total,
-            cost: costBlock(0, { remaining: balance.total, note: 'Call failed — pre-auth refunded, nothing charged.' }),
+            creditsRemaining: metered.balance.total,
+            cost: costBlock(0, { remaining: metered.balance.total, note: 'Call failed — pre-auth refunded, nothing charged.' }),
           }) }],
           isError: true,
         };
       }
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          message: `Script generated (${format})`,
+          id: metered.value.id,
+          script: metered.value.script,
+          creditsCharged: metered.creditsCharged,
+          creditsRemaining: metered.balance.total,
+          cost: costBlock(metered.creditsCharged, { remaining: metered.balance.total }),
+        }, null, 2) }],
+      };
     });
 
   server.tool('get_script',
@@ -375,7 +377,7 @@ export function registerCreativeTools(server: McpServer) {
       analysisId: z.string(),
       brandContext: z.string().optional().describe('Brand/product context for adaptation'),
     },
-    async ({ workspaceId, analysisId, brandContext }) => {
+    async ({ workspaceId, analysisId, brandContext }, extra) => {
       const workspace = await resolveToolWorkspace({ workspaceId });
       const scopedBrief = await db.analysis.findFirst({
         where: { id: analysisId, video: { source: { workspaceId: workspace.id } } },
@@ -384,42 +386,44 @@ export function registerCreativeTools(server: McpServer) {
       if (!scopedBrief) {
         return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Analysis not found' }) }], isError: true };
       }
-      const opId = randomUUID();
+      let metered;
       try {
-        await debitCredits(workspace.id, CREDIT_COSTS.createBrief, 'create_brief', `${opId}:preauth`);
+        metered = await runPreauthed({
+          workspaceId: workspace.id,
+          credits: CREDIT_COSTS.createBrief,
+          tool: 'create_brief',
+          signal: mergedAbortSignal(extra),
+          run: () => generateBrief(analysisId, brandContext),
+        });
       } catch (err) {
         if (err instanceof InsufficientCreditsError) {
           return { content: [{ type: 'text' as const, text: JSON.stringify(insufficientCreditsPayload(err), null, 2) }], isError: true };
         }
         throw err;
       }
-
-      try {
-        const result = await generateBrief(analysisId, brandContext);
-        const balance = await creditBalance(workspace.id);
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({
-            message: 'Brief generated',
-            id: result.id,
-            brief: result.brief,
-            creditsCharged: CREDIT_COSTS.createBrief,
-            creditsRemaining: balance.total,
-            cost: costBlock(CREDIT_COSTS.createBrief, { remaining: balance.total }),
-          }, null, 2) }],
-        };
-      } catch (err) {
-        const balance = await refundCredits(workspace.id, CREDIT_COSTS.createBrief, 'create_brief', `${opId}:fail`, 'call_failed');
+      if (!metered.ok) {
+        const failed = metered.error instanceof Error ? metered.error.message : 'Call aborted';
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
             error: 'Brief generation failed',
-            message: (err as Error).message,
+            message: failed,
             creditsCharged: 0,
-            creditsRemaining: balance.total,
-            cost: costBlock(0, { remaining: balance.total, note: 'Call failed — pre-auth refunded, nothing charged.' }),
+            creditsRemaining: metered.balance.total,
+            cost: costBlock(0, { remaining: metered.balance.total, note: 'Call failed — pre-auth refunded, nothing charged.' }),
           }) }],
           isError: true,
         };
       }
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          message: 'Brief generated',
+          id: metered.value.id,
+          brief: metered.value.brief,
+          creditsCharged: metered.creditsCharged,
+          creditsRemaining: metered.balance.total,
+          cost: costBlock(metered.creditsCharged, { remaining: metered.balance.total }),
+        }, null, 2) }],
+      };
     });
 
   server.tool('get_brief',
