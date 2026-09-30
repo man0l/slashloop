@@ -1,6 +1,7 @@
 # Deploy the whole Cloudflare stack on every push to master/main
 # (direct commits AND merged PRs both land here as push events):
-# verify (typecheck + tests) → sync secrets → D1 migrations → wrangler deploy
+# verify (typecheck + tests) → sync secrets → D1 migrations
+# (skipped when prisma/d1-migrations did not change) → wrangler deploy
 # (Worker + routes + D1/R2/KV bindings + cron triggers) → live smoke check.
 #
 # GitHub is the source of truth for the Worker's environment: the job runs in
@@ -140,8 +141,23 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -o pipefail
+          # Listing applied migrations is a remote D1 query and counts against
+          # the daily row-read quota. Skip it when this push does not change
+          # prisma/d1-migrations, so a quota cap cannot block a code-only deploy.
+          # A push that adds SQL, and a manual workflow_dispatch, still apply.
+          if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            git fetch --depth=1 origin "$BEFORE_SHA"
+            changed="$(git diff --name-only "$BEFORE_SHA" HEAD -- prisma/d1-migrations)"
+            if [ -z "$changed" ]; then
+              echo "No prisma/d1-migrations changes since ${BEFORE_SHA}; skipping remote apply."
+              exit 0
+            fi
+            echo "Migration files changed:"
+            printf '%s\n' "$changed"
+          fi
           bunx wrangler d1 migrations apply slashloop --remote 2>&1 | tee -a "$WORKFLOW_LOG"
 
       - name: Deploy Worker (Worker + routes + D1/R2/KV bindings + cron triggers)
