@@ -29,6 +29,8 @@ import * as socialPosts from '../../api/social-posts.js';
 import * as socialUpload from '../../api/social-upload.js';
 import * as internalRawBatch from './internal.js';
 import * as mediaRoutes from './media-routes.js';
+import * as oauthAuthorize from './oauth-authorize.js';
+import type { Env } from './env.js';
 import { loginPage, consentPage } from '../../remote/pages.js';
 import { AUTHORIZATION_SERVER } from '../../remote/mcp-server.js';
 import { corsHeaders } from '../lib/cors.js';
@@ -141,6 +143,9 @@ const ROUTES: Route[] = [
   { re: /^\/api\/digest-settings$/, mod: digestSettings },
   { re: /^\/api\/jobs\/video-recreate$/, mod: videoRecreateCron },
   { re: /^\/api\/stripe\/webhook$/, mod: stripeWebhook },
+  // OAuth authorize completion (SLA-118): mints the provider grant after the
+  // Supabase login round-trip and returns the client's redirect_uri target.
+  { re: /^\/api\/oauth\/authorize\/complete$/, mod: oauthAuthorize },
   // VPS-side atomic batch bridge (src/cf/internal.ts) — before the catch-all.
   { re: /^\/internal\/raw-batch$/, mod: internalRawBatch },
   // Binding-backed media (src/cf/media-routes.ts) — Workers-only routes.
@@ -150,7 +155,7 @@ const ROUTES: Route[] = [
   { re: /.*/, page: '404' },
 ];
 
-async function dispatch(mod: HandlerModule, method: string, request: Request): Promise<Response> {
+async function dispatch(mod: HandlerModule, method: string, request: Request, env?: Env): Promise<Response> {
   const effective = method === 'HEAD' ? 'GET' : method;
   const handler = mod[effective];
   if (typeof handler !== 'function') {
@@ -164,7 +169,7 @@ async function dispatch(mod: HandlerModule, method: string, request: Request): P
   // failure and the site renders as a hang with no Retry. Log it and answer
   // JSON with CORS so every failure is visible and retryable.
   try {
-    return await (handler as (req: Request) => Promise<Response> | Response)(request);
+    return await (handler as (req: Request, env?: Env) => Promise<Response> | Response)(request, env);
   } catch (err) {
     const busy = (err as { name?: string }).name === 'DbBusyError';
     console.error(
@@ -185,7 +190,7 @@ async function dispatch(mod: HandlerModule, method: string, request: Request): P
 }
 
 /** Route one request. Returns undefined only for internal upgrade paths (none today). */
-export async function route(request: Request): Promise<Response> {
+export async function route(request: Request, env?: Env): Promise<Response> {
   const url = new URL(request.url);
   for (const entry of ROUTES) {
     const match = entry.re.exec(url.pathname);
@@ -207,7 +212,7 @@ export async function route(request: Request): Promise<Response> {
       }
       request = new Request(url.toString(), request);
     }
-    return dispatch(mod, request.method, request);
+    return dispatch(mod, request.method, request, env);
   }
   return servePage('404', url); // unreachable — the last route matches everything
 }

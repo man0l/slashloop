@@ -26,7 +26,9 @@ const oauth = createOAuthProvider(async (request, env, ctx) => {
   // nested context where the outer fetch ALS does not apply.
   return runWithWaitUntil((p) => { ctx.waitUntil(p); }, async () => {
     await ensureStore(env, ctx);
-    return route(request);
+    // env carries OAUTH_PROVIDER (populated by the provider's fetch before
+    // the defaultHandler runs) — the authorize-completion route needs it.
+    return route(request, env);
   });
 });
 
