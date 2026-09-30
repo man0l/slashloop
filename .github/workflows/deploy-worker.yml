@@ -15,10 +15,33 @@
 #   CLOUDFLARE_ACCOUNT_ID — (as a repo VARIABLE works too)
 # Plus everything scripts/sync-worker-secrets.mjs lists in its manifest.
 #
-# Rollback: re-run a previous deployment from the Actions tab
-# (or `wrangler rollback`).
+# A failed run is not retried. The D1 quota failure on run 182 would have
+# failed the same way on a re-run and still skipped `wrangler deploy`. The
+# recovery is the next successful publish of a descendant SHA. That later
+# green run must not be the only record that the failed SHA's code shipped.
+#
+# `worker-live` moves only after wrangler deploy and the smoke check pass.
+# Commit status `cloudflare-worker/published` stays on that SHA (failure is
+# not cleared by a later run). A failed ancestor that this publish contains
+# gets `cloudflare-worker/shipped-via`. GET /health `commit` is the live
+# build id. The GitHub `production` deployment status is not: Vercel writes
+# a later failure onto that same environment.
+#
+# Rollback: re-run a previous successful deploy-worker run from the Actions
+# tab, or `wrangler rollback`. A manual rollback does not move `worker-live`;
+# move the tag to the republished SHA in the same step
+# (`gh api -X PATCH repos/man0l/slashloop/git/refs/tags/worker-live -f sha=<sha> -F force=true`).
 
 name: deploy-worker
+
+# Job tokens can only narrow these scopes, not raise them. lineage needs
+# contents:write (worker-live) and statuses:write. deploy needs actions:write
+# for the log artifact. A workflow token of contents:read would drop both
+# writes and the failure signal would never be posted.
+permissions:
+  contents: write
+  statuses: write
+  actions: write
 
 on:
   # Any push to the default branch — direct commits AND merged PRs both land
@@ -36,6 +59,8 @@ jobs:
   # Gate: nothing deploys unless typecheck + tests pass on the pushed code.
   verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -58,6 +83,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     needs: verify
+    permissions:
+      contents: read
+      actions: write
     env:
       # Log monitor: every run step below tees stdout/stderr here; the final
       # report step filters it by WORKFLOW_LOG_LEVEL (repo/environment VARIABLE:
@@ -160,7 +188,15 @@ jobs:
           fi
           bunx wrangler d1 migrations apply slashloop --remote 2>&1 | tee -a "$WORKFLOW_LOG"
 
+      # /health commit is this SHA only when the stamp below runs. A bundle
+      # that skipped it keeps the committed "dev" value and fails the smoke.
+      - name: Stamp deploy SHA
+        run: |
+          printf '%s\n' '/** Stamped by deploy-worker immediately before wrangler deploy. */' "export const DEPLOY_SHA = \"${GITHUB_SHA}\";" > src/cf/deploy-sha.ts
+          grep -F "\"${GITHUB_SHA}\"" src/cf/deploy-sha.ts
+
       - name: Deploy Worker (Worker + routes + D1/R2/KV bindings + cron triggers)
+        id: wrangler
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -168,18 +204,30 @@ jobs:
           set -o pipefail
           bunx wrangler deploy --autoconfig=false --keep-vars 2>&1 | tee -a "$WORKFLOW_LOG"
 
-      # Post-deploy smoke: fail the run if the live Worker doesn't answer.
+      # Post-deploy smoke: the live Worker must answer, and /health.commit
+      # must be this SHA. A 200 from the previous build is not a publish.
       - name: Smoke check live Worker
+        id: smoke
         env:
           PUBLIC_URL: ${{ vars.PUBLIC_URL }}
         run: |
           set -e
           BASE="${PUBLIC_URL:-https://mcp.slashloop.dev}"
-          echo "health: $(curl -s -o /dev/null -w '%{http_code}' "$BASE/health")"
-          test "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/health")" = "200"
-          test "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/login")" = "200"
+          ok=0
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            code="$(curl -sS -o /tmp/health.json -w '%{http_code}' "$BASE/health" || true)"
+            commit="$(node -e 'const fs=require("fs"); try { const j=JSON.parse(fs.readFileSync("/tmp/health.json","utf8")); process.stdout.write(String(j.commit||"")); } catch { process.stdout.write(""); }')"
+            echo "try $i health=$code commit=$commit want=$GITHUB_SHA"
+            if [ "$code" = "200" ] && [ "$commit" = "$GITHUB_SHA" ]; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          test "$ok" = "1"
+          test "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/login")" = "200"
           # Unauthenticated MCP must 401, never 500
-          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/mcp")" = "401"
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/mcp")" = "401"
           echo "smoke: ok"
 
       # Runs even when an earlier step fails — errors/warnings are most
@@ -199,3 +247,23 @@ jobs:
             ${{ runner.temp }}/workflow-warnings.log
           retention-days: 14
           if-no-files-found: warn
+
+  # Runs after verify and deploy, including when either failed. Writes the
+  # worker-live tag and the commit statuses. Exits 0 on a signal-API error
+  # so a publish that already passed smoke stays a green workflow.
+  lineage:
+    runs-on: ubuntu-latest
+    needs: [verify, deploy]
+    if: always()
+    permissions:
+      contents: write
+      statuses: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record publish or the hole a later green run must not hide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_PUBLISHED: ${{ needs.deploy.result == 'success' && needs.verify.result == 'success' }}
+        run: node scripts/deploy-lineage.mjs
