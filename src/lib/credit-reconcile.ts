@@ -54,6 +54,31 @@ export interface WalletReconciliation {
   chargedWithoutUsageLog: LedgerEntry[];
 }
 
+/** ISO-8601 timestamps the ledger stores. Idempotency keys do not match. */
+const LEDGER_TIME = /^\d{4}-\d{2}-\d{2}T/;
+
+export function isLedgerTimestamp(value: Date | string): boolean {
+  const text = value instanceof Date ? value.toISOString() : value;
+  return LEDGER_TIME.test(text);
+}
+
+/**
+ * D1 debit/refund inserts used to bind the timestamp into `refId` and the
+ * idempotency key into `createdAt`. Prisma then rejected `createdAt` as a
+ * DateTime (the value `sla16-recreate-canary-grant:cf7b725d` is one of those
+ * keys). Rows written after the bind fix already have the columns in schema
+ * order. This swaps a row back in memory when only `refId` is a timestamp,
+ * so get_usage can read both shapes. It does not write.
+ */
+export function normalizeLedgerColumns(row: LedgerEntry): LedgerEntry {
+  const createdAt = row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt);
+  const refId = String(row.refId);
+  if (!isLedgerTimestamp(createdAt) && isLedgerTimestamp(refId)) {
+    return { ...row, refId: createdAt, createdAt: refId };
+  }
+  return { ...row, refId, createdAt };
+}
+
 function millis(value: Date | string): number {
   return value instanceof Date ? value.getTime() : new Date(value).getTime();
 }

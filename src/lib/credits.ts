@@ -22,6 +22,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
+import { creditLedgerRefAndCreatedAt } from './credit-ledger-bind.js';
 import { dbDialect, isUniqueViolation, rawBatch, type RawStatement } from '../store.js';
 import type { Prisma, Workspace } from '@prisma/client';
 import { customerIdField, subscriptionIdField } from './stripe.js';
@@ -311,7 +312,9 @@ async function debitSqlite(
           SELECT ?, ?, ?, 'plan', 'tool_call', ?, "planCredits" + "packCredits" - ?, ?, ?
             FROM "Workspace"
            WHERE "id" = ? AND "planCredits" + "packCredits" >= ?`,
-    params: [randomUUID(), billingWorkspaceId, -credits, tool, credits, now, refId, billingWorkspaceId, credits],
+    // refId then createdAt. The previous order (now, refId) stored the
+    // idempotency key in createdAt, which Prisma cannot parse as DateTime.
+    params: [randomUUID(), billingWorkspaceId, -credits, tool, credits, ...creditLedgerRefAndCreatedAt(refId, now), billingWorkspaceId, credits],
   };
   const debit: RawStatement = {
     sql: `UPDATE "Workspace"
@@ -355,7 +358,9 @@ async function refundSqlite(
           SELECT ?, ?, ?, 'pack', ?, ?, "planCredits" + "packCredits" + ?, ?, ?
             FROM "Workspace"
            WHERE "id" = ?`,
-    params: [randomUUID(), billingWorkspaceId, credits, reason, tool, credits, now, refId, billingWorkspaceId],
+    // refId then createdAt — see debitSqlite. Swapping these wrote the
+    // refund key into createdAt and broke get_usage's DateTime read.
+    params: [randomUUID(), billingWorkspaceId, credits, reason, tool, credits, ...creditLedgerRefAndCreatedAt(refId, now), billingWorkspaceId],
   };
   const credit: RawStatement = {
     sql: `UPDATE "Workspace"
@@ -454,7 +459,7 @@ export async function refundCreditsBatched(items: RefundItem[]): Promise<{ refun
               SELECT ?, ?, ?, 'pack', ?, ?, "planCredits" + "packCredits" + ?, ?, ?
                 FROM "Workspace"
                WHERE "id" = ?`,
-        params: [randomUUID(), billingId, Math.ceil(it.credits), it.reason, it.tool, Math.ceil(it.credits), now, it.refId, billingId],
+        params: [randomUUID(), billingId, Math.ceil(it.credits), it.reason, it.tool, Math.ceil(it.credits), ...creditLedgerRefAndCreatedAt(it.refId, now), billingId],
       }));
       statements.push({
         sql: `UPDATE "Workspace" SET "packCredits" = "packCredits" + ? WHERE "id" = ?`,

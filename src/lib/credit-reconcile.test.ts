@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { reconcileWallet, type LedgerEntry } from './credit-reconcile.js';
+import { normalizeLedgerColumns, reconcileWallet, type LedgerEntry } from './credit-reconcile.js';
 
 // SLA-166 shape: wallet ends at 288 after a create_brief :preauth of -2,
 // UsageLog cost stays $13.35, and no UsageLog row is written that day.
@@ -49,6 +49,53 @@ test('a refunded preauth and a brief that wrote UsageLog are not flagged', () =>
     usageRows: [{ costCents: 1, createdAt: '2026-09-30T11:00:02Z' }],
   });
   expect(report.chargedWithoutUsageLog).toEqual([]);
+});
+
+test('swapped createdAt keys are read as the idempotency ref', () => {
+  // Live D1 shape: the timestamp landed in refId and the key in createdAt.
+  const normalized = normalizeLedgerColumns({
+    delta: 20,
+    reason: 'adjustment',
+    tool: 'recreate_slideshow',
+    balanceAfter: 21,
+    refId: '2026-09-28T02:27:59.803+00:00',
+    createdAt: 'sla16-recreate-canary-grant:cf7b725d',
+  });
+  expect(normalized.refId).toBe('sla16-recreate-canary-grant:cf7b725d');
+  expect(normalized.createdAt).toBe('2026-09-28T02:27:59.803+00:00');
+
+  const alreadyCorrect = normalizeLedgerColumns({
+    delta: 10000,
+    reason: 'adjustment',
+    tool: null,
+    balanceAfter: 10278,
+    refId: 'sla-167:board-pack-grant:10000',
+    createdAt: '2026-09-30T11:09:27.000Z',
+  });
+  expect(alreadyCorrect.refId).toBe('sla-167:board-pack-grant:10000');
+  expect(alreadyCorrect.createdAt).toBe('2026-09-30T11:09:27.000Z');
+});
+
+test('a swapped fixed-price preauth still flags after normalize', () => {
+  const row = normalizeLedgerColumns({
+    delta: -2,
+    reason: 'tool_call',
+    tool: 'create_brief',
+    balanceAfter: 288,
+    refId: '2026-09-30T10:36:20.765+00:00',
+    createdAt: '7d10b06e-3400-485a-9dbc-8a921779d224:preauth',
+  });
+  const report = reconcileWallet({
+    creditsTotal: 288,
+    sumOfLedgerDeltas: 288,
+    latestLedgerBalance: 288,
+    usageLogCostCents: 0,
+    ledgerRows: [row],
+    usageRows: [],
+  });
+  expect(report.chargedWithoutUsageLog.map((entry) => entry.refId)).toEqual([
+    '7d10b06e-3400-485a-9dbc-8a921779d224:preauth',
+  ]);
 });
 
 test('a wallet that moved with no ledger row does not reconcile', () => {
