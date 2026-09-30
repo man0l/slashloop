@@ -11,6 +11,7 @@ import {
   hookFailurePayload,
   hookGeneratingPayload,
   HookGenerationError,
+  hookIdContainsToken,
   logicalHookBatchId,
   toHookBatchListItem,
   type HookDelivery,
@@ -168,8 +169,8 @@ export function registerHookTools(server: McpServer) {
   server.tool('generate_hook_variations',
     'Generate new hook variations from saved vault hooks. Preserves the MECHANISM of the original, not the words. '
       + 'Costs 2 credits. The batch id is reserved before the model call and is in every response. An identical '
-      + 'replay returns that id and does not charge again. If the response is lost, list_hook_variations returns '
-      + 'that id. A slow model returns status "generating"; call this tool again with the same arguments to poll.',
+      + 'replay returns that id and does not charge again. If the response is lost, list_hook_variations by a '
+      + 'source hookId returns that id. A slow model returns status "generating"; call this tool again with the same arguments to poll.',
     {
       workspaceId: workspaceIdField,
       hookIds: z.array(z.string()).min(1).max(5).describe('1-5 hook IDs from the vault to vary'),
@@ -259,19 +260,24 @@ export function registerHookTools(server: McpServer) {
 
   // ---- list_hook_variations ----
   server.tool('list_hook_variations',
-    'List generate_hook_variations batches in this workspace, newest first. Free. Use this to recover a batch id and its variations when generate_hook_variations was charged but the response was lost. Filter by batchId.',
+    'List generate_hook_variations batches in this workspace, newest first. Free. Use this to recover a batch id and its variations when generate_hook_variations was charged but the response was lost. Pass hookId, one of the source vault hooks sent to generate_hook_variations. Each row includes that batch id.',
     {
       workspaceId: workspaceIdField,
+      hookId: z.string().min(1).max(40).optional().describe('Source vault hook id passed to generate_hook_variations'),
       batchId: z.string().optional().describe('Reserved batch id from generate_hook_variations'),
       limit: z.number().min(1).max(100).default(30),
     },
     { readOnlyHint: true },
-    async ({ workspaceId, batchId, limit }) => {
+    async ({ workspaceId, hookId, batchId, limit }) => {
       const workspace = await resolveToolWorkspace({ workspaceId });
+      if (hookId && /[%_\\"]/.test(hookId)) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Invalid hookId' }) }], isError: true };
+      }
       const rows = await db.hook.findMany({
         where: {
           hookType: HOOK_BATCH_TYPE,
           ...(batchId ? { id: batchId } : {}),
+          ...(hookId ? { text: { contains: hookIdContainsToken(hookId) } } : {}),
           video: { source: { workspaceId: workspace.id } },
         },
         orderBy: { createdAt: 'desc' },

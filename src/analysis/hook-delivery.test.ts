@@ -4,6 +4,7 @@ import {
   failedBatchJson,
   generatingBatchJson,
   logicalGeneratedHookId,
+  hookIdContainsToken,
   logicalHookBatchId,
   readStoredHookBatch,
   readyBatchJson,
@@ -79,6 +80,7 @@ describe('readStoredHookBatch', () => {
       analysisId: 'a1',
       createdAt: '2026-09-30T11:00:00.000Z',
       status: 'ready',
+      sourceHookIds: [],
       variations,
       error: null,
     });
@@ -96,6 +98,32 @@ describe('readStoredHookBatch', () => {
       createdAt,
       text: generatingBatchJson('2026-09-30T11:00:00.000Z'),
     })).toMatchObject({ status: 'generating', variations: null, error: null });
+  });
+
+  test('a source hook id embedded in the batch is what list_hook_variations searches', () => {
+    const sourceHookIds = [
+      '11111111-1111-4111-8111-111111111111',
+      '22222222-2222-4222-8222-222222222222',
+    ];
+    const variations = [{
+      id: 'h1',
+      text: 'Your notes are the bottleneck',
+      sourceIndex: 0,
+      type: 'curiosity_gap',
+      mechanism: 'names the pain',
+    }];
+    const ready = readyBatchJson(variations, sourceHookIds);
+    expect(ready).toContain(hookIdContainsToken(sourceHookIds[0]!));
+    expect(generatingBatchJson('2026-09-30T11:00:00.000Z', sourceHookIds)).toContain(hookIdContainsToken(sourceHookIds[1]!));
+    expect(failedBatchJson('model down', sourceHookIds)).toContain(hookIdContainsToken(sourceHookIds[0]!));
+    expect(hookIdContainsToken(sourceHookIds[0]!).length).toBeLessThanOrEqual(50);
+    expect(toHookBatchListItem({
+      id: 'batch-1',
+      videoId: 'v1',
+      analysisId: null,
+      createdAt: new Date('2026-09-30T11:00:00.000Z'),
+      text: ready,
+    }).sourceHookIds).toEqual(sourceHookIds);
   });
 });
 
@@ -116,6 +144,7 @@ test('generate_hook_variations reserves one batch id and replays it', () => {
   expect(listStart).toBeGreaterThan(start);
   expect(listBody).toContain('readOnlyHint: true');
   expect(listBody).toContain('hookType: HOOK_BATCH_TYPE');
+  expect(listBody).toContain('hookIdContainsToken(hookId)');
   expect(listBody).not.toContain('runPreauthed');
   expect(listBody).not.toContain('CREDIT_COSTS');
 });
