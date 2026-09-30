@@ -12,6 +12,7 @@ import {
   hookGeneratingPayload,
   HookGenerationError,
   logicalHookBatchId,
+  toHookBatchListItem,
   type HookDelivery,
 } from '../analysis/hook-delivery.js';
 import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload, refundCredits } from '../lib/credits.js';
@@ -167,8 +168,8 @@ export function registerHookTools(server: McpServer) {
   server.tool('generate_hook_variations',
     'Generate new hook variations from saved vault hooks. Preserves the MECHANISM of the original, not the words. '
       + 'Costs 2 credits. The batch id is reserved before the model call and is in every response. An identical '
-      + 'replay returns that id and does not charge again. A slow model returns status "generating"; call this '
-      + 'tool again with the same arguments to poll. list_hooks hides the reservation unless hookType is "batch".',
+      + 'replay returns that id and does not charge again. If the response is lost, list_hook_variations returns '
+      + 'that id. A slow model returns status "generating"; call this tool again with the same arguments to poll.',
     {
       workspaceId: workspaceIdField,
       hookIds: z.array(z.string()).min(1).max(5).describe('1-5 hook IDs from the vault to vary'),
@@ -253,6 +254,39 @@ export function registerHookTools(server: McpServer) {
           creditsRemaining: metered.balance.total,
           cost: costBlock(metered.creditsCharged, { remaining: metered.balance.total }),
         }, null, 2) }],
+      };
+    });
+
+  // ---- list_hook_variations ----
+  server.tool('list_hook_variations',
+    'List generate_hook_variations batches in this workspace, newest first. Free. Use this to recover a batch id and its variations when generate_hook_variations was charged but the response was lost. Filter by batchId.',
+    {
+      workspaceId: workspaceIdField,
+      batchId: z.string().optional().describe('Reserved batch id from generate_hook_variations'),
+      limit: z.number().min(1).max(100).default(30),
+    },
+    { readOnlyHint: true },
+    async ({ workspaceId, batchId, limit }) => {
+      const workspace = await resolveToolWorkspace({ workspaceId });
+      const rows = await db.hook.findMany({
+        where: {
+          hookType: HOOK_BATCH_TYPE,
+          ...(batchId ? { id: batchId } : {}),
+          video: { source: { workspaceId: workspace.id } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        select: {
+          id: true,
+          videoId: true,
+          analysisId: true,
+          text: true,
+          createdAt: true,
+        },
+      });
+      const batches = rows.map((row) => toHookBatchListItem(row));
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ batches, count: batches.length }, null, 2) }],
       };
     });
 }

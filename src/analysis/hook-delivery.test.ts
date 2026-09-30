@@ -7,6 +7,7 @@ import {
   logicalHookBatchId,
   readStoredHookBatch,
   readyBatchJson,
+  toHookBatchListItem,
 } from './hook-delivery.js';
 
 const base = {
@@ -55,6 +56,47 @@ describe('readStoredHookBatch', () => {
     expect(readStoredHookBatch('not-json').status).toBe('unreadable');
     expect(readStoredHookBatch(JSON.stringify({ status: 'ready', variations })).status).toBe('unreadable');
   });
+
+  test('list items expose the reserved id and the saved variations', () => {
+    const createdAt = new Date('2026-09-30T11:00:00.000Z');
+    const variations = [{
+      id: 'h1',
+      text: 'Your notes are the bottleneck',
+      sourceIndex: 0,
+      type: 'curiosity_gap',
+      mechanism: 'names the pain',
+    }];
+    expect(toHookBatchListItem({
+      id: 'batch-1',
+      videoId: 'v1',
+      analysisId: 'a1',
+      createdAt,
+      text: readyBatchJson(variations),
+    })).toEqual({
+      id: 'batch-1',
+      batchId: 'batch-1',
+      videoId: 'v1',
+      analysisId: 'a1',
+      createdAt: '2026-09-30T11:00:00.000Z',
+      status: 'ready',
+      variations,
+      error: null,
+    });
+    expect(toHookBatchListItem({
+      id: 'batch-1',
+      videoId: 'v1',
+      analysisId: null,
+      createdAt,
+      text: failedBatchJson('model down'),
+    })).toMatchObject({ status: 'failed', variations: null, error: 'model down' });
+    expect(toHookBatchListItem({
+      id: 'batch-1',
+      videoId: 'v1',
+      analysisId: null,
+      createdAt,
+      text: generatingBatchJson('2026-09-30T11:00:00.000Z'),
+    })).toMatchObject({ status: 'generating', variations: null, error: null });
+  });
 });
 
 test('generate_hook_variations reserves one batch id and replays it', () => {
@@ -65,5 +107,15 @@ test('generate_hook_variations reserves one batch id and replays it', () => {
   expect(body).toContain('readOnlyHint: false');
   expect(body).toContain('idempotencyKey: batchId');
   expect(body).toContain('logicalHookBatchId');
+  expect(body).toContain('onLateFailure');
   expect(src).toContain('not: HOOK_BATCH_TYPE');
+  expect(src).not.toMatch(/throw err;/);
+
+  const listStart = src.indexOf("server.tool('list_hook_variations'");
+  const listBody = src.slice(listStart);
+  expect(listStart).toBeGreaterThan(start);
+  expect(listBody).toContain('readOnlyHint: true');
+  expect(listBody).toContain('hookType: HOOK_BATCH_TYPE');
+  expect(listBody).not.toContain('runPreauthed');
+  expect(listBody).not.toContain('CREDIT_COSTS');
 });
