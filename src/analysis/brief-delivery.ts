@@ -6,8 +6,13 @@
 
 import { BriefDataSchema, type BriefData } from './schema.js';
 
-/** Stay under the edge timeout that drops a finished write into a cached 502. */
-export const BRIEF_INLINE_BUDGET_MS = 8_000;
+/**
+ * Stay under the edge and the tool gateway. The gateway aborts a remote
+ * tool call at 10s by default and surfaces the dropped response as
+ * `error code: 502`, which it then caches for write tools. Reserve the row
+ * first and answer inside this budget; the model call may finish after.
+ */
+export const BRIEF_INLINE_BUDGET_MS = 6_000;
 
 export type StoredBrief =
   | { status: 'ready'; brief: BriefData }

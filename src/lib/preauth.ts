@@ -72,19 +72,28 @@ export async function runPreauthed<T>(
     credits: number;
     tool: string;
     signal?: AbortSignal;
+    /**
+     * Stable ledger identity. The same key replays the debit instead of
+     * charging again. Omit it for a one-shot random id.
+     */
+    idempotencyKey?: string;
     run: () => Promise<T>;
   },
   deps: PreauthDeps = defaultDeps,
 ): Promise<PreauthResult<T>> {
-  const opId = randomUUID();
-  await deps.debitCredits(opts.workspaceId, opts.credits, opts.tool, `${opId}:preauth`);
+  const opId = opts.idempotencyKey ?? randomUUID();
+  const debited = await deps.debitCredits(opts.workspaceId, opts.credits, opts.tool, `${opId}:preauth`);
+  // A replayed debit already moved the wallet on an earlier attempt. This
+  // attempt must not install its own abort-refund, or a retry of a finished
+  // call would give the charge back.
+  const replayed = debited.replayed === true;
 
   const signal = opts.signal;
   let committed = false;
   let refundPromise: Promise<CreditBalance> | null = null;
 
   const closeWithRefund = (reason: 'call_failed' | 'fetch_failed'): Promise<CreditBalance> => {
-    if (committed) return deps.creditBalance(opts.workspaceId);
+    if (committed || replayed) return deps.creditBalance(opts.workspaceId);
     if (!refundPromise) {
       refundPromise = deps.refundCredits(opts.workspaceId, opts.credits, opts.tool, `${opId}:fail`, reason);
       deps.keepAlive(refundPromise);
@@ -106,7 +115,7 @@ export async function runPreauthed<T>(
 
   try {
     const value = await opts.run();
-    if (signal?.aborted || refundPromise) {
+    if (!replayed && (signal?.aborted || refundPromise)) {
       const balance = await closeWithRefund('fetch_failed');
       // The artifact may already exist. Hand it back so the tool can put the
       // id in the body instead of answering with an empty failure.
@@ -114,8 +123,17 @@ export async function runPreauthed<T>(
     }
     committed = true;
     const balance = await deps.creditBalance(opts.workspaceId);
-    return { ok: true, value, balance, creditsCharged: opts.credits };
+    return { ok: true, value, balance, creditsCharged: replayed ? 0 : opts.credits };
   } catch (error) {
+    // A replayed debit that fails still refunds once. `:fail` is idempotent,
+    // so an earlier refund of the same key does not grant the credits twice.
+    // The replayed guard above skips that refund only after commit; a thrown
+    // run has not committed, including when this attempt is the one that
+    // finally notices the original call died before writing an artifact.
+    if (replayed) {
+      const balance = await deps.refundCredits(opts.workspaceId, opts.credits, opts.tool, `${opId}:fail`, 'call_failed').catch(() => deps.creditBalance(opts.workspaceId));
+      return { ok: false, aborted: false, error, balance, creditsCharged: 0 };
+    }
     const balance = await closeWithRefund('call_failed');
     return { ok: false, aborted: false, error, balance, creditsCharged: 0 };
   } finally {

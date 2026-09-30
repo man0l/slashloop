@@ -253,7 +253,7 @@ populating the env vars above from a real Stripe account.
 | Feed (3) | get_feed, search_library, get_outlier_summary |
 | Video (3) | get_video, analyze_video, get_video_transcript |
 | Hooks (3) | list_hooks, extract_hook, generate_hook_variations |
-| Creative (14) | list_boards, get_board, create_board, save_to_board, export_board, list_ideas, get_idea_queue, create_idea, update_idea_status, create_brief, get_brief, export_brief, generate_script, get_script |
+| Creative (16) | list_boards, get_board, create_board, save_to_board, export_board, list_ideas, get_idea_queue, create_idea, update_idea_status, create_brief, get_brief, list_briefs, export_brief, generate_script, get_script, list_scripts |
 | Studio (2) | get_weekly_retro, get_benchmark |
 | Hook tests (7) | start_hook_test, get_hook_test, update_hook_test, reroll_hooks, pick_hook_versions, export_shotlist, close_hook_test |
 | Settings (7) | get_usage, get_settings, update_settings, get_refresh_logs, run_auto_analyze, get_apify_spend_status, get_digest |

@@ -97,6 +97,8 @@ export interface CreditBalance {
   planCredits: number;
   packCredits: number;
   total: number;
+  /** True when this refId was already charged and the wallet did not move. */
+  replayed?: boolean;
 }
 
 /**
@@ -190,7 +192,7 @@ export async function debitCredits(
         where: { id: billingWorkspaceId },
         select: { planCredits: true, packCredits: true },
       });
-      return { planCredits: ws.planCredits, packCredits: ws.packCredits, total: ws.planCredits + ws.packCredits };
+      return { planCredits: ws.planCredits, packCredits: ws.packCredits, total: ws.planCredits + ws.packCredits, replayed: true };
     }
 
     // Single conditional UPDATE: only commits if the balance covers the
@@ -331,7 +333,8 @@ async function debitSqlite(
   } catch (err) {
     if (isUniqueViolation(err)) {
       // Retried refId — replay the prior result: report the balance, move nothing.
-      return creditBalance(billingWorkspaceId);
+      const balance = await creditBalance(billingWorkspaceId);
+      return { ...balance, replayed: true };
     }
     throw err;
   }

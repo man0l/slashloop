@@ -8,7 +8,7 @@ import { db } from '../db.js';
 import { hasWaitUntil, keepAlive } from '../cf/wait-until.js';
 import { BriefDataSchema, type BriefData } from './schema.js';
 import type { BriefResult } from './types.js';
-import { callModelText } from '../lib/llm.js';
+import { callModelText, modelJson } from '../lib/llm.js';
 import {
   BRIEF_INLINE_BUDGET_MS,
   failedBriefJson,
@@ -57,8 +57,8 @@ export async function generateBrief(
 
   let briefData!: BriefData;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const parsed = await callModelText(BRIEF_SYSTEM, userMessage, model);
-    const result = BriefDataSchema.safeParse(parsed);
+    const envelope = await callModelText(BRIEF_SYSTEM, userMessage, model);
+    const result = BriefDataSchema.safeParse(modelJson(envelope));
     if (result.success) { briefData = result.data; break; }
     if (attempt === 0) continue;
     throw new Error(`Brief validation failed after 2 attempts`);
