@@ -5,11 +5,44 @@
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
-import { generateHookVariations } from '../analysis/hooks.js';
-import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload } from '../lib/credits.js';
+import {
+  deliverHookVariations,
+  HOOK_BATCH_TYPE,
+  hookFailurePayload,
+  hookGeneratingPayload,
+  HookGenerationError,
+  logicalHookBatchId,
+  type HookDelivery,
+} from '../analysis/hook-delivery.js';
+import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload, refundCredits } from '../lib/credits.js';
 import { mergedAbortSignal, runPreauthed } from '../lib/preauth.js';
 import { costBlock } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+
+function reservedBatchId(error: unknown, value: unknown): string | null {
+  if (error instanceof HookGenerationError && error.batchId) return error.batchId;
+  if (!value || typeof value !== 'object') return null;
+  const delivery = value as Partial<HookDelivery>;
+  if (delivery.delivery === 'generating' && typeof delivery.id === 'string') return delivery.id;
+  if (delivery.delivery === 'ready' && typeof delivery.id === 'string') return delivery.id;
+  return null;
+}
+
+function hookToolError(message: string, batchId: string | null, creditsRemaining: number | null) {
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        ...hookFailurePayload({ message, batchId, creditsRemaining }),
+        cost: costBlock(0, {
+          ...(creditsRemaining != null ? { remaining: creditsRemaining } : {}),
+          note: 'Call failed — pre-auth refunded, nothing charged.',
+        }),
+      }, null, 2),
+    }],
+    isError: true as const,
+  };
+}
 
 export function registerHookTools(server: McpServer) {
 
@@ -28,7 +61,9 @@ export function registerHookTools(server: McpServer) {
     async ({ workspaceId, hookType, nicheTag, origin, search, limit }) => {
       const workspace = await resolveToolWorkspace({ workspaceId });
       const where: any = { video: { source: { workspaceId: workspace.id } } };
+      // Batch rows are the generate_hook_variations reservation, not vault hooks.
       if (hookType) where.hookType = hookType;
+      else where.hookType = { not: HOOK_BATCH_TYPE };
       if (nicheTag) where.nicheTag = nicheTag;
       if (origin) where.origin = origin;
       if (search) where.text = { contains: search };
@@ -130,12 +165,16 @@ export function registerHookTools(server: McpServer) {
 
   // ---- generate_hook_variations ----
   server.tool('generate_hook_variations',
-    'Generate new hook variations from saved vault hooks. Preserves the MECHANISM of the original, not the words. Costs 2 credits.',
+    'Generate new hook variations from saved vault hooks. Preserves the MECHANISM of the original, not the words. '
+      + 'Costs 2 credits. The batch id is reserved before the model call and is in every response. An identical '
+      + 'replay returns that id and does not charge again. A slow model returns status "generating"; call this '
+      + 'tool again with the same arguments to poll. list_hooks hides the reservation unless hookType is "batch".',
     {
       workspaceId: workspaceIdField,
       hookIds: z.array(z.string()).min(1).max(5).describe('1-5 hook IDs from the vault to vary'),
       productDescription: z.string().describe('Your product/niche/offer description for contextual adaptation'),
     },
+    { readOnlyHint: false },
     async ({ workspaceId, hookIds, productDescription }, extra) => {
       const workspace = await resolveToolWorkspace({ workspaceId });
       const ownedHooks = await db.hook.findMany({
@@ -145,6 +184,11 @@ export function registerHookTools(server: McpServer) {
       if (ownedHooks.length !== hookIds.length) {
         return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Hook not found' }) }], isError: true };
       }
+      const batchId = logicalHookBatchId({
+        workspaceId: workspace.id,
+        hookIds,
+        productDescription,
+      });
       let metered;
       try {
         metered = await runPreauthed({
@@ -152,32 +196,59 @@ export function registerHookTools(server: McpServer) {
           credits: CREDIT_COSTS.generateHookVariations,
           tool: 'generate_hook_variations',
           signal: mergedAbortSignal(extra),
-          run: () => generateHookVariations(hookIds, productDescription),
+          idempotencyKey: batchId,
+          run: () => deliverHookVariations({
+            id: batchId,
+            workspaceId: workspace.id,
+            hookIds,
+            productDescription,
+            onLateFailure: async () => {
+              await refundCredits(
+                workspace.id,
+                CREDIT_COSTS.generateHookVariations,
+                'generate_hook_variations',
+                `${batchId}:fail`,
+                'call_failed',
+              );
+            },
+          }),
         });
       } catch (err) {
         if (err instanceof InsufficientCreditsError) {
           return { content: [{ type: 'text' as const, text: JSON.stringify(insufficientCreditsPayload(err), null, 2) }], isError: true };
         }
-        throw err;
+        const message = err instanceof Error ? err.message : 'Hook generation failed';
+        return hookToolError(message, reservedBatchId(err, null), null);
       }
       if (!metered.ok) {
         const failed = metered.error instanceof Error ? metered.error.message : 'Call aborted';
+        return hookToolError(failed, reservedBatchId(metered.error, metered.value), metered.balance.total);
+      }
+      const replayed = metered.creditsCharged === 0 || metered.value.replayed;
+      if (metered.value.delivery === 'generating') {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
-            error: 'Hook generation failed',
-            message: failed,
-            creditsCharged: 0,
-            creditsRemaining: metered.balance.total,
-            cost: costBlock(0, { remaining: metered.balance.total, note: 'Call failed — pre-auth refunded, nothing charged.' }),
-          }) }],
-          isError: true,
+            ...hookGeneratingPayload({
+              id: metered.value.id,
+              creditsCharged: metered.creditsCharged,
+              creditsRemaining: metered.balance.total,
+              replayed,
+            }),
+            cost: costBlock(metered.creditsCharged, { remaining: metered.balance.total }),
+          }, null, 2) }],
         };
       }
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
-          message: `${metered.value.length} hook variations generated and saved to vault`,
-          variations: metered.value,
-          note: 'Variations are automatically saved to the Hook Vault with origin="generated".',
+          message: replayed
+            ? `${metered.value.variations.length} hook variations already generated. This replay was not charged.`
+            : `${metered.value.variations.length} hook variations generated and saved to vault`,
+          id: metered.value.id,
+          batchId: metered.value.id,
+          status: 'ready',
+          replayed,
+          variations: metered.value.variations,
+          note: 'Variations are saved to the Hook Vault with origin="generated".',
           creditsCharged: metered.creditsCharged,
           creditsRemaining: metered.balance.total,
           cost: costBlock(metered.creditsCharged, { remaining: metered.balance.total }),
