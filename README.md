@@ -20,8 +20,8 @@ Live endpoint: **https://mcp.slashloop.dev/mcp**
 
 ```
 src/
-  register-tools.ts  # 55 tools, shared with the remote host
-  tools/             # sources, feed, video, hooks, creative, studio, settings
+  register-tools.ts  # 63 tools, shared with the remote host
+  tools/             # sources, feed, video, hooks, creative, studio, settings, experiments
   analysis/          # Gemini native + text analyzers
   lib/               # apify, gemini, spend-cap, storage, media, retention
 remote/              # OAuth + Streamable HTTP handlers
@@ -50,7 +50,7 @@ On first tool call, complete the Supabase OAuth login in the browser.
 ### Claude Desktop / Cowork / claude.ai (connector)
 Settings → Connectors → Add custom connector →
 `https://mcp.slashloop.dev/mcp` → log in → consent.
-All 32 tools are then available; ask in plain language
+All 63 tools (plus `whoami`) are then available; ask in plain language
 ("track tiktok creator @x", "find outlier videos about Y").
 
 > The `/slashloop:track` / `/discover` slash shortcuts are Claude Code plugin
@@ -244,7 +244,7 @@ populating the env vars above from a real Stripe account.
 
 ---
 
-## Tool inventory (55 tools)
+## Tool inventory (63 tools, plus `whoami` on the remote host)
 
 | Module | Tools |
 |---|---|
@@ -255,13 +255,25 @@ populating the env vars above from a real Stripe account.
 | Hooks (4) | list_hooks, extract_hook, generate_hook_variations, list_hook_variations |
 | Creative (16) | list_boards, get_board, create_board, save_to_board, export_board, list_ideas, get_idea_queue, create_idea, update_idea_status, create_brief, get_brief, list_briefs, export_brief, generate_script, get_script, list_scripts |
 | Studio (2) | get_weekly_retro, get_benchmark |
-| Hook tests (7) | start_hook_test, get_hook_test, update_hook_test, reroll_hooks, pick_hook_versions, export_shotlist, close_hook_test |
+| Experiments (10) | list_experiments, get_experiment, create_experiment, estimate_experiment, plan_experiment, update_experiment_variant, generate_experiment, retry_experiment, cancel_experiment, delete_experiment |
 | Settings (7) | get_usage, get_settings, update_settings, get_refresh_logs, run_auto_analyze, get_apify_spend_status, get_digest |
 | Gallery (1) | show_gallery |
 | Fetch (1) | fetch_videos |
 | Baselines (2) | deepen_baselines, rescore_sources |
 | Jobs (2) | await_job, get_job_status |
 | Schedule (2) | list_due_sources, refresh_due_sources |
+| Workspaces (1) | list_workspaces |
+
+Experiments are the agent-facing twin of the site's `/experiments` page and
+wrap the same service as `api/experiments.ts` (`src/experiments/service.ts`):
+`create_experiment` (free draft, one experiment per source slideshow) →
+`estimate_experiment` stage `plan` → user approves → `plan_experiment`
+(background analysis + pattern report + variant briefs) → status `review` →
+optional `update_experiment_variant` → `estimate_experiment` stage `generate`
+→ user approves → `generate_experiment` (background rendering). Every
+spending tool takes `approvedCredits` and refuses if the fresh estimate is
+higher; omitted idempotency keys are derived from the request, so an identical
+retry replays instead of duplicating.
 
 `discover` is the keyword-driven front door: paste a niche (keywords, #hashtags,
 @handles) → AI expands into seed keywords → each seed gets a small real probe

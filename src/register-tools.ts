@@ -16,6 +16,7 @@ import { registerJobTools } from './tools/jobs.js';
 import { registerScheduleTools } from './tools/schedule.js';
 import { registerStudioTools } from './tools/studio.js';
 import { registerWorkspaceTools } from './tools/workspaces.js';
+import { registerExperimentTools } from './tools/experiments.js';
 
 /** Register the full product tool surface, plus the gallery MCP App (§4). */
 export function registerAllTools(server: McpServer) {
@@ -33,4 +34,5 @@ export function registerAllTools(server: McpServer) {
   registerScheduleTools(server);
   registerStudioTools(server);
   registerWorkspaceTools(server);
+  registerExperimentTools(server);
 }

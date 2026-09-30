@@ -38,9 +38,8 @@ import { buildCreatorPreview } from '../src/lib/creator-preview.js';
 import { verifyGalleryToken, isGalleryLinkEnabled } from '../src/lib/gallery-link.js';
 import { corsPreflight } from '../src/lib/cors.js';
 import { requireWorkspaceAccess, jsonResponse } from '../src/lib/authz.js';
-import { createExperiment, estimate } from '../src/experiments/service.js';
+import { createExperiment, estimate, fingerprint } from '../src/experiments/service.js';
 import { ExperimentError } from '../src/experiments/schema.js';
-import { randomUUID } from 'node:crypto';
 import { ZodError } from 'zod/v4';
 import type { GalleryFilters } from '../src/ui/gallery.js';
 
@@ -169,7 +168,10 @@ export async function POST(request: Request): Promise<Response> {
     const { surveyMode: _mode, ...fields } = survey;
     const created = await runWithUser(userId, async () => {
       const workspace = await requireWorkspace();
-      return createExperiment({ ...fields, workspaceId: workspace.id, idempotencyKey: randomUUID() });
+      // Stable key from the submitted survey: a resubmit after a lost response
+      // (or a double click) returns the same draft instead of a duplicate.
+      const idempotencyKey = `gallery:${fingerprint({ workspaceId: workspace.id, fields }).slice(0, 48)}`;
+      return createExperiment({ ...fields, workspaceId: workspace.id, idempotencyKey });
     });
     const plan = await estimate(created, 'plan');
     return jsonResponse(200, {
