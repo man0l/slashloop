@@ -2,12 +2,12 @@
 // MCP Tools: Hook Vault + Hook Generator
 // ---------------------------------------------------------------------------
 
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { generateHookVariations } from '../analysis/hooks.js';
-import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, insufficientCreditsPayload, creditBalance } from '../lib/credits.js';
+import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload } from '../lib/credits.js';
+import { mergedAbortSignal, runPreauthed } from '../lib/preauth.js';
 import { costBlock } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -136,7 +136,7 @@ export function registerHookTools(server: McpServer) {
       hookIds: z.array(z.string()).min(1).max(5).describe('1-5 hook IDs from the vault to vary'),
       productDescription: z.string().describe('Your product/niche/offer description for contextual adaptation'),
     },
-    async ({ workspaceId, hookIds, productDescription }) => {
+    async ({ workspaceId, hookIds, productDescription }, extra) => {
       const workspace = await resolveToolWorkspace({ workspaceId });
       const ownedHooks = await db.hook.findMany({
         where: { id: { in: hookIds }, video: { source: { workspaceId: workspace.id } } },
@@ -145,42 +145,43 @@ export function registerHookTools(server: McpServer) {
       if (ownedHooks.length !== hookIds.length) {
         return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Hook not found' }) }], isError: true };
       }
-      const opId = randomUUID();
+      let metered;
       try {
-        await debitCredits(workspace.id, CREDIT_COSTS.generateHookVariations, 'generate_hook_variations', `${opId}:preauth`);
+        metered = await runPreauthed({
+          workspaceId: workspace.id,
+          credits: CREDIT_COSTS.generateHookVariations,
+          tool: 'generate_hook_variations',
+          signal: mergedAbortSignal(extra),
+          run: () => generateHookVariations(hookIds, productDescription),
+        });
       } catch (err) {
         if (err instanceof InsufficientCreditsError) {
           return { content: [{ type: 'text' as const, text: JSON.stringify(insufficientCreditsPayload(err), null, 2) }], isError: true };
         }
         throw err;
       }
-
-      try {
-        const variations = await generateHookVariations(hookIds, productDescription);
-        const balance = await creditBalance(workspace.id);
-
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({
-            message: `${variations.length} hook variations generated and saved to vault`,
-            variations,
-            note: 'Variations are automatically saved to the Hook Vault with origin="generated".',
-            creditsCharged: CREDIT_COSTS.generateHookVariations,
-            creditsRemaining: balance.total,
-            cost: costBlock(CREDIT_COSTS.generateHookVariations, { remaining: balance.total }),
-          }, null, 2) }],
-        };
-      } catch (err) {
-        const balance = await refundCredits(workspace.id, CREDIT_COSTS.generateHookVariations, 'generate_hook_variations', `${opId}:fail`, 'call_failed');
+      if (!metered.ok) {
+        const failed = metered.error instanceof Error ? metered.error.message : 'Call aborted';
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
             error: 'Hook generation failed',
-            message: (err as Error).message,
+            message: failed,
             creditsCharged: 0,
-            creditsRemaining: balance.total,
-            cost: costBlock(0, { remaining: balance.total, note: 'Call failed — pre-auth refunded, nothing charged.' }),
+            creditsRemaining: metered.balance.total,
+            cost: costBlock(0, { remaining: metered.balance.total, note: 'Call failed — pre-auth refunded, nothing charged.' }),
           }) }],
           isError: true,
         };
       }
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          message: `${metered.value.length} hook variations generated and saved to vault`,
+          variations: metered.value,
+          note: 'Variations are automatically saved to the Hook Vault with origin="generated".',
+          creditsCharged: metered.creditsCharged,
+          creditsRemaining: metered.balance.total,
+          cost: costBlock(metered.creditsCharged, { remaining: metered.balance.total }),
+        }, null, 2) }],
+      };
     });
 }
