@@ -5,8 +5,8 @@ import { corsPreflight } from '../src/lib/cors.js';
 import { InsufficientCreditsError } from '../src/lib/credits.js';
 import { ExperimentError, Id, Estimate } from '../src/experiments/schema.js';
 import { createExperiment, estimate, mutate } from '../src/experiments/service.js';
-import { load, list, remove, serialize } from '../src/experiments/store.js';
-import { deleteObjects, thumbBucket } from '../src/lib/storage.js';
+import { load, list, serialize } from '../src/experiments/store.js';
+import { deleteExperiment, deleteExperiments } from '../src/experiments/delete.js';
 
 export const OPTIONS=async(request:Request)=>corsPreflight(request);
 async function body(request:Request):Promise<Record<string,unknown>> {
@@ -46,38 +46,11 @@ async function handle(request:Request):Promise<Response> {
     }else if(request.method==='POST'&&id&&action)response={experiment:serialize(await mutate(workspaceId,id,action,b))};
     else if(request.method==='PATCH'&&id&&variantId)response={experiment:serialize(await mutate(workspaceId,id,'edit',b,variantId))};
     else if(request.method==='DELETE'&&!id){
-      // Bulk delete: best-effort per id — running experiments are refused, the
-      // rest cascade (document row + retained R2 images) exactly like the
-      // single delete. Partial outcomes are reported, never thrown as one.
+      // Bulk delete: best-effort per id (src/experiments/delete.ts).
       const ids=z.array(Id).min(1).max(100).parse(b?.ids);
-      const deleted:string[]=[];const failed:Array<{id:string;code:string;message?:string}>=[];
-      const paths:string[]=[];
-      for(const delId of ids){
-        try{
-          const del=await load(workspaceId,delId);
-          if(del.status==='planning'||del.status==='generating'){failed.push({id:delId,code:'active_experiment',message:'Cancel the experiment before deleting it.'});continue;}
-          const own=[...del.tasks.map(t=>t.path),...del.variants.flatMap(v=>v.slides.map(s=>s.path))].filter((p):p is string=>!!p);
-          if(await remove(workspaceId,delId)){deleted.push(delId);paths.push(...own);}
-          else failed.push({id:delId,code:'experiment_not_found'});
-        }catch(err){
-          failed.push(err instanceof ExperimentError
-            ? {id:delId,code:err.code,message:err.message}
-            : {id:delId,code:'experiment_request_failed',message:err instanceof Error?err.message:undefined});
-        }
-      }
-      if(paths.length)await deleteObjects(thumbBucket(),paths).catch(()=>0);
-      response={deleted:deleted.length,failed};
+      response=await deleteExperiments(workspaceId,ids);
     }
-    else if(request.method==='DELETE'&&id&&!action){
-      const e=await load(workspaceId,id);
-      if(e.status==='planning'||e.status==='generating') throw new ExperimentError(409,'active_experiment','Cancel the experiment before deleting it.');
-      // Retained slide images live under the retained prefix; remove them with the record.
-      const paths=[...e.tasks.map(t=>t.path),...e.variants.flatMap(v=>v.slides.map(s=>s.path))].filter((p):p is string=>!!p);
-      const deleted=await remove(workspaceId,id);
-      if(!deleted) throw new ExperimentError(404,'experiment_not_found');
-      if(paths.length)await deleteObjects(thumbBucket(),paths).catch(()=>0);
-      response={deleted:true};
-    }
+    else if(request.method==='DELETE'&&id&&!action)response=await deleteExperiment(workspaceId,id);
     else return jsonResponse(405,{error:'method_not_allowed'},request);
     return jsonResponse(200,response,request);
   }catch(err){

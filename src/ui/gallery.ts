@@ -910,10 +910,10 @@ ${cards.length ? toolbarHtml(filters) : ''}
         document.getElementById('exp-review').innerHTML = reviewHtml(p);
         document.getElementById('exp-host-payload-wrap').hidden = !inHost;
         if (inHost) {
-          var chatPayload = Object.assign({ workspaceId: 'YOUR_WORKSPACE_ID' }, p);
+          var chatPayload = Object.assign({}, p);
           delete chatPayload.surveyMode;
           document.getElementById('exp-host-payload').textContent =
-            'Create this slideshow experiment:\n' + JSON.stringify(chatPayload, null, 2);
+            'Create this slideshow experiment with the create_experiment tool:\n' + JSON.stringify(chatPayload, null, 2);
         }
         setStep(3);
         return;
