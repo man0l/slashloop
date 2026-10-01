@@ -130,8 +130,8 @@ describe('dailyReadLimit', () => {
 
 describe('degradedDailyReadLimit', () => {
   test('losing shared accounting may only ever lower the ceiling', () => {
-    expect(degradedDailyReadLimit(4_000_000)).toBe(1_000_000);
-    expect(degradedDailyReadLimit(1_000_000)).toBe(250_000);
+    expect(degradedDailyReadLimit(4_000_000)).toBe(250_000);
+    expect(degradedDailyReadLimit(1_000_000)).toBe(62_500);
     for (const limit of [2, 3, 5, 97, 4_000_000, 987_654_321]) {
       expect(degradedDailyReadLimit(limit)).toBeLessThanOrEqual(limit);
       expect(degradedDailyReadLimit(limit)).toBeGreaterThan(0);
@@ -432,6 +432,40 @@ describe('degraded mode fails toward a lower ceiling', () => {
     // 32,014,400 rows before this fix, on a 5,000,000 platform cap.
     expect(total).toBeLessThanOrEqual(4 * (degradedDailyReadLimit(DEFAULT_DAILY_READ_LIMIT) + RUNAWAY_ROWS));
     expect(total).toBeLessThan(5_000_000);
+  });
+
+  test('runaway with KV writes exhausted: eight and sixteen isolates stay inside the platform cap', async () => {
+    process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
+    setShardDirectory(asKv(fakeKv({}, { failPut: true })));
+
+    // The load-bearing case, and the reason the reduced ceiling is a sixteenth
+    // rather than a quarter. At a quarter this same replay spends 8,008,000 rows
+    // across eight isolates — past the 5,000,000 cap by nothing more than the
+    // isolate count, which is exactly the failure class this guard exists to
+    // prevent wearing a 429 as a disguise.
+    for (const isolates of [8, 16]) {
+      let total = 0;
+      for (let isolate = 0; isolate < isolates; isolate++) {
+        resetReadBudgetCache(); // stand in for a brand-new isolate
+        total += (await replayRunaway()).spent;
+      }
+      expect(total).toBeLessThan(5_000_000);
+    }
+  });
+
+  test('the reduced ceiling is sized so N isolates still total the ceiling', () => {
+    // This identity is the entire safety argument for the degraded mode: with no
+    // shared state the account can only be bounded by bounding each isolate, so
+    // the divisor has to hold up against a plausible isolate count.
+    expect(DEGRADED_LIMIT_FRACTION).toBe(1 / 16);
+    const reduced = degradedDailyReadLimit(DEFAULT_DAILY_READ_LIMIT);
+    expect(reduced).toBe(250_000);
+    expect(16 * reduced).toBe(DEFAULT_DAILY_READ_LIMIT);
+    // And it must stay strictly below the real ceiling at any scale — losing
+    // shared accounting may only ever make the guard stricter.
+    for (const limit of [2, 17, 1000, 250_000, DEFAULT_DAILY_READ_LIMIT, 1_000_000_000]) {
+      expect(degradedDailyReadLimit(limit)).toBeLessThanOrEqual(limit);
+    }
   });
 
   test('overlapping flushes cannot make this isolate forget rows it spent', async () => {

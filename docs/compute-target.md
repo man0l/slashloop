@@ -85,9 +85,22 @@ Two things bound that instead of tuning it:
   than queuing them, so once accounting is unavailable each isolate would
   otherwise read 0 from an unwritten key and grant itself the whole 4,000,000.
   An isolate that cannot read or persist the counter drops to
-  `DEGRADED_LIMIT_FRACTION` (1/4 → 1,000,000) instead. Same replay, writes
-  exhausted: 1 isolate 4,001,800 → **1,001,000** rows; 4 isolates 16,007,200 →
-  **4,004,000**, back inside the 5,000,000 platform cap.
+  `DEGRADED_LIMIT_FRACTION` (1/16 → 250,000) instead. Same replay, writes
+  exhausted: 1 isolate 4,001,800 → **250,800** rows; 8 isolates → **2,006,400**,
+  16 isolates → **4,012,800**, all inside the 5,000,000 platform cap.
+
+  The divisor is the safety argument, not the numerator. With no shared state
+  there is no account-wide number, only a per-isolate one, so the account total
+  is `live isolates x reduced ceiling` — the only way to buy headroom is to
+  shrink each slice. At 1/4 the same replay still spends **8,008,000 rows at
+  eight isolates**, past the cap by nothing more than the isolate count; at
+  1/16 it holds to sixteen. That sixteen is the honest limit of the design:
+  nothing here can count the account, so removing the bound entirely needs
+  shared state that is not eventually consistent (a Durable Object). It is also
+  the price of blindness paid in throughput — 250,000 rows/day/isolate is ~113
+  bridge requests — and it is unreachable in normal operation, because the
+  reduced ceiling only engages after three consecutive flushes fail to advance
+  the counter.
 
 The price is cross-isolate accuracy: KV's read-then-write loses whatever
 another isolate had pending, and cheap writes widen that window. The module

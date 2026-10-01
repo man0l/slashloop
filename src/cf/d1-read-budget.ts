@@ -85,7 +85,7 @@
 //
 //   • When this isolate cannot read or persist the shared counter it keeps
 //     counting rows locally against DEGRADED_LIMIT_FRACTION of the ceiling —
-//     1,000,000 rows at the default instead of 4,000,000. Triggers: no KV
+//     250,000 rows at the default instead of 4,000,000. Triggers: no KV
 //     binding, the most recent load could not read the counter, a write
 //     threw, or the daily write budget is spent.
 //   • Degrading toward the full ceiling is what inverts the guard. Every
@@ -94,12 +94,19 @@
 //     2026-09-30 replay with writes exhausted, that spent 8,003,600 rows at
 //     one isolate and 32,014,400 at four, against the 5,000,000 platform cap
 //     — roughly twice the ceiling, behind a 429 that looks like protection.
-//     The same replay with the reduced ceiling stops at 1,001,000 and
-//     4,004,000 (one batch of overshoot each).
+//     The same replay with the reduced ceiling stops at 250,800 per isolate
+//     (one batch of overshoot each), so eight isolates total 2,006,400.
 //   • The bound that survives a KV-write outage is `live isolates x reduced
 //     ceiling`, not `live isolates x limit`. Without shared state there is no
 //     account-wide number, only a per-isolate one — which is the whole reason
-//     the write budget above exists: to make the outage itself unlikely.
+//     the write budget above exists: to make the outage itself unlikely, and
+//     why the reduced ceiling is a sixteenth rather than a quarter: at a
+//     quarter the replay still breaches the platform cap at eight isolates.
+//   • The remaining limit is honest and stated: sixteen concurrent isolates is
+//     the point past which any per-isolate ceiling can be outrun, because
+//     nothing in this design can count the account. Removing that bound needs
+//     shared state that is not eventually consistent, i.e. a Durable Object.
+//     Sixteen concurrent isolates is well above what this endpoint runs.
 //   • A fresh isolate cannot know writes are dead until its own first flush
 //     fails, so it runs at the full ceiling for at most one sync window
 //     (SYNC_MS = 60s). At the 2026-09-30 rate that is ~100k rows, not
@@ -153,11 +160,31 @@ export const MAX_DAILY_WRITES = 50;
 
 /**
  * Fraction of the ceiling an isolate falls back to when its counter cannot be
- * read or persisted. 1/4 turns "each isolate grants itself the full 4,000,000"
- * into "each isolate stops at 1,000,000", which is what keeps four degraded
- * isolates inside the 5,000,000 platform cap.
+ * read or persisted. 1/16 turns "each isolate grants itself the full 4,000,000"
+ * into "each isolate stops at 250,000".
+ *
+ * The divisor, not the numerator, is what makes this safe. Without shared
+ * state there is no account-wide number, only a per-isolate one, so the account
+ * total is bounded by `live isolates x this ceiling` — and the only way to buy
+ * headroom against isolate turnover is to shrink each isolate's slice. Sixteen
+ * isolates spending a sixteenth of the ceiling total exactly the ceiling, so
+ * the 5,000,000 platform cap holds even if the counter has been unreadable
+ * since the first request.
+ *
+ * Measured on the 2026-09-30 replay (33,712 requests x 2,200 rows) with KV
+ * writes dead, at 1/4 the account total is 8,008,000 rows at EIGHT isolates
+ * and 24,024,000 at twenty-four — past the 5,000,000 cap by a factor that is
+ * just isolate count. At 1/16 it is 2,006,400 at eight and 4,012,800 at
+ * sixteen: inside the cap, breaching only past sixteen concurrent isolates.
+ *
+ * Why not lower still: this is the price of blindness, and paying it in
+ * throughput is a real cost. 250,000 rows/day/isolate is ~113 bridge requests —
+ * severe, but a loud reversible 429 with a fresh ceiling at midnight UTC, which
+ * is the right failure direction. It is also unreachable in normal operation:
+ * it only engages after three consecutive flushes fail to advance the counter,
+ * which requires the account's shared write budget to be gone.
  */
-export const DEGRADED_LIMIT_FRACTION = 0.25;
+export const DEGRADED_LIMIT_FRACTION = 0.0625;
 
 /** KV key for one UTC day's read total. */
 export function dailyReadKey(at: Date = new Date()): string {
