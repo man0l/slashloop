@@ -85,6 +85,14 @@
     // Dialect flag for the raw-SQL branch points (src/store.ts). The Worker is
     // always sqlite; Postgres runtimes (VPS worker, scripts) keep the default.
     "DB_DIALECT": "sqlite",
+    // Ceiling on rows/day the /internal/raw-batch bridge will spend before it
+    // answers 429 (src/cf/d1-read-budget.ts). D1 free tier caps an ACCOUNT at
+    // 5M rows read per UTC day, and crossing it fails EVERY database on the
+    // account until midnight — 2026-09-30 a runaway VPS loop read 74.3M rows
+    // in 12h and took unrelated reads down with it. Same value as the code
+    // default, declared here so the ceiling is visible in the dashboard.
+    // Set to 0 (or "off") to disable; raise it only with a paid plan.
+    "D1_DAILY_READ_LIMIT": "4000000",
     // Account id for the Stream API (video-recreate stepper). The token that
     // goes with it is a secret: CLOUDFLARE_STREAM_TOKEN (Stream:Edit) or a
     // CLOUDFLARE_API_TOKEN whose scope covers Stream.
