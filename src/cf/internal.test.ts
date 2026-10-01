@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { setActiveClient } from '../store.js';
+import { rawBatch, setActiveClient } from '../store.js';
 import { recordBatchUsage } from '../lib/d1-usage.js';
 import { setShardDirectory } from './kv.js';
 import { dailyReadKey, resetReadBudgetCache, SYNC_ROWS } from './d1-read-budget.js';
@@ -15,6 +15,21 @@ import { POST } from './internal.js';
 const SECRET = 'test-cron-secret';
 
 let executed: string[][] = [];
+
+/**
+ * The executor this file drives is reached through rawBatch() in
+ * src/cf/internal.ts, and rawBatch comes from the shared '../store.js' module
+ * registry — which other test files rewrite with mock.module, process-globally
+ * and irreversibly (mock.restore() does not undo a module mock). If one of
+ * them replaced rawBatch with a stub, every assertion below about whether D1
+ * was touched would silently measure the stub instead: a "must not execute"
+ * expectation passes for the wrong reason and a "must execute" one fails with a
+ * bare `executed` length mismatch. Both the offending stubs and the file
+ * ordering that decides who wins are nondeterministic across machines, so this
+ * asserts the dependency directly and fails loudly with the cause named
+ * rather than letting five downstream assertions report it.
+ */
+const rawBatchIsReal = /rawBatch/.test(rawBatch.toString()) && /activeStore/.test(rawBatch.toString());
 
 /** Fake raw executor — records what the bridge asked D1 to run. */
 function fakeExecutor(rows = [] as unknown[][]) {
@@ -54,6 +69,12 @@ afterEach(() => {
 });
 
 describe('POST /internal/raw-batch read ceiling', () => {
+  test('this suite drives the real rawBatch, not another file\'s module stub', () => {
+    // See rawBatchIsReal above. When this fails, every other test in this
+    // block is measuring a mock, so fix the leaking mock.module first.
+    expect(rawBatchIsReal ? true : rawBatch.toString()).toBe(true);
+  });
+
   test('serves a batch normally while the day is under budget', async () => {
     process.env.D1_DAILY_READ_LIMIT = '1000';
     recordBatchUsage(2200, 12); // binding-side meta for the batch below
