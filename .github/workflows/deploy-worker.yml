@@ -1,6 +1,8 @@
 # Deploy the whole Cloudflare stack on every push to master/main
 # (direct commits AND merged PRs both land here as push events):
-# verify (typecheck + tests) → sync secrets → D1 migrations → wrangler deploy
+# verify (typecheck + tests) → sync secrets → prune unreachable secrets →
+# var-budget check → D1 migrations
+# (skipped when prisma/d1-migrations did not change) → wrangler deploy
 # (Worker + routes + D1/R2/KV bindings + cron triggers) → live smoke check.
 #
 # GitHub is the source of truth for the Worker's environment: the job runs in
@@ -9,15 +11,57 @@
 # value that is set — "if set" — to the Worker with `wrangler secret bulk`.
 # Values not set in GitHub are left as-is on the Worker, never deleted.
 #
+# The Free plan caps secret_text + plain_text bindings at 64 combined, and
+# Cloudflare only rejects the 65th during `wrangler deploy`. Names live in
+# scripts/worker-secrets.mjs; WORKER_EXCLUDED holds the ones the Worker cannot
+# read. Because "if set" never deletes, freeing a slot needs the explicit prune
+# step — and staying under the cap needs the budget check, so the next var
+# fails here instead of at wrangler.
+#
 # Required GitHub secrets:
 #   CLOUDFLARE_API_TOKEN  — token with Workers Scripts:Edit + D1:Edit
 #   CLOUDFLARE_ACCOUNT_ID — (as a repo VARIABLE works too)
 # Plus everything scripts/sync-worker-secrets.mjs lists in its manifest.
 #
-# Rollback: re-run a previous deployment from the Actions tab
-# (or `wrangler rollback`).
+# A failed run is not retried. The D1 quota failure on run 182 would have
+# failed the same way on a re-run and still skipped `wrangler deploy`. The
+# recovery is the next successful publish of a descendant SHA. That later
+# green run must not be the only record that the failed SHA's code shipped.
+#
+# A red `verify` on master is worse than a skipped deploy for this SHA alone:
+# because `deploy` is `needs: verify`, EVERY later push is blocked too, with
+# no retry and no signal on which job failed. Run 188 was exactly that. Read
+# the commit's `cloudflare-worker/deploy-blocked` status before assuming the
+# pipeline is healthy, and note that a hotfix cannot bypass the gate.
+#
+# `worker-live` moves only after wrangler deploy and the smoke check pass.
+# Commit status `cloudflare-worker/published` stays on that SHA (failure is
+# not cleared by a later run). `cloudflare-worker/deploy-blocked` names the
+# job that stopped the publish — success once the gate is reached, failure
+# naming `verify` or `deploy` otherwise. A failed ancestor that this publish
+# contains gets `cloudflare-worker/shipped-via`. GET /health `commit` is the
+# live build id. The GitHub `production` deployment status is not: Vercel
+# writes a later failure onto that same environment.
+#
+# PR-level verify lives in .github/workflows/verify-pr.yml and is deliberately
+# NOT a deploy gate — it exists so an order-sensitive test fails on the pull
+# request instead of stalling the pipeline here.
+#
+# Rollback: re-run a previous successful deploy-worker run from the Actions
+# tab, or `wrangler rollback`. A manual rollback does not move `worker-live`;
+# move the tag to the republished SHA in the same step
+# (`gh api -X PATCH repos/man0l/slashloop/git/refs/tags/worker-live -f sha=<sha> -F force=true`).
 
 name: deploy-worker
+
+# Job tokens can only narrow these scopes, not raise them. lineage needs
+# contents:write (worker-live) and statuses:write. deploy needs actions:write
+# for the log artifact. A workflow token of contents:read would drop both
+# writes and the failure signal would never be posted.
+permissions:
+  contents: write
+  statuses: write
+  actions: write
 
 on:
   # Any push to the default branch — direct commits AND merged PRs both land
@@ -35,6 +79,8 @@ jobs:
   # Gate: nothing deploys unless typecheck + tests pass on the pushed code.
   verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -57,6 +103,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     needs: verify
+    permissions:
+      contents: read
+      actions: write
     env:
       # Log monitor: every run step below tees stdout/stderr here; the final
       # report step filters it by WORKFLOW_LOG_LEVEL (repo/environment VARIABLE:
@@ -97,8 +146,6 @@ jobs:
           SCRAPER_PROXY_URL: ${{ secrets.SCRAPER_PROXY_URL }}
           QUEUE_API_KEY_ID: ${{ secrets.QUEUE_API_KEY_ID }}
           QUEUE_API_KEY_SECRET: ${{ secrets.QUEUE_API_KEY_SECRET }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           STRIPE_SECRET_API_KEY: ${{ secrets.STRIPE_SECRET_API_KEY }}
@@ -107,14 +154,12 @@ jobs:
           STRIPE_PRICE_CREATOR_YEAR: ${{ vars.STRIPE_PRICE_CREATOR_YEAR }}
           STRIPE_PRICE_PRO_MONTH: ${{ vars.STRIPE_PRICE_PRO_MONTH }}
           STRIPE_PRICE_PRO_YEAR: ${{ vars.STRIPE_PRICE_PRO_YEAR }}
-          STRIPE_PRICE_PACK: ${{ vars.STRIPE_PRICE_PACK }}
           STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
           STRIPE_TEST_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
           STRIPE_TEST_PRICE_CREATOR_MONTH: ${{ vars.STRIPE_TEST_PRICE_CREATOR_MONTH }}
           STRIPE_TEST_PRICE_CREATOR_YEAR: ${{ vars.STRIPE_TEST_PRICE_CREATOR_YEAR }}
           STRIPE_TEST_PRICE_PRO_MONTH: ${{ vars.STRIPE_TEST_PRICE_PRO_MONTH }}
           STRIPE_TEST_PRICE_PRO_YEAR: ${{ vars.STRIPE_TEST_PRICE_PRO_YEAR }}
-          STRIPE_TEST_PRICE_PACK: ${{ vars.STRIPE_TEST_PRICE_PACK }}
           STRIPE_MODE: ${{ vars.STRIPE_MODE }}
           # ── variables (repo + production environment) ──
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
@@ -124,8 +169,6 @@ jobs:
           OPENROUTER_VIDEO_MODE: ${{ vars.OPENROUTER_VIDEO_MODE }}
           OPENROUTER_VIDEO_MAX_TOKENS: ${{ vars.OPENROUTER_VIDEO_MAX_TOKENS }}
           PROXY_TRAFFIC_CAP_GB: ${{ vars.PROXY_TRAFFIC_CAP_GB }}
-          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
-          R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
           R2_THUMB_BUCKET: ${{ vars.R2_THUMB_BUCKET }}
           R2_MEDIA_BUCKET: ${{ vars.R2_MEDIA_BUCKET }}
           R2_THUMB_PUBLIC_BASE: ${{ vars.R2_THUMB_PUBLIC_BASE }}
@@ -136,15 +179,65 @@ jobs:
           set -o pipefail
           bun scripts/sync-worker-secrets.mjs 2>&1 | tee -a "$WORKFLOW_LOG"
 
-      - name: Apply D1 migrations
+      # "If set" sync never deletes, so a name dropped from the manifest keeps
+      # its slot forever. Free accounts cap secret+text bindings at 64 and the
+      # Worker was sitting exactly at the cap, which is why PR #96's deploy
+      # failed with Cloudflare code 10055. This step is the only thing that
+      # frees a slot: it deletes the names in WORKER_EXCLUDED
+      # (scripts/worker-secrets.mjs) that are still bound, and no-ops when
+      # there are none. The VPS image reads those R2 values from GitHub
+      # separately (build-worker-image.yml) and is unaffected.
+      - name: Prune unreachable Worker secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -o pipefail
+          bun scripts/prune-worker-secrets.mjs 2>&1 | tee -a "$WORKFLOW_LOG"
+
+      # Pre-flight for the same ceiling, before wrangler deploy burns a run on
+      # it: projects the counted set this deploy ends with and fails the job
+      # when it does not fit. Reads binding names/types only.
+      - name: Check Worker var budget (Free plan caps secrets+text at 64)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -o pipefail
+          bun scripts/check-worker-var-budget.mjs 2>&1 | tee -a "$WORKFLOW_LOG"
+
+      - name: Apply D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -o pipefail
+          # Listing applied migrations is a remote D1 query and counts against
+          # the daily row-read quota. Skip it when this push does not change
+          # prisma/d1-migrations, so a quota cap cannot block a code-only deploy.
+          # A push that adds SQL, and a manual workflow_dispatch, still apply.
+          if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            git fetch --depth=1 origin "$BEFORE_SHA"
+            changed="$(git diff --name-only "$BEFORE_SHA" HEAD -- prisma/d1-migrations)"
+            if [ -z "$changed" ]; then
+              echo "No prisma/d1-migrations changes since ${BEFORE_SHA}; skipping remote apply."
+              exit 0
+            fi
+            echo "Migration files changed:"
+            printf '%s\n' "$changed"
+          fi
           bunx wrangler d1 migrations apply slashloop --remote 2>&1 | tee -a "$WORKFLOW_LOG"
 
+      # /health commit is this SHA only when the stamp below runs. A bundle
+      # that skipped it keeps the committed "dev" value and fails the smoke.
+      - name: Stamp deploy SHA
+        run: |
+          printf '%s\n' '/** Stamped by deploy-worker immediately before wrangler deploy. */' "export const DEPLOY_SHA = \"${GITHUB_SHA}\";" > src/cf/deploy-sha.ts
+          grep -F "\"${GITHUB_SHA}\"" src/cf/deploy-sha.ts
+
       - name: Deploy Worker (Worker + routes + D1/R2/KV bindings + cron triggers)
+        id: wrangler
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -152,18 +245,30 @@ jobs:
           set -o pipefail
           bunx wrangler deploy --autoconfig=false --keep-vars 2>&1 | tee -a "$WORKFLOW_LOG"
 
-      # Post-deploy smoke: fail the run if the live Worker doesn't answer.
+      # Post-deploy smoke: the live Worker must answer, and /health.commit
+      # must be this SHA. A 200 from the previous build is not a publish.
       - name: Smoke check live Worker
+        id: smoke
         env:
           PUBLIC_URL: ${{ vars.PUBLIC_URL }}
         run: |
           set -e
           BASE="${PUBLIC_URL:-https://mcp.slashloop.dev}"
-          echo "health: $(curl -s -o /dev/null -w '%{http_code}' "$BASE/health")"
-          test "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/health")" = "200"
-          test "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/login")" = "200"
+          ok=0
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            code="$(curl -sS -o /tmp/health.json -w '%{http_code}' "$BASE/health" || true)"
+            commit="$(node -e 'const fs=require("fs"); try { const j=JSON.parse(fs.readFileSync("/tmp/health.json","utf8")); process.stdout.write(String(j.commit||"")); } catch { process.stdout.write(""); }')"
+            echo "try $i health=$code commit=$commit want=$GITHUB_SHA"
+            if [ "$code" = "200" ] && [ "$commit" = "$GITHUB_SHA" ]; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          test "$ok" = "1"
+          test "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/login")" = "200"
           # Unauthenticated MCP must 401, never 500
-          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/mcp")" = "401"
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/mcp")" = "401"
           echo "smoke: ok"
 
       # Runs even when an earlier step fails — errors/warnings are most
@@ -183,3 +288,29 @@ jobs:
             ${{ runner.temp }}/workflow-warnings.log
           retention-days: 14
           if-no-files-found: warn
+
+  # Runs after verify and deploy, including when either failed. Writes the
+  # worker-live tag and the commit statuses. Exits 0 on a signal-API error
+  # so a publish that already passed smoke stays a green workflow.
+  lineage:
+    runs-on: ubuntu-latest
+    needs: [verify, deploy]
+    if: always()
+    permissions:
+      contents: write
+      statuses: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record publish or the hole a later green run must not hide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_PUBLISHED: ${{ needs.deploy.result == 'success' && needs.verify.result == 'success' }}
+          # A red verify SKIPS deploy, so deploy logs nothing at all. Hand the
+          # raw job results to the script so it can name the gate on the SHA
+          # (cloudflare-worker/deploy-blocked) instead of leaving "master is
+          # red" as something an operator has to open Actions to explain.
+          VERIFY_RESULT: ${{ needs.verify.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+        run: node scripts/deploy-lineage.mjs

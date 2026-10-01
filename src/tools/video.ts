@@ -8,6 +8,8 @@ import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { analyzeVideoForWorkspace } from '../lib/video-service.js';
 import { resolveThumbUrl, signedMediaUrl, frameUrlAt } from '../lib/media.js';
 import { outstandingJobForVideo } from '../lib/jobs.js';
+import { readStoredBrief } from '../analysis/brief-delivery.js';
+import { readStoredScript } from '../analysis/script-delivery.js';
 import { withNextSteps, costBlock } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -44,6 +46,18 @@ export function registerVideoTools(server: McpServer) {
         : [];
       const hooks = await db.hook.findMany({ where: { videoId: video.id } });
       const ideaCount = await db.idea.count({ where: { videoId: video.id } });
+      const latestBriefRow = await db.brief.findFirst({
+        where: { analysis: { videoId: video.id } },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, briefJson: true },
+      });
+      const latestBrief = latestBriefRow ? readStoredBrief(latestBriefRow.briefJson) : null;
+      const latestScriptRow = await db.script.findFirst({
+        where: { analysis: { videoId: video.id } },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, scriptJson: true },
+      });
+      const latestScript = latestScriptRow ? readStoredScript(latestScriptRow.scriptJson) : null;
 
       const engRate = video.views > 0
         ? ((video.likes + video.comments + (video.shares ?? 0)) / video.views * 100).toFixed(1)
@@ -138,6 +152,12 @@ export function registerVideoTools(server: McpServer) {
             hasAnalysis: analysisCount > 0,
             canExtractHook: !!latestAnalysis && (latestAnalysis.analysisBasis.startsWith('video') || latestAnalysis.analysisBasis === 'transcript+thumbnail'),
             hasIdea: ideaCount > 0,
+            hasBrief: latestBrief?.status === 'ready',
+            briefId: latestBriefRow?.id ?? null,
+            briefStatus: latestBrief?.status ?? null,
+            hasScript: latestScript?.status === 'ready',
+            scriptId: latestScriptRow?.id ?? null,
+            scriptStatus: latestScript?.status ?? null,
           },
         }, null, 2) }],
       };

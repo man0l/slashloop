@@ -25,6 +25,11 @@ export function runWithWaitUntil<T>(waitUntil: WaitUntilFn | undefined, fn: () =
  * waitUntil is installed (Worker fetch/scheduled); false on Node/tests, where
  * abort-cancellation does not apply.
  */
+/** True on a Worker request that installed ctx.waitUntil. False on Node and in tests. */
+export function hasWaitUntil(): boolean {
+  return als.getStore() != null;
+}
+
 export function keepAlive(promise: Promise<unknown>): boolean {
   const store = als.getStore();
   if (!store) return false;

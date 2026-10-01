@@ -19,7 +19,8 @@ asking the user to do manual steps.
 3. **Analyze a winner** — `analyze_video` (Gemini native video; auto-falls back
    to text-only). Pull transcript with `get_video_transcript`.
 4. **Mine hooks** — `extract_hook` from an analysis, then
-   `generate_hook_variations` to adapt. Browse with `list_hooks`.
+   `generate_hook_variations` to adapt. Browse with `list_hooks`. Recover a
+   charged batch whose response was lost with `list_hook_variations` (free).
 5. **Produce creative** — `create_idea` -> `create_brief`. Save references to a
    board via `save_to_board`.
 

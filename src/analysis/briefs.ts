@@ -3,11 +3,29 @@
 // Takes an analysis JSON and optional brand context → UGC/ad brief.
 // ---------------------------------------------------------------------------
 
-import { z } from 'zod/v4';
+import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
+import { hasWaitUntil, keepAlive } from '../cf/wait-until.js';
 import { BriefDataSchema, type BriefData } from './schema.js';
 import type { BriefResult } from './types.js';
-import { callModelText } from '../lib/llm.js';
+import { callModelText, modelJson } from '../lib/llm.js';
+import {
+  BRIEF_INLINE_BUDGET_MS,
+  failedBriefJson,
+  generatingBriefJson,
+  raceBudget,
+} from './brief-delivery.js';
+
+export class BriefGenerationError extends Error {
+  constructor(message: string, readonly briefId: string | null) {
+    super(message);
+    this.name = 'BriefGenerationError';
+  }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : 'Brief generation failed';
+}
 
 const BRIEF_SYSTEM = `You are Gemini, a UGC/ad creative director who turns viral video analyses into actionable creative briefs. Given an analysis, produce a brief a UGC creator can follow.
 
@@ -26,6 +44,7 @@ export async function generateBrief(
   analysisId: string,
   brandContext?: string,
   model = 'gemini-3.5-flash',
+  existingBriefId?: string,
 ): Promise<BriefResult> {
   const analysis = await db.analysis.findUnique({
     where: { id: analysisId },
@@ -38,14 +57,17 @@ export async function generateBrief(
 
   let briefData!: BriefData;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const parsed = await callModelText(BRIEF_SYSTEM, userMessage, model);
-    const result = BriefDataSchema.safeParse(parsed);
+    const envelope = await callModelText(BRIEF_SYSTEM, userMessage, model);
+    const result = BriefDataSchema.safeParse(modelJson(envelope));
     if (result.success) { briefData = result.data; break; }
     if (attempt === 0) continue;
     throw new Error(`Brief validation failed after 2 attempts`);
   }
 
-  const saved = await db.brief.create({ data: { analysisId, briefJson: JSON.stringify(briefData) } });
+  const briefJson = JSON.stringify(briefData);
+  const saved = existingBriefId
+    ? await db.brief.update({ where: { id: existingBriefId }, data: { briefJson } })
+    : await db.brief.create({ data: { analysisId, briefJson } });
 
   const workspaceId = analysis.video?.source?.workspaceId;
   if (workspaceId) {
@@ -53,4 +75,75 @@ export async function generateBrief(
   }
 
   return { id: saved.id, brief: briefData };
+}
+
+export type BriefDelivery =
+  | { delivery: 'ready'; result: BriefResult }
+  | { delivery: 'generating'; id: string };
+
+async function markBriefFailed(id: string, error: unknown): Promise<void> {
+  await db.brief.update({
+    where: { id },
+    data: { briefJson: failedBriefJson(errorText(error)) },
+  }).catch(() => {});
+}
+
+/**
+ * Reserve a brief id, then generate. The id exists before the model call.
+ * When generation exceeds the inline budget, the row stays `generating` and
+ * the model call is pinned with waitUntil so the HTTP response can leave
+ * with the id instead of dying as a 502.
+ */
+export async function deliverBrief(opts: {
+  analysisId: string;
+  workspaceId: string;
+  brandContext?: string;
+  model?: string;
+  budgetMs?: number;
+  onLateFailure?: (briefId: string, error: unknown) => Promise<void>;
+}): Promise<BriefDelivery> {
+  const owned = await db.analysis.findFirst({
+    where: { id: opts.analysisId, video: { source: { workspaceId: opts.workspaceId } } },
+    select: { id: true },
+  });
+  if (!owned) throw new BriefGenerationError(`Analysis not found: ${opts.analysisId}`, null);
+
+  const id = randomUUID();
+  await db.brief.create({
+    data: { id, analysisId: opts.analysisId, briefJson: generatingBriefJson() },
+  });
+
+  const work = generateBrief(opts.analysisId, opts.brandContext, opts.model, id).then(
+    (result) => ({ ok: true as const, result }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+
+  const raced = await raceBudget(work, opts.budgetMs ?? BRIEF_INLINE_BUDGET_MS);
+  if (raced.kind === 'done') {
+    if (!raced.value.ok) {
+      await markBriefFailed(id, raced.value.error);
+      throw new BriefGenerationError(errorText(raced.value.error), id);
+    }
+    return { delivery: 'ready', result: raced.value.result };
+  }
+
+  if (hasWaitUntil()) {
+    keepAlive(work.then(async (settled) => {
+      if (settled.ok) return;
+      try {
+        await markBriefFailed(id, settled.error);
+        await opts.onLateFailure?.(id, settled.error);
+      } catch (err) {
+        console.error(`create_brief late failure ${id}: ${errorText(err)}`);
+      }
+    }));
+    return { delivery: 'generating', id };
+  }
+
+  const settled = await work;
+  if (!settled.ok) {
+    await markBriefFailed(id, settled.error);
+    throw new BriefGenerationError(errorText(settled.error), id);
+  }
+  return { delivery: 'ready', result: settled.result };
 }

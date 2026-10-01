@@ -14,7 +14,7 @@
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { ScriptDataSchema, SCRIPT_FORMATS, type ScriptData, type ScriptFormat } from './schema.js';
-import { callModelText } from '../lib/llm.js';
+import { callModelText, modelJson } from '../lib/llm.js';
 
 /** Per-format direction. Kept terse — the model also has the analysis. */
 const FORMAT_DIRECTIONS: Record<ScriptFormat, string> = {
@@ -74,6 +74,7 @@ export async function generateScript(
   analysisId: string,
   opts: GenerateScriptOptions,
   model = 'gemini-3.5-flash',
+  existingScriptId?: string,
 ): Promise<ScriptResult> {
   const analysis = await db.analysis.findUnique({
     where: { id: analysisId },
@@ -93,8 +94,8 @@ export async function generateScript(
 
   let script!: ScriptData;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const parsed = await callModelText(SCRIPT_SYSTEM, userMessage, model);
-    const result = ScriptDataSchema.safeParse(parsed);
+    const envelope = await callModelText(SCRIPT_SYSTEM, userMessage, model);
+    const result = ScriptDataSchema.safeParse(modelJson(envelope));
     if (result.success) {
       // Trust the caller's format id over whatever the model echoed back.
       script = { ...result.data, format: opts.format };
@@ -104,9 +105,10 @@ export async function generateScript(
     throw new Error('Script validation failed after 2 attempts');
   }
 
-  const saved = await db.script.create({
-    data: { analysisId, format: opts.format, scriptJson: JSON.stringify(script) },
-  });
+  const scriptJson = JSON.stringify(script);
+  const saved = existingScriptId
+    ? await db.script.update({ where: { id: existingScriptId }, data: { format: opts.format, scriptJson } })
+    : await db.script.create({ data: { analysisId, format: opts.format, scriptJson } });
 
   const workspaceId = analysis.video?.source?.workspaceId;
   if (workspaceId) {

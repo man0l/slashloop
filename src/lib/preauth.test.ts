@@ -56,7 +56,10 @@ test('an aborted call refunds and does not keep the debit when the model call la
     },
   }, d);
   expect(result.ok).toBe(false);
-  if (!result.ok) expect(result.aborted).toBe(true);
+  if (!result.ok) {
+    expect(result.aborted).toBe(true);
+    expect(result.value).toEqual({ id: 'brief-orphaned' });
+  }
   expect(result.creditsCharged).toBe(0);
   expect(d.refunds).toEqual(['fetch_failed']);
 });
@@ -71,6 +74,45 @@ test('a finished call keeps the debit', async () => {
   }, d);
   expect(result).toMatchObject({ ok: true, creditsCharged: 2, value: { id: 'brief-1' } });
   expect(d.refunds).toEqual([]);
+});
+
+test('a stable idempotency key replays the debit and does not charge again', async () => {
+  const refs: string[] = [];
+  const d = deps([]);
+  d.debitCredits = async (_w, _c, _t, ref) => {
+    refs.push(ref);
+    return { ...balance(286), replayed: true };
+  };
+  const result = await runPreauthed({
+    workspaceId: 'w',
+    credits: 2,
+    tool: 'generate_script',
+    idempotencyKey: 'script-1',
+    run: async () => ({ id: 'script-1' }),
+  }, d);
+  expect(refs).toEqual(['script-1:preauth']);
+  expect(result).toMatchObject({ ok: true, creditsCharged: 0, value: { id: 'script-1' } });
+  expect(d.refunds).toEqual([]);
+});
+
+test('a replayed debit that fails refunds once on the shared fail ref', async () => {
+  const refs: string[] = [];
+  const d = deps([]);
+  d.debitCredits = async () => ({ ...balance(286), replayed: true });
+  d.refundCredits = async (_w, _c, _t, ref, reason = 'call_failed') => {
+    refs.push(`${ref}:${reason}`);
+    return balance(288);
+  };
+  const result = await runPreauthed({
+    workspaceId: 'w',
+    credits: 2,
+    tool: 'generate_script',
+    idempotencyKey: 'script-1',
+    run: async () => { throw new Error('still dead'); },
+  }, d);
+  expect(result.ok).toBe(false);
+  expect(result.creditsCharged).toBe(0);
+  expect(refs).toEqual(['script-1:fail:call_failed']);
 });
 
 test('the abort refund is pinned with waitUntil so a client disconnect cannot cancel it', async () => {

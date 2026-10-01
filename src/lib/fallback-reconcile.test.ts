@@ -1,6 +1,21 @@
 // Sweep that unparks fallback_d1 queued_remote rows via one-way PG republish.
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 
+// Snapshot the REAL ../store.js by value before any mock.module runs, and put
+// it back in afterAll. bun's mock.module rewrites the shared module registry
+// entry for the whole `bun test` PROCESS and mock.restore() does not undo it,
+// so this stub used to outlive the file: rawBatch stayed `async () => [[]]`
+// for every later test file, and src/cf/internal.test.ts then read 200 from a
+// batch that never reached D1. Ordering between files is not stable across
+// machines, which is why this only ever failed in CI.
+// See also src/lib/queue-owner.test.ts, which stubs the same module.
+import * as realStore from '../store.js';
+const REAL_STORE = { ...realStore };
+
+afterAll(() => {
+  mock.module('../store.js', () => ({ ...REAL_STORE }));
+});
+
 const seen: {
   findWhere: unknown;
   reconcile: Array<Record<string, unknown>>;
