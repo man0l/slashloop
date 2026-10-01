@@ -18,6 +18,15 @@ so installers never handle them.
 
 Live endpoint: **https://mcp.slashloop.dev/mcp**
 
+## Agent skills
+
+`skills/` contains installable agent skills for the remote MCP:
+`slashloop-sources`, `slashloop-refresh`, `slashloop-gallery`,
+`slashloop-experiments`, and `slashloop`. Copy a skill directory into your
+agent's skills root (for Codex, `$CODEX_HOME/skills`) and read its `SKILL.md`
+before running the workflow. Every skill requires an explicit workspace ID or
+exact workspace name; none silently defaults to the primary workspace.
+
 ```
 src/
   register-tools.ts  # 63 tools, shared with the remote host
