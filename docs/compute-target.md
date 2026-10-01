@@ -53,9 +53,7 @@ already *failing*, and the runaway was succeeding.
 `src/cf/d1-read-budget.ts` is the volume ceiling that was missing. It meters the
 bridge's rows-read per UTC day and answers `429` (with `Retry-After` at the
 reset) instead of spending the account. The counter lives in KV, never D1 — a
-D1 counter would consume the rows it exists to protect. Accounting is
-deliberately soft (KV is eventually consistent) and the default ceiling carries
-20% headroom for that; see the module header for the full trade-off.
+D1 counter would consume the rows it exists to protect.
 
 | Var | Default | Notes |
 |---|---|---|
@@ -66,6 +64,47 @@ the money paths (credit refunds in `src/lib/credits.ts`) are only refused when
 the account's read budget is genuinely spent. One request may cross the ceiling
 by its own row count — the check is before the batch, so the overshoot is
 bounded by one request rather than open-ended.
+
+#### The guard's own budget: KV writes are capped, and it knows when it is flying blind
+
+KV's free tier allows **1,000 writes/day for the whole account**, shared with
+every other namespace including the digest cursor. Cloudflare *rejects* writes
+past that cap rather than queueing them, so an account that blows the write cap
+loses its counter — and the first cut of this guard then inverted: every fresh
+isolate read the absent counter as 0, granted itself the full 4,000,000, and
+replayed the 2026-09-30 runaway to **8,003,600 rows** at one isolate and
+**32,014,400** at four, against the 5,000,000 platform cap. The 429 read like
+protection while the outage arrived anyway.
+
+Two defenses, because one was measured failing:
+
+1. **Writes are budgeted.** Each isolate stops writing after
+   `DAILY_FLUSH_BUDGET` (200) flushes per UTC day — 200 x the ~4 isolates this
+   account runs is 800 of the 1,000 available. The flush size is *derived*
+   rather than tuned: `syncRows(limit) = limit / DAILY_FLUSH_BUDGET` (floored at
+   `MIN_SYNC_ROWS`), so 200 writes walk the whole ceiling exactly once. Treat
+   `SYNC_MS` and `syncRows()` as budget knobs, not accuracy knobs.
+2. **The ceiling shrinks when the counter cannot be persisted.** Every flush
+   that fails to advance the shared total — write rejected, or budget spent —
+   increments a stall counter; `STALL_FLUSH_FAILURES` (3) consecutive failures
+   and the ceiling drops to `limit / DEGRADED_DIVISOR` (16), i.e. 250,000 at the
+   default. Sixteen isolates each spending a sixteenth still total exactly the
+   ceiling, so isolate turnover cannot breach the account cap even if the counter
+   has been unreadable since the first request. A 429 body carries
+   `degraded: true` when this is the ceiling that refused, which is the
+   difference between "the day is spent" and "we can no longer see the day".
+
+The honest limits: degraded mode cannot see other isolates, so it bounds the
+account only by bounding each isolate, and it assumes at most 16 concurrent
+isolates. It is still the safe direction — the failure mode is a loud,
+reversible 429, never an overrun. A precise meter would need a Durable Object
+counter, which is not worth a new migration class on the incident path.
+
+Accounting is deliberately soft (KV is eventually consistent) and the default
+ceiling carries 20% headroom for that; the module header carries the full
+trade-off. Metering never blocks the caller: `recordDailyReads()` applies the
+accounting synchronously and returns only the KV write, which `internal.ts`
+pins with `ctx.waitUntil`, so a batch does not hold its 200 on a KV round trip.
 
 ## Path (a) — Cloudflare-native follow-up (scaffolded, not wired)
 

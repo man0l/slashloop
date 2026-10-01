@@ -156,3 +156,49 @@ describe('POST /internal/raw-batch read ceiling', () => {
     expect(executed).toHaveLength(1);
   });
 });
+
+describe('POST /internal/raw-batch metering', () => {
+  test('a 429 says whether the ceiling was reduced by a dead counter', async () => {
+    process.env.D1_DAILY_READ_LIMIT = '200000';
+    // Reads work, writes are rejected — the counter exists and looks
+    // trustworthy but can never advance.
+    setShardDirectory({
+      get: async (key: string) => (key === dailyReadKey() ? '0' : null),
+      put: async () => { throw new Error('kv write limit exceeded'); },
+    } as unknown as KVNamespace);
+    resetReadBudgetCache();
+
+    // Spend a slice per call until the stall trips and the reduced ceiling
+    // takes over, then keep going: the bridge must refuse rather than keep
+    // serving against a full 40,000.
+    let last: { status: number; body: Record<string, unknown> } | null = null;
+    for (let i = 0; i < 12; i++) {
+      recordBatchUsage(20_000, 0);
+      const res = await POST(bridge(OK_BODY));
+      last = { status: res.status, body: (await res.json()) as Record<string, unknown> };
+      if (res.status === 429) break;
+    }
+
+    expect(last?.status).toBe(429);
+    expect(last?.body).toMatchObject({ error: 'd1_daily_read_limit', degraded: true });
+    // 200,000 ceiling; a sixteenth is 12,500. The refusal came from the
+    // REDUCED ceiling — a naive guard would have served another 140,000 rows
+    // against a counter that can never move again.
+    expect(last?.body.rowLimit).toBe(12_500);
+    expect(last?.body.rowsReadToday).toBe(60_000);
+    expect(executed.length).toBeLessThan(12);
+  });
+
+  test('a healthy refusal is not reported as degraded', async () => {
+    process.env.D1_DAILY_READ_LIMIT = '5000';
+    setShardDirectory({
+      get: async (key: string) => (key === dailyReadKey() ? '5000' : null),
+      put: async () => {},
+    } as unknown as KVNamespace);
+    resetReadBudgetCache();
+
+    const res = await POST(bridge(OK_BODY));
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ rowLimit: 5000, degraded: false });
+  });
+});

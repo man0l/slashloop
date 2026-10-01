@@ -14,6 +14,7 @@ import { rawBatch, type RawStatement } from '../store.js';
 import { takeBatchUsage } from '../lib/d1-usage.js';
 import { CircuitBreaker, CircuitOpenError } from '../lib/circuit-breaker.js';
 import { guardDailyReads, recordDailyReads, secondsUntilUtcMidnight } from './d1-read-budget.js';
+import { keepAlive } from './wait-until.js';
 
 // Per-isolate circuit breaker: while D1 is timing out, refuse inbound
 // raw-batch traffic fast (503) instead of holding every request against the
@@ -36,6 +37,24 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
 const MAX_STATEMENTS = 50;
 const MAX_SQL_LENGTH = 100_000;
 const MAX_TOTAL_PARAMS = 500;
+
+/**
+ * Charge rows to the daily read budget WITHOUT holding the response on KV.
+ *
+ * recordDailyReads() applies the accounting and decides whether a flush is due
+ * synchronously, so the ceiling is already correct by the time this returns;
+ * the promise it hands back is only the KV write. On a Worker, keepAlive()
+ * pins that write to ctx.waitUntil, which also keeps it alive past a client
+ * abort, so a batch never blocks on a KV round trip. Off-Worker (Node, tests)
+ * there is no IoContext to extend, so it is awaited — that keeps the accounting
+ * deterministic in tests and leaves no floating promise. recordDailyReads never
+ * rejects, so neither path can turn a 200 into a 500.
+ */
+async function meterBatch(rows: number): Promise<void> {
+  const flush = recordDailyReads(rows);
+  if (keepAlive(flush)) return;
+  await flush;
+}
 
 export async function POST(request: Request): Promise<Response> {
   const secret = process.env.CRON_SECRET;
@@ -69,11 +88,23 @@ export async function POST(request: Request): Promise<Response> {
   // cap this way and took unrelated reads down with it. 429 + Retry-After, not
   // 503: the account is healthy, today's read budget is spent, and the caller
   // should come back after the reset.
+  //
+  // `degraded` means the shared KV counter stopped taking this isolate's
+  // writes (KV's account-wide 1,000 writes/day exhausted, or this isolate used
+  // its own daily budget), so `rowLimit` is the reduced local ceiling rather
+  // than the configured one. Both are a 429 to the caller; the flag is what
+  // tells an operator which of the two happened.
   const budget = await guardDailyReads();
   if (!budget.allowed) {
     return json(
       429,
-      { success: false, error: 'd1_daily_read_limit', rowsReadToday: budget.used, rowLimit: budget.limit },
+      {
+        success: false,
+        error: 'd1_daily_read_limit',
+        rowsReadToday: budget.used,
+        rowLimit: budget.limit,
+        degraded: budget.degraded,
+      },
       { 'Retry-After': String(secondsUntilUtcMidnight()) },
     );
   }
@@ -83,7 +114,7 @@ export async function POST(request: Request): Promise<Response> {
     // Binding-side meta for the VPS caller's write attribution (Phase 0).
     // Additive fields — older VPS images ignore them.
     const usage = takeBatchUsage();
-    await recordDailyReads(usage.reads);
+    await meterBatch(usage.reads);
     return json(200, { success: true, results, rowsRead: usage.reads, rowsWritten: usage.writes });
   } catch (err) {
     const e = err as Error;
@@ -92,7 +123,7 @@ export async function POST(request: Request): Promise<Response> {
     // approaches the limit and is never refused. takeBatchUsage() is per-isolate
     // best-effort and can hand back an interleaved batch's rows; for a ceiling
     // that direction of error is the safe one.
-    await recordDailyReads(takeBatchUsage().reads);
+    await meterBatch(takeBatchUsage().reads);
     if (e instanceof CircuitOpenError) {
       // D1 is known-down: fail fast without touching the binding. The VPS
       // side reads this as an HTTP-5xx infra failure and trips its own
