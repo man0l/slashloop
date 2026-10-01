@@ -192,6 +192,14 @@ export const MAX_DAILY_WRITES = 50;
  * the UTC reset, which is loud and automatic. Operators should read a sudden
  * 429 burst on a healthy account as "this isolate lost KV write visibility",
  * not as "the bridge is broken".
+ *
+ * Deliberately NOT made recoverable by tolerating N consecutive failures
+ * before degrading, even though that would win back most of a single-blip day.
+ * The tolerated flushes run at the FULL ceiling, so the worst case per isolate
+ * becomes 4,000,000 + 250,000 and the 5,000,000 platform cap is breached at TWO
+ * concurrent isolates instead of sixteen. A recovery path is not worth an 8x
+ * wider outage window; if that trade ever flips, it is a change to the ceiling,
+ * not to the trigger.
  */
 export const DEGRADED_LIMIT_FRACTION = 0.0625;
 
