@@ -98,9 +98,14 @@ Two things bound that instead of tuning it:
   nothing here can count the account, so removing the bound entirely needs
   shared state that is not eventually consistent (a Durable Object). It is also
   the price of blindness paid in throughput — 250,000 rows/day/isolate is ~113
-  bridge requests — and it is unreachable in normal operation, because the
-  reduced ceiling only engages after three consecutive flushes fail to advance
-  the counter.
+  bridge requests. It engages on the **first** flush that fails to advance the
+  counter — there is no stall counter, so one failed write is enough, and the
+  reduced ceiling then holds for the rest of the UTC day. Measured: one failed
+  write with KV healthy on the next put took the isolate from 4,000,000 to
+  250,000 with no recovery before midnight. That fails safe (the guard cannot
+  overspend) and self-heals at the UTC reset, but a burst of 429s on an
+  otherwise healthy account means that isolate lost KV write visibility, not that
+  the bridge is broken.
 
 The price is cross-isolate accuracy: KV's read-then-write loses whatever
 another isolate had pending, and cheap writes widen that window. The module

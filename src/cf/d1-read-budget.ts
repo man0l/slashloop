@@ -180,9 +180,26 @@ export const MAX_DAILY_WRITES = 50;
  * Why not lower still: this is the price of blindness, and paying it in
  * throughput is a real cost. 250,000 rows/day/isolate is ~113 bridge requests —
  * severe, but a loud reversible 429 with a fresh ceiling at midnight UTC, which
- * is the right failure direction. It is also unreachable in normal operation:
- * it only engages after three consecutive flushes fail to advance the counter,
- * which requires the account's shared write budget to be gone.
+ * is the right failure direction.
+ *
+ * It engages on the FIRST flush that fails to advance the counter, not after a
+ * run of them — there is no stall counter, so `writeDegraded` is set by a single
+ * failed write (or by the write budget running out) and stays set for the rest
+ * of the UTC day. A transient KV error is therefore enough: measured, one
+ * failed write with KV healthy on the next put drops the isolate to 250,000 for
+ * the remainder of the day, with no recovery before midnight. That is a severe
+ * but safe direction to fail — the guard cannot overspend — and the recovery is
+ * the UTC reset, which is loud and automatic. Operators should read a sudden
+ * 429 burst on a healthy account as "this isolate lost KV write visibility",
+ * not as "the bridge is broken".
+ *
+ * Deliberately NOT made recoverable by tolerating N consecutive failures
+ * before degrading, even though that would win back most of a single-blip day.
+ * The tolerated flushes run at the FULL ceiling, so the worst case per isolate
+ * becomes 4,000,000 + 250,000 and the 5,000,000 platform cap is breached at TWO
+ * concurrent isolates instead of sixteen. A recovery path is not worth an 8x
+ * wider outage window; if that trade ever flips, it is a change to the ceiling,
+ * not to the trigger.
  */
 export const DEGRADED_LIMIT_FRACTION = 0.0625;
 

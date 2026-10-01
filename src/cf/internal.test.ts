@@ -1,9 +1,7 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { rawBatch, setActiveClient } from '../store.js';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { recordBatchUsage } from '../lib/d1-usage.js';
 import { setShardDirectory } from './kv.js';
 import { dailyReadKey, resetReadBudgetCache, SYNC_ROWS } from './d1-read-budget.js';
-import { POST } from './internal.js';
 
 /**
  * Endpoint-level cover for the daily row-read ceiling on the bridge. The
@@ -15,21 +13,45 @@ import { POST } from './internal.js';
 const SECRET = 'test-cron-secret';
 
 let executed: string[][] = [];
+/** Set while a test drives execution; undefined hands rawBatch back untouched. */
+let executor: ((statements: { sql: string }[]) => Promise<unknown[][]>) | undefined;
 
 /**
- * The executor this file drives is reached through rawBatch() in
- * src/cf/internal.ts, and rawBatch comes from the shared '../store.js' module
- * registry — which other test files rewrite with mock.module, process-globally
- * and irreversibly (mock.restore() does not undo a module mock). If one of
- * them replaced rawBatch with a stub, every assertion below about whether D1
- * was touched would silently measure the stub instead: a "must not execute"
- * expectation passes for the wrong reason and a "must execute" one fails with a
- * bare `executed` length mismatch. Both the offending stubs and the file
- * ordering that decides who wins are nondeterministic across machines, so this
- * asserts the dependency directly and fails loudly with the cause named
- * rather than letting five downstream assertions report it.
+ * Own the executor seam instead of injecting through the store registry.
+ *
+ * internal.ts calls rawBatch as imported from ../store.js, and two other test
+ * files (src/lib/fallback-reconcile.test.ts, src/lib/queue-owner.test.ts)
+ * permanently mock.module('../store.js') with a stub whose rawBatch returns
+ * `[[]]` without touching any executor. Which rawBatch internal.ts ends up with
+ * therefore depends on whether this file runs before or after them — so these
+ * tests only checked anything by luck of ordering. It ran 2nd locally and
+ * passed; CI ran it at #50, after both mocks, and 5 of the 8 failed with a 200
+ * and zero recorded executions.
+ *
+ * Mocking the module here and importing internal.ts afterwards pins the
+ * rawBatch these assertions observe to the one internal.ts actually calls, in
+ * any order. Whatever was in the module before this file — real, or another
+ * file's stub — is captured as the pass-through, so this mock leaves every
+ * later test file exactly as it found it.
+ *
+ * There is deliberately no "am I holding the real rawBatch?" assertion here.
+ * One existed until this landed, and it was the right idea against a weaker
+ * fix: it detected the foreign stub by inspecting a static import and failed
+ * loudly with the cause named. But this file no longer depends on which
+ * rawBatch it captured — the assertions run through the seam below either way
+ * — so that assertion only re-reported the leak instead of being immune to it,
+ * and it inspected a binding this file stopped relying on. Detecting the leak is
+ * still worth doing at its source: both offending stubs are scoped where they
+ * live, in fallback-reconcile.test.ts and queue-owner.test.ts.
  */
-const rawBatchIsReal = /rawBatch/.test(rawBatch.toString()) && /activeStore/.test(rawBatch.toString());
+const storeBeforeMock = await import('../store.js');
+const passThroughRawBatch = storeBeforeMock.rawBatch;
+mock.module('../store.js', () => ({
+  rawBatch: (statements: { sql: string }[]) =>
+    executor ? executor(statements) : passThroughRawBatch(statements),
+}));
+
+const { POST } = await import('./internal.js');
 
 /** Fake raw executor — records what the bridge asked D1 to run. */
 function fakeExecutor(rows = [] as unknown[][]) {
@@ -54,14 +76,16 @@ const kv = { get: async () => null, put: async () => {} } as unknown as KVNamesp
 
 beforeEach(() => {
   executed = [];
+  executor = fakeExecutor();
   process.env.CRON_SECRET = SECRET;
   delete process.env.D1_DAILY_READ_LIMIT;
   resetReadBudgetCache();
   setShardDirectory(kv);
-  setActiveClient({} as unknown as Parameters<typeof setActiveClient>[0], fakeExecutor());
 });
 
 afterEach(() => {
+  // Hand rawBatch back so a later test file is not left talking to a recorder.
+  executor = undefined;
   delete process.env.CRON_SECRET;
   delete process.env.D1_DAILY_READ_LIMIT;
   setShardDirectory(undefined);
@@ -69,12 +93,6 @@ afterEach(() => {
 });
 
 describe('POST /internal/raw-batch read ceiling', () => {
-  test('this suite drives the real rawBatch, not another file\'s module stub', () => {
-    // See rawBatchIsReal above. When this fails, every other test in this
-    // block is measuring a mock, so fix the leaking mock.module first.
-    expect(rawBatchIsReal ? true : rawBatch.toString()).toBe(true);
-  });
-
   test('serves a batch normally while the day is under budget', async () => {
     process.env.D1_DAILY_READ_LIMIT = '1000';
     recordBatchUsage(2200, 12); // binding-side meta for the batch below
@@ -129,16 +147,13 @@ describe('POST /internal/raw-batch read ceiling', () => {
   test('rows spent on a failing batch still count toward the ceiling', async () => {
     process.env.D1_DAILY_READ_LIMIT = '600';
     // First batch: D1 rejects it, but it was still metered.
-    setActiveClient(
-      {} as unknown as Parameters<typeof setActiveClient>[0],
-      async () => { throw new Error('D1 timeout'); },
-    );
+    executor = async () => { throw new Error('D1 timeout'); };
     recordBatchUsage(600, 0);
     expect((await POST(bridge(OK_BODY))).status).toBe(500);
 
     // The refusal is invisible in the status of the failing call above, so a
     // caller that only ever errors would never trip the cap without this.
-    setActiveClient({} as unknown as Parameters<typeof setActiveClient>[0], fakeExecutor());
+    executor = fakeExecutor();
     recordBatchUsage(600, 0);
     const res = await POST(bridge(OK_BODY));
     expect(res.status).toBe(429);
