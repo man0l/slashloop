@@ -19,6 +19,7 @@
     "cf:deploy": "wrangler deploy",
     "postinstall": "prisma generate --schema prisma/schema.prisma; prisma generate --schema prisma/schema.sqlite.prisma; true",
     "test": "bun test",
+    "check:vercel-functions": "node scripts/check-vercel-function-count.mjs",
     "test:queue": "bun test src/queue/",
     "test:queue:pg": "QUEUE_TEST_DATABASE_URL=${QUEUE_TEST_DATABASE_URL:?set a scratch PG url} bun test src/queue/pg.test.ts",
     "typecheck": "bunx tsc --noEmit -p tsconfig.json",

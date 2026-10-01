@@ -25,9 +25,15 @@ src/
   analysis/          # Gemini native + text analyzers
   lib/               # apify, gemini, spend-cap, storage, media, retention
 remote/              # OAuth + Streamable HTTP handlers
-api/                 # Vercel entrypoints — kept to <=12 files (Hobby plan cap)
-                     # by routing several URL paths at one physical function
-                     # via vercel.json rewrites (see api/sources.ts)
+api/                 # Vercel entrypoints — MUST stay within the Hobby plan's
+                     # 12 Serverless Function cap. Every file here (including
+                     # *.test.ts) becomes its own function, and going over fails
+                     # the deploy at patchBuild *after* a green build, so typecheck
+                     # and bun test will not catch it. Consolidate by routing
+                     # several URL paths at one physical function via vercel.json
+                     # rewrites (see api/sources.ts), then check with
+                     # `bun run check:vercel-functions`. Currently OVER the cap —
+                     # see SLA-314.
 api/billing.ts       # Checkout, Billing Portal, status — called by slashloop-site
 api/stripe/          # Webhook — the only thing that grants/revokes credits
 api/cron/            # Scheduled jobs (media retention sweep, weekly digest)

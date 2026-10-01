@@ -46,5 +46,14 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Vercel function count (advisory — see SLA-314)
+        # Vercel builds every file under api/ as a Serverless Function and caps a
+        # Hobby deployment at 12, so going over fails the deploy at patchBuild
+        # AFTER a green build. Nothing above catches it. This is advisory only
+        # while the tree is already over the cap; it becomes a blocking gate in
+        # the same change that brings the count back under 12.
+        continue-on-error: true
+        run: bun run check:vercel-functions
+
       - name: Tests
         run: bun test

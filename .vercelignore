@@ -7,11 +7,12 @@ prisma/*.db
 .zcode
 .mcp.json
 
-# Superseded — delete the file and this line together.
+# api/jobs/refresh.ts was ignored here to stay under the Vercel Hobby cap of 12
+# Serverless Functions per deployment. That file was deleted in c23d6f8, which left
+# this rule as a no-op, and the cap was then silently crossed by later feature
+# work — every deploy has failed since 2026-09-17 as a result. The mitigation is
+# gone on purpose: consolidating routes through vercel.json rewrites (the
+# api/sources.ts pattern) is the real fix, and ignoring a live route would hide
+# the symptom by breaking that route at runtime.
 #
-# A dedicated refresh worker was written here, then folded back into
-# api/jobs/analyze.ts: the Hobby plan caps a deployment at 12 Serverless
-# Functions and this project sits exactly on that limit, so a 13th route fails
-# the build outright ("No more than 12 Serverless Functions can be added").
-# Ignoring it keeps the build green until the file is actually removed.
-api/jobs/refresh.ts
+# Run `bun run check:vercel-functions` to see where the count actually stands.
