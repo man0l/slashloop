@@ -13,6 +13,14 @@
 //     after the previous successful publish
 //   - otherwise: leave the tag where it is and mark
 //     `cloudflare-worker/published` failure on this SHA
+//   - always name the gate: mark `cloudflare-worker/deploy-blocked` success on
+//     a publish, and failure naming the job that stopped this SHA otherwise.
+//     `deploy` is `needs: verify`, so a red verify skips it without a word —
+//     run 188 was that case, and `cloudflare-worker/published` alone read the
+//     same for a test failure, a D1 quota refusal, and a failed smoke. A
+//     blocked gate also blocks every LATER push, not just its own SHA, so the
+//     name is the difference between knowing an emergency hotfix is stuck
+//     behind red tests and guessing.
 //
 // The tag move and status posts are best-effort. This process exits 0 even
 // when GitHub rejects a write, and records the failure as a workflow
@@ -24,6 +32,7 @@ import { appendFileSync } from 'node:fs';
 
 const PUBLISHED = 'cloudflare-worker/published';
 const SHIPPED_VIA = 'cloudflare-worker/shipped-via';
+const DEPLOY_BLOCKED = 'cloudflare-worker/deploy-blocked';
 const TAG = process.env.WORKER_LIVE_TAG || 'worker-live';
 
 // Failures whose own SHA never has a successful deploy-worker run.
@@ -71,6 +80,31 @@ export function selectFailedAncestors(runs, { headSha, runId }) {
 
 export function ancestorCompare(status) {
   return status === 'ahead' || status === 'identical';
+}
+
+// Which job stopped this SHA from reaching `wrangler deploy`.
+//
+// `deploy` is `needs: verify`, so a red verify SKIPS deploy: no step runs, no
+// message is emitted, and the only signal was `cloudflare-worker/published`
+// failure. That description is identical whether typecheck failed, the test
+// suite failed, the D1 quota rejected a migration, or the smoke check failed
+// — so "master is red" was true but not legible, and an operator could not
+// tell an emergency hotfix that was safe to push from one that was not.
+// Naming the job is the whole point of this context.
+//
+// Rules, in order:
+//   - verify failure  -> verify. deploy never started, so nothing else can
+//                        be the cause.
+//   - deploy failure  -> deploy. verify passed; the failure is downstream.
+//   - anything else   -> null. A cancelled workflow, a re-run, or a skip with
+//                        no failing predecessor has no job to name, and a
+//                        wrong name is worse than no status. Callers must not
+//                        post DEPLOY_BLOCKED on null.
+export function selectBlockingJob(results) {
+  const r = results && typeof results === 'object' ? results : {};
+  if (r.verify === 'failure') return 'verify';
+  if (r.deploy === 'failure') return 'deploy';
+  return null;
 }
 
 function clip(text) {
@@ -178,6 +212,10 @@ async function main() {
   const branch = process.env.GITHUB_REF_NAME || 'master';
   const server = process.env.GITHUB_SERVER_URL || 'https://github.com';
   const published = process.env.DEPLOY_PUBLISHED === 'true';
+  const blockingJob = published ? null : selectBlockingJob({
+    verify: process.env.VERIFY_RESULT,
+    deploy: process.env.DEPLOY_RESULT,
+  });
   const targetUrl = `${server}/${repo}/actions/runs/${runId}`;
   const errors = [];
 
@@ -193,6 +231,15 @@ async function main() {
     published
       ? `- Result: **published** \`${sha.slice(0, 7)}\` (deploy-worker run ${runNumber})`
       : `- Result: **not published**. \`${sha.slice(0, 7)}\` did not finish wrangler + smoke. The \`${TAG}\` tag was left where it is.`,
+    published
+      ? `- \`${DEPLOY_BLOCKED}\`: **success** — the deploy gate was reached.`
+      : blockingJob
+        ? `- \`${DEPLOY_BLOCKED}\`: **failure** — job \`${blockingJob}\` failed${
+            blockingJob === 'verify'
+              ? ', so \`deploy\` was skipped and wrangler never ran. Every later push is blocked too: the next green publish of a descendant SHA is the only recovery.'
+              : ' after \`verify\` passed, so wrangler ran and the failure is downstream of the gate.'
+          }`
+        : `- \`${DEPLOY_BLOCKED}\`: not posted — no gating job reported a failure, so naming one would be a guess.`,
     `- Own-run status: \`${PUBLISHED}\``,
     '- A later green run does not clear a failure on this SHA.',
     `- Do not read the GitHub \`production\` deployment status as the Worker result. Vercel posts onto that same environment.`,
@@ -212,6 +259,27 @@ async function main() {
     );
   } catch (error) {
     errors.push(error.message);
+  }
+
+  // Name the gating job on the SHA itself, so `master` being red is legible
+  // from the commit page without opening the Actions tab. Published and
+  // blocked-by-verify are the two states worth a status; a cancelled or
+  // re-run workflow posts nothing, because "blocked" would be a lie.
+  if (published || blockingJob) {
+    try {
+      await postStatus(
+        repo,
+        sha,
+        DEPLOY_BLOCKED,
+        published ? 'success' : 'failure',
+        published
+          ? `Deploy gate reached by run ${runNumber}: verify passed and wrangler deploy + smoke completed.`
+          : `Deploy blocked by job \`${blockingJob}\` in run ${runNumber}. wrangler deploy did not run; ${TAG} unchanged. A red gate here blocks EVERY later push, not just this SHA.`,
+        targetUrl,
+      );
+    } catch (error) {
+      errors.push(error.message);
+    }
   }
 
   if (published) {

@@ -20,12 +20,24 @@
 # recovery is the next successful publish of a descendant SHA. That later
 # green run must not be the only record that the failed SHA's code shipped.
 #
+# A red `verify` on master is worse than a skipped deploy for this SHA alone:
+# because `deploy` is `needs: verify`, EVERY later push is blocked too, with
+# no retry and no signal on which job failed. Run 188 was exactly that. Read
+# the commit's `cloudflare-worker/deploy-blocked` status before assuming the
+# pipeline is healthy, and note that a hotfix cannot bypass the gate.
+#
 # `worker-live` moves only after wrangler deploy and the smoke check pass.
 # Commit status `cloudflare-worker/published` stays on that SHA (failure is
-# not cleared by a later run). A failed ancestor that this publish contains
-# gets `cloudflare-worker/shipped-via`. GET /health `commit` is the live
-# build id. The GitHub `production` deployment status is not: Vercel writes
-# a later failure onto that same environment.
+# not cleared by a later run). `cloudflare-worker/deploy-blocked` names the
+# job that stopped the publish — success once the gate is reached, failure
+# naming `verify` or `deploy` otherwise. A failed ancestor that this publish
+# contains gets `cloudflare-worker/shipped-via`. GET /health `commit` is the
+# live build id. The GitHub `production` deployment status is not: Vercel
+# writes a later failure onto that same environment.
+#
+# PR-level verify lives in .github/workflows/pr-verify.yml and is deliberately
+# NOT a deploy gate — it exists so an order-sensitive test fails on the pull
+# request instead of stalling the pipeline here.
 #
 # Rollback: re-run a previous successful deploy-worker run from the Actions
 # tab, or `wrangler rollback`. A manual rollback does not move `worker-live`;
@@ -266,4 +278,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DEPLOY_PUBLISHED: ${{ needs.deploy.result == 'success' && needs.verify.result == 'success' }}
+          # A red verify SKIPS deploy, so deploy logs nothing at all. Hand the
+          # raw job results to the script so it can name the gate on the SHA
+          # (cloudflare-worker/deploy-blocked) instead of leaving "master is
+          # red" as something an operator has to open Actions to explain.
+          VERIFY_RESULT: ${{ needs.verify.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
         run: node scripts/deploy-lineage.mjs
