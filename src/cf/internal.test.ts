@@ -1,9 +1,7 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { setActiveClient } from '../store.js';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { recordBatchUsage } from '../lib/d1-usage.js';
 import { setShardDirectory } from './kv.js';
 import { dailyReadKey, resetReadBudgetCache, SYNC_ROWS } from './d1-read-budget.js';
-import { POST } from './internal.js';
 
 /**
  * Endpoint-level cover for the daily row-read ceiling on the bridge. The
@@ -15,6 +13,35 @@ import { POST } from './internal.js';
 const SECRET = 'test-cron-secret';
 
 let executed: string[][] = [];
+/** Set while a test drives execution; undefined hands rawBatch back untouched. */
+let executor: ((statements: { sql: string }[]) => Promise<unknown[][]>) | undefined;
+
+/**
+ * Own the executor seam instead of injecting through the store registry.
+ *
+ * internal.ts calls rawBatch as imported from ../store.js, and two other test
+ * files (src/lib/fallback-reconcile.test.ts, src/lib/queue-owner.test.ts)
+ * permanently mock.module('../store.js') with a stub whose rawBatch returns
+ * `[[]]` without touching any executor. Which rawBatch internal.ts ends up with
+ * therefore depends on whether this file runs before or after them — so these
+ * tests only checked anything by luck of ordering. It ran 2nd locally and
+ * passed; CI ran it at #50, after both mocks, and 5 of the 8 failed with a 200
+ * and zero recorded executions.
+ *
+ * Mocking the module here and importing internal.ts afterwards pins the
+ * rawBatch these assertions observe to the one internal.ts actually calls, in
+ * any order. Whatever was in the module before this file — real, or another
+ * file's stub — is captured as the pass-through, so this mock leaves every
+ * later test file exactly as it found it.
+ */
+const storeBeforeMock = await import('../store.js');
+const passThroughRawBatch = storeBeforeMock.rawBatch;
+mock.module('../store.js', () => ({
+  rawBatch: (statements: { sql: string }[]) =>
+    executor ? executor(statements) : passThroughRawBatch(statements),
+}));
+
+const { POST } = await import('./internal.js');
 
 /** Fake raw executor — records what the bridge asked D1 to run. */
 function fakeExecutor(rows = [] as unknown[][]) {
@@ -39,14 +66,16 @@ const kv = { get: async () => null, put: async () => {} } as unknown as KVNamesp
 
 beforeEach(() => {
   executed = [];
+  executor = fakeExecutor();
   process.env.CRON_SECRET = SECRET;
   delete process.env.D1_DAILY_READ_LIMIT;
   resetReadBudgetCache();
   setShardDirectory(kv);
-  setActiveClient({} as unknown as Parameters<typeof setActiveClient>[0], fakeExecutor());
 });
 
 afterEach(() => {
+  // Hand rawBatch back so a later test file is not left talking to a recorder.
+  executor = undefined;
   delete process.env.CRON_SECRET;
   delete process.env.D1_DAILY_READ_LIMIT;
   setShardDirectory(undefined);
@@ -108,16 +137,13 @@ describe('POST /internal/raw-batch read ceiling', () => {
   test('rows spent on a failing batch still count toward the ceiling', async () => {
     process.env.D1_DAILY_READ_LIMIT = '600';
     // First batch: D1 rejects it, but it was still metered.
-    setActiveClient(
-      {} as unknown as Parameters<typeof setActiveClient>[0],
-      async () => { throw new Error('D1 timeout'); },
-    );
+    executor = async () => { throw new Error('D1 timeout'); };
     recordBatchUsage(600, 0);
     expect((await POST(bridge(OK_BODY))).status).toBe(500);
 
     // The refusal is invisible in the status of the failing call above, so a
     // caller that only ever errors would never trip the cap without this.
-    setActiveClient({} as unknown as Parameters<typeof setActiveClient>[0], fakeExecutor());
+    executor = fakeExecutor();
     recordBatchUsage(600, 0);
     const res = await POST(bridge(OK_BODY));
     expect(res.status).toBe(429);
