@@ -2,7 +2,22 @@
 // select only queueOwner='d1' rows and that every enqueue writes queueOwner
 // 'd1' — PG projection ('pg') and fallback ('fallback_d1') rows must never be
 // selected by D1 workers.
-import { describe, expect, mock, test } from 'bun:test';
+import { afterAll, describe, expect, mock, test } from 'bun:test';
+
+// Snapshot the REAL ../store.js by value before any mock.module runs. bun's
+// mock.module rewrites the shared module registry entry for the whole `bun
+// test` PROCESS and cannot be undone with mock.restore(), so this stub used to
+// outlive this file: rawBatch stayed `async () => [[]]` for every later test
+// file, and src/cf/internal.test.ts then read 200 from a batch that never
+// touched D1 (5 failures in CI, which orders files differently than a local
+// run). Restoring the real module in afterAll keeps the stub to this file.
+// See also src/lib/fallback-reconcile.test.ts, which stubs the same module.
+import * as realStore from '../store.js';
+const REAL_STORE = { ...realStore };
+
+afterAll(() => {
+  mock.module('../store.js', () => ({ ...REAL_STORE }));
+});
 
 const seen: {
   rawSql: string[];

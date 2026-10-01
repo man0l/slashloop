@@ -1,6 +1,7 @@
 # Deploy the whole Cloudflare stack on every push to master/main
 # (direct commits AND merged PRs both land here as push events):
-# verify (typecheck + tests) → sync secrets → D1 migrations
+# verify (typecheck + tests) → sync secrets → prune unreachable secrets →
+# var-budget check → D1 migrations
 # (skipped when prisma/d1-migrations did not change) → wrangler deploy
 # (Worker + routes + D1/R2/KV bindings + cron triggers) → live smoke check.
 #
@@ -9,6 +10,13 @@
 # injected), and scripts/sync-worker-secrets.mjs pushes every manifest-listed
 # value that is set — "if set" — to the Worker with `wrangler secret bulk`.
 # Values not set in GitHub are left as-is on the Worker, never deleted.
+#
+# The Free plan caps secret_text + plain_text bindings at 64 combined, and
+# Cloudflare only rejects the 65th during `wrangler deploy`. Names live in
+# scripts/worker-secrets.mjs; WORKER_EXCLUDED holds the ones the Worker cannot
+# read. Because "if set" never deletes, freeing a slot needs the explicit prune
+# step — and staying under the cap needs the budget check, so the next var
+# fails here instead of at wrangler.
 #
 # Required GitHub secrets:
 #   CLOUDFLARE_API_TOKEN  — token with Workers Scripts:Edit + D1:Edit
@@ -138,8 +146,6 @@ jobs:
           SCRAPER_PROXY_URL: ${{ secrets.SCRAPER_PROXY_URL }}
           QUEUE_API_KEY_ID: ${{ secrets.QUEUE_API_KEY_ID }}
           QUEUE_API_KEY_SECRET: ${{ secrets.QUEUE_API_KEY_SECRET }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           STRIPE_SECRET_API_KEY: ${{ secrets.STRIPE_SECRET_API_KEY }}
@@ -148,14 +154,12 @@ jobs:
           STRIPE_PRICE_CREATOR_YEAR: ${{ vars.STRIPE_PRICE_CREATOR_YEAR }}
           STRIPE_PRICE_PRO_MONTH: ${{ vars.STRIPE_PRICE_PRO_MONTH }}
           STRIPE_PRICE_PRO_YEAR: ${{ vars.STRIPE_PRICE_PRO_YEAR }}
-          STRIPE_PRICE_PACK: ${{ vars.STRIPE_PRICE_PACK }}
           STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
           STRIPE_TEST_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
           STRIPE_TEST_PRICE_CREATOR_MONTH: ${{ vars.STRIPE_TEST_PRICE_CREATOR_MONTH }}
           STRIPE_TEST_PRICE_CREATOR_YEAR: ${{ vars.STRIPE_TEST_PRICE_CREATOR_YEAR }}
           STRIPE_TEST_PRICE_PRO_MONTH: ${{ vars.STRIPE_TEST_PRICE_PRO_MONTH }}
           STRIPE_TEST_PRICE_PRO_YEAR: ${{ vars.STRIPE_TEST_PRICE_PRO_YEAR }}
-          STRIPE_TEST_PRICE_PACK: ${{ vars.STRIPE_TEST_PRICE_PACK }}
           STRIPE_MODE: ${{ vars.STRIPE_MODE }}
           # ── variables (repo + production environment) ──
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
@@ -165,8 +169,6 @@ jobs:
           OPENROUTER_VIDEO_MODE: ${{ vars.OPENROUTER_VIDEO_MODE }}
           OPENROUTER_VIDEO_MAX_TOKENS: ${{ vars.OPENROUTER_VIDEO_MAX_TOKENS }}
           PROXY_TRAFFIC_CAP_GB: ${{ vars.PROXY_TRAFFIC_CAP_GB }}
-          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
-          R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
           R2_THUMB_BUCKET: ${{ vars.R2_THUMB_BUCKET }}
           R2_MEDIA_BUCKET: ${{ vars.R2_MEDIA_BUCKET }}
           R2_THUMB_PUBLIC_BASE: ${{ vars.R2_THUMB_PUBLIC_BASE }}
@@ -176,6 +178,33 @@ jobs:
         run: |
           set -o pipefail
           bun scripts/sync-worker-secrets.mjs 2>&1 | tee -a "$WORKFLOW_LOG"
+
+      # "If set" sync never deletes, so a name dropped from the manifest keeps
+      # its slot forever. Free accounts cap secret+text bindings at 64 and the
+      # Worker was sitting exactly at the cap, which is why PR #96's deploy
+      # failed with Cloudflare code 10055. This step is the only thing that
+      # frees a slot: it deletes the names in WORKER_EXCLUDED
+      # (scripts/worker-secrets.mjs) that are still bound, and no-ops when
+      # there are none. The VPS image reads those R2 values from GitHub
+      # separately (build-worker-image.yml) and is unaffected.
+      - name: Prune unreachable Worker secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -o pipefail
+          bun scripts/prune-worker-secrets.mjs 2>&1 | tee -a "$WORKFLOW_LOG"
+
+      # Pre-flight for the same ceiling, before wrangler deploy burns a run on
+      # it: projects the counted set this deploy ends with and fails the job
+      # when it does not fit. Reads binding names/types only.
+      - name: Check Worker var budget (Free plan caps secrets+text at 64)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -o pipefail
+          bun scripts/check-worker-var-budget.mjs 2>&1 | tee -a "$WORKFLOW_LOG"
 
       - name: Apply D1 migrations
         env:

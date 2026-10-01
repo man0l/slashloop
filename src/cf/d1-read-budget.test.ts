@@ -51,6 +51,13 @@ function asKv(fake: ReturnType<typeof fakeKv>): KVNamespace {
 
 const AT = new Date('2026-10-01T09:00:00Z');
 
+/**
+ * Real now + 10s: far enough past STALE_MS that the next guard really reloads.
+ * load() stamps loadedAt from Date.now(), not from the instant the caller
+ * passed, so a simulated past date would never look stale.
+ */
+const later = () => new Date(Date.now() + 10_000);
+
 /** The measured 2026-09-30 runaway: bridge requests, rows each, and duration. */
 const RUNAWAY_REQUESTS = 33_712;
 const RUNAWAY_ROWS = 2_200;
@@ -381,10 +388,6 @@ describe('degraded mode fails toward a lower ceiling', () => {
 
   test('a failed read is degraded for that load only; a failed write is sticky', async () => {
     process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
-    // Real now + 10s: far enough past STALE_MS that the next guard really
-    // reloads. load() stamps loadedAt from Date.now(), not from the instant the
-    // caller passed, so a simulated past date would never look stale.
-    const later = () => new Date(Date.now() + 10_000);
 
     setShardDirectory(asKv(fakeKv()));
     expect((await guardDailyReads(new Date())).degraded).toBe(false);
@@ -403,6 +406,54 @@ describe('degraded mode fails toward a lower ceiling', () => {
     expect((await guardDailyReads(later())).degraded).toBe(true);
     setShardDirectory(asKv(fakeKv()));
     expect((await guardDailyReads(later())).degraded).toBe(true);
+  });
+
+  // The module header and docs/compute-target.md both promise operators that one
+  // transient KV write error degrades the isolate for the rest of the day. That
+  // sentence is load-bearing — it is how an operator plans their incident — so
+  // it is pinned here. It previously said the reduced ceiling "only engages
+  // after three consecutive flushes", which no code implemented; there is no
+  // stall counter, and one failure was always enough.
+  test('one failed write degrades the day: the documented promise, pinned', async () => {
+    process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
+    setShardDirectory(asKv(fakeKv()));
+
+    expect((await guardDailyReads(new Date())).limit).toBe(DEFAULT_DAILY_READ_LIMIT);
+
+    // A single transient write error, then a perfectly healthy KV forever after.
+    setShardDirectory(asKv(fakeKv({}, { failPut: true })));
+    await recordDailyReads(SYNC_ROWS, new Date());
+    setShardDirectory(asKv(fakeKv()));
+
+    const after = await guardDailyReads(later());
+    expect(after.degraded).toBe(true);
+    expect(after.limit).toBe(degradedDailyReadLimit(DEFAULT_DAILY_READ_LIMIT));
+    // Still degraded on the next load — no recovery without a new UTC day.
+    expect((await guardDailyReads(later())).degraded).toBe(true);
+  });
+
+  test('the cost of one blip is most of the day, and that is the accepted trade', async () => {
+    process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
+    resetReadBudgetCache();
+    setShardDirectory(asKv(fakeKv()));
+    const healthy = await replayRunaway();
+
+    // Same day, one failed flush at the start, healthy KV thereafter.
+    resetReadBudgetCache();
+    setShardDirectory(asKv(fakeKv({}, { failPut: true })));
+    await recordDailyReads(SYNC_ROWS, new Date());
+    setShardDirectory(asKv(fakeKv()));
+    const afterBlip = await replayRunaway();
+
+    // Quantified so a future "make it recover faster" change has to state the
+    // safety cost it is buying. Tolerating N consecutive failures runs those
+    // flushes at the FULL ceiling, so the per-isolate worst case becomes
+    // 4,000,000 + 250,000 and the 5,000,000 platform cap is breached at two
+    // concurrent isolates instead of sixteen.
+    expect(afterBlip.requests).toBeLessThan(healthy.requests / 10);
+    expect(afterBlip.spent).toBeLessThanOrEqual(
+      degradedDailyReadLimit(DEFAULT_DAILY_READ_LIMIT) + RUNAWAY_ROWS,
+    );
   });
 
   test('runaway with KV writes exhausted: one isolate stays at the reduced ceiling', async () => {
