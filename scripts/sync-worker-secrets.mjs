@@ -10,6 +10,11 @@
 //   • GH value absent/empty → Worker secret LEFT AS-IS (never deleted).
 //   • Names not in the manifest are never touched.
 //
+// The manifest and the Free-plan var budget live in ./worker-secrets.mjs,
+// together with WORKER_EXCLUDED — names the Worker must not carry. Because
+// "if set" never deletes, pruning those names is a separate, explicit step
+// (./prune-worker-secrets.mjs).
+//
 // One-time setup lives on the Cloudflare side (`wrangler secret put`) only
 // for values that have no GH home (e.g. the generated GALLERY_LINK_SECRET).
 
@@ -18,102 +23,49 @@ import { writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { MANIFEST, WORKER_EXCLUDED, WORKER_NAME, isPlaceholder } from './worker-secrets.mjs';
+
 /**
- * GH secret/variable name → Worker env name. Everything the Worker should see
- * goes here explicitly — an allowlist, not a firehose: CI runtimes export
- * dozens of GITHUB_* and RUNNER_* vars that must never reach the Worker.
+ * Build the `wrangler secret bulk` payload from the environment: every
+ * manifest entry whose GitHub value is present and not a placeholder.
+ * Exported for tests; `env` is injected so nothing here reads process.env.
  */
-const MANIFEST = {
-  // ── from repo/environment SECRETS ──
-  // Stream credential for the video-recreate stepper. Preferred: a dedicated
-  // Stream:Edit-only token in CLOUDFLARE_STREAM_TOKEN (least privilege). If it
-  // is not set, the stepper falls back to CLOUDFLARE_API_TOKEN — which only
-  // works when the deploy token's scope covers Stream.
-  CLOUDFLARE_STREAM_TOKEN: 'CLOUDFLARE_STREAM_TOKEN',
-  CLOUDFLARE_API_TOKEN: 'CLOUDFLARE_API_TOKEN',
-  SUPABASE_ANON_KEY: 'SUPABASE_ANON_KEY',
-  SUPABASE_SECRET_KEY: 'SUPABASE_SECRET_KEY',
-  GEMINI_API_KEY: 'GEMINI_API_KEY',
-  OPENROUTER_API_KEY: 'OPENROUTER_API_KEY',
-  APIFY_API_KEY: 'APIFY_API_KEY',
-  SCRAPER_PROXY_URL: 'SCRAPER_PROXY_URL',
-  R2_ACCESS_KEY_ID: 'R2_ACCESS_KEY_ID',
-  R2_SECRET_ACCESS_KEY: 'R2_SECRET_ACCESS_KEY',
-  CRON_SECRET: 'CRON_SECRET',
-  ALERT_EMAIL: 'ALERT_EMAIL',
-  // Stripe: GH holds the live secret key under the name the stripe-setup
-  // workflows already use (production environment). The rest are set directly
-  // under their Worker names once real values exist in GitHub.
-  STRIPE_SECRET_API_KEY: 'STRIPE_SECRET_KEY',
-  STRIPE_WEBHOOK_SECRET: 'STRIPE_WEBHOOK_SECRET',
-  STRIPE_PRICE_CREATOR_MONTH: 'STRIPE_PRICE_CREATOR_MONTH',
-  STRIPE_PRICE_CREATOR_YEAR: 'STRIPE_PRICE_CREATOR_YEAR',
-  STRIPE_PRICE_PRO_MONTH: 'STRIPE_PRICE_PRO_MONTH',
-  STRIPE_PRICE_PRO_YEAR: 'STRIPE_PRICE_PRO_YEAR',
-  STRIPE_PRICE_PACK: 'STRIPE_PRICE_PACK',
-  STRIPE_TEST_SECRET_KEY: 'STRIPE_TEST_SECRET_KEY',
-  STRIPE_TEST_WEBHOOK_SECRET: 'STRIPE_TEST_WEBHOOK_SECRET',
-  STRIPE_TEST_PRICE_CREATOR_MONTH: 'STRIPE_TEST_PRICE_CREATOR_MONTH',
-  STRIPE_TEST_PRICE_CREATOR_YEAR: 'STRIPE_TEST_PRICE_CREATOR_YEAR',
-  STRIPE_TEST_PRICE_PRO_MONTH: 'STRIPE_TEST_PRICE_PRO_MONTH',
-  STRIPE_TEST_PRICE_PRO_YEAR: 'STRIPE_TEST_PRICE_PRO_YEAR',
-  STRIPE_TEST_PRICE_PACK: 'STRIPE_TEST_PRICE_PACK',
-  // Runtime billing switch (live|test) — set as a GitHub VARIABLE. Unset
-  // leaves whatever the Worker currently has.
-  STRIPE_MODE: 'STRIPE_MODE',
-  // ── from repo/environment VARIABLES ──
-  SUPABASE_URL: 'SUPABASE_URL',
-  APIFY_SPEND_CAP_CENTS: 'APIFY_SPEND_CAP_CENTS',
-  MEDIA_SIGNED_URL_TTL_SECONDS: 'MEDIA_SIGNED_URL_TTL_SECONDS',
-  OPENROUTER_VIDEO_MODEL: 'OPENROUTER_VIDEO_MODEL',
-  OPENROUTER_VIDEO_MODE: 'OPENROUTER_VIDEO_MODE',
-  OPENROUTER_VIDEO_MAX_TOKENS: 'OPENROUTER_VIDEO_MAX_TOKENS',
-  PROXY_TRAFFIC_CAP_GB: 'PROXY_TRAFFIC_CAP_GB',
-  R2_ACCOUNT_ID: 'R2_ACCOUNT_ID',
-  R2_ENDPOINT: 'R2_ENDPOINT',
-  R2_THUMB_BUCKET: 'R2_THUMB_BUCKET',
-  R2_MEDIA_BUCKET: 'R2_MEDIA_BUCKET',
-  // Presigned-S3 fallback data; on Workers the bindings win (src/lib/storage.ts
-  // checks them first), so these only matter if the binding backend is off.
-  R2_THUMB_PUBLIC_BASE: 'R2_THUMB_PUBLIC_BASE',
-  WORKER_URL: 'WORKER_URL',
-  SITE_URL: 'SITE_URL',
-  PUBLIC_URL: 'PUBLIC_URL',
-  // PG producer HMAC (SLA-16). URL has a code default; only id/secret need
-  // bindings. PROXY_CHEAP_* stay on the VPS image, not this Worker — Free
-  // accounts cap secrets+text at 64 and the Worker never scrapes.
-  QUEUE_API_KEY_ID: 'QUEUE_API_KEY_ID',
-  QUEUE_API_KEY_SECRET: 'QUEUE_API_KEY_SECRET',
-};
-
-// Values that mean "placeholder, not configured" — never pushed.
-const PLACEHOLDER = /^\[|SENSITIVE|placeholder|changeme|^your[-_]|^xxx$|example\.com|^todo\b/i;
-
-const payload = {};
-const skipped = [];
-for (const [ghName, workerName] of Object.entries(MANIFEST)) {
-  const value = process.env[ghName];
-  if (!value || value.trim() === '' || PLACEHOLDER.test(value)) {
-    skipped.push(ghName);
-    continue;
+export function buildPayload(env = process.env) {
+  const payload = {};
+  const skipped = [];
+  for (const [ghName, workerName] of Object.entries(MANIFEST)) {
+    if (WORKER_EXCLUDED.has(workerName)) continue;
+    const value = env[ghName];
+    if (!value || value.trim() === '' || isPlaceholder(value)) {
+      skipped.push(ghName);
+      continue;
+    }
+    payload[workerName] = value;
   }
-  payload[workerName] = value;
+  return { payload, skipped };
 }
 
-const names = Object.keys(payload);
-console.log(`syncing ${names.length} secrets: ${names.join(' ')}`);
-if (skipped.length > 0) console.log(`not set in GitHub (left as-is on the Worker): ${skipped.join(' ')}`);
+function main() {
+  const { payload, skipped } = buildPayload(process.env);
 
-if (names.length === 0) {
-  console.log('nothing to sync');
-  process.exit(0);
+  const names = Object.keys(payload);
+  console.log(`syncing ${names.length} secrets: ${names.join(' ')}`);
+  if (skipped.length > 0) console.log(`not set in GitHub (left as-is on the Worker): ${skipped.join(' ')}`);
+
+  if (names.length === 0) {
+    console.log('nothing to sync');
+    return;
+  }
+
+  const file = join(tmpdir(), `worker-secrets-${Date.now()}.json`);
+  writeFileSync(file, JSON.stringify(payload));
+  try {
+    execFileSync('bunx', ['wrangler', 'secret', 'bulk', file, '--name', WORKER_NAME], { stdio: 'inherit' });
+    console.log('secrets synced.');
+  } finally {
+    rmSync(file);
+  }
 }
 
-const file = join(tmpdir(), `worker-secrets-${Date.now()}.json`);
-writeFileSync(file, JSON.stringify(payload));
-try {
-  execFileSync('bunx', ['wrangler', 'secret', 'bulk', file, '--name', 'slashloop'], { stdio: 'inherit' });
-  console.log('secrets synced.');
-} finally {
-  rmSync(file);
-}
+const invoked = process.argv[1] && process.argv[1].endsWith('sync-worker-secrets.mjs');
+if (invoked) main();
