@@ -43,7 +43,7 @@
 # live build id. The GitHub `production` deployment status is not: Vercel
 # writes a later failure onto that same environment.
 #
-# PR-level verify lives in .github/workflows/pr-verify.yml and is deliberately
+# PR-level verify lives in .github/workflows/verify-pr.yml and is deliberately
 # NOT a deploy gate — it exists so an order-sensitive test fails on the pull
 # request instead of stalling the pipeline here.
 #

@@ -83,7 +83,7 @@ it is tracked separately from the pipeline work.
 Order-dependent coupling is invisible locally and reproducible only in CI,
 which is what makes it expensive. The mitigations in place:
 
-- `.github/workflows/pr-verify.yml` runs the same typecheck + `bun test` as
+- `.github/workflows/verify-pr.yml` runs the same typecheck + `bun test` as
   the deploy gate on every pull request, so a violation is caught on the PR
   that introduces it rather than on `master` after a merge.
 - `cloudflare-worker/deploy-blocked` names the gating job on the SHA, so a
