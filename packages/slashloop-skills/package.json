@@ -1,0 +1,34 @@
+{
+  "name": "slashloop-skills",
+  "version": "1.0.0",
+  "description": "Install Slashloop MCP agent skills into Codex, Claude, or any directory-based skills root.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "slashloop-skills": "./bin/slashloop-skills.js"
+  },
+  "files": [
+    "bin",
+    "skills",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "node ./scripts/sync-skills.js",
+    "test": "node ./bin/slashloop-skills.js list"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "slashloop",
+    "agent-skills",
+    "codex",
+    "claude",
+    "mcp"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/man0l/slashloop.git",
+    "directory": "packages/slashloop-skills"
+  }
+}
