@@ -25,14 +25,15 @@ src/
   analysis/          # Gemini native + text analyzers
   lib/               # apify, gemini, spend-cap, storage, media, retention
 remote/              # OAuth + Streamable HTTP handlers
-api/                 # Vercel entrypoints — kept to <=12 files (Hobby plan cap)
-                     # by routing several URL paths at one physical function
-                     # via vercel.json rewrites (see api/sources.ts)
+api/                 # Legacy Vercel entrypoints, retained as the rollback path.
+                     # Several URL paths were folded onto one physical function
+                     # via rewrites (see api/sources.ts); that rewrite config
+                     # went away with the Vercel project. Live routing is
+                     # src/cf/router.ts, which mirrors the old rewrites 1:1.
 api/billing.ts       # Checkout, Billing Portal, status — called by slashloop-site
 api/stripe/          # Webhook — the only thing that grants/revokes credits
 api/cron/            # Scheduled jobs (media retention sweep, weekly digest)
 claude-plugin/       # Claude Code plugin (skills + bundled remote MCP)
-vercel.json
 ```
 
 ---
@@ -64,6 +65,11 @@ All 63 tools (plus `whoami`) are then available; ask in plain language
 > Cutover in progress: Worker + D1 is primary (`docs/cf-full-backend-plan.md`,
 > runbook `docs/cloudflare-migration.md`, checks `docs/cf-cutover-checklist.md`).
 > Below is the legacy Vercel/Supabase path, kept as the rollback target.
+>
+> **The Vercel project has been deleted**, so that path is not currently
+> deployable: `vercel --prod` below needs a project re-created, and `vercel.json`
+> (the URL rewrites the `api/` entrypoints depend on) went with it. The `api/`
+> source and the Supabase steps are still here so the path can be restored.
 
 ### 1. Supabase dashboard
 1. **Auth → URL Configuration → Site URL** = your public connector URL.
