@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { setActiveClient } from '../store.js';
 import { recordBatchUsage } from '../lib/d1-usage.js';
 import { setShardDirectory } from './kv.js';
-import { dailyReadKey, resetReadBudgetCache } from './d1-read-budget.js';
+import { dailyReadKey, resetReadBudgetCache, SYNC_ROWS } from './d1-read-budget.js';
 import { POST } from './internal.js';
 
 /**
@@ -154,5 +154,41 @@ describe('POST /internal/raw-batch read ceiling', () => {
     const res = await POST(bridge(OK_BODY));
     expect(res.status).toBe(200);
     expect(executed).toHaveLength(1);
+  });
+
+  test('a batch response does not wait on the accounting KV write', async () => {
+    process.env.D1_DAILY_READ_LIMIT = '100000000';
+    // A KV put that does not settle until we release it — the shape of the
+    // write this endpoint used to await before answering 200.
+    let release!: () => void;
+    const writeBlocked = new Promise<void>((resolve) => { release = resolve; });
+    setShardDirectory({
+      get: async () => null,
+      put: async () => { await writeBlocked; },
+    } as unknown as KVNamespace);
+    resetReadBudgetCache();
+    // Big enough to cross SYNC_ROWS, so recordDailyReads flushes.
+    recordBatchUsage(SYNC_ROWS * 2, 0);
+
+    try {
+      // Whichever settles first is the answer: with the accounting write off
+      // the response path, the response always wins. The timeout arm only
+      // exists so an awaited write fails this fast instead of hanging.
+      const settled = await Promise.race([
+        POST(bridge(OK_BODY)).then(() => 'response'),
+        writeBlocked.then(() => 'write'),
+        new Promise((r) => setTimeout(() => r('still-blocked'), 1_000)),
+      ]);
+      expect(settled).toBe('response');
+      expect(executed).toHaveLength(1);
+    } finally {
+      release();
+    }
+
+    // The rows are still counted before the response goes out, so the next
+    // request's guard already sees this batch's spend.
+    process.env.D1_DAILY_READ_LIMIT = String(SYNC_ROWS * 2);
+    recordBatchUsage(1, 0);
+    expect((await POST(bridge(OK_BODY))).status).toBe(429);
   });
 });

@@ -67,6 +67,34 @@ the account's read budget is genuinely spent. One request may cross the ceiling
 by its own row count — the check is before the batch, so the overshoot is
 bounded by one request rather than open-ended.
 
+#### The counter spends the account's KV *write* budget
+
+The KV free tier allows **1,000 writes/day, account-wide**, shared with every
+other namespace here including the digest cursor — so the accounting is itself
+on a budget, and `SYNC_MS` / `SYNC_ROWS` / `MAX_DAILY_WRITES` are budget knobs,
+not accuracy knobs. A flush-per-minute floor is 1,440 writes/day before the
+second isolate is counted; replaying the 2026-09-30 runaway through it measured
+1,403 writes at **one** isolate.
+
+Two things bound that instead of tuning it:
+
+- **`MAX_DAILY_WRITES` (50/isolate/day).** Account-wide cost becomes
+  `50 x live isolates` rather than `1,440 x isolates`. After it is spent the
+  isolate stops writing, keeps counting locally, and runs on the reduced ceiling.
+- **Degraded mode fails *down*.** Cloudflare fails writes past the cap rather
+  than queuing them, so once accounting is unavailable each isolate would
+  otherwise read 0 from an unwritten key and grant itself the whole 4,000,000.
+  An isolate that cannot read or persist the counter drops to
+  `DEGRADED_LIMIT_FRACTION` (1/4 → 1,000,000) instead. Same replay, writes
+  exhausted: 1 isolate 4,001,800 → **1,001,000** rows; 4 isolates 16,007,200 →
+  **4,004,000**, back inside the 5,000,000 platform cap.
+
+The price is cross-isolate accuracy: KV's read-then-write loses whatever
+another isolate had pending, and cheap writes widen that window. The module
+header carries the measured trade-off. Recording is also kept off the response
+path — `recordDailyReads` is pinned with `ctx.waitUntil`, so a batch's 200
+never waits on a KV write.
+
 ## Path (a) — Cloudflare-native follow-up (scaffolded, not wired)
 
 Stubs: `src/cf/queues.ts` (producer + consumer routing), `src/cf/workflows.ts`

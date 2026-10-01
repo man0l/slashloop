@@ -3,10 +3,13 @@ import { setShardDirectory } from './kv.js';
 import {
   D1_USAGE_PREFIX,
   DEFAULT_DAILY_READ_LIMIT,
+  DEGRADED_LIMIT_FRACTION,
+  MAX_DAILY_WRITES,
   SYNC_MS,
   SYNC_ROWS,
   dailyReadKey,
   dailyReadLimit,
+  degradedDailyReadLimit,
   guardDailyReads,
   localTotal,
   recordDailyReads,
@@ -14,8 +17,15 @@ import {
   secondsUntilUtcMidnight,
 } from './d1-read-budget.js';
 
+interface FakeKvOptions {
+  /** Reads fail — e.g. the binding is unreachable. */
+  failGet?: boolean;
+  /** Writes fail — e.g. Cloudflare has refused writes past the account cap. */
+  failPut?: boolean;
+}
+
 /** Minimal KVNamespace stand-in — the budget only uses get() and put(). */
-function fakeKv(seed: Record<string, string> = {}) {
+function fakeKv(seed: Record<string, string> = {}, opts: FakeKvOptions = {}) {
   const store = new Map(Object.entries(seed));
   const calls = { get: 0, put: 0 };
   return {
@@ -23,10 +33,12 @@ function fakeKv(seed: Record<string, string> = {}) {
     calls,
     get: async (key: string) => {
       calls.get++;
+      if (opts.failGet) throw new Error('kv read failed');
       return store.get(key) ?? null;
     },
     put: async (key: string, value: string) => {
       calls.put++;
+      if (opts.failPut) throw new Error('kv writes exhausted');
       store.set(key, value);
     },
   };
@@ -38,6 +50,34 @@ function asKv(fake: ReturnType<typeof fakeKv>): KVNamespace {
 }
 
 const AT = new Date('2026-10-01T09:00:00Z');
+
+/** The measured 2026-09-30 runaway: bridge requests, rows each, and duration. */
+const RUNAWAY_REQUESTS = 33_712;
+const RUNAWAY_ROWS = 2_200;
+/** The twelve hours the runaway was observed over, in ms. */
+const RUNAWAY_WINDOW_MS = 12 * 60 * 60 * 1000;
+const RUNAWAY_STEP_MS = Math.floor(RUNAWAY_WINDOW_MS / RUNAWAY_REQUESTS);
+
+/**
+ * Drive one isolate's day the way the VPS loop drove it: `requests` batches of
+ * `rowsPerRequest` rows, spread evenly over the measured twelve hours. Stops as
+ * soon as the guard refuses, and reports what this isolate actually spent.
+ */
+async function replayRunaway(
+  requests = RUNAWAY_REQUESTS,
+  rowsPerRequest = RUNAWAY_ROWS,
+  at: Date = AT,
+): Promise<{ spent: number; requests: number }> {
+  let spent = 0;
+  let i = 0;
+  for (; i < requests; i++) {
+    const when = new Date(at.getTime() + i * RUNAWAY_STEP_MS);
+    if (!(await guardDailyReads(when)).allowed) break;
+    await recordDailyReads(rowsPerRequest, when);
+    spent += rowsPerRequest;
+  }
+  return { spent, requests: i };
+}
 
 beforeEach(() => {
   resetReadBudgetCache();
@@ -85,6 +125,21 @@ describe('dailyReadLimit', () => {
     for (const raw of ['lots', '-5', '1.5', 'NaN', '']) {
       expect(dailyReadLimit(raw)).toBe(DEFAULT_DAILY_READ_LIMIT);
     }
+  });
+});
+
+describe('degradedDailyReadLimit', () => {
+  test('losing shared accounting may only ever lower the ceiling', () => {
+    expect(degradedDailyReadLimit(4_000_000)).toBe(1_000_000);
+    expect(degradedDailyReadLimit(1_000_000)).toBe(250_000);
+    for (const limit of [2, 3, 5, 97, 4_000_000, 987_654_321]) {
+      expect(degradedDailyReadLimit(limit)).toBeLessThanOrEqual(limit);
+      expect(degradedDailyReadLimit(limit)).toBeGreaterThan(0);
+    }
+    // A ceiling of 1 row has nothing below it; the floor must not invent rows.
+    expect(degradedDailyReadLimit(1)).toBe(1);
+    expect(degradedDailyReadLimit(Infinity)).toBe(Infinity);
+    expect(DEGRADED_LIMIT_FRACTION).toBeLessThan(1);
   });
 });
 
@@ -224,5 +279,188 @@ describe('guardDailyReads', () => {
     await recordDailyReads(-5, AT);
     await recordDailyReads(NaN, AT);
     expect((await guardDailyReads(AT)).used).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two failure modes the 2026-10-01 DevOps review of PR #96 measured on the
+// 2026-09-30 replay. Both are regressions that only show up under load, so the
+// numbers below are quoted from that replay rather than hand-waved.
+// ---------------------------------------------------------------------------
+
+describe('daily KV write budget', () => {
+  test('the whole measured runaway spends the budget once, not one write per minute', async () => {
+    // Ceiling deliberately far above what the runaway spends, so a refusal can
+    // only come from the guard's own machinery. This is the bound that makes
+    // the account-wide 1,000/day cap unreachable by tuning.
+    process.env.D1_DAILY_READ_LIMIT = '100000000';
+    const fake = fakeKv();
+    setShardDirectory(asKv(fake));
+
+    const { spent, requests } = await replayRunaway();
+
+    // One flush per SYNC_MS is 1,403 writes for this replay — measured, and over
+    // the 1,000/day account cap at ONE isolate before this budget existed.
+    expect(fake.calls.put).toBe(MAX_DAILY_WRITES);
+    expect(MAX_DAILY_WRITES).toBeLessThan(1_000);
+    // It stopped early, but not by reaching the ceiling: spending the write
+    // budget is what degrades it, and the REDUCED ceiling refuses. That is the
+    // "fail toward a lower ceiling" behaviour working, not a budget that ran
+    // out silently.
+    expect(requests).toBeLessThan(RUNAWAY_REQUESTS);
+    expect(spent).toBeLessThanOrEqual(degradedDailyReadLimit(100_000_000) + RUNAWAY_ROWS);
+    expect((await guardDailyReads(new Date(AT.getTime() + RUNAWAY_WINDOW_MS))).degraded).toBe(true);
+    // KV reads stay bounded by STALE_MS, nowhere near the 100k/day cap.
+    expect(fake.calls.get).toBeLessThan(RUNAWAY_REQUESTS / 2);
+  });
+
+  test('a spent budget stops the writes and drops this isolate to the reduced ceiling', async () => {
+    process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
+    const fake = fakeKv();
+    setShardDirectory(asKv(fake));
+
+    // Burn the daily budget: each spend crosses the early-flush bound.
+    for (let i = 0; i < MAX_DAILY_WRITES; i++) await recordDailyReads(SYNC_ROWS, AT);
+    expect(fake.calls.put).toBe(MAX_DAILY_WRITES);
+
+    // Past this point nothing else reaches KV today.
+    const putsAfterBudget = fake.calls.put;
+    await recordDailyReads(SYNC_ROWS, AT);
+    expect(fake.calls.put).toBe(putsAfterBudget);
+
+    // ...and the rows are still counted, against a lower ceiling than before.
+    const state = await guardDailyReads(AT);
+    expect(state.degraded).toBe(true);
+    expect(state.limit).toBe(degradedDailyReadLimit(DEFAULT_DAILY_READ_LIMIT));
+    expect(state.used).toBe((MAX_DAILY_WRITES + 1) * SYNC_ROWS);
+  });
+
+  test('the budget is per isolate per UTC day, not for the isolate forever', async () => {
+    process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
+    const fake = fakeKv();
+    setShardDirectory(asKv(fake));
+
+    // The (MAX_DAILY_WRITES + 1)-th flush is the one that finds the budget gone.
+    for (let i = 0; i <= MAX_DAILY_WRITES; i++) await recordDailyReads(SYNC_ROWS, AT);
+    expect((await guardDailyReads(AT)).degraded).toBe(true);
+
+    const tomorrow = new Date('2026-10-02T00:30:00Z');
+    const fresh = await guardDailyReads(tomorrow);
+    expect(fresh).toMatchObject({ used: 0, degraded: false, allowed: true });
+    expect(fresh.limit).toBe(DEFAULT_DAILY_READ_LIMIT);
+    await recordDailyReads(SYNC_ROWS, tomorrow);
+    expect(fake.calls.put).toBe(MAX_DAILY_WRITES + 1);
+  });
+});
+
+describe('degraded mode fails toward a lower ceiling', () => {
+  test('a KV write that fails drops the ceiling — Cloudflare does not queue writes', async () => {
+    process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
+    // Writes exhausted; reads still answer, and answer 0 because nothing was
+    // ever persisted. This is the state the guard used to invert in.
+    setShardDirectory(asKv(fakeKv({}, { failPut: true })));
+
+    await recordDailyReads(SYNC_ROWS, AT);
+    const state = await guardDailyReads(AT);
+    expect(state.degraded).toBe(true);
+    expect(state.limit).toBe(degradedDailyReadLimit(DEFAULT_DAILY_READ_LIMIT));
+    // The rows that failed to persist are still counted locally.
+    expect(state.used).toBe(SYNC_ROWS);
+    expect(state.allowed).toBe(true);
+  });
+
+  test('no KV binding at all is a degraded isolate, not a full-ceiling one', async () => {
+    process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
+    setShardDirectory(undefined);
+
+    expect(await guardDailyReads(AT)).toMatchObject({
+      limit: degradedDailyReadLimit(DEFAULT_DAILY_READ_LIMIT),
+      degraded: true,
+    });
+  });
+
+  test('a failed read is degraded for that load only; a failed write is sticky', async () => {
+    process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
+    // Real now + 10s: far enough past STALE_MS that the next guard really
+    // reloads. load() stamps loadedAt from Date.now(), not from the instant the
+    // caller passed, so a simulated past date would never look stale.
+    const later = () => new Date(Date.now() + 10_000);
+
+    setShardDirectory(asKv(fakeKv()));
+    expect((await guardDailyReads(new Date())).degraded).toBe(false);
+
+    // A read that fails leaves this isolate counting on its own memory — now...
+    setShardDirectory(asKv(fakeKv({}, { failGet: true })));
+    expect((await guardDailyReads(later())).degraded).toBe(true);
+    // ...and the next good load clears it. One blip must not cost the day.
+    setShardDirectory(asKv(fakeKv()));
+    expect((await guardDailyReads(later())).degraded).toBe(false);
+
+    // A write that fails means the platform's write cap is spent, which IS
+    // sticky for the day: no amount of reading brings the shared counter back.
+    setShardDirectory(asKv(fakeKv({}, { failPut: true })));
+    await recordDailyReads(SYNC_ROWS, new Date());
+    expect((await guardDailyReads(later())).degraded).toBe(true);
+    setShardDirectory(asKv(fakeKv()));
+    expect((await guardDailyReads(later())).degraded).toBe(true);
+  });
+
+  test('runaway with KV writes exhausted: one isolate stays at the reduced ceiling', async () => {
+    process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
+    setShardDirectory(asKv(fakeKv({}, { failPut: true })));
+
+    const { spent } = await replayRunaway();
+
+    // The ceiling plus the one batch that may cross it (the check is before the
+    // batch). Before this fix the same replay spent 8,003,600 rows here.
+    expect(spent).toBeLessThanOrEqual(degradedDailyReadLimit(DEFAULT_DAILY_READ_LIMIT) + RUNAWAY_ROWS);
+    expect(spent).toBeLessThan(DEFAULT_DAILY_READ_LIMIT);
+  });
+
+  test('runaway with KV writes exhausted: four isolates stay inside the platform cap', async () => {
+    process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
+    // One shared KV whose writes are dead: every isolate reads 0 and grants
+    // itself whatever its local ceiling says.
+    setShardDirectory(asKv(fakeKv({}, { failPut: true })));
+
+    let total = 0;
+    for (let isolate = 0; isolate < 4; isolate++) {
+      resetReadBudgetCache(); // stand in for a brand-new isolate
+      total += (await replayRunaway()).spent;
+    }
+
+    // 32,014,400 rows before this fix, on a 5,000,000 platform cap.
+    expect(total).toBeLessThanOrEqual(4 * (degradedDailyReadLimit(DEFAULT_DAILY_READ_LIMIT) + RUNAWAY_ROWS));
+    expect(total).toBeLessThan(5_000_000);
+  });
+
+  test('overlapping flushes cannot make this isolate forget rows it spent', async () => {
+    process.env.D1_DAILY_READ_LIMIT = '1000000';
+    // A slow KV write, so the second record lands while the first flush is
+    // still awaiting — the shape the response path now allows (waitUntil).
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const fake = fakeKv();
+    const gated = { ...fake, put: async (k: string, v: string) => { await blocked; fake.put(k, v); } };
+    setShardDirectory(gated as unknown as KVNamespace);
+
+    const first = recordDailyReads(SYNC_ROWS, AT);
+    const later = new Date(AT.getTime() + SYNC_MS + 1);
+    await recordDailyReads(SYNC_ROWS, later);
+    release();
+    await first;
+
+    // The overlap cost a write, not a count: nothing this isolate spent is
+    // forgotten, locally or once the skipped window is retried. A racing flush
+    // could otherwise write `stored + its own pending` from a stale base and land
+    // a LOWER number than the first — which is how a ceiling stops biting.
+    expect(fake.calls.put).toBe(1);
+    expect(localTotal()).toBe(2 * SYNC_ROWS);
+    expect(fake.store.get(dailyReadKey(AT))).toBe(String(SYNC_ROWS));
+
+    // The skipped window is picked up by the next record, not dropped.
+    await recordDailyReads(1, new Date(later.getTime() + SYNC_MS + 1));
+    expect(fake.calls.put).toBe(2);
+    expect(fake.store.get(dailyReadKey(AT))).toBe(String(2 * SYNC_ROWS + 1));
   });
 });

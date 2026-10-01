@@ -14,6 +14,7 @@ import { rawBatch, type RawStatement } from '../store.js';
 import { takeBatchUsage } from '../lib/d1-usage.js';
 import { CircuitBreaker, CircuitOpenError } from '../lib/circuit-breaker.js';
 import { guardDailyReads, recordDailyReads, secondsUntilUtcMidnight } from './d1-read-budget.js';
+import { keepAlive } from './wait-until.js';
 
 // Per-isolate circuit breaker: while D1 is timing out, refuse inbound
 // raw-batch traffic fast (503) instead of holding every request against the
@@ -83,7 +84,13 @@ export async function POST(request: Request): Promise<Response> {
     // Binding-side meta for the VPS caller's write attribution (Phase 0).
     // Additive fields — older VPS images ignore them.
     const usage = takeBatchUsage();
-    await recordDailyReads(usage.reads);
+    // NOT awaited: recording can flush to KV, and a batch's 200 must not wait
+    // on a KV write. keepAlive pins it to the request's IoContext on the
+    // Worker (src/cf/worker.ts installs the store around every fetch) so the
+    // flush survives the response being returned and cannot hang if the client
+    // disconnects. recordDailyReads counts its rows locally before its first
+    // await, so the next request's guard already sees them.
+    keepAlive(recordDailyReads(usage.reads));
     return json(200, { success: true, results, rowsRead: usage.reads, rowsWritten: usage.writes });
   } catch (err) {
     const e = err as Error;
@@ -92,7 +99,7 @@ export async function POST(request: Request): Promise<Response> {
     // approaches the limit and is never refused. takeBatchUsage() is per-isolate
     // best-effort and can hand back an interleaved batch's rows; for a ceiling
     // that direction of error is the safe one.
-    await recordDailyReads(takeBatchUsage().reads);
+    keepAlive(recordDailyReads(takeBatchUsage().reads));
     if (e instanceof CircuitOpenError) {
       // D1 is known-down: fail fast without touching the binding. The VPS
       // side reads this as an HTTP-5xx infra failure and trips its own
