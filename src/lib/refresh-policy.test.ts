@@ -7,23 +7,27 @@
 // The dry-source backoff is aimed at that remainder.
 //
 // db is stubbed, so these are pure decision tests: no Postgres, no network.
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
+import { swapActiveClientForTests, type AppPrismaClient } from '../store.js';
 
 let videoCount = 0;
 let recentRuns: Array<{ newVideos: number; itemsPulled: number }> = [];
 let newestPostedAt: Date | null = null;
 
-mock.module('../db.js', () => ({
-  db: {
-    video: {
-      count: async () => videoCount,
-      findFirst: async () => (newestPostedAt ? { postedAt: newestPostedAt } : null),
-    },
-    refreshRun: {
-      findMany: async ({ take }: { take: number }) => recentRuns.slice(0, take),
-    },
+// swapActiveClientForTests, not mock.module('../db.js'): mock.module rewrites
+// the process-wide registry shared by every file in a `bun test` run and Bun
+// cannot undo it, so a fake installed here outlived this file. See
+// docs/test-suite-policy.md.
+const restoreStore = swapActiveClientForTests({
+  video: {
+    count: async () => videoCount,
+    findFirst: async () => (newestPostedAt ? { postedAt: newestPostedAt } : null),
   },
-}));
+  refreshRun: {
+    findMany: async ({ take }: { take: number }) => recentRuns.slice(0, take),
+  },
+} as unknown as AppPrismaClient);
+afterAll(restoreStore);
 
 const {
   resolveRefreshPlan,

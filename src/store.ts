@@ -73,6 +73,35 @@ export function setActiveClient(client: AppPrismaClient, raw?: RawExecutor): voi
   globalForStore.__slashloopStore = { client, raw };
 }
 
+/**
+ * @internal — test seam. Install a fake client and get back a restorer.
+ *
+ * Unit tests used to fake the database with `mock.module('../db.js', …)`.
+ * That rewrites the process-wide module registry, which every file in a
+ * `bun test` run shares and which Bun cannot undo — `mock.restore()` does not
+ * put a mocked module back (verified on 1.4.2). So a fake installed by one
+ * file was still in place for every file that loaded after it, and which fake
+ * won depended on discovery order. `src/db.js` is imported by most of the app,
+ * so that leaked almost everywhere; see docs/test-suite-policy.md.
+ *
+ * `db` is already a Proxy that resolves the active client on every access, so
+ * swapping the client behind it is enough — no module identity involved, and
+ * the swap is scoped to one file's lifetime because Bun loads and runs test
+ * files one at a time. Call the returned function from `afterAll` so the next
+ * file finds the store as it was.
+ */
+export function swapActiveClientForTests(
+  client: AppPrismaClient,
+  raw?: RawExecutor,
+): () => void {
+  const previous = globalForStore.__slashloopStore;
+  setActiveClient(client, raw);
+  return () => {
+    if (previous) globalForStore.__slashloopStore = previous;
+    else delete globalForStore.__slashloopStore;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Process-wide DB turn — NOT wired into `db`.
 //

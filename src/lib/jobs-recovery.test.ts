@@ -6,7 +6,8 @@
 //   - deadlineAt is 5 minutes, so most refresh jobs run AFTER their deadline
 //   - reclaimStuckJobs only ever inspected status='running', so a job that was
 //     never claimed could hold a pre-auth forever
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { swapActiveClientForTests, type AppPrismaClient } from '../store.js';
 
 type JobRow = {
   id: string; workspaceId: string; kind: string; status: string;
@@ -26,25 +27,29 @@ const findManyCalls: Array<{ take?: number; orderBy?: unknown }> = [];
 
 const realCredits = await import('./credits.js');
 
-mock.module('../db.js', () => ({
-  db: {
-    mediaJob: {
-      findMany: async (args: any) => {
-        findManyCalls.push({ take: args?.take, orderBy: args?.orderBy });
-        const { where } = args;
-        const notAvail = where.NOT?.availableAt?.gt as Date | undefined;
-        return jobs.filter(j =>
-          j.status === where.status
-          && (where.createdAt?.lt ? j.createdAt < where.createdAt.lt : true)
-          && (where.startedAt === null ? j.startedAt === null : true)
-          && (notAvail ? (j as any).availableAt == null || (j as any).availableAt <= notAvail : true));
-      },
-      update: async ({ where, data }: any) => { updates.push({ id: where.id, data }); return {}; },
-      findUnique: async ({ where }: any) => jobs.find(j => j.id === where.id) ?? null,
+// The fake database goes in through swapActiveClientForTests, not
+// mock.module('../db.js'): mock.module rewrites the process-wide registry that
+// every file in a `bun test` run shares, Bun cannot undo it, and src/db.js is
+// imported by most of the app — so the fake was still installed for every file
+// that loaded after this one. See docs/test-suite-policy.md.
+const restoreStore = swapActiveClientForTests({
+  mediaJob: {
+    findMany: async (args: any) => {
+      findManyCalls.push({ take: args?.take, orderBy: args?.orderBy });
+      const { where } = args;
+      const notAvail = where.NOT?.availableAt?.gt as Date | undefined;
+      return jobs.filter(j =>
+        j.status === where.status
+        && (where.createdAt?.lt ? j.createdAt < where.createdAt.lt : true)
+        && (where.startedAt === null ? j.startedAt === null : true)
+        && (notAvail ? (j as any).availableAt == null || (j as any).availableAt <= notAvail : true));
     },
-    $executeRaw: async (...args: any[]) => { executeRawCalls.push(args); return 1; },
+    update: async ({ where, data }: any) => { updates.push({ id: where.id, data }); return {}; },
+    findUnique: async ({ where }: any) => jobs.find(j => j.id === where.id) ?? null,
   },
-}));
+  $executeRaw: async (...args: any[]) => { executeRawCalls.push(args); return 1; },
+} as unknown as AppPrismaClient);
+afterAll(restoreStore);
 
 mock.module('./credits.js', () => ({
   ...realCredits,

@@ -2,7 +2,8 @@
 // stubbed: team shares resolve both directions across workspace membership,
 // and degrade to owner-only without an email claim.
 
-import { describe, expect, test, mock, beforeEach } from 'bun:test';
+import { afterAll, describe, expect, test, beforeEach } from 'bun:test';
+import { swapActiveClientForTests, type AppPrismaClient } from '../store.js';
 
 type WorkspaceRow = { ownerId: string | null };
 
@@ -11,33 +12,36 @@ let teammateEmails: string[] = [];
 let knownUsers: Array<{ id: string }> = [];
 const calls: string[] = [];
 
-mock.module('../db.js', () => ({
-  db: {
-    workspace: {
-      findMany: async () => {
-        calls.push('workspace.findMany');
-        return sharedWithMe;
-      },
-    },
-    workspaceMember: {
-      findMany: async () => {
-        calls.push('workspaceMember.findMany');
-        return teammateEmails.map((email) => ({ email }));
-      },
-    },
-    user: {
-      findMany: async () => {
-        calls.push('user.findMany');
-        return knownUsers;
-      },
-      upsert: async ({ create }: { create: { id: string; email: string } }) => {
-        calls.push('user.upsert');
-        knownUsers.push({ id: create.id });
-        return create;
-      },
+// swapActiveClientForTests, not mock.module('../db.js'): mock.module rewrites
+// the process-wide registry shared by every file in a `bun test` run and Bun
+// cannot undo it, so a fake installed here outlived this file. See
+// docs/test-suite-policy.md.
+const restoreStore = swapActiveClientForTests({
+  workspace: {
+    findMany: async () => {
+      calls.push('workspace.findMany');
+      return sharedWithMe;
     },
   },
-}));
+  workspaceMember: {
+    findMany: async () => {
+      calls.push('workspaceMember.findMany');
+      return teammateEmails.map((email) => ({ email }));
+    },
+  },
+  user: {
+    findMany: async () => {
+      calls.push('user.findMany');
+      return knownUsers;
+    },
+    upsert: async ({ create }: { create: { id: string; email: string } }) => {
+      calls.push('user.upsert');
+      knownUsers.push({ id: create.id });
+      return create;
+    },
+  },
+} as unknown as AppPrismaClient);
+afterAll(restoreStore);
 
 const { visibleOwnerIds } = await import('./visibility.js');
 

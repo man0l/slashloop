@@ -1,23 +1,23 @@
 // Per-kind queue transport controls (SLA-16 Phase 2).
 // No database: the WorkerControl read is stubbed via mock.module.
-import { describe, expect, mock, test } from 'bun:test';
+import { afterAll, describe, expect, test } from 'bun:test';
+import { swapActiveClientForTests, type AppPrismaClient } from '../store.js';
 
 let controlRows: Record<string, string | undefined> = {};
 
-mock.module('../db.js', () => ({
-  db: {
-    workerControl: {
-      findUnique: async ({ where }: { where: { key: string } }) => {
-        const value = controlRows[where.key];
-        return value === undefined ? null : { key: where.key, value };
-      },
+// swapActiveClientForTests, not mock.module('../db.js'): mock.module rewrites
+// the process-wide registry shared by every file in a `bun test` run and Bun
+// cannot undo it, so a fake installed here outlived this file. See
+// docs/test-suite-policy.md.
+const restoreStore = swapActiveClientForTests({
+  workerControl: {
+    findUnique: async ({ where }: { where: { key: string } }) => {
+      const value = controlRows[where.key];
+      return value === undefined ? null : { key: where.key, value };
     },
   },
-  dbDialect: () => 'postgres',
-  effectiveDatabaseUrl: () => '',
-  initStorePostgres: () => {},
-  initStoreD1Http: () => {},
-}));
+} as unknown as AppPrismaClient);
+afterAll(restoreStore);
 
 import {
   defaultQueueTransport,

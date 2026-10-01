@@ -2,7 +2,8 @@
 // select only queueOwner='d1' rows and that every enqueue writes queueOwner
 // 'd1' — PG projection ('pg') and fallback ('fallback_d1') rows must never be
 // selected by D1 workers.
-import { describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { swapActiveClientForTests, type AppPrismaClient } from '../store.js';
 
 const seen: {
   rawSql: string[];
@@ -16,8 +17,19 @@ const seen: {
   lastCreated: null,
 };
 
-mock.module('../db.js', () => ({
-  db: {
+// The D1 side of the store, faked through swapActiveClientForTests — the client
+// for db.* and the executor for rawBatch — instead of mock.module('../db.js')
+// and mock.module('../store.js').
+//
+// Both of those rewrote the process-wide module registry that every file in a
+// `bun test` run shares, and Bun cannot undo a module mock (mock.restore() does
+// not put it back on 1.4.2). src/cf/internal.ts imports rawBatch from
+// src/store.js, so the store.js stub used to survive this file and reach the
+// bridge endpoint's accounting — 5 of its 8 tests failed in CI at position #50
+// and passed locally at position 2, purely on discovery order. See
+// docs/test-suite-policy.md.
+const restoreStore = swapActiveClientForTests(
+  {
     $queryRaw: async (...args: unknown[]) => {
       const [strings, ...values] = args as [TemplateStringsArray, ...unknown[]];
       seen.rawSql.push(Array.isArray(strings) ? strings.join('?') : String(strings));
@@ -36,22 +48,23 @@ mock.module('../db.js', () => ({
       findMany: async () => [],
     },
     workerControl: { findUnique: async () => null, findMany: async () => [] },
-  },
-  dbDialect: () => 'sqlite',
-  effectiveDatabaseUrl: () => '',
-  initStorePostgres: () => {},
-  initStoreD1Http: () => {},
-}));
-
-mock.module('../store.js', () => ({
-  chunked: async () => {},
-  coerceRowDates: (row: Record<string, unknown>) => row,
-  dbDialect: () => 'sqlite',
-  rawBatch: async (stmts: Array<{ sql: string }>) => {
+  } as unknown as AppPrismaClient,
+  async (stmts: Array<{ sql: string }>) => {
     seen.batchSql.push(...stmts.map((s) => s.sql));
     return [[]];
   },
-}));
+);
+afterAll(restoreStore);
+
+// The claims under test are the SQLite/D1 branch. DB_DIALECT is process-global,
+// so it is set for this file's tests and put back afterwards rather than left
+// behind for the next file.
+const dialectBefore = process.env.DB_DIALECT;
+beforeAll(() => { process.env.DB_DIALECT = 'sqlite'; });
+afterAll(() => {
+  if (dialectBefore === undefined) delete process.env.DB_DIALECT;
+  else process.env.DB_DIALECT = dialectBefore;
+});
 
 import {
   claimJobsByIds,

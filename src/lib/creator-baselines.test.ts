@@ -1,8 +1,14 @@
-import { describe, expect, mock, test, beforeEach } from 'bun:test';
+import { afterAll, describe, expect, mock, test, beforeEach } from 'bun:test';
+import { swapActiveClientForTests, type AppPrismaClient } from '../store.js';
 
-// ── module mocks (see the spread note: later test files re-import these
-// modules, so a partial mock would break them — spread the real surface,
-// override only what this file drives) ──
+// ── seams ──
+// The database is faked through swapActiveClientForTests, NOT
+// mock.module('../db.js'). mock.module rewrites the process-wide registry that
+// every file in a `bun test` run shares, Bun cannot undo it (mock.restore()
+// does not put a module back on 1.4.2), and src/db.js is imported by most of
+// the app — so a fake installed here was still in place for every file that
+// loaded after it. `db` is already a Proxy onto the active client, so swapping
+// that client is enough and the swap is undone below for the next file.
 
 const realJobs = await import('./jobs.js');
 const realCredits = await import('./credits.js');
@@ -13,33 +19,32 @@ let balanceTotal = 100;
 let pendingPayloads: string[] = [];
 let failedPayloads: string[] = [];
 
-mock.module('../db.js', () => ({
-  db: {
-    source: {
-      findUnique: async () => ({ sourceType: 'hashtag', platform: 'tiktok' }),
-    },
-    video: {
-      findMany: async () => [
-        { creatorHandle: 'a', platform: 'tiktok' },
-        { creatorHandle: 'b', platform: 'tiktok' },
-      ],
-      groupBy: async () => [
-        { creatorHandle: 'a', platform: 'tiktok', _count: { _all: 2 } },
-        { creatorHandle: 'b', platform: 'tiktok', _count: { _all: 1 } },
-      ],
-    },
-    mediaJob: {
-      findMany: async (args: any) => {
-        const status = args?.where?.status;
-        if (status && typeof status === 'object' && Array.isArray(status.in)) {
-          return pendingPayloads.map((payloadJson) => ({ payloadJson }));
-        }
-        if (status === 'failed') return failedPayloads.map((payloadJson) => ({ payloadJson }));
-        return [];
-      },
+const restoreStore = swapActiveClientForTests({
+  source: {
+    findUnique: async () => ({ sourceType: 'hashtag', platform: 'tiktok' }),
+  },
+  video: {
+    findMany: async () => [
+      { creatorHandle: 'a', platform: 'tiktok' },
+      { creatorHandle: 'b', platform: 'tiktok' },
+    ],
+    groupBy: async () => [
+      { creatorHandle: 'a', platform: 'tiktok', _count: { _all: 2 } },
+      { creatorHandle: 'b', platform: 'tiktok', _count: { _all: 1 } },
+    ],
+  },
+  mediaJob: {
+    findMany: async (args: any) => {
+      const status = args?.where?.status;
+      if (status && typeof status === 'object' && Array.isArray(status.in)) {
+        return pendingPayloads.map((payloadJson) => ({ payloadJson }));
+      }
+      if (status === 'failed') return failedPayloads.map((payloadJson) => ({ payloadJson }));
+      return [];
     },
   },
-}));
+} as unknown as AppPrismaClient);
+afterAll(restoreStore);
 
 mock.module('./credits.js', () => ({
   ...realCredits,

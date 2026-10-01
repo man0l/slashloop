@@ -1,18 +1,20 @@
 // Handler compatibility: PG rows must deserialize into the same MediaJobRow
 // shape processClaimedJob owns — without forking it. Pins the numeric policy
 // mirroring AND the kind-expansion parity against the real lib/jobs.ts.
-import { describe, expect, mock, test } from 'bun:test';
+import { afterAll, describe, expect, test } from 'bun:test';
+import { swapActiveClientForTests, type AppPrismaClient } from '../store.js';
 
 // lib/jobs.ts pulls the store/db graph (which auto-inits Postgres when
 // DATABASE_URL is set). The parity checks below only need its pure policy
-// functions, so the db module is stubbed like worker-control.test.ts does.
-mock.module('../db.js', () => ({
-  db: {},
-  dbDialect: () => 'postgres',
-  effectiveDatabaseUrl: () => '',
-  initStorePostgres: () => {},
-  initStoreD1Http: () => {},
-}));
+// functions, so the store is left with an empty client — the same reason
+// worker-control.test.ts fakes it, and through the same seam.
+//
+// swapActiveClientForTests, not mock.module('../db.js'): mock.module rewrites
+// the process-wide registry shared by every file in a `bun test` run and Bun
+// cannot undo it, so a fake installed here outlived this file. See
+// docs/test-suite-policy.md.
+const restoreStore = swapActiveClientForTests({} as AppPrismaClient);
+afterAll(restoreStore);
 
 import {
   expandQueueKinds,

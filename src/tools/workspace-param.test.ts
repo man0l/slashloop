@@ -3,8 +3,9 @@
 //   2. Every registered MCP tool accepts an optional workspaceId (so any
 //      workspace from list_workspaces — e.g. a non-primary one — is reachable).
 
-import { describe, expect, test, mock, beforeEach } from 'bun:test';
+import { afterAll, describe, expect, test, beforeEach } from 'bun:test';
 import { z } from 'zod/v4';
+import { swapActiveClientForTests, type AppPrismaClient } from '../store.js';
 
 const PRIMARY = { id: 'ws-primary', name: 'My workspace' };
 const SECOND = { id: 'ws-second', name: 'faceless maxxing' };
@@ -18,32 +19,35 @@ const OWNERS: Record<string, string> = {
 };
 const MEMBER_EMAILS: Record<string, string[]> = { 'ws-shared': ['mate@x.co'] };
 
-mock.module('../db.js', () => ({
-  db: {
-    workspace: {
-      findFirst: async ({ where }: { where: { id?: string; ownerId?: string; OR?: unknown[] } }) => {
-        if (where.id) {
-          const ownerId = OWNERS[where.id];
-          if (!ownerId) return null;
-          if (where.ownerId && where.ownerId !== ownerId) return null;
-          if (where.OR) {
-            const or = where.OR as Array<{ ownerId?: string; members?: { some: { email: string } } }>;
-            const ok = or.some(
-              (cond) =>
-                (cond.ownerId !== undefined && cond.ownerId === ownerId) ||
-                (cond.members !== undefined && MEMBER_EMAILS[where.id!]?.includes(cond.members.some.email)),
-            );
-            if (!ok) return null;
-          } else if (where.ownerId && where.ownerId !== ownerId) {
-            return null;
-          }
-          return { id: where.id, name: where.id, ownerId };
+// swapActiveClientForTests, not mock.module('../db.js'): mock.module rewrites
+// the process-wide registry shared by every file in a `bun test` run and Bun
+// cannot undo it, so a fake installed here outlived this file. See
+// docs/test-suite-policy.md.
+const restoreStore = swapActiveClientForTests({
+  workspace: {
+    findFirst: async ({ where }: { where: { id?: string; ownerId?: string; OR?: unknown[] } }) => {
+      if (where.id) {
+        const ownerId = OWNERS[where.id];
+        if (!ownerId) return null;
+        if (where.ownerId && where.ownerId !== ownerId) return null;
+        if (where.OR) {
+          const or = where.OR as Array<{ ownerId?: string; members?: { some: { email: string } } }>;
+          const ok = or.some(
+            (cond) =>
+              (cond.ownerId !== undefined && cond.ownerId === ownerId) ||
+              (cond.members !== undefined && MEMBER_EMAILS[where.id!]?.includes(cond.members.some.email)),
+          );
+          if (!ok) return null;
+        } else if (where.ownerId && where.ownerId !== ownerId) {
+          return null;
         }
-        return { ...PRIMARY, ownerId: 'u1' };
-      },
+        return { id: where.id, name: where.id, ownerId };
+      }
+      return { ...PRIMARY, ownerId: 'u1' };
     },
   },
-}));
+} as unknown as AppPrismaClient);
+afterAll(restoreStore);
 
 const { resolveToolWorkspace } = await import('./workspace-param.js');
 const { runWithUser } = await import('../context.js');
@@ -109,8 +113,4 @@ describe('registered tools accept workspaceId', () => {
     }
     expect(missing).toEqual([]);
   });
-});
-
-beforeEach(() => {
-  mock.restore();
 });

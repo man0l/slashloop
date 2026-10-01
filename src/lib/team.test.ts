@@ -1,7 +1,8 @@
 // Team invites (src/lib/team.ts) — db and email are stubbed, so these are
 // pure roster-logic tests: validation, the per-workspace member cap,
 // idempotent re-invites, and removal. No D1, no Resend.
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { swapActiveClientForTests, type AppPrismaClient } from '../store.js';
 
 // Spread the real module: mock.module replaces the registry entry shared with
 // cache.test.ts, and a full fake (pass-through getOrFill) poisoned it once bun
@@ -18,33 +19,36 @@ let ownedWorkspaces: Array<{ id: string; name: string }> = [
   { id: 'ws-2', name: 'Side' },
 ];
 
-mock.module('../db.js', () => ({
-  db: {
-    workspace: {
-      findMany: async () => ownedWorkspaces,
-    },
-    workspaceMember: {
-      count: async ({ where }: { where: { workspaceId: string } }) =>
-        members.filter((m) => m.workspaceId === where.workspaceId).length,
-      upsert: async ({ where, create }: { where: { workspaceId_email: { workspaceId: string; email: string } }; create: Omit<MemberRow, 'id' | 'createdAt'> }) => {
-        const existing = members.find(
-          (m) => m.workspaceId === where.workspaceId_email.workspaceId && m.email === where.workspaceId_email.email,
-        );
-        if (existing) return existing;
-        const row: MemberRow = { id: `wm-${members.length + 1}`, createdAt: new Date('2026-09-16T00:00:00Z'), ...create };
-        members.push(row);
-        return row;
-      },
-      deleteMany: async ({ where }: { where: { workspaceId: string; email: string } }) => {
-        const before = members.length;
-        members = members.filter((m) => !(m.workspaceId === where.workspaceId && m.email === where.email));
-        return { count: before - members.length };
-      },
-      findMany: async ({ where }: { where?: { workspaceId?: string } } = {}) =>
-        where?.workspaceId ? members.filter((m) => m.workspaceId === where.workspaceId) : members,
-    },
+// swapActiveClientForTests, not mock.module('../db.js'): mock.module rewrites
+// the process-wide registry shared by every file in a `bun test` run and Bun
+// cannot undo it, so a fake installed here outlived this file. See
+// docs/test-suite-policy.md.
+const restoreStore = swapActiveClientForTests({
+  workspace: {
+    findMany: async () => ownedWorkspaces,
   },
-}));
+  workspaceMember: {
+    count: async ({ where }: { where: { workspaceId: string } }) =>
+      members.filter((m) => m.workspaceId === where.workspaceId).length,
+    upsert: async ({ where, create }: { where: { workspaceId_email: { workspaceId: string; email: string } }; create: Omit<MemberRow, 'id' | 'createdAt'> }) => {
+      const existing = members.find(
+        (m) => m.workspaceId === where.workspaceId_email.workspaceId && m.email === where.workspaceId_email.email,
+      );
+      if (existing) return existing;
+      const row: MemberRow = { id: `wm-${members.length + 1}`, createdAt: new Date('2026-09-16T00:00:00Z'), ...create };
+      members.push(row);
+      return row;
+    },
+    deleteMany: async ({ where }: { where: { workspaceId: string; email: string } }) => {
+      const before = members.length;
+      members = members.filter((m) => !(m.workspaceId === where.workspaceId && m.email === where.email));
+      return { count: before - members.length };
+    },
+    findMany: async ({ where }: { where?: { workspaceId?: string } } = {}) =>
+      where?.workspaceId ? members.filter((m) => m.workspaceId === where.workspaceId) : members,
+  },
+} as unknown as AppPrismaClient);
+afterAll(restoreStore);
 
 mock.module('./email.js', () => ({
   emailConfigured: () => true,

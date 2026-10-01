@@ -4,13 +4,15 @@
 // is a claim + billing reads + debit + failJob write against D1, and the
 // automatic sweeps mint fresh rows every few minutes regardless.
 //
-// Mocking discipline: bun shares one module registry across every test file in
-// the run, and a mocked module is re-evaluated for each later importer — so a
+// Mocking discipline: bun shares one module registry across every file in the
+// run, and a mocked module is re-evaluated for each later importer — so a
 // PARTIAL mock silently breaks whatever file imports the real thing next.
 // Every mock below therefore spreads the REAL module and overrides only the
-// few functions under test. (db.js stays narrow: it's the one module whose
-// surface can't be spread, same trade-off the other queue tests make.)
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+// few functions under test. The database fake uses swapActiveClientForTests
+// rather than mock.module('../db.js') for the same reason the others cannot
+// spread it: mock.module cannot be undone, so it outlived this file.
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { swapActiveClientForTests, type AppPrismaClient } from '../store.js';
 
 const realMedia = await import('../lib/media.js');
 const realCredits = await import('../lib/credits.js');
@@ -22,19 +24,18 @@ const refunds: Array<{ workspaceId: string; amount: number; refId: string }> = [
 let jobRow: Record<string, unknown> = {};
 let runRefreshResult: Record<string, unknown> = {};
 
-mock.module('../db.js', () => ({
-  db: {
-    mediaJob: {
-      findUnique: async () => jobRow,
-      update: async ({ where, data }: any) => { updates.push({ id: where.id, data }); return {}; },
-      findFirst: async () => null,
-      create: async () => ({}),
-    },
-    source: { findFirst: async () => ({ platform: 'tiktok', sourceType: 'creator', query: '@a' }) },
-    video: { findFirst: async () => null },
-    workspace: { findUnique: async () => null },
+const restoreStore = swapActiveClientForTests({
+  mediaJob: {
+    findUnique: async () => jobRow,
+    update: async ({ where, data }: any) => { updates.push({ id: where.id, data }); return {}; },
+    findFirst: async () => null,
+    create: async () => ({}),
   },
-}));
+  source: { findFirst: async () => ({ platform: 'tiktok', sourceType: 'creator', query: '@a' }) },
+  video: { findFirst: async () => null },
+  workspace: { findUnique: async () => null },
+} as unknown as AppPrismaClient);
+afterAll(restoreStore);
 
 mock.module('../lib/refresh.js', () => ({
   ...realRefresh,

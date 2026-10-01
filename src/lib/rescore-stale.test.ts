@@ -1,18 +1,18 @@
-// (Lives in src/lib, not src/: bun shares one module registry across test
-// files, and every db.js-mocking test must sort AFTER src/store.test.ts,
-// which exercises the real db client. All existing db mocks live here too.)
-//
 // rescoreStaleTooFresh's enqueue gate: a workspace that cannot cover the
 // stale-rescrape pre-auth must get NO refresh jobs. Before this gate, every
 // sweep (every ~5 min, from two workers) re-enqueued a creator scrape that was
 // claimed, refused by debitCredits and failed — forever, because the videos
 // stay too_fresh until a rescrape actually lands. That loop drained D1.
 //
-// Mocking discipline: bun re-evaluates a mocked module for every later
-// importer in the run, so each mock below spreads the REAL module and
-// overrides only what this file drives. db.js can't be spread (same
-// trade-off as the other queue tests).
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+// Mocking discipline: bun shares one module registry across every file in a
+// run, and a mocked module stays in place for every file that loads after it —
+// Bun cannot undo mock.module. So each mock below spreads the REAL module and
+// overrides only what this file drives, and the database fake goes in through
+// swapActiveClientForTests instead of mock.module('../db.js') precisely because
+// db.js is the one module whose surface can't be spread. See
+// docs/test-suite-policy.md.
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { swapActiveClientForTests, type AppPrismaClient } from '../store.js';
 
 const realJobs = await import('./jobs.js');
 const realCredits = await import('./credits.js');
@@ -21,25 +21,24 @@ const enqueues: Array<{ workspaceId: string; sourceId: string; videoLimit: numbe
 let balanceTotal = 100;
 let baselineRow: Record<string, unknown> | null = null;
 
-mock.module('../db.js', () => ({
-  db: {
-    video: {
-      findMany: async (args: any) => {
-        // The stale scan selects on score.scoreType; batchScoreVideos' scans don't.
-        if (args?.where?.score) {
-          return [{
-            creatorHandle: '@a', platform: 'tiktok', sourceId: 'src-1',
-            postedAt: new Date(Date.now() - 72 * 3600_000),
-            source: { workspaceId: 'ws-1' },
-          }];
-        }
-        return [];
-      },
+const restoreStore = swapActiveClientForTests({
+  video: {
+    findMany: async (args: any) => {
+      // The stale scan selects on score.scoreType; batchScoreVideos' scans don't.
+      if (args?.where?.score) {
+        return [{
+          creatorHandle: '@a', platform: 'tiktok', sourceId: 'src-1',
+          postedAt: new Date(Date.now() - 72 * 3600_000),
+          source: { workspaceId: 'ws-1' },
+        }];
+      }
+      return [];
     },
-    source: { findUnique: async () => null },
-    baseline: { findUnique: async () => baselineRow },
   },
-}));
+  source: { findUnique: async () => null },
+  baseline: { findUnique: async () => baselineRow },
+} as unknown as AppPrismaClient);
+afterAll(restoreStore);
 
 mock.module('./jobs.js', () => ({
   ...realJobs,

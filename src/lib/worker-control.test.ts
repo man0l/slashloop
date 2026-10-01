@@ -1,30 +1,33 @@
-import { beforeEach, expect, test } from 'bun:test';
-import { mock } from 'bun:test';
+import { afterAll, beforeEach, expect, test } from 'bun:test';
+import { swapActiveClientForTests, type AppPrismaClient } from '../store.js';
 
 let rows = new Map<string, string>();
 let findCalls = 0;
 
-mock.module('../db.js', () => ({
-  db: {
-    workerControl: {
-      findUnique: async ({ where }: any) => {
-        findCalls++;
-        return rows.has(where.key) ? { key: where.key, value: rows.get(where.key) } : null;
-      },
-      findMany: async ({ where }: any) => {
-        findCalls++;
-        return (where.key.in as string[])
-          .filter((k) => rows.has(k))
-          .map((k) => ({ key: k, value: rows.get(k) }));
-      },
-      upsert: async ({ where, create, update }: any) => {
-        const value = (update ?? create).value as string;
-        rows.set(where.key, value);
-        return { key: where.key, value };
-      },
+// swapActiveClientForTests, not mock.module('../db.js'): mock.module rewrites
+// the process-wide registry shared by every file in a `bun test` run and Bun
+// cannot undo it, so a fake installed here outlived this file. See
+// docs/test-suite-policy.md.
+const restoreStore = swapActiveClientForTests({
+  workerControl: {
+    findUnique: async ({ where }: any) => {
+      findCalls++;
+      return rows.has(where.key) ? { key: where.key, value: rows.get(where.key) } : null;
+    },
+    findMany: async ({ where }: any) => {
+      findCalls++;
+      return (where.key.in as string[])
+        .filter((k) => rows.has(k))
+        .map((k) => ({ key: k, value: rows.get(k) }));
+    },
+    upsert: async ({ where, create, update }: any) => {
+      const value = (update ?? create).value as string;
+      rows.set(where.key, value);
+      return { key: where.key, value };
     },
   },
-}));
+} as unknown as AppPrismaClient);
+afterAll(restoreStore);
 
 const { controlEnabled, setControl, filterKindsByControl, resetControlCacheForTests } = await import(
   './worker-control.js'
