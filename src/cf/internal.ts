@@ -13,6 +13,7 @@
 import { rawBatch, type RawStatement } from '../store.js';
 import { takeBatchUsage } from '../lib/d1-usage.js';
 import { CircuitBreaker, CircuitOpenError } from '../lib/circuit-breaker.js';
+import { guardDailyReads, recordDailyReads, secondsUntilUtcMidnight } from './d1-read-budget.js';
 
 // Per-isolate circuit breaker: while D1 is timing out, refuse inbound
 // raw-batch traffic fast (503) instead of holding every request against the
@@ -24,8 +25,11 @@ import { CircuitBreaker, CircuitOpenError } from '../lib/circuit-breaker.js';
 // Module state here is per-isolate, which is exactly the blast radius wanted.
 const batchBreaker = new CircuitBreaker({ name: 'raw-batch', threshold: 3, cooldownMs: 60_000 });
 
-function json(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...headers },
+  });
 }
 
 /** Sanity caps — this endpoint executes raw SQL, so keep the blast radius small. */
@@ -58,14 +62,37 @@ export async function POST(request: Request): Promise<Response> {
     return json(400, { error: `too many bound parameters (${totalParams} > ${MAX_TOTAL_PARAMS})` });
   }
 
+  // Volume ceiling, checked after auth and shape validation (so a malformed
+  // caller cannot spend budget it never earned) but before any D1 work. On the
+  // free tier an over-budget read fails with Cloudflare 7500 for EVERY database
+  // on the account until midnight UTC — 2026-09-30 a runaway VPS loop spent the
+  // cap this way and took unrelated reads down with it. 429 + Retry-After, not
+  // 503: the account is healthy, today's read budget is spent, and the caller
+  // should come back after the reset.
+  const budget = await guardDailyReads();
+  if (!budget.allowed) {
+    return json(
+      429,
+      { success: false, error: 'd1_daily_read_limit', rowsReadToday: budget.used, rowLimit: budget.limit },
+      { 'Retry-After': String(secondsUntilUtcMidnight()) },
+    );
+  }
+
   try {
     const results = await batchBreaker.execute(() => rawBatch(statements));
     // Binding-side meta for the VPS caller's write attribution (Phase 0).
     // Additive fields — older VPS images ignore them.
     const usage = takeBatchUsage();
+    await recordDailyReads(usage.reads);
     return json(200, { success: true, results, rowsRead: usage.reads, rowsWritten: usage.writes });
   } catch (err) {
     const e = err as Error;
+    // A batch that threw may still have been metered by D1, so the ceiling has
+    // to see those rows too — otherwise a caller that only ever errors never
+    // approaches the limit and is never refused. takeBatchUsage() is per-isolate
+    // best-effort and can hand back an interleaved batch's rows; for a ceiling
+    // that direction of error is the safe one.
+    await recordDailyReads(takeBatchUsage().reads);
     if (e instanceof CircuitOpenError) {
       // D1 is known-down: fail fast without touching the binding. The VPS
       // side reads this as an HTTP-5xx infra failure and trips its own

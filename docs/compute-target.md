@@ -36,6 +36,37 @@ Env matrix (`worker/.env.example` has the full comments):
 | `WORKER_INTERNAL_URL` + `CRON_SECRET` | n/a | required in prod (atomic rawBatch via `/internal/raw-batch`) |
 | everything else (R2, Apify, AI, proxy) | unchanged | unchanged |
 
+### The account-wide D1 read ceiling
+
+The VPS loop reaches D1 through `POST /internal/raw-batch`, so it reads with the
+Worker's D1 binding but against the same Cloudflare **account**. On the free
+tier that account gets 5M rows read per UTC day, and the cap is account-wide:
+once it is reached, **every** D1 read on **every** database in the account fails
+with Cloudflare error 7500 until midnight. A runaway caller therefore takes down
+reads it has nothing to do with.
+
+This happened on 2026-09-30: the worker loop ran `rawBatch` ~2,800 times an hour
+(~2,200 rows each) and spent 74.3M rows in twelve hours. The circuit breaker
+(`src/lib/circuit-breaker.ts`) could not help — that only opens when D1 is
+already *failing*, and the runaway was succeeding.
+
+`src/cf/d1-read-budget.ts` is the volume ceiling that was missing. It meters the
+bridge's rows-read per UTC day and answers `429` (with `Retry-After` at the
+reset) instead of spending the account. The counter lives in KV, never D1 — a
+D1 counter would consume the rows it exists to protect. Accounting is
+deliberately soft (KV is eventually consistent) and the default ceiling carries
+20% headroom for that; see the module header for the full trade-off.
+
+| Var | Default | Notes |
+|---|---|---|
+| `D1_DAILY_READ_LIMIT` | `4000000` | Rows/day the bridge will spend before refusing. `0` / `off` disables. Raise only with a paid plan. Worker-side var (`wrangler.jsonc`), not a VPS `.env` value. |
+
+The ceiling is on the **bridge**, deliberately: ordinary reads keep working, and
+the money paths (credit refunds in `src/lib/credits.ts`) are only refused when
+the account's read budget is genuinely spent. One request may cross the ceiling
+by its own row count — the check is before the batch, so the overshoot is
+bounded by one request rather than open-ended.
+
 ## Path (a) — Cloudflare-native follow-up (scaffolded, not wired)
 
 Stubs: `src/cf/queues.ts` (producer + consumer routing), `src/cf/workflows.ts`
