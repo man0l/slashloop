@@ -19,8 +19,11 @@ Deploys run through **GitHub Actions** (`.github/workflows/deploy-worker.yml`):
 every push to `master` (or a manual `workflow_dispatch`) installs deps, syncs
 the Worker's environment from GitHub (`scripts/sync-worker-secrets.mjs` — every
 manifest-listed secret/variable that is **set** in GitHub is pushed to the
-Worker; unset ones are left as-is, never deleted), applies pending D1
-migrations, and runs `wrangler deploy`.
+Worker; unset ones are left as-is, never deleted), prunes the names the Worker
+cannot read (`scripts/prune-worker-secrets.mjs`, the only step that frees a
+slot), checks the Free plan's 64-var ceiling
+(`scripts/check-worker-var-budget.mjs`), applies pending D1 migrations, and
+runs `wrangler deploy`.
 
 Required GitHub secrets: `CLOUDFLARE_API_TOKEN` (Workers Scripts:Edit +
 D1:Edit), `CLOUDFLARE_ACCOUNT_ID`, plus the manifest names in
@@ -28,6 +31,16 @@ D1:Edit), `CLOUDFLARE_ACCOUNT_ID`, plus the manifest names in
 `GALLERY_LINK_SECRET` is the one value that lives only on Cloudflare
 (generated at migration time — `wrangler secret put GALLERY_LINK_SECRET` to
 rotate).
+
+The manifest, the excluded names, and the ceiling live in one file,
+`scripts/worker-secrets.mjs`. **Adding a Worker env var counts against the
+Free plan's 64 `secret_text` + `plain_text` cap** (d1 / kv_namespace /
+r2_bucket bindings do not count) and Cloudflare only rejects the 65th during
+`wrangler deploy` — after the migration apply, with the Worker left on the
+previous build. PR #96 hit that after merge because this workflow only runs on
+`master`. The budget check is the pre-flight: it fails the deploy step with the
+over-count instead. A var the Worker never reads belongs in `WORKER_EXCLUDED`,
+not in the manifest.
 
 ## What was built
 
