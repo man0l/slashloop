@@ -25,6 +25,7 @@ import { QUEUE_FALLBACK_STATUS, getQueueFallbackEnabled } from '../queue/transpo
 import { CREDIT_COSTS, refundCredits, refundCreditsBatched, type RefundItem } from './credits.js';
 import { classifyFetchError } from './fetch-errors.js';
 import { notifyScrapeFailure, markScrapeSuccess } from './scrape-alert.js';
+import { createThrottle, foldedSuffix } from './log-throttle.js';
 
 // ---------------------------------------------------------------------------
 // Routed enqueue (SLA-16 Phase 2b): every enqueue*Job below funnels through
@@ -1455,6 +1456,27 @@ function isRateLimited(err: unknown): boolean {
 }
 
 /**
+ * How long the fallback-reconcile throttle warning stays quiet after it is
+ * emitted. The sweep runs every WORKER_RECLAIM_INTERVAL_MS (default 5 min),
+ * so a backlog that outlives the limiter's 60s window used to re-warn on
+ * every pass of every container. 15 minutes keeps a reader's hourly log
+ * window to at most one line per process while still showing a change in
+ * condition quickly, and the emitted line carries the count of the sweeps
+ * that were folded into it. 0 disables throttling (every occurrence warns).
+ */
+const THROTTLE_LOG_EVERY_MS = (() => {
+  const n = Number(process.env.WORKER_THROTTLE_LOG_EVERY_MS ?? 15 * 60_000);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 15 * 60_000;
+})();
+
+const fallbackThrottleLog = createThrottle({ everyMs: THROTTLE_LOG_EVERY_MS });
+
+/** The throttle window is process-wide, so tests need a way back to zero. */
+export function resetFallbackThrottleLogForTests(): void {
+  fallbackThrottleLog.reset();
+}
+
+/**
  * One-way fallback reconciliation (SLA-16). Picks D1 rows parked as
  * queueOwner='fallback_d1' status queued_remote (PG publish failed) and
  * republishes them with dedupeKey d1:<MediaJob.id> and the ORIGINAL opId.
@@ -1469,6 +1491,12 @@ function isRateLimited(err: unknown): boolean {
  * by the same query, so nothing is lost — and turns N warnings into one. This
  * is what SLA-317's smoke test saw live: `reconciled=0 failed=25` repeating
  * while the backlog drained at the limiter's own 10/minute pace.
+ *
+ * The surviving warning is itself throttled (THROTTLE_LOG_EVERY_MS). Hitting
+ * the publish limiter is a self-healing condition, not a fault — the same
+ * rows come back on the next sweep — so warning on every pass of a
+ * multi-minute drain is a log flood that hides real warnings. See
+ * src/lib/log-throttle.ts.
  */
 export async function reconcileFallbackJobs(opts?: {
   take?: number;
@@ -1518,9 +1546,15 @@ export async function reconcileFallbackJobs(opts?: {
       if (isRateLimited(err)) {
         // Budget spent for this window. The row stays parked and the next
         // sweep picks it up; `more` stays true so the caller loops again.
-        console.warn(
-          `[jobs] fallback reconcile throttled by queue-api after ${reconciled} publish(es); ${batch.length - reconciled - 1} row(s) still parked`,
-        );
+        // Log-gated: a throttled sweep is the expected steady state while a
+        // backlog drains at the limiter's pace, and warning every pass filled
+        // the log. The first pass warns; later passes fold into one line that
+        // reports how many it swallowed, so the rate is still visible.
+        const parked = batch.length - reconciled - 1;
+        const line = fallbackThrottleLog.take('reconcile-throttled', (folded) =>
+          `[jobs] fallback reconcile throttled by queue-api after ${reconciled} publish(es); ${parked} row(s) still parked`
+          + foldedSuffix(folded));
+        if (line) console.warn(line);
         return { reconciled, failed, more: true };
       }
       failed++;
