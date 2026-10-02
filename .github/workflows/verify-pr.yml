@@ -3,7 +3,8 @@
 # deploy-worker.yml only triggers on a push to master, so its `verify` job —
 # the one that caught the leaking mock.module in #96 — first ran AFTER that
 # PR was merged, and the merge had to be unpicked. This runs the identical
-# steps on the PR instead: typecheck plus the full `bun test` suite on the
+# steps on the PR instead: typecheck, the full `bun test` suite, and the
+# date-anchored suites under a shifted clock (SLA-323's guardrail), on the
 # pinned bun, on a clean checkout with no workspace state.
 #
 # Read-only and secret-free by design: contents:read, no environment, no
@@ -48,3 +49,12 @@ jobs:
 
       - name: Tests
         run: bun test
+
+      # SLA-323: a suite that stamps one instant with `new Date()` while reading
+      # from a hardcoded date anchor only fails once the calendar moves, so CI
+      # was green on the authoring day and red every day after — and `deploy` is
+      # `needs: verify`. This runs the date-anchored suites under a shifted
+      # clock so that class of bug fails the same day. Scoped on purpose: the
+      # queue and timeout suites measure real elapsed time.
+      - name: Tests (date-anchored suites under a shifted clock)
+        run: bun run test:clock-shift
