@@ -36,6 +36,20 @@
 // safe: a row that would have ranked in the global top N is necessarily in the
 // top N of at least one of the two orderings.
 //
+// The two orderings above are only index-served if nothing in the SELECT list
+// wraps the column being ordered. `CAST("createdAt" AS TEXT) AS "createdAt"`
+// looks like a free no-op — the column is already TEXT in D1 — but it makes
+// SQLite abandon the index for the ORDER BY and sort the whole slice in a temp
+// B-tree. Measured on production, same workspace, same 20 rows, same order:
+//
+//   34,663 rows read, 33.6 ms   <- with the CAST
+//       20 rows read,  0.7 ms   <- same query, createdAt projected raw
+//
+// and EXPLAIN QUERY PLAN names why: the CAST version adds "USE TEMP B-TREE FOR
+// ORDER BY" while the plain one does not. So the string coercion the CAST was
+// there for (never let a driver decode createdAt as a DateTime) happens in
+// fetchRecentLedgerRows instead, where it costs nothing.
+//
 // The range endpoints are intentionally the ASCII digits '2' and '2' + 1
 // rather than a LIKE. `LIKE '20%'` cannot use an index (measured: 15,404 rows
 // read for one workspace). An explicit range can.
@@ -59,7 +73,14 @@ export interface RawLedgerRow {
 const ISO_REF_LOW = '20';
 const ISO_REF_HIGH = '21';
 
-const RECENT_COLUMNS = '"delta", "reason", "tool", "balanceAfter", "refId", CAST("createdAt" AS TEXT) AS "createdAt"';
+/**
+ * Project the columns raw. Nothing here may wrap `"createdAt"` in an
+ * expression: see the header — an expression on the ordered column sends
+ * SQLite to a temp B-tree and costs the entire workspace slice (34,663 rows
+ * read instead of 20). The string guarantee the CAST used to provide is
+ * enforced in `fetchRecentLedgerRows`.
+ */
+const RECENT_COLUMNS = '"delta", "reason", "tool", "balanceAfter", "refId", "createdAt"';
 
 /**
  * The two raw reads `fetchRecentLedgerRows` issues. Exported so a test can
@@ -121,6 +142,12 @@ export function mergeRecentLedgerRows(
  * Read the newest `take` CreditLedger rows for a workspace using only
  * index-served predicates. `query` is the caller's D1 handle; it is injected so
  * this stays testable and so the SQL above is the single source of truth.
+ *
+ * The rows are normalised to strings here rather than in SQL. A slice of
+ * historical rows stores the idempotency key in `createdAt` (see
+ * normalizeLedgerColumns), so anything that decodes the column as a timestamp
+ * rejects those rows — but the coercion has to happen after the query returns,
+ * because doing it in the SELECT list is what costs the index.
  */
 export async function fetchRecentLedgerRows(
   query: (sql: string, ...params: unknown[]) => Promise<RawLedgerRow[]>,
@@ -131,7 +158,24 @@ export async function fetchRecentLedgerRows(
     query(RECENT_LEDGER_QUERIES.inCreatedAt, workspaceId, take),
     query(RECENT_LEDGER_QUERIES.inRefId, workspaceId, take),
   ]);
-  return mergeRecentLedgerRows([...inCreatedAt, ...inRefId], take);
+  return mergeRecentLedgerRows(
+    [...inCreatedAt, ...inRefId].map(asRawLedgerRow),
+    take,
+  );
+}
+
+/**
+ * `createdAt` as an ISO string, whatever the driver handed back. D1 returns
+ * TEXT as TEXT, so in practice this is already a string — but `isLedgerTimestamp`
+ * matches an ISO pattern, so a Date arriving here must become `.toISOString()`,
+ * not `String(date)` (which is `Thu Oct 01 2026 ...` and matches nothing).
+ */
+function asRawLedgerRow(row: RawLedgerRow): RawLedgerRow {
+  // `unknown` because the declared type says string and the point of this
+  // function is that the driver might not agree; `never` is the alternative.
+  const createdAt: unknown = row.createdAt;
+  if (typeof createdAt === 'string') return row;
+  return { ...row, createdAt: createdAt instanceof Date ? createdAt.toISOString() : String(createdAt) };
 }
 
 export { isLedgerTimestamp };
