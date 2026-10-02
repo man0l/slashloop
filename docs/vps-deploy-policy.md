@@ -47,3 +47,14 @@ rejected — the model below is the ONLY way.
    on the commit is the "will it work" answer — VPS pulls only green
    master. Residual risk it does NOT cover: VPS-local drift (missing
    secret files, untracked edits) — `git status` on the VPS before pull.
+9. **Watchtower moves images; it does not move config.** A service labeled
+   `com.centurylinklabs.watchtower.enable=true` is re-pulled within ~5 min
+   (`--interval 300`) of a new `:master` push — no `up -d` needed. Anything
+   that changes a service's *config* (labels, env, volumes, ports,
+   healthcheck, resource limits) only lands via rule 2's
+   `git pull` + `docker compose up -d <service>`, because watchtower
+   recreates from the container's stored config and never re-reads
+   compose. So CI being green does not mean the VPS is running what
+   compose says. When adding a new CI-built service, add the watchtower
+   label in the same PR — otherwise it silently never updates, which is
+   exactly how `queue-api` sat on a 4-day-old image after merge (SLA-330).
