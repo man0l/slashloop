@@ -287,7 +287,8 @@ export async function enqueueFetchJob(opts: {
 /**
  * Queue watch-page slideshow downloads for photo posts that scrape only
  * captured a photomode cover (or whose off-proxy slide ingest 403'd).
- * Dedupes against already-queued/running jobs for the same video.
+ * Dedupes against already-outstanding jobs for the same video — which now
+ * includes a parked fallback_d1 row (see isOutstandingJobStatus).
  */
 export async function enqueueSlideshowFetches(
   workspaceId: string,
@@ -300,7 +301,7 @@ export async function enqueueSlideshowFetches(
     if (!videoId || seen.has(videoId)) { skipped++; continue; }
     seen.add(videoId);
     const outstanding = await outstandingJobForVideo(videoId);
-    if (outstanding && (outstanding.status === 'queued' || outstanding.status === 'running')) {
+    if (outstanding && isOutstandingJobStatus(outstanding.status)) {
       skipped++;
       continue;
     }
@@ -603,10 +604,36 @@ export async function outstandingJobForSource(
   }) as unknown as Promise<MediaJobRow | null>;
 }
 
-/** The job a caller should be told about for this video, if any is outstanding. */
+/**
+ * Does this job row mean "work for this target is already spoken for"?
+ *
+ * Callers that dedupe an enqueue against an outstanding row MUST use this
+ * rather than re-spelling `status === 'queued' || status === 'running'`. A
+ * parked fallback row is `queued_remote`: not claimable, but real pending work
+ * that the reconciler will publish. A caller that queries with the widened
+ * status set and then filters the row back out with a literal two-value
+ * comparison gets exactly the double-enqueue the widening was meant to stop —
+ * the query and the check have to agree.
+ */
+export function isOutstandingJobStatus(status: string | null | undefined): boolean {
+  return status === 'queued' || status === 'running' || status === QUEUE_FALLBACK_STATUS;
+}
+
+/**
+ * The job a caller should be told about for this video, if any is outstanding.
+ *
+ * QUEUE_FALLBACK_STATUS (`queued_remote`) counts as outstanding, exactly as it
+ * does in outstandingJobForSource — and for the same reason: a row parked there
+ * is invisible to every claimer (D1 claims select only queueOwner='d1' and PG
+ * has no row) but reconcileFallbackJobs publishes it and it runs, so the work
+ * is genuinely pending. Answering "nothing outstanding" for a parked row is
+ * what made a second fetch job for the same video get enqueued while the first
+ * was still parked — see enqueueSlideshowFetches and the SLA-341 measurement
+ * below.
+ */
 export async function outstandingJobForVideo(videoId: string): Promise<MediaJobRow | null> {
   return db.mediaJob.findFirst({
-    where: { videoId, status: { in: ['queued', 'running'] } },
+    where: { videoId, status: { in: ['queued', 'running', QUEUE_FALLBACK_STATUS] } },
     orderBy: { createdAt: 'desc' },
   }) as unknown as Promise<MediaJobRow | null>;
 }

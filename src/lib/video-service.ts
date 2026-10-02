@@ -12,7 +12,7 @@ import type { AnalysisResult } from '../analysis/types.js';
 import { loadAnalysisConfig } from '../analysis/config.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from './credits.js';
 import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls, resolveRecreationUrls, isPhotoPost, slideshowIsHydrated } from './media.js';
-import { enqueueAnalyzeJob, enqueueFetchJob, enqueueRecreateJob, latestReportingJobForVideo, outstandingJobForVideo, latestJobForVideo, type MediaJobRow } from './jobs.js';
+import { enqueueAnalyzeJob, enqueueFetchJob, enqueueRecreateJob, isOutstandingJobStatus, latestReportingJobForVideo, outstandingJobForVideo, latestJobForVideo, type MediaJobRow } from './jobs.js';
 import { classifyGeminiError, errorCodeFor, parseJobLastError, friendlyGeminiMessage, type GeminiErrorCode } from './gemini-errors.js';
 import { keepAlive } from '../cf/wait-until.js';
 import { driveVideoRecreateJob, defaultRecreateVideoDeps, recreatePreAuthCredits } from './recreate-video-stream.js';
@@ -126,7 +126,9 @@ export type FetchVideoOutcome =
  * whose fetch job carries enqueueAnalysis). Free: no credit pre-auth, no
  * opId, so reclaimStuckJobs never tries to refund these rows. A second call
  * while a fetch is outstanding returns the existing job instead of queueing
- * a duplicate; an already-stored video short-circuits without queueing.
+ * a duplicate; an already-stored video short-circuits without queueing. "Still
+ * outstanding" includes a parked fallback row, so a video whose first fetch is
+ * awaiting reconciliation is not downloaded twice (see isOutstandingJobStatus).
  */
 export async function fetchVideoForWorkspace(
   workspace: Workspace,
@@ -145,7 +147,7 @@ export async function fetchVideoForWorkspace(
   // the rest of the carousel.
 
   const outstanding = await outstandingJobForVideo(videoId);
-  if (outstanding && (outstanding.status === 'queued' || outstanding.status === 'running')) {
+  if (outstanding && isOutstandingJobStatus(outstanding.status)) {
     return { ok: true, queued: true, job: outstanding };
   }
 
