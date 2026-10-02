@@ -22,10 +22,18 @@ Live endpoint: **https://mcp.slashloop.dev/mcp**
 
 `skills/` contains installable agent skills for the remote MCP:
 `slashloop-sources`, `slashloop-refresh`, `slashloop-gallery`,
-`slashloop-experiments`, and `slashloop`. Copy a skill directory into your
-agent's skills root (for Codex, `$CODEX_HOME/skills`) and read its `SKILL.md`
-before running the workflow. Every skill requires an explicit workspace ID or
-exact workspace name; none silently defaults to the primary workspace.
+`slashloop-experiments`, and `slashloop`. After publication to npm, install
+them with:
+
+```bash
+npx slashloop-skills install --codex
+```
+
+Use `--claude`, `--project`, or `--target <skills-dir>` for another skills
+root. Copy a skill directory into your agent's skills root (for Codex,
+`$CODEX_HOME/skills`) and read its `SKILL.md` before running the workflow.
+Every skill requires an explicit workspace ID or exact workspace name; none
+silently defaults to the primary workspace.
 
 ```
 src/
