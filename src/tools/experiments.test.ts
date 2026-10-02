@@ -9,7 +9,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Command, Create, EditBrief, Generate, Plan, Retry, ExperimentError, Key, type Experiment } from '../experiments/schema.js';
 import {
-  registerExperimentTools, defaultExperimentCap, derivedKey, type ExperimentToolDeps,
+  registerExperimentTools, defaultExperimentCap, derivedKey, editSlideDirection,
+  EDIT_GOAL, EDIT_MAX_CREDITS, EDIT_VARIANT_COUNT, type ExperimentToolDeps,
 } from './experiments.js';
 
 const TOOLS = [
@@ -174,6 +175,84 @@ describe('create_experiment', () => {
     expect(body.error).toBe('invalid_request');
     expect(callsOf('createExperiment')).toHaveLength(0);
   });
+
+  test('create mode without instructions says what is missing', async () => {
+    const { isError, body } = await call('create_experiment', { videoIds: ['vid1'] });
+    expect(isError).toBe(true);
+    expect(body.message).toMatch(/instructions/);
+    expect(callsOf('createExperiment')).toHaveLength(0);
+  });
+
+  // ---- edit mode (the site's "Edit slideshow" wizard path) ----
+
+  test('edit mode sends the site\'s payload: one deck, hook variable, 2 variants, 100 credits', async () => {
+    const { isError, body } = await call('create_experiment', {
+      mode: 'edit', videoIds: ['vid1'], hook: 'Stop doing this', overlayTexts: ['Three things I wish I knew', ''],
+    });
+    expect(isError).toBe(false);
+    expect(callsOf('createExperiment')).toHaveLength(1);
+    const body0 = callsOf('createExperiment')[0]![0] as any;
+    expect(body0.videoIds).toEqual(['vid1']);
+    expect(body0.instructions).toEqual({
+      goal: EDIT_GOAL,
+      brand: '',
+      audience: '',
+      language: 'English',
+      direction: 'Render the exact overlay texts. Slide 1 (hook): "Stop doing this" (empty clears it too) '
+        + 'Slide 2: "Three things I wish I knew" Slide 3: "" (strip — no text)',
+      lockedConstraints: [],
+      variables: ['hook'],
+      mode: 'controlled',
+    });
+    expect(body0.variantCount).toBe(EDIT_VARIANT_COUNT);
+    expect(body0.maxCredits).toBe(EDIT_MAX_CREDITS);
+    // The strict backend schema must accept it — and reject the wizard-only
+    // surveyMode marker, which never leaves the browser.
+    expect(Create.safeParse(body0).success).toBe(true);
+    expect(Create.safeParse({ ...body0, surveyMode: 'edit' }).success).toBe(false);
+    // Free: the draft response carries the plan estimate and a spending edge.
+    expect(body.experiments[0].planEstimate.totalCredits).toBe(9);
+    expect(body.nextSteps[0]).toMatchObject({ tool: 'plan_experiment', spendsMoney: true });
+  });
+
+  test('edit mode quotes copy in the site\'s wording and order, trimming each entry', async () => {
+    expect(editSlideDirection(' A hook ', [' second ', '', 'fourth']))
+      .toBe('Render the exact overlay texts. Slide 1 (hook): "A hook" (empty clears it too) '
+        + 'Slide 2: "second" Slide 3: "" (strip — no text) Slide 4: "fourth"');
+    expect(editSlideDirection('Only a hook', [])).toBe('Render the exact overlay texts. Slide 1 (hook): "Only a hook" (empty clears it too)');
+  });
+
+  test('edit mode refuses several decks and empty copy before creating anything', async () => {
+    const many = await call('create_experiment', { mode: 'edit', videoIds: ['vid1', 'vid2'], hook: 'H' });
+    expect(many.isError).toBe(true);
+    expect(many.body.message).toMatch(/exactly one slideshow/);
+    const nothing = await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], hook: '', overlayTexts: ['', '  '] });
+    expect(nothing.isError).toBe(true);
+    expect(nothing.body.message).toMatch(/new copy/);
+    expect(callsOf('createExperiment')).toHaveLength(0);
+  });
+
+  test('edit mode passes the caller\'s language through and ignores create-only fields', async () => {
+    await call('create_experiment', {
+      mode: 'edit', videoIds: ['vid1'], hook: 'H', overlayTexts: ['B'], language: 'Danish',
+      variantCount: 9, maxCredits: 5000,
+    });
+    const body0 = callsOf('createExperiment')[0]![0] as any;
+    expect(body0.instructions.language).toBe('Danish');
+    // Edit mode is pinned to the site's shape; the caller cannot talk it out of it.
+    expect(body0.variantCount).toBe(EDIT_VARIANT_COUNT);
+    expect(body0.maxCredits).toBe(EDIT_MAX_CREDITS);
+    expect(Create.safeParse(body0).success).toBe(true);
+  });
+
+  test('an identical edit retry derives the same key (no duplicate drafts)', async () => {
+    const args = { mode: 'edit', videoIds: ['vid1'], hook: 'H', overlayTexts: ['B'] };
+    await call('create_experiment', args);
+    await call('create_experiment', args);
+    const keys = callsOf('createExperiment').map(a => (a[0] as any).idempotencyKey);
+    expect(keys[0]).toBe(keys[1]);
+    expect(Key.safeParse(keys[0]!).success).toBe(true);
+  });
 });
 
 describe('spending actions', () => {
@@ -198,6 +277,32 @@ describe('spending actions', () => {
     expect((a![3] as any).idempotencyKey).toBe((b![3] as any).idempotencyKey);
     expect(Plan.safeParse(a![3]).success).toBe(true);
     expect(first.body.progress.status).toBe('draft');
+  });
+
+  test('plan_experiment returns the estimate it was gated on, not just the refusal case', async () => {
+    store.set('e1', exp('e1'));
+    estimateTotal = 9;
+    const { isError, body } = await call('plan_experiment', { experimentId: 'e1', approvedCredits: 9 });
+    expect(isError).toBe(false);
+    // The post-transition state reads as "nothing left to plan", so the price
+    // of the work just started has to come back from the gate that priced it.
+    expect(body.estimate.totalCredits).toBe(9);
+    expect(body.estimateNote).toMatch(/before this call/);
+    expect(callsOf('estimate')).toHaveLength(1);
+  });
+
+  test('generate_experiment and retry_experiment return their estimate too', async () => {
+    store.set('e1', exp('e1', { status: 'review' }));
+    estimateTotal = 40;
+    const generated = await call('generate_experiment', { experimentId: 'e1', variants: [{ id: 'v1', revision: 1 }], approvedCredits: 40 });
+    expect(generated.isError).toBe(false);
+    expect(generated.body.estimate.totalCredits).toBe(40);
+
+    store.set('e2', exp('e2', { status: 'failed', tasks: [{ id: 't1', kind: 'slide', target: 'v1', index: 0, status: 'failed', attempts: 1, charged: 10 }] }));
+    estimateTotal = 30;
+    const retried = await call('retry_experiment', { experimentId: 'e2', taskIds: ['t1'], approvedCredits: 30 });
+    expect(retried.isError).toBe(false);
+    expect(retried.body.estimate.totalCredits).toBe(30);
   });
 
   test('generate_experiment prices and sends exactly the chosen variants and revisions', async () => {
