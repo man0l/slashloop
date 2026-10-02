@@ -13,6 +13,12 @@
 // transaction. The service reads the RAW body before JSON parsing; no generic
 // JSON middleware may sit in front of the signed routes (see server.ts).
 //
+// Observability: every terminal response, including each 429 gate, reports
+// itself once through deps.onOutcome with the status the producer actually
+// got (SLA-350). Rejections used to return before the only report call, which
+// lived in the 202 branch with 202 hardcoded — so every rejects_total series
+// was unreachable from HTTP.
+//
 // Nonce rule: the nonce is committed only when the business transaction
 // succeeds. Enqueue inserts it atomically alongside the job row. For
 // non-enqueueing lookups (GET/cancel) a transient failure AFTER a successful
@@ -37,6 +43,7 @@ import {
   toJobStatus,
   validateJobTargets,
 } from './contract.js';
+import type { RateLimitGate } from './metrics.js';
 import { PgQueue } from './pg.js';
 
 // -- validation ---------------------------------------------------------------
@@ -133,13 +140,24 @@ export interface QueueApiDeps {
   /** PG liveness probe for /readyz. */
   ping(): Promise<boolean>;
   nowSeconds(): number;
-  onPublish?: (info: {
+  /**
+   * Fires once per request, for EVERY terminal response — not just accepted
+   * publishes. It is the queue-api's own instrument: server.ts wires it to
+   * recordApiEvent, whose 401/409/413/422/429/5xx branches are all reachable
+   * only from here (SLA-350).
+   *
+   * `gate` is set on a 429 and names the limiter that refused, so
+   * cause="rate_limit" can be split into per_key / per_workspace /
+   * per_kind_workspace instead of one untunable number.
+   */
+  onOutcome?: (info: {
     keyId: string;
     kind: string;
     workspaceId: string;
     deduped: boolean;
     latencyMs: number;
     status: number;
+    gate?: RateLimitGate;
   }) => void;
 }
 
@@ -160,7 +178,46 @@ export async function handleQueueRequest(
   const startedAt = Date.now();
   const method = req.method.toUpperCase();
 
+  // -- outcome reporting (SLA-350) ------------------------------------------------
+  // Every terminal response below goes through respond(), which reports the
+  // status the producer actually received to deps.onOutcome BEFORE returning.
+  //
+  // This used to be a single deps.onPublish call inside the 202 branch with
+  // `status: 202` hardcoded. All three 429 gates returned before reaching it,
+  // so recordApiEvent's `status === 429` branch was dead code from the HTTP
+  // path: slashloop_queue_api_rejects_total{cause="rate_limit"} rendered a
+  // permanent 0 and QueueApiRejectsSpike could never fire on rate limiting.
+  // 401/409/413/422/5xx were unreachable the same way.
+  //
+  // The context fields are filled in as the request reveals them; early
+  // rejections legitimately report an empty keyId/kind/workspaceId.
+  let keyId = '';
+  let kind = '';
+  let workspaceId = '';
+  let deduped = false;
+  /** Set only on the 429 branches, immediately before returning. */
+  let gate: RateLimitGate | undefined;
+
+  const respond = (
+    status: number,
+    value: unknown,
+    extraHeaders?: Record<string, string>,
+  ): QueueHttpResponse => {
+    deps.onOutcome?.({
+      keyId,
+      kind,
+      workspaceId,
+      deduped,
+      latencyMs: Date.now() - startedAt,
+      status,
+      ...(gate ? { gate } : {}),
+    });
+    return json(status, value, extraHeaders);
+  };
+
   // -- unauthenticated health ---------------------------------------------------
+  // Reported by the scrape, not by the request counter — health checks are not
+  // publishes and must not move a producer-facing series.
   if (method === 'GET' && req.path === '/healthz' && !req.query) {
     return json(200, { ok: true });
   }
@@ -193,52 +250,54 @@ export async function handleQueueRequest(
   }
   if (!route) {
     // Unknown path/trailing slash: 404 before verification (no oracle).
-    return json(404, queueError('not_found', 'unknown path'));
+    return respond(404, queueError('not_found', 'unknown path'));
   }
 
   // Signed POSTs must not carry a query string (canonical path is exact).
   if (method === 'POST' && req.query) {
-    return json(401, queueError('unauthenticated', 'query strings are not accepted on signed routes'));
+    return respond(401, queueError('unauthenticated', 'query strings are not accepted on signed routes'));
   }
 
   // -- body cap (before auth: oversized bodies never reach verification) --------
   if (req.rawBody.length > QUEUE_BODY_MAX_BYTES) {
-    return json(413, queueError('body_too_large', `body exceeds ${QUEUE_BODY_MAX_BYTES} bytes`));
+    return respond(413, queueError('body_too_large', `body exceeds ${QUEUE_BODY_MAX_BYTES} bytes`));
   }
 
   // -- auth (before business validation) -----------------------------------------
   const canonicalPath = route === 'enqueue' ? '/v1/jobs' : `/v1/jobs/${jobId}${route === 'cancel' ? '/cancel' : ''}`;
   const auth = verifyAuth(req.headers, method, canonicalPath, req.rawBody, deps.keys, deps.nowSeconds());
   if (!auth.ok) {
-    return json(401, queueError('unauthenticated', `bad auth: ${auth.reason}`));
+    return respond(401, queueError('unauthenticated', `bad auth: ${auth.reason}`));
   }
+  keyId = auth.key.keyId;
 
   // -- per-key rate limit ----------------------------------------------------------
   const keyRetry = deps.limiter.take(`key:${auth.key.keyId}`, deps.limits.perKeyPerMinute);
   if (keyRetry != null) {
-    return json(429, queueError('rate_limited', 'per-key rate limit exceeded'), {
+    gate = 'per_key';
+    return respond(429, queueError('rate_limited', 'per-key rate limit exceeded'), {
       'retry-after': String(keyRetry),
     });
   }
 
   if (route === 'status') {
     const row = await deps.queue.getJob(jobId!);
-    if (!row) return json(404, queueError('not_found', 'job not found', jobId));
+    if (!row) return respond(404, queueError('not_found', 'job not found', jobId));
     if (!keyMayAccessWorkspace(auth.key, row.workspace_id)) {
-      return json(403, queueError('forbidden', 'key is not authorized for this workspace', jobId));
+      return respond(403, queueError('forbidden', 'key is not authorized for this workspace', jobId));
     }
     // Nonce commit for a successful side-effect-free lookup.
     await deps.queue
       .consumeNonce(auth.key.keyId, auth.nonce, nonceExpiry(deps.nowSeconds()))
       .catch(() => {});
-    return json(200, toJobStatus(row));
+    return respond(200, toJobStatus(row));
   }
 
   if (route === 'cancel') {
     const row = await deps.queue.getJob(jobId!);
-    if (!row) return json(404, queueError('not_found', 'job not found', jobId));
+    if (!row) return respond(404, queueError('not_found', 'job not found', jobId));
     if (!keyMayAccessWorkspace(auth.key, row.workspace_id)) {
-      return json(403, queueError('forbidden', 'key is not authorized for this workspace', jobId));
+      return respond(403, queueError('forbidden', 'key is not authorized for this workspace', jobId));
     }
     const outcome = await deps.queue.requestCancel(jobId!);
     // Successful terminal transition commits the nonce.
@@ -246,10 +305,10 @@ export async function handleQueueRequest(
       await deps.queue
         .consumeNonce(auth.key.keyId, auth.nonce, nonceExpiry(deps.nowSeconds()))
         .catch(() => {});
-      return json(200, { jobId, state: 'cancelled', acceptedAt: new Date().toISOString() });
+      return respond(200, { jobId, state: 'cancelled', acceptedAt: new Date().toISOString() });
     }
     if (outcome.reason === 'job_not_cancellable') {
-      return json(409, queueError('job_not_cancellable', 'only queued jobs can be cancelled', jobId));
+      return respond(409, queueError('job_not_cancellable', 'only queued jobs can be cancelled', jobId));
     }
     // already_terminal: idempotent — return current state with 200 (consistent
     // choice per plan rev 4: implement ONE behavior; this is it).
@@ -257,7 +316,7 @@ export async function handleQueueRequest(
       .consumeNonce(auth.key.keyId, auth.nonce, nonceExpiry(deps.nowSeconds()))
       .catch(() => {});
     const current = await deps.queue.getJob(jobId!);
-    return json(200, {
+    return respond(200, {
       jobId,
       state: current?.state ?? 'unknown',
       acceptedAt: new Date().toISOString(),
@@ -269,24 +328,27 @@ export async function handleQueueRequest(
   try {
     parsed = JSON.parse(Buffer.from(req.rawBody).toString('utf8'));
   } catch {
-    return json(422, queueError('invalid_job', 'body is not valid JSON'));
+    return respond(422, queueError('invalid_job', 'body is not valid JSON'));
   }
   const zod = enqueueSchema.safeParse(parsed);
   if (!zod.success) {
-    return json(422, queueError('invalid_job', `invalid job: ${zod.error.issues[0]?.message ?? 'validation failed'}`));
+    return respond(422, queueError('invalid_job', `invalid job: ${zod.error.issues[0]?.message ?? 'validation failed'}`));
   }
   const body = zod.data;
+  kind = body.kind;
+  workspaceId = body.workspaceId;
 
   const targetError = validateJobTargets(body.kind, body.videoId, body.sourceId);
   if (targetError) {
-    return json(422, queueError('invalid_target', targetError));
+    return respond(422, queueError('invalid_target', targetError));
   }
 
   // Per-workspace and per-kind+workspace publish limits (after validation so
   // invalid bodies do not burn the workspace budget).
   const wsRetry = deps.limiter.take(`ws:${body.workspaceId}`, deps.limits.perWorkspacePerMinute);
   if (wsRetry != null) {
-    return json(429, queueError('rate_limited', 'per-workspace publish limit exceeded'), {
+    gate = 'per_workspace';
+    return respond(429, queueError('rate_limited', 'per-workspace publish limit exceeded'), {
       'retry-after': String(wsRetry),
     });
   }
@@ -295,7 +357,8 @@ export async function handleQueueRequest(
     deps.limits.perKindWorkspacePerMinute,
   );
   if (kindRetry != null) {
-    return json(429, queueError('rate_limited', 'per-kind publish limit exceeded'), {
+    gate = 'per_kind_workspace';
+    return respond(429, queueError('rate_limited', 'per-kind publish limit exceeded'), {
       'retry-after': String(kindRetry),
     });
   }
@@ -313,7 +376,7 @@ export async function handleQueueRequest(
     nonceExpiry(deps.nowSeconds(), auth.timestamp),
   );
   if (!nonceOk) {
-    return json(409, queueError('replay_detected', 'nonce already used'));
+    return respond(409, queueError('replay_detected', 'nonce already used'));
   }
 
   let deadlineAt: Date | null = null;
@@ -324,7 +387,7 @@ export async function handleQueueRequest(
   // mints replacement billing identities.
   const dedupeKey = body.dedupeKey || dedupeKeyFor(body.kind, body.videoId, body.sourceId);
   try {
-    const { row, deduped } = await deps.queue.enqueue({
+    const { row, deduped: resolvedDeduped } = await deps.queue.enqueue({
       kind: body.kind,
       workspaceId: body.workspaceId,
       videoId: body.videoId,
@@ -336,25 +399,18 @@ export async function handleQueueRequest(
       preAuthCredits: body.credits?.preAuthCredits ?? null,
       d1JobId: body.d1JobId ?? null,
     });
-    deps.onPublish?.({
-      keyId: auth.key.keyId,
-      kind: body.kind,
-      workspaceId: body.workspaceId,
-      deduped,
-      latencyMs: Date.now() - startedAt,
-      status: 202,
-    });
-    return json(202, {
+    deduped = resolvedDeduped;
+    return respond(202, {
       jobId: row.job_id,
       // The REAL state of the row this publish resolved to. Hardcoding
       // 'queued' here is what let a dedupe onto an already-terminal job read
       // as freshly queued work at every call site (SLA-329).
       state: row.state,
-      deduped,
+      deduped: resolvedDeduped,
       acceptedAt: new Date().toISOString(),
     });
   } catch (err) {
-    return json(500, queueError('internal_error', `enqueue failed: ${(err as Error).message}`));
+    return respond(500, queueError('internal_error', `enqueue failed: ${(err as Error).message}`));
   }
 }
 
