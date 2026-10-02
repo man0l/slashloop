@@ -70,38 +70,42 @@ function slideshowVideo(id: string, workspaceId: string, slides: number) {
   });
 }
 
-const restoreStore = swapActiveClientForTests({
-  workspace: {
-    findFirst: async ({ where }: { where: { id?: string; ownerId?: string } }) => {
-      if (where.id) {
-        const ownerId = OWNERS[where.id];
-        if (!ownerId || (where.ownerId && where.ownerId !== ownerId)) return null;
-        return { id: where.id, name: where.id, ownerId };
-      }
-      return { id: WS, name: 'primary', ownerId: where.ownerId ?? 'u1' };
-    },
-    // creditBalance() reads the balance through these two, so the estimates
-    // come off the same fake workspace row rather than a credits stub.
-    findUnique: async ({ where }: { where: { id: string } }) => workspaceRow(where.id),
-    findUniqueOrThrow: async ({ where }: { where: { id: string } }) => {
-      const row = workspaceRow(where.id);
-      if (!row) throw new Error('workspace not found');
-      return row;
-    },
-  },
-  video: {
-    findFirst: async ({ where }: { where: { id: string; source?: { workspaceId: string } } }) => {
-      const v = videos.get(where.id);
-      if (!v) return null;
-      if (where.source?.workspaceId && v.workspaceId !== where.source.workspaceId) return null;
-      return v;
-    },
-  },
-  analysis: { findFirst: async () => null, findMany: async () => [] },
-} as unknown as AppPrismaClient, raw);
-afterAll(restoreStore);
-
+// Installed from beforeAll, not at module scope: `bun test` evaluates every file
+// before running any of them, so a client installed while this file loads can be
+// displaced by a file that loads later and only handed back if that file's own
+// afterAll runs. Doing it at test time means these tests always see this fake.
+let restoreStore = () => {};
 beforeAll(() => {
+  restoreStore = swapActiveClientForTests({
+    workspace: {
+      findFirst: async ({ where }: { where: { id?: string; ownerId?: string } }) => {
+        if (where.id) {
+          const ownerId = OWNERS[where.id];
+          if (!ownerId || (where.ownerId && where.ownerId !== ownerId)) return null;
+          return { id: where.id, name: where.id, ownerId };
+        }
+        return { id: WS, name: 'primary', ownerId: where.ownerId ?? 'u1' };
+      },
+      // creditBalance() reads the balance through these two, so the estimates
+      // come off the same fake workspace row rather than a credits stub.
+      findUnique: async ({ where }: { where: { id: string } }) => workspaceRow(where.id),
+      findUniqueOrThrow: async ({ where }: { where: { id: string } }) => {
+        const row = workspaceRow(where.id);
+        if (!row) throw new Error('workspace not found');
+        return row;
+      },
+    },
+    video: {
+      findFirst: async ({ where }: { where: { id: string; source?: { workspaceId: string } } }) => {
+        const v = videos.get(where.id);
+        if (!v) return null;
+        if (where.source?.workspaceId && v.workspaceId !== where.source.workspaceId) return null;
+        return v;
+      },
+    },
+    analysis: { findFirst: async () => null, findMany: async () => [] },
+  } as unknown as AppPrismaClient, raw);
+
   process.env.DB_DIALECT = 'sqlite';
   setR2Bindings({
     thumbs: { delete: async (paths: string[]) => { deletedPaths.push(...paths); } },
@@ -109,6 +113,7 @@ beforeAll(() => {
   } as unknown as Parameters<typeof setR2Bindings>[0]);
 });
 afterAll(() => {
+  restoreStore();
   if (savedDialect === undefined) delete process.env.DB_DIALECT;
   else process.env.DB_DIALECT = savedDialect;
   setR2Bindings(null as unknown as Parameters<typeof setR2Bindings>[0]);

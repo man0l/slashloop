@@ -18,17 +18,21 @@ const sql = new Database(':memory:');
 sql.exec(`CREATE TABLE "Experiment" ("id" TEXT PRIMARY KEY, "workspaceId" TEXT, "status" TEXT,
   "version" INTEGER, "dataJson" TEXT, "createdAt" TEXT, "updatedAt" TEXT, "createKey" TEXT);`);
 
-const restoreStore = swapActiveClientForTests({} as unknown as AppPrismaClient, async (statements: RawStatement[]) => {
+const raw = async (statements: RawStatement[]) => {
   const out: unknown[][] = [];
   for (const s of statements) {
     out.push(sql.query(s.sql).all(...(s.params ?? []).map(v => (v instanceof Date ? v.toISOString() : v)) as never[]));
   }
   return out;
-});
-afterAll(restoreStore);
+};
 
 const deletedObjects: string[] = [];
+let restoreStore = () => {};
 beforeAll(() => {
+  // Installed at test time, not while this file loads: `bun test` evaluates
+  // every file before running any of them, so a module-scope fake can be
+  // displaced by a file that loads later.
+  restoreStore = swapActiveClientForTests({} as unknown as AppPrismaClient, raw);
   process.env.DB_DIALECT = 'sqlite';
   setR2Bindings({
     thumbs: { delete: async (paths: string[]) => { deletedObjects.push(...paths); } },
@@ -36,6 +40,7 @@ beforeAll(() => {
   } as unknown as Parameters<typeof setR2Bindings>[0]);
 });
 afterAll(() => {
+  restoreStore();
   if (savedDialect === undefined) delete process.env.DB_DIALECT;
   else process.env.DB_DIALECT = savedDialect;
   setR2Bindings(null as unknown as Parameters<typeof setR2Bindings>[0]);
