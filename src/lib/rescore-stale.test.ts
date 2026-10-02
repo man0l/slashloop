@@ -61,6 +61,7 @@ mock.module('./credits.js', () => ({
 const { rescoreStaleTooFresh } = await import('../scoring.js');
 
 let logSpy: ReturnType<typeof spyOn<Console, 'log'>>;
+let warnSpy: ReturnType<typeof spyOn<Console, 'warn'>>;
 
 beforeEach(() => {
   enqueues.length = 0;
@@ -71,10 +72,14 @@ beforeEach(() => {
   logSpy = spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
     logs.push(args.map(String).join(' '));
   });
+  warnSpy = spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+    logs.push(args.map(String).join(' '));
+  });
 });
 
 afterEach(() => {
   logSpy.mockRestore();
+  warnSpy.mockRestore();
 });
 
 describe('rescoreStaleTooFresh — the affordability gate', () => {
@@ -127,7 +132,7 @@ describe('rescoreStaleTooFresh — the dedupe guardrail', () => {
     expect(res.creatorsRescraped).toBe(0);
     expect(res.creatorsDeduped).toBe(1);
     expect(res.sourcesRescoredOnly).toBe(1);
-    expect(logs.join('\n')).toContain('deduped onto done');
+    expect(logs.join('\n')).toContain('deduped onto TERMINAL done');
   });
 
   test('a real publish still logs and counts the queued scrape', async () => {
@@ -135,5 +140,59 @@ describe('rescoreStaleTooFresh — the dedupe guardrail', () => {
     expect(res.creatorsRescraped).toBe(1);
     expect(res.creatorsDeduped).toBe(0);
     expect(logs.join('\n')).toContain('queued creator scrape');
+  });
+});
+
+// SLA-141. A dedupe onto queued/running is routine — that work IS in flight.
+// A dedupe onto a terminal job creates nothing and leaves nothing queued, so
+// the creator is never rescraped and its videos stay too_fresh forever. Since
+// SLA-329 releases a terminal holder's dedupe key and retries the publish,
+// reaching that branch again is the anomaly, and it is the exact condition
+// that was invisible for four days. It must separate itself from routine
+// in-flight dedupes and be loud.
+describe('rescoreStaleTooFresh — the terminal-dedupe tripwire (SLA-141)', () => {
+  test('an in-flight holder counts only as deduped, never as terminal', async () => {
+    enqueueResult = { id: 'job-1', status: 'running', deduped: true };
+    const res = await rescoreStaleTooFresh();
+    expect(res.creatorsDeduped).toBe(1);
+    expect(res.creatorsDedupedTerminal).toBe(0);
+  });
+
+  test('a queued holder is in flight too, not terminal', async () => {
+    enqueueResult = { id: 'job-1', status: 'queued', deduped: true };
+    const res = await rescoreStaleTooFresh();
+    expect(res.creatorsDeduped).toBe(1);
+    expect(res.creatorsDedupedTerminal).toBe(0);
+  });
+
+  for (const status of ['done', 'failed', 'cancelled']) {
+    test(`a ${status} holder counts as terminal AND warns that nothing is in flight`, async () => {
+      enqueueResult = { id: 'job-1', status, deduped: true };
+      const res = await rescoreStaleTooFresh();
+      expect(res.creatorsDeduped).toBe(1);
+      expect(res.creatorsDedupedTerminal).toBe(1);
+      const out = logs.join('\n');
+      // Names the holder state, says nothing is in flight, and points at the
+      // cause — an operator reading only this line must know the dedupe key
+      // failed to release, not that the queue is busy.
+      expect(out).toContain(`deduped onto TERMINAL ${status} job job-1`);
+      expect(out).toContain('nothing in flight');
+      expect(out).toContain('SLA-141');
+    });
+  }
+
+  test('a real publish is neither deduped nor terminal', async () => {
+    const res = await rescoreStaleTooFresh();
+    expect(res.creatorsDeduped).toBe(0);
+    expect(res.creatorsDedupedTerminal).toBe(0);
+  });
+
+  test('the parked kill switch reports zeros for both counters', async () => {
+    // controlEnabled comes from the real (mocked-spread) worker-control module,
+    // whose db read returns null here, so default off -> the sweep runs. The
+    // assertion that matters is the shape: a skipped sweep must not report a
+    // terminal dedupe it never measured.
+    const res = await rescoreStaleTooFresh();
+    expect(res.creatorsDedupedTerminal).toBe(0);
   });
 });
