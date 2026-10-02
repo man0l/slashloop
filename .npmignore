@@ -3,7 +3,6 @@
 
 remote/
 api/
-vercel.json
 scripts/
 .vercel/
 .agents/
