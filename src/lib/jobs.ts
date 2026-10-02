@@ -100,8 +100,14 @@ export function resetRoutedPublisherForTests(): void {
 /**
  * Single choke point for all enqueues. Returns the D1 row (legacy row on the
  * D1 transport, compatibility projection on the PG transport) in MediaJobRow
- * shape. opId/preAuthCredits arrive pre-minted from the caller and pass
- * through verbatim — never re-minted here.
+ * shape, plus the transport's dedupe bit. opId/preAuthCredits arrive
+ * pre-minted from the caller and pass through verbatim — never re-minted here.
+ *
+ * `deduped` is load-bearing, not decoration (SLA-329): on the PG transport a
+ * publish that resolves to an existing key creates NO new work, and for four
+ * days rescoreStaleTooFresh counted exactly that as a queued creator scrape —
+ * so a permanently-deduping key was invisible from every log. Callers that
+ * report "queued" must check it; the row's `status` says which row they got.
  */
 async function enqueueRouted(opts: {
   kind: string;
@@ -114,7 +120,7 @@ async function enqueueRouted(opts: {
   deadlineAt?: Date | null;
   dedupeKey?: string | null;
   analysisId?: string | null;
-}): Promise<MediaJobRow> {
+}): Promise<EnqueuedJob> {
   const ref = await routedQueuePublisher().publish({
     kind: opts.kind,
     workspaceId: opts.workspaceId,
@@ -130,7 +136,7 @@ async function enqueueRouted(opts: {
   const row = await db.mediaJob.findUnique({ where: { id: ref.d1JobId } });
   if (!row) throw new Error(`queue publisher lost D1 row ${ref.d1JobId}`);
   // On PG dedupe, ref.d1JobId is the original shared id (no second projection).
-  return row as unknown as MediaJobRow;
+  return { ...(row as unknown as MediaJobRow), deduped: ref.deduped };
 }
 
 /** Raw-row date columns, hydrated to Date on SQLite (raw SQL returns strings there). */
@@ -208,6 +214,14 @@ export interface MediaJobRow {
   availableAt: Date | null;
 }
 
+/**
+ * What every enqueue*Job returns: the job row, plus whether the transport
+ * actually created it. `deduped: true` means NO new work exists — the publish
+ * resolved to an existing row (see SLA-329: the returned `status` is that
+ * row's, so it may already be terminal). Never log "queued" without checking.
+ */
+export type EnqueuedJob = MediaJobRow & { deduped: boolean };
+
 export interface AnalyzeJobPayload {
   forceBackend?: 'gemini-native' | 'gemini-text' | 'openrouter-video';
 }
@@ -240,7 +254,7 @@ export async function enqueueRecreateJob(opts: {
   preAuthCredits: number;
   /** 'video' when the target is an MP4 (slide plan + ffmpeg extraction). */
   payload?: { mode?: 'photo' | 'video' };
-}): Promise<MediaJobRow> {
+}): Promise<EnqueuedJob> {
   return enqueueRouted({
     kind: 'recreate',
     workspaceId: opts.workspaceId,
@@ -256,7 +270,7 @@ export async function enqueueFetchJob(opts: {
   workspaceId: string;
   videoId: string;
   payload?: FetchJobPayload;
-}): Promise<MediaJobRow> {
+}): Promise<EnqueuedJob> {
   return enqueueRouted({
     kind: 'fetch',
     workspaceId: opts.workspaceId,
@@ -317,7 +331,7 @@ export async function enqueueThumbJob(opts: {
   workspaceId: string;
   videoId: string;
   payload?: ThumbJobPayload;
-}): Promise<MediaJobRow> {
+}): Promise<EnqueuedJob> {
   return enqueueRouted({
     kind: 'thumb',
     workspaceId: opts.workspaceId,
@@ -338,7 +352,7 @@ export async function enqueueAnalyzeJob(opts: {
   videoId: string;
   payload: AnalyzeJobPayload;
   opId: string;
-}): Promise<MediaJobRow> {
+}): Promise<EnqueuedJob> {
   return enqueueRouted({
     kind: 'analyze',
     workspaceId: opts.workspaceId,
@@ -470,7 +484,7 @@ export async function enqueueDiscoverJob(opts: {
   opId: string;
   preAuthCredits: number;
   deadlineAt: Date;
-}): Promise<MediaJobRow> {
+}): Promise<EnqueuedJob> {
   return enqueueRouted({
     kind: 'discover',
     workspaceId: opts.workspaceId,
@@ -499,7 +513,7 @@ export async function enqueueRefreshJob(opts: {
   videoLimit: number;
   /** Wall clock after which await_job stops telling callers to keep waiting. */
   deadlineAt: Date;
-}): Promise<MediaJobRow> {
+}): Promise<EnqueuedJob> {
   const opId = randomUUID();
   const preAuthCredits = Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * opts.videoLimit);
   return enqueueRouted({
@@ -540,7 +554,7 @@ export async function enqueueRescoreJob(opts: {
   /** The creator source that triggered this; satisfies the one-target CHECK. */
   sourceId: string;
   payload: RescoreJobPayload;
-}): Promise<MediaJobRow> {
+}): Promise<EnqueuedJob> {
   return enqueueRouted({
     kind: 'rescore',
     workspaceId: opts.workspaceId,

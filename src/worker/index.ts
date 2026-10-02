@@ -408,10 +408,13 @@ while (!shuttingDown) {
       lastRescoreAt = Date.now();
       const rescoreSnap = snapshotD1Usage();
       await rescoreStaleTooFresh()
-        .then(({ creatorsRescraped, sourcesRescoredOnly }) => {
-          if (creatorsRescraped || sourcesRescoredOnly) {
+        .then(({ creatorsRescraped, sourcesRescoredOnly, creatorsDeduped }) => {
+          if (creatorsRescraped || sourcesRescoredOnly || creatorsDeduped) {
+            // deduped is printed on purpose: a nonzero value means publishes
+            // that created nothing. If it ever climbs while rescraped stays 0,
+            // the queue is not draining this work (see SLA-329).
             console.log(
-              `[worker] rescoreStaleTooFresh rescraped=${creatorsRescraped} rescored=${sourcesRescoredOnly}${formatD1Usage(deltaD1Usage(rescoreSnap))}`,
+              `[worker] rescoreStaleTooFresh rescraped=${creatorsRescraped} rescored=${sourcesRescoredOnly} deduped=${creatorsDeduped}${formatD1Usage(deltaD1Usage(rescoreSnap))}`,
             );
           }
         })

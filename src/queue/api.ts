@@ -304,8 +304,9 @@ export async function handleQueueRequest(
   // the atomic arbiter — a racing duplicate gets rowCount 0 and a 409, and
   // never enqueues). If enqueue then fails transiently, the nonce stays
   // consumed and the producer retries with a FRESH nonce + the SAME dedupe
-  // key — the dedupe key (not the nonce) is the idempotency identity, so the
-  // retry safely replays to the same job row.
+  // key. While the first job is still in flight the dedupe key replays the
+  // retry onto the same row; once it is terminal the key is released
+  // (SLA-329), so the retry becomes a new job instead of a permanent no-op.
   const nonceOk = await deps.queue.consumeNonce(
     auth.key.keyId,
     auth.nonce,
@@ -345,7 +346,10 @@ export async function handleQueueRequest(
     });
     return json(202, {
       jobId: row.job_id,
-      state: 'queued',
+      // The REAL state of the row this publish resolved to. Hardcoding
+      // 'queued' here is what let a dedupe onto an already-terminal job read
+      // as freshly queued work at every call site (SLA-329).
+      state: row.state,
       deduped,
       acceptedAt: new Date().toISOString(),
     });

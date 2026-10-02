@@ -1,14 +1,22 @@
 // PG adapter tests.
 //
 // Unit half (no database): claim-query builder — kind order CASE, refresh
-// coalesce predicate, video-mode recreate exclusion, allowlist rejection.
+// coalesce predicate, video-mode recreate exclusion, allowlist rejection; plus
+// the dedupe-key lifetime (SLA-329) against a statement-level fake of the
+// UNIQUE index — in flight dedupes, terminal holders release and re-publish.
 // Integration half (ephemeral REAL Postgres only): set QUEUE_TEST_DATABASE_URL
 // to a scratch database (CI service / Testcontainers). Skipped otherwise —
 // never SQLite-mocked, per plan rev 4.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildClaimQuery, PgQueue, type QueueDb } from './pg.js';
+import {
+  buildClaimQuery,
+  PgQueue,
+  RELEASE_TERMINAL_DEDUPE_SQL,
+  type QueueDb,
+} from './pg.js';
+import type { PgQueueJobRow } from './contract.js';
 
 describe('buildClaimQuery (no DB)', () => {
   const base = { batchSize: 5, workerId: 'w1', leaseSeconds: 900, refreshCoalesceMs: 30_000 };
@@ -78,6 +86,205 @@ describe('enqueue shared D1/PG id (no DB)', () => {
     expect(calls[0].text).toContain('COALESCE($1::uuid, gen_random_uuid())');
     expect(calls[0].values[0]).toBe(id);
     expect(calls[0].values[12]).toBe(id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dedupe-key lifetime (SLA-329) — no DB.
+//
+// `queue_jobs.dedupe_key` is UNIQUE and NULLs are distinct, which is what makes
+// the release a plain UPDATE. The fake below models exactly that one index plus
+// the terminal-state filter; it is a statement dispatcher, not a SQL engine, so
+// any statement PgQueue.enqueue/terminal paths did not grow fails loudly.
+// ---------------------------------------------------------------------------
+
+type FakeRow = PgQueueJobRow;
+
+const TERMINAL = ['done', 'failed', 'cancelled'];
+
+function dedupeKeyDb(): {
+  db: QueueDb;
+  rows: Map<string, FakeRow>;
+  /** UNIQUE index: key -> job_id (NULL keys are simply absent, like Postgres). */
+  byKey: Map<string, string>;
+  statements: string[];
+} {
+  const rows = new Map<string, FakeRow>();
+  const byKey = new Map<string, string>();
+  const statements: string[] = [];
+  let seq = 0;
+
+  const release = (key: string | null, jobId: string): void => {
+    if (key == null) return;
+    byKey.delete(key);
+    const row = rows.get(jobId);
+    if (row) row.dedupe_key = null;
+  };
+
+  const db: QueueDb = {
+    query: async <T,>(text: string, values?: unknown[]) => {
+      statements.push(text);
+      const v = values ?? [];
+      const sql = text.trim();
+      // The fake only ever hands back queue_jobs rows; `ok` casts so the
+      // generic QueueDb signature is satisfied without a cast per branch.
+      const ok = (r: unknown[], n: number) => ({ rows: r as T[], rowCount: n });
+
+      if (/^INSERT INTO queue_jobs/i.test(sql)) {
+        const [d1JobId, dedupeKey, kind, workspaceId, videoId, sourceId, payloadJson, opId, preAuth, , , analysisId] = v as never[];
+        // ON CONFLICT (dedupe_key) DO NOTHING
+        if (dedupeKey != null && byKey.has(dedupeKey)) return ok([], 0);
+        const now = new Date().toISOString();
+        const row = {
+          job_id: (d1JobId as string) ?? `job-${++seq}`,
+          dedupe_key: dedupeKey as string | null,
+          kind: kind as string,
+          state: 'queued',
+          attempts: 0,
+          max_attempts: 3,
+          claimed_by: null,
+          lease_expires_at: null,
+          workspace_id: workspaceId as string,
+          video_id: videoId as string | null,
+          source_id: sourceId as string | null,
+          payload: JSON.parse(payloadJson as string),
+          result: null,
+          op_id: opId as string | null,
+          pre_auth_credits: preAuth as number | null,
+          deadline_at: null,
+          analysis_id: analysisId as string | null,
+          available_at: now,
+          started_at: null,
+          finished_at: null,
+          last_error: null,
+          cancel_requested_at: null,
+          d1_synced_at: null,
+          d1_job_id: (d1JobId as string) ?? null,
+          created_at: now,
+          updated_at: now,
+        } as FakeRow;
+        rows.set(row.job_id, row);
+        if (row.dedupe_key != null) byKey.set(row.dedupe_key, row.job_id);
+        return ok([row], 1);
+      }
+
+      if (/^SELECT/i.test(sql) && /WHERE dedupe_key = \$1/i.test(sql)) {
+        const jobId = byKey.get(v[0] as string);
+        return jobId ? ok([rows.get(jobId)!], 1) : ok([], 0);
+      }
+
+      if (/^SELECT/i.test(sql) && /WHERE job_id = \$1/i.test(sql)) {
+        const row = rows.get(v[0] as string);
+        return row ? ok([row], 1) : ok([], 0);
+      }
+
+      // RELEASE_TERMINAL_DEDUPE_SQL — releases a TERMINAL holder only.
+      if (/^UPDATE/i.test(sql) && /WHERE dedupe_key = \$1/i.test(sql)) {
+        const jobId = byKey.get(v[0] as string);
+        if (!jobId) return ok([], 0);
+        const row = rows.get(jobId)!;
+        if (!TERMINAL.includes(row.state)) return ok([], 0);
+        release(row.dedupe_key, jobId);
+        return ok([row], 1);
+      }
+
+      if (/^UPDATE/i.test(sql)) {
+        const row = rows.get(v[0] as string);
+        if (!row) return ok([], 0);
+        if (/state = 'done'/.test(sql)) row.state = 'done';
+        else if (/state = 'failed'/.test(sql)) row.state = 'failed';
+        else if (/state = 'cancelled'/.test(sql)) row.state = 'cancelled';
+        else throw new Error(`dedupeKeyDb: unsupported UPDATE:\n${sql}`);
+        // A terminal transition that clears the key in the same statement.
+        if (/dedupe_key = NULL/i.test(sql)) release(row.dedupe_key, row.job_id);
+        return ok([row], 1);
+      }
+
+      throw new Error(`dedupeKeyDb: unexpected statement:\n${sql}`);
+    },
+  };
+  return { db, rows, byKey, statements };
+}
+
+const REFRESH_KEY = 'refresh:source:s1';
+
+function refreshInput(dedupeKey: string) {
+  return { kind: 'refresh', workspaceId: 'ws-1', videoId: null, sourceId: 's1', dedupeKey };
+}
+
+describe('dedupe key means in flight, not has ever existed (no DB)', () => {
+  test('a second publish while the first is queued still dedupes onto it', async () => {
+    const { db, rows, byKey } = dedupeKeyDb();
+    const queue = new PgQueue(db);
+    const first = await queue.enqueue(refreshInput(REFRESH_KEY));
+    const second = await queue.enqueue(refreshInput(REFRESH_KEY));
+    expect(first.deduped).toBe(false);
+    expect(second.deduped).toBe(true);
+    expect(second.row.job_id).toBe(first.row.job_id);
+    expect(rows.size).toBe(1);
+    expect(byKey.get(REFRESH_KEY)).toBe(first.row.job_id);
+  });
+
+  test('completing the job releases the key; the next publish creates a NEW job', async () => {
+    const { db, rows, byKey } = dedupeKeyDb();
+    const queue = new PgQueue(db);
+    const first = await queue.enqueue(refreshInput(REFRESH_KEY));
+    await queue.completeJob(first.row.job_id, null);
+    expect(rows.get(first.row.job_id)!.dedupe_key).toBeNull();
+    expect(byKey.has(REFRESH_KEY)).toBe(false);
+
+    // This is the SLA-329 scenario: it used to return the four-day-old done
+    // job with deduped=true and no new work.
+    const second = await queue.enqueue(refreshInput(REFRESH_KEY));
+    expect(second.deduped).toBe(false);
+    expect(second.row.job_id).not.toBe(first.row.job_id);
+    expect(second.row.state).toBe('queued');
+    expect(rows.size).toBe(2);
+    expect(byKey.get(REFRESH_KEY)).toBe(second.row.job_id);
+  });
+
+  test('a TERMINAL holder that predates the release is recovered, not deduped onto', async () => {
+    const { db, rows, byKey } = dedupeKeyDb();
+    const queue = new PgQueue(db);
+    const first = await queue.enqueue(refreshInput(REFRESH_KEY));
+    // Simulate the live prod shape: state 'done', key still occupied.
+    const legacy = rows.get(first.row.job_id)!;
+    legacy.state = 'done';
+
+    const second = await queue.enqueue(refreshInput(REFRESH_KEY));
+    expect(second.deduped).toBe(false);
+    expect(second.row.job_id).not.toBe(first.row.job_id);
+    expect(legacy.dedupe_key).toBeNull();
+    expect(byKey.get(REFRESH_KEY)).toBe(second.row.job_id);
+  });
+
+  test('a failed/cancelled holder releases too; a RUNNING holder never does', async () => {
+    const { db, rows, byKey } = dedupeKeyDb();
+    const queue = new PgQueue(db);
+    const failed = await queue.enqueue({ kind: 'thumb', workspaceId: 'ws-1', videoId: 'v1', sourceId: null, dedupeKey: 'thumb:video:v1' });
+    await queue.failJob(failed.row.job_id, 'boom', { terminal: true });
+    expect(rows.get(failed.row.job_id)!.dedupe_key).toBeNull();
+    expect((await queue.enqueue({ kind: 'thumb', workspaceId: 'ws-1', videoId: 'v1', sourceId: null, dedupeKey: 'thumb:video:v1' })).deduped).toBe(false);
+
+    const cancelled = await queue.enqueue({ kind: 'rescore', workspaceId: 'ws-1', videoId: null, sourceId: 's1', dedupeKey: 'rescore:source:s1' });
+    await queue.requestCancel(cancelled.row.job_id);
+    expect(rows.get(cancelled.row.job_id)!.dedupe_key).toBeNull();
+    expect((await queue.enqueue({ kind: 'rescore', workspaceId: 'ws-1', videoId: null, sourceId: 's1', dedupeKey: 'rescore:source:s1' })).deduped).toBe(false);
+
+    // Running: the release statement must decline (state filter), so a
+    // concurrent publish collapses onto the in-flight job.
+    const running = await queue.enqueue(refreshInput(REFRESH_KEY));
+    rows.get(running.row.job_id)!.state = 'running';
+    const rival = await queue.enqueue(refreshInput(REFRESH_KEY));
+    expect(rival.deduped).toBe(true);
+    expect(rival.row.job_id).toBe(running.row.job_id);
+    expect(byKey.get(REFRESH_KEY)).toBe(running.row.job_id);
+  });
+
+  test('the release statement only ever clears a TERMINAL key', () => {
+    expect(RELEASE_TERMINAL_DEDUPE_SQL).toMatch(/SET\s+dedupe_key = NULL/);
+    expect(RELEASE_TERMINAL_DEDUPE_SQL).toMatch(/WHERE dedupe_key = \$1/);
+    expect(RELEASE_TERMINAL_DEDUPE_SQL).toMatch(/state IN \('done', 'failed', 'cancelled'\)/);
   });
 });
 
@@ -342,5 +549,74 @@ describeIntegration('pg integration (ephemeral real Postgres)', () => {
     expect(theirs.some((j) => j.job_id === row.job_id)).toBe(false);
     expect(await queue.renewLease(row.job_id, 'owner-a', 900)).toBe(true);
     expect(await queue.renewLease(row.job_id, 'owner-b', 900)).toBe(false);
+  });
+
+  // Kept last: these rows stay `queued`, so no earlier claim round can see
+  // them. SLA-329 — the exact live failure: one finished refresh held
+  // `refresh:source:<id>` forever and every later sweep deduped onto it.
+  test('a completed refresh releases its key; the next publish creates a NEW job', async () => {
+    const key = 'refresh:source:sla-329';
+    const first = await queue.enqueue({ kind: 'refresh', workspaceId: 'ws-329', videoId: null, sourceId: 'sla-329', dedupeKey: key });
+    expect(first.deduped).toBe(false);
+    // In flight: two publishes of one logical job still collapse to one row.
+    const inflight = await queue.enqueue({ kind: 'refresh', workspaceId: 'ws-329', videoId: null, sourceId: 'sla-329', dedupeKey: key });
+    expect(inflight.deduped).toBe(true);
+    expect(inflight.row.job_id).toBe(first.row.job_id);
+
+    await queue.completeJob(first.row.job_id, null);
+    expect((await queue.getJob(first.row.job_id))!.dedupe_key).toBeNull();
+
+    const second = await queue.enqueue({ kind: 'refresh', workspaceId: 'ws-329', videoId: null, sourceId: 'sla-329', dedupeKey: key });
+    expect(second.deduped).toBe(false);
+    expect(second.row.job_id).not.toBe(first.row.job_id);
+    expect(second.row.state).toBe('queued');
+  });
+
+  test('a terminal holder that predates the release still recovers on re-publish', async () => {
+    const key = 'refresh:source:sla-329-legacy';
+    const legacy = await queue.enqueue({ kind: 'refresh', workspaceId: 'ws-329b', videoId: null, sourceId: 'sla-329-legacy', dedupeKey: key });
+    // The live prod shape: state done, key still occupying the unique index.
+    await db.query(`UPDATE queue_jobs SET state = 'done', dedupe_key = $2, finished_at = now() WHERE job_id = $1`, [
+      legacy.row.job_id,
+      key,
+    ]);
+    const again = await queue.enqueue({ kind: 'refresh', workspaceId: 'ws-329b', videoId: null, sourceId: 'sla-329-legacy', dedupeKey: key });
+    expect(again.deduped).toBe(false);
+    expect(again.row.job_id).not.toBe(legacy.row.job_id);
+    expect((await queue.getJob(legacy.row.job_id))!.dedupe_key).toBeNull();
+  });
+
+  test('concurrent publishes across a terminal release produce exactly one job', async () => {
+    const key = 'refresh:source:sla-329-race';
+    const first = await queue.enqueue({ kind: 'refresh', workspaceId: 'ws-329c', videoId: null, sourceId: 'sla-329-race', dedupeKey: key });
+    await db.query(`UPDATE queue_jobs SET state = 'done', dedupe_key = $2, finished_at = now() WHERE job_id = $1`, [
+      first.row.job_id,
+      key,
+    ]);
+    const racing = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        queue.enqueue({ kind: 'refresh', workspaceId: 'ws-329c', videoId: null, sourceId: 'sla-329-race', dedupeKey: key }),
+      ),
+    );
+    const ids = new Set(racing.map((r) => r.row.job_id));
+    expect(ids.size).toBe(1);
+    expect(ids.has(first.row.job_id)).toBe(false);
+    expect(racing.filter((r) => !r.deduped).length).toBeGreaterThanOrEqual(1);
+    const live = await db.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM queue_jobs WHERE dedupe_key = $1`,
+      [key],
+    );
+    expect(live.rows[0].n).toBe('1');
+  });
+
+  test('a terminally failed refresh releases its key', async () => {
+    const key = 'refresh:source:sla-329-failed';
+    const job = await queue.enqueue({ kind: 'refresh', workspaceId: 'ws-329d', videoId: null, sourceId: 'sla-329-failed', dedupeKey: key, opId: 'op-329-fail', preAuthCredits: 3 });
+    const res = await queue.failJob(job.row.job_id, 'scrape exploded', { terminal: true });
+    expect(res.terminal).toBe(true);
+    expect((await queue.getJob(job.row.job_id))!.dedupe_key).toBeNull();
+    const next = await queue.enqueue({ kind: 'refresh', workspaceId: 'ws-329d', videoId: null, sourceId: 'sla-329-failed', dedupeKey: key });
+    expect(next.deduped).toBe(false);
+    expect(next.row.job_id).not.toBe(job.row.job_id);
   });
 });

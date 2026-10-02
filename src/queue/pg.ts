@@ -12,10 +12,15 @@
 //   forked here.
 // - Minimal Db surface ({ query }) so the adapter works over node-postgres,
 //   pgbouncer, or any compatible pool. No Prisma, no D1 imports.
+// - dedupe_key means IN FLIGHT, not "has ever existed" (SLA-329): every
+//   terminal transition clears it, and enqueue releases a terminal holder
+//   before retrying its insert, so a source's second refresh is a real job
+//   again instead of a silent dedupe onto a finished one.
 // ---------------------------------------------------------------------------
 
 import {
   expandQueueKinds,
+  isTerminalJobState,
   normalizeKindList,
   queueBackoffMs,
   QUEUE_ABANDONED_AFTER_MINUTES,
@@ -23,6 +28,7 @@ import {
   QUEUE_MAX_ATTEMPTS,
   QUEUE_REFRESH_COALESCE_MS_DEFAULT,
   QUEUE_STUCK_AFTER_MINUTES,
+  QUEUE_TERMINAL_STATE_SQL,
   QUEUE_YIELD_COOLDOWN_MS,
   type PgQueueJobRow,
 } from './contract.js';
@@ -50,7 +56,7 @@ export interface EnqueueInput {
 
 export interface EnqueueResult {
   row: PgQueueJobRow;
-  /** True when the dedupe key already existed — no new work was created. */
+  /** True when no new row was created because the key was already held. */
   deduped: boolean;
 }
 
@@ -93,6 +99,21 @@ const CLAIM_ROW = `job_id, dedupe_key, kind, state, attempts, max_attempts,
 const CLAIM_ROW_Q = CLAIM_ROW.split(',')
   .map((c) => `q.${c.trim()}`)
   .join(', ');
+
+/**
+ * Release the dedupe key of a TERMINAL holder (SLA-329).
+ *
+ * `queue_jobs.dedupe_key` is UNIQUE and NULLs are distinct under UNIQUE, so a
+ * terminal job that keeps its key makes every later publish of the same
+ * logical job dedupe onto it forever. Exported so the transition statements
+ * and the enqueue retry path can never drift apart — and so the tests can
+ * assert the one SQL shape that fixes the defect.
+ */
+export const RELEASE_TERMINAL_DEDUPE_SQL = `UPDATE queue_jobs
+   SET dedupe_key = NULL,
+       updated_at = now()
+ WHERE dedupe_key = $1
+   AND state IN (${QUEUE_TERMINAL_STATE_SQL})`;
 
 /**
  * Build the ordered batch-claim statement. Pure (unit-tested without a DB):
@@ -160,47 +181,76 @@ export class PgQueue {
    * Insert a job; on dedupe-key conflict return the existing row with
    * deduped=true (same opId/credits — never a second billing operation).
    * Nonce handling lives in the API layer (inserted atomically alongside).
+   *
+   * The key means "this logical job is in flight", NOT "it once existed"
+   * (SLA-329). A TERMINAL holder is released and the insert is retried, so a
+   * source's second/third refresh publishes a real job again. Concurrency is
+   * unchanged: the unique index still arbitrates, and the loser of a race
+   * re-reads by key and dedupes onto the winner — two concurrent publishes of
+   * one logical job still produce exactly one row.
    */
   async enqueue(input: EnqueueInput): Promise<EnqueueResult> {
     const allowed = normalizeKindList([input.kind]);
     if (allowed.length === 0) throw new Error(`unknown kind "${input.kind}"`);
     const payloadJson = JSON.stringify(input.payload ?? {});
+    const values = [
+      input.d1JobId ?? null,
+      input.dedupeKey,
+      input.kind,
+      input.workspaceId,
+      input.videoId,
+      input.sourceId,
+      payloadJson,
+      input.opId ?? null,
+      input.preAuthCredits ?? null,
+      input.deadlineAt ?? null,
+      input.maxAttempts ?? QUEUE_MAX_ATTEMPTS,
+      input.analysisId ?? null,
+      input.d1JobId ?? null,
+    ];
     // Shared id with the D1 projection when the producer pre-allocates one
     // (SLA-16 1:1 link). Otherwise Postgres mints job_id.
-    const res = await this.db.query<PgQueueJobRow>(
-      `INSERT INTO queue_jobs
-         (job_id, dedupe_key, kind, workspace_id, video_id, source_id, payload,
-          op_id, pre_auth_credits, deadline_at, max_attempts, analysis_id, d1_job_id)
-       VALUES (COALESCE($1::uuid, gen_random_uuid()),$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13)
-       ON CONFLICT (dedupe_key) DO NOTHING
-       RETURNING ${CLAIM_ROW}`,
-      [
-        input.d1JobId ?? null,
-        input.dedupeKey,
-        input.kind,
-        input.workspaceId,
-        input.videoId,
-        input.sourceId,
-        payloadJson,
-        input.opId ?? null,
-        input.preAuthCredits ?? null,
-        input.deadlineAt ?? null,
-        input.maxAttempts ?? QUEUE_MAX_ATTEMPTS,
-        input.analysisId ?? null,
-        input.d1JobId ?? null,
-      ],
-    );
-    if (res.rows[0]) return { row: res.rows[0], deduped: false };
-    // Conflict path only happens when a dedupe key was supplied; a null key
-    // never conflicts (Postgres NULLs are distinct), so rows[0] always exists
-    // for internal rows. Guard anyway: re-read by key when present.
-    if (input.dedupeKey) {
-      const existing = await this.db.query<PgQueueJobRow>(
+    const insert = () =>
+      this.db.query<PgQueueJobRow>(
+        `INSERT INTO queue_jobs
+           (job_id, dedupe_key, kind, workspace_id, video_id, source_id, payload,
+            op_id, pre_auth_credits, deadline_at, max_attempts, analysis_id, d1_job_id)
+         VALUES (COALESCE($1::uuid, gen_random_uuid()),$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13)
+         ON CONFLICT (dedupe_key) DO NOTHING
+         RETURNING ${CLAIM_ROW}`,
+        values,
+      );
+    const readByKey = async (): Promise<PgQueueJobRow | null> => {
+      const res = await this.db.query<PgQueueJobRow>(
         `SELECT ${CLAIM_ROW} FROM queue_jobs WHERE dedupe_key = $1`,
         [input.dedupeKey],
       );
-      if (existing.rows[0]) return { row: existing.rows[0], deduped: true };
-    }
+      return res.rows[0] ?? null;
+    };
+
+    const inserted = await insert();
+    if (inserted.rows[0]) return { row: inserted.rows[0], deduped: false };
+    // Conflict path only happens when a dedupe key was supplied; a null key
+    // never conflicts (Postgres NULLs are distinct), so rows[0] always exists
+    // for internal rows. Guard anyway: re-read by key when present.
+    if (!input.dedupeKey) throw new Error('enqueue lost its row without a dedupe conflict');
+
+    const holder = await readByKey();
+    if (!holder) throw new Error('enqueue lost its row without a dedupe conflict');
+    // In flight (queued/running): the dedupe did its job — collapse two
+    // publishes of one logical job onto one row.
+    if (!isTerminalJobState(holder.state)) return { row: holder, deduped: true };
+
+    // Terminal holder: it finished, so it must not block the next publish.
+    // Also the recovery path for rows that reached terminal BEFORE the release
+    // existed (no backfill needed — the key frees itself on first re-publish).
+    await this.db.query(RELEASE_TERMINAL_DEDUPE_SQL, [input.dedupeKey]);
+    const retried = await insert();
+    if (retried.rows[0]) return { row: retried.rows[0], deduped: false };
+    // Lost a concurrent race: another publisher got the key in between. Adopt
+    // its row rather than minting a second job for the same logical work.
+    const winner = await readByKey();
+    if (winner) return { row: winner, deduped: true };
     throw new Error('enqueue lost its row without a dedupe conflict');
   }
 
@@ -259,10 +309,16 @@ export class PgQueue {
 
   // -- terminal transitions ----------------------------------------------------
 
+  /**
+   * `done`. Releases the dedupe key in the same statement: a finished job must
+   * not keep `refresh:source:<id>` (or any other key) reserved, or the next
+   * publish of the same logical job can never be created again (SLA-329).
+   */
   async completeJob(jobId: string, analysisId: string | null, result?: unknown): Promise<void> {
     await this.db.query(
       `UPDATE queue_jobs
           SET state = 'done',
+              dedupe_key = NULL,
               analysis_id = COALESCE($2, analysis_id),
               result = COALESCE($3::jsonb, result),
               finished_at = now(),
@@ -294,6 +350,7 @@ export class PgQueue {
       await this.db.query(
         `UPDATE queue_jobs
             SET state = 'failed',
+                dedupe_key = NULL,
                 last_error = $2,
                 finished_at = now(),
                 claimed_by = NULL,
@@ -346,6 +403,7 @@ export class PgQueue {
     const res = await this.db.query<PgQueueJobRow>(
       `UPDATE queue_jobs
           SET state = 'cancelled',
+              dedupe_key = NULL,
               cancel_requested_at = COALESCE(cancel_requested_at, now()),
               finished_at = now(),
               available_at = now(),
@@ -407,6 +465,7 @@ export class PgQueue {
         const done = await this.db.query(
           `UPDATE queue_jobs
               SET state = 'failed',
+                  dedupe_key = NULL,
                   finished_at = now(),
                   claimed_by = NULL,
                   lease_expires_at = NULL,
@@ -467,6 +526,7 @@ export class PgQueue {
       const done = await this.db.query(
         `UPDATE queue_jobs
             SET state = 'failed',
+                dedupe_key = NULL,
                 finished_at = now(),
                 last_error = 'Never claimed by any worker — the queue is not draining.',
                 updated_at = now()
