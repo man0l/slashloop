@@ -20,7 +20,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { Database } from 'bun:sqlite';
 import { z } from 'zod/v4';
 import { swapActiveClientForTests, type AppPrismaClient, type RawStatement } from '../store.js';
-import { setCreditsForTests } from '../lib/credits.js';
 import { setR2Bindings } from '../lib/storage-bindings.js';
 import { runWithUser } from '../context.js';
 import { registerExperimentTools, clampSlideCount, editInstructions } from './experiments.js';
@@ -52,6 +51,12 @@ async function raw(statements: RawStatement[]): Promise<unknown[][]> {
 // ── fakes ──────────────────────────────────────────────────────────────────
 
 const OWNERS: Record<string, string> = { [WS]: 'u1', [OTHER_WS]: 'u2' };
+const WORKSPACE_CREDITS = 5000;
+
+/** Balances live on the workspace row, so estimates read the same fake row. */
+function workspaceRow(id: string) {
+  return OWNERS[id] ? { id, ownerId: OWNERS[id], planCredits: WORKSPACE_CREDITS, packCredits: 0 } : null;
+}
 
 const videos = new Map<string, Record<string, unknown>>();
 const deletedPaths: string[] = [];
@@ -74,6 +79,14 @@ const restoreStore = swapActiveClientForTests({
       }
       return { id: WS, name: 'primary', ownerId: where.ownerId ?? 'u1' };
     },
+    // creditBalance() reads the balance through these two, so the estimates
+    // come off the same fake workspace row rather than a credits stub.
+    findUnique: async ({ where }: { where: { id: string } }) => workspaceRow(where.id),
+    findUniqueOrThrow: async ({ where }: { where: { id: string } }) => {
+      const row = workspaceRow(where.id);
+      if (!row) throw new Error('workspace not found');
+      return row;
+    },
   },
   video: {
     findFirst: async ({ where }: { where: { id: string; source?: { workspaceId: string } } }) => {
@@ -87,11 +100,8 @@ const restoreStore = swapActiveClientForTests({
 } as unknown as AppPrismaClient, raw);
 afterAll(restoreStore);
 
-const WORKSPACE_CREDITS = 5000;
-
 beforeAll(() => {
   process.env.DB_DIALECT = 'sqlite';
-  setCreditsForTests({ creditBalance: async () => ({ planCredits: WORKSPACE_CREDITS, packCredits: 0, total: WORKSPACE_CREDITS }) });
   setR2Bindings({
     thumbs: { delete: async (paths: string[]) => { deletedPaths.push(...paths); } },
     media: { delete: async () => {} },
@@ -100,7 +110,6 @@ beforeAll(() => {
 afterAll(() => {
   if (savedDialect === undefined) delete process.env.DB_DIALECT;
   else process.env.DB_DIALECT = savedDialect;
-  setCreditsForTests(null);
   setR2Bindings(null as unknown as Parameters<typeof setR2Bindings>[0]);
 });
 
