@@ -24,11 +24,13 @@ const seen: {
   batchSql: string[];
   creates: Array<Record<string, unknown>>;
   lastCreated: Record<string, unknown> | null;
+  findFirstWhere: Record<string, unknown> | undefined;
 } = {
   rawSql: [],
   batchSql: [],
   creates: [],
   lastCreated: null,
+  findFirstWhere: undefined,
 };
 
 mock.module('../db.js', () => ({
@@ -47,7 +49,10 @@ mock.module('../db.js', () => ({
       },
       findUnique: async () => seen.lastCreated,
       update: async ({ data }: { data: Record<string, unknown> }) => ({ ...seen.lastCreated, ...data }),
-      findFirst: async () => null,
+      findFirst: async (args: { where?: Record<string, unknown> }) => {
+        seen.findFirstWhere = args?.where;
+        return null;
+      },
       findMany: async () => [],
     },
     workerControl: { findUnique: async () => null, findMany: async () => [] },
@@ -79,9 +84,11 @@ import {
   enqueueRefreshJob,
   enqueueRescoreJob,
   enqueueThumbJob,
+  outstandingJobForSource,
+  outstandingJobForVideo,
   resetRoutedPublisherForTests,
 } from './jobs.js';
-import { resetTransportCacheForTests } from '../queue/transport.js';
+import { QUEUE_FALLBACK_STATUS, resetTransportCacheForTests } from '../queue/transport.js';
 
 describe('single-owner D1 claims', () => {
   test('claimNextJob filters to d1-owned rows', async () => {
@@ -151,5 +158,42 @@ describe('single-owner D1 claims', () => {
       resetRoutedPublisherForTests();
       resetTransportCacheForTests();
     }
+  });
+});
+
+// SLA-141: a fallback_d1/queued_remote row is not claimable by anything, but
+// the reconciler publishes it and it runs. Treating "parked" as "not
+// outstanding" is what let the stale sweep re-enqueue the same paid creator
+// scrape five times in 62 minutes on 2026-10-01.
+describe('outstanding-job dedupe sees a parked fallback row', () => {
+  // The db mock overwrites findFirstWhere on every call, so each case just
+  // reads the last one — no reset needed.
+  test('outstandingJobForSource counts queued_remote as outstanding', async () => {
+    await outstandingJobForSource('src-1');
+    expect(seen.findFirstWhere).toEqual({
+      sourceId: 'src-1',
+      status: { in: ['queued', 'running', QUEUE_FALLBACK_STATUS] },
+      kind: 'refresh',
+    });
+  });
+
+  test('the kind filter is still applied', async () => {
+    await outstandingJobForSource('src-1', null);
+    expect(seen.findFirstWhere).toEqual({
+      sourceId: 'src-1',
+      status: { in: ['queued', 'running', QUEUE_FALLBACK_STATUS] },
+    });
+  });
+
+  // Deliberately NOT widened: no measurement implicates the video-scoped
+  // lookup, and its callers (await_job-style waits) report `status` straight
+  // back to the user. If a parked video job ever needs the same treatment it
+  // gets its own evidence, not a speculative widening here.
+  test('outstandingJobForVideo is unchanged', async () => {
+    await outstandingJobForVideo('vid-1');
+    expect(seen.findFirstWhere).toEqual({
+      videoId: 'vid-1',
+      status: { in: ['queued', 'running'] },
+    });
   });
 });
