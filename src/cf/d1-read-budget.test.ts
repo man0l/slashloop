@@ -438,10 +438,14 @@ describe('degraded mode fails toward a lower ceiling', () => {
     setShardDirectory(asKv(fakeKv()));
     const healthy = await replayRunaway();
 
-    // Same day, one failed flush at the start, healthy KV thereafter.
+    // Same day, one failed flush at the start, healthy KV thereafter. The blip
+    // is stamped AT, not new Date(): writeDegraded is sticky per UTC day, so a
+    // blip recorded on a different day than replayRunaway() replays is dropped by
+    // the day rollover and the isolate never degrades. That made this test pass
+    // only on 2026-10-01 and fail every UTC day after it.
     resetReadBudgetCache();
     setShardDirectory(asKv(fakeKv({}, { failPut: true })));
-    await recordDailyReads(SYNC_ROWS, new Date());
+    await recordDailyReads(SYNC_ROWS, AT);
     setShardDirectory(asKv(fakeKv()));
     const afterBlip = await replayRunaway();
 
