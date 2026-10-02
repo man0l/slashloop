@@ -23,38 +23,75 @@ rejected — the model below is the ONLY way.
 4. **Secrets live ONLY on the host** (`/root/salonease/<svc>/`, mode 600:
    `.env` files + compose `secrets.file` absolutes). Never committed,
    never pasted in chat/comments, never baked into images.
-5. **Two repos, one host, ONE compose source.** Queue API *code* lives in
-   `slashloop` (`src/queue/**`); queue *service config* is deployed from
-   `salonease/docker-compose.prod.yml` and nowhere else — per rule 1, there
-   is no second `-f` file on the VPS. Edit it there, via a branch + PR.
-   Do NOT mirror it into `slashloop`: `deploy/queue-compose.fragment.yml`
-   was exactly such a mirror, it was never deployed, and it silently
-   drifted until a merged fix sat un-deployed for 4 days (SLA-330). It is
-   now a stub that says so. "Mirror changes both ways" was retracted for
-   that reason — mirroring had no reader and cost a real outage of trust
-   in the deploy path.
+5. **Two repos, one host:** queue API code + its fragment mirror live in
+   `slashloop` (`deploy/queue-compose.fragment.yml`); the DEPLOYED
+   services live in `salonease/docker-compose.prod.yml`. Mirror changes
+   both ways and say so in the commit.
 6. **Host paths in compose are `/root/salonease/...` absolutes** where a
    bind mount is needed (relative sources resolve from the project dir;
    a missing source mounts as an empty directory).
 7. **Proving it still works after any compose change:** `config --quiet`,
    container health, `GET /healthz` → 200, unsigned `POST /v1/jobs` → 401.
    Full signed-enqueue gate only when auth/env changed.
-8. **Enforcement (not just convention):** salonease
-   `.github/workflows/validate-compose.yml` + `.github/scripts/assert-compose.py`
-   run on every compose edit (PR or master push) and fail on: published
-   queue ports, non-GHCR queue-api image, changed router rule, missing
-   secret file, volumes, healthchecks, or memory budgets. A green check
-   on the commit is the "will it work" answer — VPS pulls only green
-   master. Residual risk it does NOT cover: VPS-local drift (missing
-   secret files, untracked edits) — `git status` on the VPS before pull.
-9. **Watchtower moves images; it does not move config.** A service labeled
-   `com.centurylinklabs.watchtower.enable=true` is re-pulled within ~5 min
-   (`--interval 300`) of a new `:master` push — no `up -d` needed. Anything
-   that changes a service's *config* (labels, env, volumes, ports,
-   healthcheck, resource limits) only lands via rule 2's
-   `git pull` + `docker compose up -d <service>`, because watchtower
-   recreates from the container's stored config and never re-reads
-   compose. So CI being green does not mean the VPS is running what
-   compose says. When adding a new CI-built service, add the watchtower
-   label in the same PR — otherwise it silently never updates, which is
-   exactly how `queue-api` sat on a 4-day-old image after merge (SLA-330).
+8. **Enforcement (not just convention), live since SLA-332:** salonease
+   `.github/workflows/validate-compose.yml` +
+   `.github/scripts/assert-compose.py` run on **every pull request** and on
+   **every push to master**. Two steps: `docker compose -f
+   docker-compose.prod.yml config --quiet` (the file is still valid compose),
+   then `python3 .github/scripts/assert-compose.py --self-test` — which also
+   re-runs the assertions against 21 deliberately broken copies of the file,
+   so a guard that stops biting fails the build too, and against 3 legitimate
+   ones that must stay accepted, so the gate cannot pass by being noisy.
+   They fail on: any service on a `ghcr.io/man0l/*` image with a mutable tag
+   that is not watchtower-managed (see below); a published host port (or
+   changed `expose`) on `queue-db`/`queue-api`; a
+   `queue-api` image off `ghcr.io/man0l/slashloop-queue-api:master`, or a
+   `build:` block on any queue service; a Traefik router rule that is not
+   byte-identical to the expected allowlist, or that appears twice; a moved or
+   missing `slashloop-queue/db_password` secret file, or `queue-api`
+   credentials inlined instead of interpolated from the host `.env`; changed
+   pgdata/backup volume mounts, `queue-db`/`queue-api` healthchecks, or
+   CPU/memory ceilings; `queue-api`/`queue-backup` no longer waiting for a
+   **healthy** `queue-db`. Read-only — `permissions: contents: read`, no
+   secrets, and it reads only the committed compose file, never the VPS
+   `.env`. So a green check answers "this file still says what it must say",
+   which is the "will it work" answer for the compose *edit*. (Until SLA-332
+   this rule described files that did not exist: `master` had only
+   `main.yaml` and no `.github/scripts/`, so "green" meant "GitGuardian
+   ran". If you ever find the workflow absent again, treat that as a
+   regression and say so.)
+   - **Watchtower coverage is swept, not enumerated.** watchtower runs
+     `--label-enable`, so it updates ONLY containers labelled
+     `com.centurylinklabs.watchtower.enable=true`. Any service on a
+     `ghcr.io/man0l/*` image with a mutable tag and no such label is silently
+     never updated: merges go green and stay dead in prod. That is SLA-330
+     (4 days), and it is not queue-specific — so the gate sweeps every service
+     in the file rather than listing them, because a service added tomorrow is
+     covered by the same rule today. In scope: `ghcr.io/man0l/*` on
+     `master`/`main`/`latest`/`edge`/`dev`. Out of scope: third-party images
+     (nobody rebuilds them here) and images on a pinned tag (nothing
+     overwrites them in place). Opting out is `UNMANAGED_BY_DESIGN` in the
+     script, currently empty — adding an entry is a reviewed diff with a
+     stated reason, never a service quietly going un-managed.
+9. **What that gate does NOT cover — do not read green as "deployed":**
+   - **A config edit to a running service is not applied by watchtower.**
+     watchtower re-pulls *images* for labelled containers (~5 min,
+     `--interval 300`) and recreates them from the container's stored
+     config — it never re-reads compose. So labels, env, volumes, ports,
+     healthchecks and resource limits only land via §2's `git pull` +
+     `docker compose -f docker-compose.prod.yml up -d <service>`. Merging
+     a compose edit is not deploying it; someone has to run that `up -d`.
+     This is the other half of SLA-330: the missing label meant images
+     never arrived, and the label that fixed it also needed one manual
+     `up -d` to take effect (watchtower's own `Scanned=9 → 10` is what
+     proved the container had joined its watch set).
+   - **VPS-local drift:** missing host secret files, untracked or hand-edited
+     files on the box. `git status` on the VPS before pull (§3).
+   - **The Salonease services** in the same compose file: beyond the
+     watchtower sweep, no invariants are asserted on them. `config --quiet`
+     only proves they parse.
+   - **The other repo:** a green check in *this* repo says nothing about
+     `salonease/docker-compose.prod.yml`, and vice versa. Queue service
+     config has one source (§5); the gate for it lives over there.
+   - **Runtime behaviour:** after any compose change, still do §7 —
+     container health, `GET /healthz` → 200, unsigned `POST /v1/jobs` → 401.

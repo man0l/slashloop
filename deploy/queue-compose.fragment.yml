@@ -23,8 +23,9 @@
 #
 # ==> The deployed config is `man0l/salonease` @ `docker-compose.prod.yml`.
 #     Edit queue service config THERE, via a branch + PR.
-#     The CI gate that should assert those properties is SLA-332; it has to
-#     read the deployed file, which is why it cannot live in this repo.
+#     Its CI gate — `.github/workflows/validate-compose.yml` +
+#     `assert-compose.py` (SLA-332) — lives in that repo, because it has to
+#     read the deployed file.
 #
 # `deploy/queue-compose.fragment.test.ts` keeps this file a stub.
 # ===========================================================================
