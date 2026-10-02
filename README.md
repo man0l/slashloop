@@ -244,7 +244,7 @@ populating the env vars above from a real Stripe account.
 
 ---
 
-## Tool inventory (55 tools)
+## Tool inventory (63 tools)
 
 | Module | Tools |
 |---|---|
@@ -255,13 +255,20 @@ populating the env vars above from a real Stripe account.
 | Hooks (4) | list_hooks, extract_hook, generate_hook_variations, list_hook_variations |
 | Creative (16) | list_boards, get_board, create_board, save_to_board, export_board, list_ideas, get_idea_queue, create_idea, update_idea_status, create_brief, get_brief, list_briefs, export_brief, generate_script, get_script, list_scripts |
 | Studio (2) | get_weekly_retro, get_benchmark |
-| Hook tests (7) | start_hook_test, get_hook_test, update_hook_test, reroll_hooks, pick_hook_versions, export_shotlist, close_hook_test |
+| Experiments (10) | list_experiments, get_experiment, create_experiment, estimate_experiment, plan_experiment, edit_experiment_variant, generate_experiment, cancel_experiment, retry_experiment, delete_experiment |
 | Settings (7) | get_usage, get_settings, update_settings, get_refresh_logs, run_auto_analyze, get_apify_spend_status, get_digest |
 | Gallery (1) | show_gallery |
 | Fetch (1) | fetch_videos |
 | Baselines (2) | deepen_baselines, rescore_sources |
 | Jobs (2) | await_job, get_job_status |
 | Schedule (2) | list_due_sources, refresh_due_sources |
+| Workspaces (1) | list_workspaces |
+
+The experiment tools mirror the site's experiment wizard over the same service
+the REST API uses. `create_experiment` spends nothing (draft only); credits move
+only in `plan_experiment`, `generate_experiment` and `retry_experiment`, and each
+of those returns its estimate before the transition. `estimate_experiment` is
+free — quote the next spending step with it and get the user's yes first.
 
 `discover` is the keyword-driven front door: paste a niche (keywords, #hashtags,
 @handles) → AI expands into seed keywords → each seed gets a small real probe
