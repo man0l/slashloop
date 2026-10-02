@@ -270,7 +270,7 @@ export async function serveQueueApi(opts: ServeQueueApiOptions): Promise<ServedQ
           return true;
         },
         nowSeconds: () => Math.floor(Date.now() / 1000),
-        onPublish: (info) => recordApiEvent(info),
+        onOutcome: (info) => recordApiEvent(info),
       });
       res.writeHead(out.status, out.headers);
       res.end(out.body);

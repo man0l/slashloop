@@ -13,6 +13,12 @@
 //    see deploy/queue-backup.sh (writes backup_age_seconds) and the Phase 0
 //    baseline doc for the restore-test state source of truth.
 //
+// SLA-350: rate-limit rejects carry the limiter that refused them (`gate`), and
+// every terminal response — not just the 202 — reports itself through
+// recordApiEvent(). Before that, onPublish fired from the 202 branch only, with
+// 202 hardcoded, so every rejects_total series stayed pinned at 0 from the HTTP
+// path and QueueApiRejectsSpike could never fire on rate limiting.
+//
 // Alert thresholds live in deploy/queue-alerts.yml.
 // ---------------------------------------------------------------------------
 
@@ -37,11 +43,39 @@ export interface ApiCounters {
   publishLatencyMsCount: number;
   authRejects: number;
   replayRejects: number;
+  /** Every 429, whatever refused it. Equals the sum of the gate counters below. */
   rateLimitRejects: number;
+  /** 429s the per-key limiter (120/min) refused. */
+  rateLimitRejectsPerKey: number;
+  /** 429s the per-workspace limiter (30/min) refused. */
+  rateLimitRejectsPerWorkspace: number;
+  /** 429s the per-kind+workspace limiter (10/min) refused. */
+  rateLimitRejectsPerKindWorkspace: number;
+  /**
+   * 429s recorded without a gate. Kept explicit so the gate series always sum
+   * back to rateLimitRejects — a silently dropped bucket is how this whole
+   * counter family went missing in the first place.
+   */
+  rateLimitRejectsUnattributed: number;
   bodyTooLargeRejects: number;
   validationRejects: number;
   internalErrors: number;
 }
+
+/**
+ * Which limiter refused a publish. "Rate limited" is untunable without it: the
+ * three gates have different numbers and mean different things (one chatty
+ * kind in one workspace, one busy workspace across kinds, one key spanning
+ * many workspaces).
+ */
+export const RATE_LIMIT_GATES = ['per_key', 'per_workspace', 'per_kind_workspace'] as const;
+export type RateLimitGate = (typeof RATE_LIMIT_GATES)[number];
+
+const GATE_COUNTER: Record<RateLimitGate, keyof ApiCounters> = {
+  per_key: 'rateLimitRejectsPerKey',
+  per_workspace: 'rateLimitRejectsPerWorkspace',
+  per_kind_workspace: 'rateLimitRejectsPerKindWorkspace',
+};
 
 const counters: ApiCounters = {
   publishTotal: 0,
@@ -51,6 +85,10 @@ const counters: ApiCounters = {
   authRejects: 0,
   replayRejects: 0,
   rateLimitRejects: 0,
+  rateLimitRejectsPerKey: 0,
+  rateLimitRejectsPerWorkspace: 0,
+  rateLimitRejectsPerKindWorkspace: 0,
+  rateLimitRejectsUnattributed: 0,
   bodyTooLargeRejects: 0,
   validationRejects: 0,
   internalErrors: 0,
@@ -66,12 +104,14 @@ export function snapshotApiCounters(): ApiCounters {
   return { ...counters };
 }
 
-/** Called by server.ts on every publish outcome (and by tests directly). */
+/** Called by server.ts on every request outcome (and by tests directly). */
 export function recordApiEvent(info: {
   kind: string;
   deduped: boolean;
   latencyMs: number;
   status: number;
+  /** Set on 429: the limiter that refused. Omit and the reject is unattributed. */
+  gate?: RateLimitGate;
 }): void {
   if (info.status === 202) {
     counters.publishTotal++;
@@ -80,8 +120,11 @@ export function recordApiEvent(info: {
     if (info.deduped) counters.publishDeduped++;
   } else if (info.status === 401) counters.authRejects++;
   else if (info.status === 409) counters.replayRejects++;
-  else if (info.status === 429) counters.rateLimitRejects++;
-  else if (info.status === 413) counters.bodyTooLargeRejects++;
+  else if (info.status === 429) {
+    counters.rateLimitRejects++;
+    if (info.gate) counters[GATE_COUNTER[info.gate]]++;
+    else counters.rateLimitRejectsUnattributed++;
+  } else if (info.status === 413) counters.bodyTooLargeRejects++;
   else if (info.status === 422) counters.validationRejects++;
   else if (info.status >= 500) counters.internalErrors++;
 }
@@ -153,11 +196,20 @@ export function renderPrometheus(s: QueueMetricsSnapshot): string {
   lines.push('# HELP slashloop_queue_api_publish_latency_ms_avg Average publish latency.');
   lines.push('# TYPE slashloop_queue_api_publish_latency_ms_avg gauge');
   lines.push(`slashloop_queue_api_publish_latency_ms_avg ${avg.toFixed(1)}`);
-  lines.push('# HELP slashloop_queue_api_rejects_total Rejections by cause.');
+  lines.push('# HELP slashloop_queue_api_rejects_total Rejections by cause; rate_limit also names the limiter that refused (gate).');
   lines.push('# TYPE slashloop_queue_api_rejects_total counter');
   lines.push(`slashloop_queue_api_rejects_total{cause="auth"} ${s.api.authRejects}`);
   lines.push(`slashloop_queue_api_rejects_total{cause="replay"} ${s.api.replayRejects}`);
-  lines.push(`slashloop_queue_api_rejects_total{cause="rate_limit"} ${s.api.rateLimitRejects}`);
+  // One series per gate rather than a single rate_limit total, and
+  // deliberately NO gate-less rate_limit series: QueueApiRejectsSpike sums
+  // `by (cause)`, so re-adding an aggregate line here would double-count it.
+  // Summing by `cause` still yields the total; summing by `gate` says WHICH
+  // limiter is refusing publishes. gate="unknown" is the self-check — the four
+  // gate lines always add up to rateLimitRejects.
+  for (const gate of RATE_LIMIT_GATES) {
+    lines.push(`slashloop_queue_api_rejects_total{cause="rate_limit",gate="${gate}"} ${s.api[GATE_COUNTER[gate]]}`);
+  }
+  lines.push(`slashloop_queue_api_rejects_total{cause="rate_limit",gate="unknown"} ${s.api.rateLimitRejectsUnattributed}`);
   lines.push(`slashloop_queue_api_rejects_total{cause="body_too_large"} ${s.api.bodyTooLargeRejects}`);
   lines.push(`slashloop_queue_api_rejects_total{cause="validation"} ${s.api.validationRejects}`);
   lines.push(`slashloop_queue_api_rejects_total{cause="internal"} ${s.api.internalErrors}`);
