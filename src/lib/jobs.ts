@@ -19,7 +19,7 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { chunked, coerceRowDates, dbDialect, rawBatch, type RawStatement } from '../store.js';
-import { ProducerHttpError, loadProducerConfig, publishJobHttp } from '../queue/producer.js';
+import { isRateLimitedError, loadProducerConfig, publishJobHttp } from '../queue/producer.js';
 import { QueuePublisher } from '../queue/publisher.js';
 import { QUEUE_FALLBACK_STATUS, getQueueFallbackEnabled } from '../queue/transport.js';
 import { CREDIT_COSTS, refundCredits, refundCreditsBatched, type RefundItem } from './credits.js';
@@ -43,7 +43,7 @@ function routedQueuePublisher(): QueuePublisher {
   const envFb = (process.env.QUEUE_FALLBACK_ENABLED ?? '').trim();
   const fallbackEnabled = envFb === '1' ? true : envFb === '0' ? false : undefined;
   const key = cfg
-    ? `${cfg.baseUrl}|${cfg.keyId}|${cfg.timeoutMs}|fb:${envFb || 'ctrl'}`
+    ? `${cfg.baseUrl}|${cfg.keyId}|${cfg.timeoutMs}|rlw:${cfg.rateLimitWaitBudgetMs ?? 'default'}|fb:${envFb || 'ctrl'}`
     : `d1|fb:${envFb || 'ctrl'}`;
   if (!routedPublisher || routedPublisherKey !== key) {
     routedPublisher = new QueuePublisher({
@@ -80,7 +80,16 @@ function routedQueuePublisher(): QueuePublisher {
       },
       pg: cfg
         ? {
-            publish: async (input) => publishJobHttp(cfg, { ...input, payload: input.payload }),
+            publish: async (input, opts) =>
+              publishJobHttp(
+                cfg,
+                { ...input, payload: input.payload },
+                // A fresh publish waits out `retry-after`; the reconciler
+                // passes 0 so its sweep still stops at the first 429.
+                opts?.rateLimitWaitBudgetMs != null
+                  ? { rateLimitWaitBudgetMs: opts.rateLimitWaitBudgetMs }
+                  : {},
+              ),
           }
         : undefined,
       fallbackEnabled,
@@ -1524,17 +1533,6 @@ export async function failAbandonedQueuedJobs(
 }
 
 /**
- * A publish the queue-api rate limiter refused (429) rather than a broken row.
- * Retrying it next sweep is the right move; retrying it in THIS sweep is not,
- * because the limiter's window (60s) has not moved and every further publish in
- * the batch would be refused too. See reconcileFallbackJobs.
- */
-function isRateLimited(err: unknown): boolean {
-  if (err instanceof ProducerHttpError) return err.code === 'rate_limited';
-  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'rate_limited';
-}
-
-/**
  * How long the fallback-reconcile throttle warning stays quiet after it is
  * emitted. The sweep runs every WORKER_RECLAIM_INTERVAL_MS (default 5 min),
  * so a backlog that outlives the limiter's 60s window used to re-warn on
@@ -1576,6 +1574,14 @@ export function resetFallbackThrottleLogForTests(): void {
  * rows come back on the next sweep — so warning on every pass of a
  * multi-minute drain is a log flood that hides real warnings. See
  * src/lib/log-throttle.ts.
+ *
+ * Two SLA-349 details make "the first 429" mean the same thing on both sides.
+ * `reconcileFallbackRow` publishes with rateLimitWaitBudgetMs 0, so the
+ * producer does not sleep out `retry-after` here — this sweep is the wait.
+ * And the refusal is classified through isRateLimitedError (queue/producer.ts),
+ * which sees a rate limit even after QueuePublisher has rewrapped it as
+ * `pg_failed`, so a limit still stops the batch instead of being counted as a
+ * broken row.
  */
 export async function reconcileFallbackJobs(opts?: {
   take?: number;
@@ -1622,7 +1628,7 @@ export async function reconcileFallbackJobs(opts?: {
       });
       reconciled++;
     } catch (err) {
-      if (isRateLimited(err)) {
+      if (isRateLimitedError(err)) {
         // Budget spent for this window. The row stays parked and the next
         // sweep picks it up; `more` stays true so the caller loops again.
         // Log-gated: a throttled sweep is the expected steady state while a

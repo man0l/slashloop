@@ -13,6 +13,9 @@
 //   X-SLQ-Key-Id / X-SLQ-Timestamp / X-SLQ-Nonce / X-SLQ-Signature
 //   canonical = METHOD\n\nPATH\n\nTIMESTAMP\n\nNONCE\n\nSHA256_HEX(raw_body)
 // Secrets are never logged (this module has no logging at all).
+//
+// A 429 is answered, not thrown: the `retry-after` header is waited out
+// inside publishJobHttp (SLA-349), bounded by DEFAULT_RATE_LIMIT_WAIT_BUDGET_MS.
 // ---------------------------------------------------------------------------
 
 export interface ProducerConfig {
@@ -21,11 +24,23 @@ export interface ProducerConfig {
   secret: string;
   /** Per-request timeout ms (default 10s — queue-api is local to its VPS). */
   timeoutMs: number;
+  /**
+   * Per-publish budget for waiting out `429 retry-after`, in ms.
+   * 0 disables waiting (a 429 throws, so the row parks) — set it on a
+   * deployment that must not hold a caller open, e.g. the Vercel MCP
+   * function whose maxDuration is 60s. See
+   * QUEUE_API_RATE_LIMIT_WAIT_BUDGET_MS.
+   */
+  rateLimitWaitBudgetMs?: number;
 }
 
 export const DEFAULT_PRODUCER_TIMEOUT_MS = 10_000;
 
-/** Env: QUEUE_API_URL (default https://queue.slashloop.dev), key id/secret. */
+/**
+ * Env: QUEUE_API_URL (default https://queue.slashloop.dev), key id/secret.
+ * QUEUE_API_RATE_LIMIT_WAIT_BUDGET_MS caps the `429 retry-after` wait per
+ * publish; 0 turns the wait off for this deployment (park on 429 instead).
+ */
 export function loadProducerConfig(env: NodeJS.ProcessEnv = process.env): ProducerConfig | null {
   const baseUrl = (env.QUEUE_API_URL ?? 'https://queue.slashloop.dev').trim().replace(/\/+$/, '');
   const keyId = (env.QUEUE_API_KEY_ID ?? '').trim();
@@ -34,7 +49,11 @@ export function loadProducerConfig(env: NodeJS.ProcessEnv = process.env): Produc
   const timeoutRaw = Number(env.QUEUE_API_TIMEOUT_MS ?? DEFAULT_PRODUCER_TIMEOUT_MS);
   const timeoutMs =
     Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? Math.floor(timeoutRaw) : DEFAULT_PRODUCER_TIMEOUT_MS;
-  return { baseUrl, keyId, secret, timeoutMs };
+  const budgetRaw = (env.QUEUE_API_RATE_LIMIT_WAIT_BUDGET_MS ?? '').trim();
+  const budgetNum = Number(budgetRaw);
+  const rateLimitWaitBudgetMs =
+    budgetRaw !== '' && Number.isFinite(budgetNum) && budgetNum >= 0 ? Math.floor(budgetNum) : undefined;
+  return { baseUrl, keyId, secret, timeoutMs, rateLimitWaitBudgetMs };
 }
 
 export interface PublishBody {
@@ -84,6 +103,61 @@ export class ProducerHttpError extends Error {
   }
 }
 
+/**
+ * `429 retry-after` is a request to wait, not a failure (SLA-349). Before
+ * this the header was parsed into retryAfterSeconds and then never read, so
+ * the wait the server named happened nowhere: the publish threw, the row was
+ * parked as fallback_d1 / queued_remote, and the job went invisible to every
+ * claimer until the reconciler swept it — up to a full
+ * WORKER_RECLAIM_INTERVAL_MS (default 5 min) instead of the seconds the
+ * response already said. Measured on 2026-10-01: 34 rescore publishes in
+ * 9.5s turned into an 8m08s staircase.
+ *
+ * The default assumes queue-api's own limiter window: api.ts
+ * DEFAULT_RATE_LIMITS are all per-minute and memoryRateLimiter's window
+ * default is 60s, so an absent/garbage header means "come back in a minute".
+ */
+export const DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS = 60;
+
+/**
+ * Ceiling on the total time one publish may spend waiting out 429s.
+ *
+ * One limiter window plus slack: a single retry-after that fits is honoured,
+ * and that wait then unblocks a whole window's worth of publishes in the
+ * calling fan-out loop, so a burst amortizes instead of stalling. A longer
+ * ask (or a second 429 inside the same call) does not fit and the caller
+ * keeps today's behaviour — park the row and let the reconciler drain it —
+ * rather than holding a request open for an unbounded time. In particular a
+ * bogus/absurd retry-after cannot pin a caller for as long as it asks for.
+ */
+export const DEFAULT_RATE_LIMIT_WAIT_BUDGET_MS = 65_000;
+
+/**
+ * True when `err` is a queue-api rate limit, including one rethrown through
+ * QueuePublisher's wrap (which carries the producer code as `producerCode`).
+ * Without that, a caller could only tell "this was a rate limit" apart from
+ * "PG really failed" by matching the message string.
+ */
+export function isRateLimitedError(err: unknown): boolean {
+  if (err instanceof ProducerHttpError) return err.code === 'rate_limited';
+  if (err == null || typeof err !== 'object') return false;
+  const e = err as { code?: unknown; producerCode?: unknown };
+  return e.code === 'rate_limited' || e.producerCode === 'rate_limited';
+}
+
+/** Retry-after seconds -> ms, falling back to one limiter window. */
+function rateLimitWaitMs(retryAfterSeconds: number | null): number {
+  const seconds =
+    retryAfterSeconds != null && Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+      ? retryAfterSeconds
+      : DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS;
+  return Math.ceil(seconds) * 1000;
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export type FetchImpl = (
   url: string,
   init: { method: string; headers: Record<string, string>; body: Uint8Array; signal?: AbortSignal },
@@ -95,6 +169,16 @@ export interface PublishDeps {
   nowSeconds?: () => number;
   /** 128-bit nonce hex (injectable for tests). */
   nonceHex?: () => string;
+  /**
+   * Total ms one publish may spend sleeping on `429 retry-after` (default
+   * DEFAULT_RATE_LIMIT_WAIT_BUDGET_MS). 0 disables waiting entirely: a 429
+   * throws immediately, which is what the fallback reconciler wants — it
+   * deliberately stops its sweep at the first 429 and lets the next sweep,
+   * which already rides WORKER_RECLAIM_INTERVAL_MS, do the waiting.
+   */
+  rateLimitWaitBudgetMs?: number;
+  /** Sleep impl (injectable for tests; default setTimeout). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 const te = new TextEncoder();
@@ -201,9 +285,16 @@ function errorFromStatus(
 }
 
 /**
- * POST one job to queue-api. Retries ONCE with a fresh nonce when the server
- * reports replay_detected (per plan §Authentication the dedupe key — not the
- * nonce — is the idempotency identity, so the retry replays to the same job).
+ * POST one job to queue-api.
+ *
+ * Two retry loops, both bounded:
+ * - replay_detected: ONE fresh-nonce retry (per plan §Authentication the
+ *   dedupe key — not the nonce — is the idempotency identity, so the retry
+ *   replays to the same job).
+ * - rate_limited: wait the `retry-after` the server named, then retry with a
+ *   fresh nonce, for as long as rateLimitWaitBudgetMs lasts (SLA-349). The
+ *   wait is local to this one publish, so a fan-out loop keeps its serial
+ *   shape and claims are never stalled behind a shared timer.
  */
 export async function publishJobHttp(
   cfg: ProducerConfig,
@@ -213,9 +304,16 @@ export async function publishJobHttp(
   const fetchImpl = deps.fetchImpl ?? defaultFetchImpl();
   const nowSeconds = deps.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
   const nonceHex = deps.nonceHex ?? defaultNonceHex;
+  const sleep = deps.sleep ?? defaultSleep;
+  // Per-call override (the reconciler passes 0) beats the deployment default
+  // (env) beats the built-in one-limiter-window default.
+  const waitBudgetMs =
+    deps.rateLimitWaitBudgetMs ?? cfg.rateLimitWaitBudgetMs ?? DEFAULT_RATE_LIMIT_WAIT_BUDGET_MS;
   const rawBody = te.encode(JSON.stringify(body));
+  let replayRetries = 0;
+  let waitedMs = 0;
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (;;) {
     const timestamp = String(nowSeconds());
     const nonce = nonceHex();
     const signature = await producerSignature(cfg.secret, 'POST', '/v1/jobs', timestamp, nonce, rawBody);
@@ -252,8 +350,22 @@ export async function publishJobHttp(
     }
     const err = errorFromStatus(res.status, await res.text(), res.headers);
     // Fresh-nonce retry on replay only; everything else surfaces immediately.
-    if (err.code === 'replay_detected' && attempt === 0) continue;
+    if (err.code === 'replay_detected' && replayRetries === 0) {
+      replayRetries++;
+      continue;
+    }
+    // Honour the wait the server named, but only while the budget lasts. A
+    // wait that does not fit is not truncated into a guaranteed second 429 —
+    // it surfaces as rate_limited, and the caller keeps today's behaviour
+    // (park the row; the reconciler drains it).
+    if (err.code === 'rate_limited' && waitBudgetMs > 0) {
+      const waitMs = rateLimitWaitMs(err.retryAfterSeconds);
+      if (waitedMs + waitMs <= waitBudgetMs) {
+        waitedMs += waitMs;
+        await sleep(waitMs);
+        continue;
+      }
+    }
     throw err;
   }
-  throw new ProducerHttpError('replay_detected', 'nonce replayed twice', { status: 409, retryable: true });
 }

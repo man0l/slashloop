@@ -71,6 +71,7 @@ import { reconcileFallbackJobs, resetFallbackThrottleLogForTests } from './jobs.
 import { QUEUE_FALLBACK_STATUS } from '../queue/transport.js';
 import { fallbackDedupeKey } from '../queue/contract.js';
 import { ProducerHttpError } from '../queue/producer.js';
+import { QueuePublishError } from '../queue/publisher.js';
 
 /** Accepts everything; records the publishes it was asked to make. */
 function okPublisher() {
@@ -174,6 +175,31 @@ describe('reconcileFallbackJobs', () => {
     const out = await reconcileFallbackJobs({ take: 50, publisher: publisher as never });
     expect(calls).toBe(1);
     expect(out).toEqual({ reconciled: 0, failed: 0, more: true });
+  });
+
+  // SLA-349: a rate limit that reached the sweep through QueuePublisher's
+  // rethrow used to arrive as a bare pg_failed, so the sweep counted it as a
+  // broken row and kept going — one doomed publish per remaining row. The
+  // wrapper now carries the transport code, and the sweep must read it.
+  test('a 429 wrapped as pg_failed by QueuePublisher still stops the batch', async () => {
+    seen.rows = ['fb-1', 'fb-2', 'fb-3'];
+    let calls = 0;
+    const publisher = {
+      reconcileFallbackRow: async (row: { id: string; opId: string | null }) => {
+        calls++;
+        seen.reconcile.push({ id: row.id, opId: row.opId, dedupe: fallbackDedupeKey(row.id) });
+        if (calls === 2) {
+          throw new QueuePublishError('pg_failed', `PG publish failed for kind "thumb": ${row.id}`, true, {
+            producerCode: 'rate_limited',
+            retryAfterSeconds: 60,
+          });
+        }
+        return { d1JobId: row.id, pgJobId: row.id, transport: 'pg' as const, deduped: false };
+      },
+    };
+    const out = await reconcileFallbackJobs({ take: 50, publisher: publisher as never });
+    expect(calls).toBe(2);
+    expect(out).toEqual({ reconciled: 1, failed: 0, more: true });
   });
 
   // Founder feedback on SLA-317: "can you cool down this error if being
