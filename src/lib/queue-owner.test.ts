@@ -25,12 +25,15 @@ const seen: {
   creates: Array<Record<string, unknown>>;
   lastCreated: Record<string, unknown> | null;
   findFirstWhere: Record<string, unknown> | undefined;
+  /** What mediaJob.findFirst returns. Defaults to null (nothing outstanding). */
+  findFirstResult: Record<string, unknown> | null;
 } = {
   rawSql: [],
   batchSql: [],
   creates: [],
   lastCreated: null,
   findFirstWhere: undefined,
+  findFirstResult: null,
 };
 
 mock.module('../db.js', () => ({
@@ -51,7 +54,7 @@ mock.module('../db.js', () => ({
       update: async ({ data }: { data: Record<string, unknown> }) => ({ ...seen.lastCreated, ...data }),
       findFirst: async (args: { where?: Record<string, unknown> }) => {
         seen.findFirstWhere = args?.where;
-        return null;
+        return seen.findFirstResult;
       },
       findMany: async () => [],
     },
@@ -83,7 +86,9 @@ import {
   enqueueRecreateJob,
   enqueueRefreshJob,
   enqueueRescoreJob,
+  enqueueSlideshowFetches,
   enqueueThumbJob,
+  isOutstandingJobStatus,
   outstandingJobForSource,
   outstandingJobForVideo,
   resetRoutedPublisherForTests,
@@ -210,15 +215,92 @@ describe('outstanding-job dedupe sees a parked fallback row', () => {
     });
   });
 
-  // Deliberately NOT widened: no measurement implicates the video-scoped
-  // lookup, and its callers (await_job-style waits) report `status` straight
-  // back to the user. If a parked video job ever needs the same treatment it
-  // gets its own evidence, not a speculative widening here.
-  test('outstandingJobForVideo is unchanged', async () => {
+  // SLA-341 widened this: the SLA-141 commit left the video-scoped lookup
+  // alone "until a parked video job needs the same treatment, with its own
+  // evidence". That evidence is the production park on a `fetch` row —
+  // "per-kind publish limit exceeded" from the queue-api limiter, which a
+  // refresh fan-out (enqueueSlideshowFetches) trips routinely. A parked fetch
+  // is invisible to every claimer, so answering "nothing outstanding" made the
+  // next refresh enqueue a SECOND fetch for the same video: the first was
+  // still parked under dedupeKey d1:<id>, the second published under
+  // fetch:video:<id>, and PG's unique dedupe_key index cannot collapse two
+  // different keys. Two Apify downloads for one video, one of them paid for.
+  test('outstandingJobForVideo counts queued_remote as outstanding', async () => {
     await outstandingJobForVideo('vid-1');
     expect(seen.findFirstWhere).toEqual({
       videoId: 'vid-1',
-      status: { in: ['queued', 'running'] },
+      status: { in: ['queued', 'running', QUEUE_FALLBACK_STATUS] },
     });
+  });
+});
+
+// The query widening is only half the fix. Every dedupe caller re-checks the
+// returned row's status, so a caller still comparing against a literal
+// 'queued'/'running' pair filters the parked row back out and reproduces the
+// double-enqueue the query was widened to prevent. Query and check must agree.
+describe('isOutstandingJobStatus', () => {
+  test('queued and running are outstanding', () => {
+    expect(isOutstandingJobStatus('queued')).toBe(true);
+    expect(isOutstandingJobStatus('running')).toBe(true);
+  });
+
+  test('a parked fallback row is outstanding', () => {
+    expect(isOutstandingJobStatus(QUEUE_FALLBACK_STATUS)).toBe(true);
+  });
+
+  test('terminal and unknown statuses are not outstanding', () => {
+    expect(isOutstandingJobStatus('done')).toBe(false);
+    expect(isOutstandingJobStatus('failed')).toBe(false);
+    expect(isOutstandingJobStatus('cancelled')).toBe(false);
+    expect(isOutstandingJobStatus(null)).toBe(false);
+    expect(isOutstandingJobStatus(undefined)).toBe(false);
+  });
+});
+
+// The query-shape test above pins the fix; this one pins the CONSEQUENCE. It
+// drives the real refresh fan-out (enqueueSlideshowFetches) against a video
+// whose first fetch is parked, and asserts no second row is written. On the
+// pre-fix source this returns queued=1 and writes a second MediaJob row —
+// which is the duplicate Apify download the SLA-341 park warns about.
+describe('refresh fan-out does not re-queue a video whose fetch is parked', () => {
+  test('a parked fallback row is skipped, not re-enqueued', async () => {
+    resetRoutedPublisherForTests();
+    resetTransportCacheForTests();
+    seen.creates.length = 0;
+    seen.lastCreated = null;
+    seen.findFirstResult = {
+      id: 'parked-1',
+      videoId: 'vid-1',
+      kind: 'fetch',
+      status: QUEUE_FALLBACK_STATUS,
+      queueOwner: 'fallback_d1',
+    };
+    try {
+      const out = await enqueueSlideshowFetches('ws-1', ['vid-1']);
+      expect(out).toEqual({ queued: 0, skipped: 1 });
+      // The whole point: no second MediaJob row for a video already spoken for.
+      expect(seen.creates).toEqual([]);
+    } finally {
+      seen.findFirstResult = null;
+      resetRoutedPublisherForTests();
+      resetTransportCacheForTests();
+    }
+  });
+
+  test('a genuinely fresh video is still queued', async () => {
+    resetRoutedPublisherForTests();
+    resetTransportCacheForTests();
+    seen.creates.length = 0;
+    seen.lastCreated = null;
+    seen.findFirstResult = null;
+    try {
+      const out = await enqueueSlideshowFetches('ws-1', ['vid-1']);
+      expect(out).toEqual({ queued: 1, skipped: 0 });
+      expect(seen.creates).toHaveLength(1);
+      expect(seen.creates[0]).toMatchObject({ kind: 'fetch', videoId: 'vid-1' });
+    } finally {
+      resetRoutedPublisherForTests();
+      resetTransportCacheForTests();
+    }
   });
 });
