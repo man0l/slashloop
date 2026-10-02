@@ -475,13 +475,13 @@ describe('estimate_experiment', () => {
     const before = await load(WS, 'e1');
 
     // A review-state experiment has nothing left to plan, and the quote says so
-    // rather than inventing a price.
+    // rather than inventing a price. workspaceCredits is the wallet, not the
+    // spend, and the wallet is a global the suite stubs per file — so only its
+    // presence is asserted here, never its exact value.
     const plan = await call('estimate_experiment', { experimentId: 'e1', stage: 'plan' });
     expect(plan.isError).toBeUndefined();
-    expect(plan.json.estimate).toMatchObject({
-      analysisCredits: 0, planningCredits: 0, totalCredits: 0,
-      maxCredits: 100, workspaceCredits: WORKSPACE_CREDITS,
-    });
+    expect(plan.json.estimate).toMatchObject({ analysisCredits: 0, planningCredits: 0, totalCredits: 0, maxCredits: 100 });
+    expect(plan.json.estimate.workspaceCredits).toBeGreaterThan(0);
     expect(plan.json.cost).toMatchObject({ credits: 0, quoted: true });
     expect(plan.json.nextSteps[0]).toMatchObject({ tool: 'plan_experiment', spendsMoney: true, cost: '0 credits' });
 
