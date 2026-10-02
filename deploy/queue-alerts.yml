@@ -5,7 +5,8 @@
 # baseline doc and are tuned after the producer canary, not before.
 #
 # Signals covered: queue depth + oldest age by kind, retries/lease expiry,
-# API auth/rejection rates, projection lag, backup age, restore-test state.
+# API auth/rejection rates (rate-limit rejects labelled by limiter gate),
+# projection lag, backup age, restore-test state.
 # ===========================================================================
 
 groups:
@@ -50,13 +51,38 @@ groups:
         annotations:
           summary: "Producer authentication rejects increasing"
 
+      # SLA-350: this alert sums `by (cause)`, so it still reads the total reject
+      # rate — but the totals it sums were previously pinned at 0, because the
+      # queue-api only reported accepted (202) publishes. Rejections are reported
+      # with their real status now, so rate limiting is visible here for the
+      # first time. Keep this expression gate-less: cause="rate_limit" now has
+      # one series PER GATE (see below) and adding a gate-less aggregate line
+      # would double-count this rule.
       - alert: QueueApiRejectsSpike
         expr: >
           sum(rate(slashloop_queue_api_rejects_total[5m])) by (cause) > 1
         for: 10m
         labels: { severity: warning }
         annotations:
-          summary: "Producer rejection rate spike (replay/rate-limit/validation)"
+          summary: "Producer rejection rate spike (auth/replay/rate-limit/validation)"
+
+      # Which limiter is doing the refusing. cause="rate_limit" carries a `gate`
+      # label — per_key (120/min), per_workspace (30/min) or
+      # per_kind_workspace (10/min) — and the three mean different things, so
+      # the alert names the one to tune instead of pointing at a single number.
+      # gate="unknown" is a 429 recorded without a gate; it should stay at 0.
+      - alert: QueueRateLimitGateSustained
+        expr: >
+          sum(rate(slashloop_queue_api_rejects_total{cause="rate_limit"}[5m])) by (gate) > 0.05
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "queue-api refusing publishes at the {{ $labels.gate }} limiter — tune that gate or slow the producer"
+          description: >-
+            Over 0.05 refused publishes/sec for 15 minutes at {{ $labels.gate }}.
+            per_kind_workspace (10/min) usually means one kind in one workspace is
+            over-publishing; per_workspace (30/min) one workspace is over-publishing
+            across kinds; per_key (120/min) one key spans too many workspaces.
 
       - alert: QueueApiDown
         expr: up{job="queue-api"} == 0
