@@ -12,7 +12,7 @@ import type { AnalysisResult } from '../analysis/types.js';
 import { loadAnalysisConfig } from '../analysis/config.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance } from './credits.js';
 import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls, resolveRecreationUrls, isPhotoPost, slideshowIsHydrated } from './media.js';
-import { enqueueAnalyzeJob, enqueueFetchJob, enqueueRecreateJob, isOutstandingJobStatus, latestReportingJobForVideo, outstandingJobForVideo, latestJobForVideo, type MediaJobRow } from './jobs.js';
+import { enqueueAnalyzeJob, enqueueFetchJob, enqueueRecreateJob, isOutstandingJobStatus, latestReportingJobForVideo, outstandingJobForVideo, latestJobForVideo, reportedJobStatus, type MediaJobRow } from './jobs.js';
 import { classifyGeminiError, errorCodeFor, parseJobLastError, friendlyGeminiMessage, type GeminiErrorCode } from './gemini-errors.js';
 import { keepAlive } from '../cf/wait-until.js';
 import { driveVideoRecreateJob, defaultRecreateVideoDeps, recreatePreAuthCredits } from './recreate-video-stream.js';
@@ -233,8 +233,8 @@ export async function getVideoDetailForWorkspace(workspace: Workspace, videoId: 
     recreationImages,
     isSlideshow: photo,
     experimentEligible: photo || slideshowImages.length > 0 || recreationImages.length > 0,
-    recreateJob: recreateJob && (recreateJob.status === 'queued' || recreateJob.status === 'running' || (recreateJob.status === 'failed' && !recreationImages.length))
-      ? { jobId: recreateJob.id, status: recreateJob.status, lastError: recreateJob.lastError }
+    recreateJob: recreateJob && (isOutstandingJobStatus(recreateJob.status) || (recreateJob.status === 'failed' && !recreationImages.length))
+      ? { jobId: recreateJob.id, status: reportedJobStatus(recreateJob.status), lastError: recreateJob.lastError }
       : null,
     creatorHandle: video.creatorHandle,
     caption: video.caption,
@@ -272,9 +272,14 @@ export async function recreateSlideshowForWorkspace(
     return { ok: false, errorCode: 'not_configured', error: 'OPENROUTER_API_KEY is not configured.', creditsCharged: 0, creditsRemaining: (await creditBalance(workspace.id)).total };
   }
 
+  // A parked fallback_d1/queued_remote recreate is outstanding too: nothing can
+  // claim it, but the reconciler will publish it and it runs. Answering "nothing
+  // outstanding" here charged the customer for a second deck (fresh opId, so a
+  // second real debit, not a replay) that then ran alongside the first. See
+  // latestJobForVideo / isOutstandingJobStatus.
   const outstanding = await latestJobForVideo(videoId, 'recreate');
-  if (outstanding && (outstanding.status === 'queued' || outstanding.status === 'running')) {
-    return { ok: true, queued: true, job: outstanding, creditsCharged: 0, creditsRemaining: (await creditBalance(workspace.id)).total };
+  if (outstanding && isOutstandingJobStatus(outstanding.status)) {
+    return { ok: true, queued: true, job: { ...outstanding, status: reportedJobStatus(outstanding.status) }, creditsCharged: 0, creditsRemaining: (await creditBalance(workspace.id)).total };
   }
 
   const opId = randomUUID();
@@ -327,7 +332,11 @@ export async function recreateSlideshowForWorkspace(
     })().catch((err: unknown) => console.warn(`[recreate] enqueue drive failed for ${videoId} (cron resumes): ${(err as Error).message}`)),
   );
   const balance = await creditBalance(workspace.id);
-  return { ok: true, queued: true, job, creditsCharged: preAuthCredits, creditsRemaining: balance.total };
+  // The enqueue itself can land parked (queue-api refused the publish on its
+  // per-kind budget), so the row we hand back may carry queued_remote. Report it
+  // as `queued` — it is pending work — rather than leaking a storage status the
+  // client's status branches have never seen.
+  return { ok: true, queued: true, job: { ...job, status: reportedJobStatus(job.status) }, creditsCharged: preAuthCredits, creditsRemaining: balance.total };
 }
 
 /**
