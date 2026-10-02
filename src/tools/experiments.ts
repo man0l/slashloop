@@ -235,7 +235,10 @@ export function registerExperimentTools(server: McpServer) {
       const page = rows.slice(0, limit);
       const nextOffset = rows.length > limit ? offset + limit : null;
       return payload({
-        experiments: page.map(detail === 'full' ? serialize : summarize),
+        // Two shapes on purpose: `serialize` is the REST record, `summarize` is
+        // the compact row. Mapped separately rather than through one union —
+        // the detail flag is a caller-facing choice about payload size.
+        experiments: detail === 'full' ? page.map(serialize) : page.map(summarize),
         nextOffset,
         ...(nextOffset === null ? {} : { nextOffsetHint: `Call again with offset=${nextOffset} for the next page.` }),
         ...(page.length ? {} : { hint: 'No experiments yet. create_experiment starts one from your slideshow videos — a draft costs nothing.' }),

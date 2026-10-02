@@ -22,6 +22,7 @@ import { z } from 'zod/v4';
 import { swapActiveClientForTests, type AppPrismaClient, type RawStatement } from '../store.js';
 import { setR2Bindings } from '../lib/storage-bindings.js';
 import { runWithUser } from '../context.js';
+import type { Variant as ExperimentVariant } from '../experiments/schema.js';
 import { registerExperimentTools, clampSlideCount, editInstructions } from './experiments.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -149,7 +150,7 @@ function brief(hook: string, overlays: string[] = []) {
     slides: [slide('hook', overlays[0] ?? ''), slide('body', overlays[1] ?? ''), slide('body', overlays[2] ?? '')],
   };
 }
-function variant(id: string, hook: string, changed: Array<{ name: 'hook'; value: string }>) {
+function variant(id: string, hook: string, changed: Array<{ name: 'hook'; value: string }>): ExperimentVariant {
   return {
     id, title: id === 'v-base' ? 'Baseline' : 'New hook', hypothesis: 'h',
     changedVariables: changed, brief: brief(hook),
