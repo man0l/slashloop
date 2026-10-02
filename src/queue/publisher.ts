@@ -288,6 +288,15 @@ export class QueuePublisher {
         queueOwner: 'fallback_d1',
         status: QUEUE_FALLBACK_STATUS,
       });
+      // Parked, not published — and until this line the park was completely
+      // silent. The row is invisible to every claimer (D1 claims skip
+      // queueOwner != 'd1', PG has no row), so "scraper claimed zero while the
+      // sweep kept queueing" was the whole operator-visible story. The
+      // reconciler is the only way out, so say so here, once, with the cause.
+      console.warn(
+        `[queue] parked kind=${req.kind} d1=${row.id} as fallback_d1/${QUEUE_FALLBACK_STATUS}`
+        + ` — PG publish failed (${(err as Error).message}); invisible to claims until reconcileFallbackJobs republishes it`,
+      );
       return { d1JobId: row.id, pgJobId: null, transport: 'fallback_d1', deduped: false };
     }
   }

@@ -562,6 +562,18 @@ export async function enqueueRescoreJob(opts: {
  * Observed live, with a workspace-wide rescore in flight.
  *
  * Pass null to ask "any job at all", which is what a UI would want.
+ *
+ * QUEUE_FALLBACK_STATUS (`queued_remote`) counts as outstanding. A row parked
+ * there after a failed PG publish (queueOwner='fallback_d1') is invisible to
+ * every claimer — D1 claims select only queueOwner='d1' and PG has no row — but
+ * the reconciler sweep WILL publish it and run it, so the work is genuinely
+ * pending. Leaving it out of this filter is what let the SLA-140 paid
+ * rescrape loop back in through a different door: observed 2026-10-01, the
+ * stale sweep enqueued five identical 5-video creator scrapes for one source
+ * over 62 minutes, each one re-checking a source whose previous row was parked
+ * (dedupeKey d1:<MediaJob.id> on all five PG rows proves the reconciler, not
+ * the enqueue, published them). Answering "nothing outstanding" for a queued
+ * job is what makes a caller pay twice for the same scrape.
  */
 export async function outstandingJobForSource(
   sourceId: string,
@@ -570,7 +582,7 @@ export async function outstandingJobForSource(
   return db.mediaJob.findFirst({
     where: {
       sourceId,
-      status: { in: ['queued', 'running'] },
+      status: { in: ['queued', 'running', QUEUE_FALLBACK_STATUS] },
       ...(kind ? { kind } : {}),
     },
     orderBy: { createdAt: 'desc' },

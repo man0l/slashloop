@@ -8,7 +8,7 @@
 // - PG failure without fallback throws retryable (no unowned dual-queue row);
 // - the PG body matches the queue-api EnqueueBody contract (required
 //   dedupeKey, record payload, credits only with opId, shared d1JobId).
-import { describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { deriveDedupeKey, QueuePublisher, QueuePublishError, type PublisherD1, type PublisherPg } from './publisher.js';
 import { QUEUE_FALLBACK_STATUS } from './transport.js';
 
@@ -66,13 +66,13 @@ function makeD1() {
 
 type PgCall = Parameters<PublisherPg['publish']>[0];
 
-function makePg(opts?: { fail?: boolean }) {
+function makePg(opts?: { fail?: boolean; message?: string }) {
   const byDedupe = new Map<string, string>();
   let n = 0;
   const calls: PgCall[] = [];
   const pg: PublisherPg = {
     publish: async (input) => {
-      if (opts?.fail) throw new Error('queue_unavailable');
+      if (opts?.fail) throw new Error(opts.message ?? 'queue_unavailable');
       calls.push(input);
       const existing = byDedupe.get(input.dedupeKey);
       if (existing) return { pgJobId: existing, deduped: true };
@@ -93,6 +93,14 @@ const baseReq = {
   opId: 'op-stable-1',
   preAuthCredits: null,
 };
+
+// console.warn is captured rather than spied so a failing assertion prints the
+// actual log line (same approach as src/lib/fallback-reconcile.test.ts).
+// Installed for the whole file and put back at the end so nothing leaks.
+const warns: string[] = [];
+const realWarn = console.warn;
+beforeAll(() => { console.warn = (...args: unknown[]) => { warns.push(args.map(String).join(' ')); }; });
+afterAll(() => { console.warn = realWarn; });
 
 describe('QueuePublisher', () => {
   test('d1 transport creates a d1-owned row with the stable opId', async () => {
@@ -184,6 +192,40 @@ describe('QueuePublisher', () => {
     expect(row.queueOwner).toBe('fallback_d1');
     expect(row.status).toBe(QUEUE_FALLBACK_STATUS);
     expect(row.opId).toBe('op-stable-1');
+  });
+
+  // SLA-141: the park used to be silent, and a parked row is visible to no
+  // claimer — so "scraper claimed zero while the sweep kept queueing" was the
+  // entire operator-visible story, with no line anywhere naming the cause.
+  test('parking a fallback row says so, names the kind and the cause', async () => {
+    warns.length = 0;
+    const { d1 } = makeD1();
+    const { pg } = makePg({ fail: true, message: 'queue-api unreachable' });
+    const pub = new QueuePublisher({
+      d1,
+      pg,
+      resolveTransport: async () => 'pg',
+      fallbackEnabled: true,
+    });
+    const ref = await pub.publish({ ...baseReq });
+    expect(warns).toHaveLength(1);
+    const line = warns[0];
+    expect(line).toContain('kind=thumb');
+    expect(line).toContain(`d1=${ref.d1JobId}`);
+    expect(line).toContain(`fallback_d1/${QUEUE_FALLBACK_STATUS}`);
+    expect(line).toContain('queue-api unreachable');
+    expect(line).toContain('reconcileFallbackJobs');
+    // The secret never reaches the log line: only the transport error text.
+    expect(line).not.toContain('secret');
+  });
+
+  test('a successful publish logs no park', async () => {
+    warns.length = 0;
+    const { d1 } = makeD1();
+    const { pg } = makePg();
+    const pub = new QueuePublisher({ d1, pg, resolveTransport: async () => 'pg' });
+    await pub.publish({ ...baseReq });
+    expect(warns).toEqual([]);
   });
 
   test('reconciliation is one-way with dedupeKey d1:<id> and the original opId', async () => {
