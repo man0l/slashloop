@@ -25,7 +25,7 @@ Supabase JWT (step-1 auth).
 
 ## 4. MCP handshake + whoami + tenant isolation
 
-- [ ] MCP Inspector against `<origin>/mcp` with a real JWT: `initialize` → tools list (55).
+- [ ] MCP Inspector against `<origin>/mcp` with a real JWT: `initialize` → tools list (63).
 - [ ] `whoami`/usage call resolves to the JWT `sub` workspace (`get_usage` returns caller data).
 - [ ] Tenant isolation: user A's `list_sources` shows no rows owned by user B
       (JWT `sub` scoping via `runWithUser` → `requireWorkspace()`).
