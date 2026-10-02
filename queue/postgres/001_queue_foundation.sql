@@ -24,6 +24,13 @@ CREATE TABLE IF NOT EXISTS queue_jobs (
   -- (e.g. `analyze:video:<id>`, `refresh:source:<id>`, `d1:<mediaJobId>`
   -- for D1 fallback reconciliation). NULL allowed for internal rows;
   -- Postgres treats NULLs as distinct under UNIQUE.
+  --
+  -- Lifetime: a key means the job is IN FLIGHT, not that it once existed
+  -- (SLA-329). Every terminal transition sets it to NULL, and enqueue also
+  -- releases a terminal holder before retrying its insert, so a source's
+  -- second refresh publishes a real job instead of deduping onto the first
+  -- one forever. Rows that reached terminal before this rule recover on
+  -- their next publish — no backfill.
   dedupe_key text UNIQUE,
   kind text NOT NULL,
   state text NOT NULL DEFAULT 'queued',

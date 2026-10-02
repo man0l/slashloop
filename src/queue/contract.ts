@@ -30,6 +30,22 @@ export const QUEUE_STATES = ['queued', 'running', 'done', 'failed', 'cancelled']
 
 export type QueueJobState = (typeof QUEUE_STATES)[number];
 
+/**
+ * States a job never leaves. A terminal job must stop occupying its dedupe
+ * key: `queue_jobs.dedupe_key` is UNIQUE, so a terminal holder turns every
+ * later publish of the same logical job into a silent no-op (SLA-329 — a
+ * source's second refresh deduped onto a four-day-old `done` row). Dedupe is
+ * about work IN FLIGHT, not work that once existed.
+ */
+export const QUEUE_TERMINAL_STATES: readonly QueueJobState[] = ['done', 'failed', 'cancelled'];
+
+export function isTerminalJobState(state: string): boolean {
+  return (QUEUE_TERMINAL_STATES as readonly string[]).includes(state);
+}
+
+/** SQL literal list of the terminal states (single source for pg.ts). */
+export const QUEUE_TERMINAL_STATE_SQL = QUEUE_TERMINAL_STATES.map((s) => `'${s}'`).join(', ');
+
 /** Give up after this many attempts (mirrors MAX_ATTEMPTS in lib/jobs.ts). */
 export const QUEUE_MAX_ATTEMPTS = 3;
 
