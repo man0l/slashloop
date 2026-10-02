@@ -1,7 +1,13 @@
-# Test suite ordering policy
+# Test suite run-dependence policy
 
 Decided 2026-10-01, after deploy-worker run 188 (verify failed on
 `src/cf/internal.test.ts`, `deploy` skipped, merged SHA never published).
+Extended 2026-10-02 with the wall-clock half of the same problem, which took
+out the next two runs for a different reason.
+
+Both sections below are one problem: a test whose result depends on something
+about the *run* other than the code under test. `deploy` needs `verify`, so
+either kind costs the whole pipeline, not just the change that introduced it.
 
 ## The decision
 
@@ -77,6 +83,53 @@ the next checkout.
 
 The general class is still open. That is a code change, not a CI change, so
 it is tracked separately from the pipeline work.
+
+## The wall clock is not a fixture
+
+A test must not depend on what day it is run on. Concretely:
+
+1. A test that drives a simulated day must pass an explicit `Date` to every
+   function under test. Bare `new Date()` next to a fixed timestamp is the bug,
+   and the compiler cannot see it — both are valid dates.
+2. Where the code under test reads the clock itself, inject or pin it. Do not
+   reach for the real one and then compare against a fixture.
+3. If a test genuinely needs "now" (a TTL that must be in the future), keep every
+   other timestamp in that test relative to that same `now`, so the file stays
+   correct on any date. This is what `d1-read-budget.test.ts` already does for
+   its staleness checks with its `later()` helper.
+
+### What it cost
+
+`src/cf/d1-read-budget.test.ts` recorded a failed KV flush with a bare
+`new Date()` and then replayed the runaway with `AT`, a fixed
+`2026-10-01T09:00:00Z`. The sticky degraded flag is scoped to a UTC day, so the
+two only lined up while the real date happened to *be* AT's date. The test's own
+comment said "Same day, one failed flush at the start" — the intent was
+recorded, the code did not express it.
+
+Nothing about that looks like a date bomb in review, and nothing looks wrong in
+a local run either. It passed on 2026-10-01, and at 2026-10-02T00:00Z it started
+failing and could not pass again until someone changed the fixture. Because
+`deploy` needs `verify`, the cost was every publish in the repo:
+
+| run | SHA | what it blocked |
+| --- | --- | --- |
+| 195 | `dbd1248` (merge of #103) | the D1 read-budget fix never reached production |
+| 196 | `a49596f` (merge of #106) | everything after it, with no retry |
+
+The last good publish was run 194 (`2b491ee7`, merge of #102). `worker-live`
+still points there.
+
+The same failure mode as run 188, one layer over: there the run depended on the
+order `bun test` discovered files in, here it depended on the calendar.
+
+### The invariant that makes the fix honest
+
+The repaired test now pins *why* `AT` is required, so the flag cannot be moved
+to a `Date` that merely looks equivalent: `load()` re-seeds the per-isolate cache
+when the UTC day changes, so a blip is scoped to the day it was raised on and
+midnight UTC is a real recovery. Making the sticky flag survive the rollover
+fails that test.
 
 ## How a violation shows up
 

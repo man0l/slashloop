@@ -439,9 +439,16 @@ describe('degraded mode fails toward a lower ceiling', () => {
     const healthy = await replayRunaway();
 
     // Same day, one failed flush at the start, healthy KV thereafter.
+    //
+    // `AT`, not `new Date()`. The blip's sticky flag is scoped to a UTC day and
+    // the replay below runs on AT's day, so a wall-clock timestamp here made
+    // this test pass only while "today" happened to equal AT's date. From
+    // 2026-10-02T00:00Z it failed on `master` — and because `deploy` needs
+    // `verify`, that one test blocked every publish (see
+    // docs/test-suite-policy.md, "the wall clock is not a fixture").
     resetReadBudgetCache();
     setShardDirectory(asKv(fakeKv({}, { failPut: true })));
-    await recordDailyReads(SYNC_ROWS, new Date());
+    await recordDailyReads(SYNC_ROWS, AT);
     setShardDirectory(asKv(fakeKv()));
     const afterBlip = await replayRunaway();
 
@@ -454,6 +461,30 @@ describe('degraded mode fails toward a lower ceiling', () => {
     expect(afterBlip.spent).toBeLessThanOrEqual(
       degradedDailyReadLimit(DEFAULT_DAILY_READ_LIMIT) + RUNAWAY_ROWS,
     );
+  });
+
+  // The inverse of the test above, and the invariant that test depends on: the
+  // sticky flag belongs to the UTC day it was raised on. Pinned because "carry
+  // degraded state forever" reads like a harmless robustness tweak while the
+  // counter it was protecting is keyed by day — and because the day-scoping is
+  // what made a wall-clock timestamp in the test above wrong rather than merely
+  // redundant.
+  test("a blip is scoped to its own UTC day: yesterday's failed flush does not degrade today", async () => {
+    process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
+    resetReadBudgetCache();
+
+    // Raise the flag on AT's day.
+    setShardDirectory(asKv(fakeKv({}, { failPut: true })));
+    await recordDailyReads(SYNC_ROWS, AT);
+    expect((await guardDailyReads(AT)).degraded).toBe(true);
+
+    // Midnight UTC is the documented recovery, and it is a real one: today's
+    // counter is a different KV key with its own availability.
+    const nextDay = new Date(AT.getTime() + 24 * 60 * 60 * 1000);
+    expect(nextDay.toISOString().slice(0, 10)).not.toBe(AT.toISOString().slice(0, 10));
+    const fresh = await guardDailyReads(nextDay);
+    expect(fresh).toMatchObject({ used: 0, degraded: false, allowed: true });
+    expect(fresh.limit).toBe(DEFAULT_DAILY_READ_LIMIT);
   });
 
   test('runaway with KV writes exhausted: one isolate stays at the reduced ceiling', async () => {
