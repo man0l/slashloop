@@ -460,6 +460,30 @@ describe('degraded mode fails toward a lower ceiling', () => {
     );
   });
 
+  // The inverse of the test above, and the invariant that makes its `AT` the
+  // right stamp rather than merely a passing one: the sticky flag belongs to the
+  // UTC day it was raised on. Pinned because "carry degraded state forever"
+  // reads like harmless robustness while the counter it protects is keyed by
+  // day — and because the day-scoping is the whole reason a wall-clock stamp
+  // there was wrong instead of just redundant.
+  test("a blip is scoped to its own UTC day: yesterday's failed flush does not degrade today", async () => {
+    process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
+    resetReadBudgetCache();
+
+    // Raise the flag on AT's day.
+    setShardDirectory(asKv(fakeKv({}, { failPut: true })));
+    await recordDailyReads(SYNC_ROWS, AT);
+    expect((await guardDailyReads(AT)).degraded).toBe(true);
+
+    // Midnight UTC is the documented recovery, and it is a real one: today's
+    // counter is a different KV key with its own availability.
+    const nextDay = new Date(AT.getTime() + 24 * 60 * 60 * 1000);
+    expect(nextDay.toISOString().slice(0, 10)).not.toBe(AT.toISOString().slice(0, 10));
+    const fresh = await guardDailyReads(nextDay);
+    expect(fresh).toMatchObject({ used: 0, degraded: false, allowed: true });
+    expect(fresh.limit).toBe(DEFAULT_DAILY_READ_LIMIT);
+  });
+
   test('runaway with KV writes exhausted: one isolate stays at the reduced ceiling', async () => {
     process.env.D1_DAILY_READ_LIMIT = String(DEFAULT_DAILY_READ_LIMIT);
     setShardDirectory(asKv(fakeKv({}, { failPut: true })));
