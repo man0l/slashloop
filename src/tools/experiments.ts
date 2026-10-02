@@ -33,7 +33,7 @@ import { load, list, serialize } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
 import {
-  ExperimentError, Id, MAX_MANUAL_ATTEMPTS, SLIDE_FANOUT, VARIABLE_FIELDS, type Experiment,
+  ExperimentError, Id, MAX_MANUAL_ATTEMPTS, SLIDE_FANOUT, VARIABLE_FIELDS, type Experiment, type InstructionsData,
 } from '../experiments/schema.js';
 
 // ---- dependencies ----------------------------------------------------------
@@ -56,6 +56,52 @@ export const defaultExperimentToolDeps: ExperimentToolDeps = {
 };
 
 // ---- helpers ---------------------------------------------------------------
+
+/**
+ * Edit-slideshow mode — the site's second wizard path, reproduced exactly.
+ *
+ * The site (src/ui/gallery.ts `buildPayload`, mode "edit") does not let the
+ * caller write an experiment brief: it takes one slideshow, the new hook and
+ * the new per-slide overlay copy, and assembles the rest itself. The goal
+ * string is fixed, the only varied variable is the hook, mode is controlled,
+ * there are exactly two variants and the cap is 100 credits — a hook A/B on a
+ * deck whose images do not move.
+ *
+ * The overlay copy goes into `direction` as the planner's only brief, so the
+ * per-slide lines are quoted in the wizard's own wording and order: slide 1 is
+ * the tested hook, slides 2..N are supporting copy, and "(strip — no text)"
+ * means render nothing at all, which is NOT the same as "leave the original".
+ */
+export const EDIT_GOAL = 'Edit the slideshow overlay text, keeping the same images.';
+/** Two variants: the original hook and the replacement. */
+export const EDIT_VARIANT_COUNT = 2;
+/** Hard ceiling for an edit run, as on the site. */
+export const EDIT_MAX_CREDITS = 100;
+
+/**
+ * The wizard's `direction` string for an edit run.
+ *
+ * Every entry is trimmed, like the wizard's `str()` helper: the copy is quoted
+ * inside the sentence, so leading or trailing whitespace would be rendered as
+ * part of the overlay text instead of being a typo in the request.
+ */
+export function editSlideDirection(hook: string, overlayTexts: string[]): string {
+  const lines = [`Slide 1 (hook): "${hook.trim()}" (empty clears it too)`];
+  overlayTexts.forEach((text, index) => {
+    const trimmed = text.trim();
+    lines.push(`Slide ${index + 2}: "${trimmed}"${trimmed ? '' : ' (strip — no text)'}`);
+  });
+  return 'Render the exact overlay texts. ' + lines.join(' ');
+}
+
+/** Edit mode is a single deck, so the "one experiment per source" loop is length 1 by definition. */
+export function editInstructions(hook: string, overlayTexts: string[], language: string): InstructionsData {
+  return {
+    goal: EDIT_GOAL, brand: '', audience: '', language: language.trim() || 'English',
+    direction: editSlideDirection(hook, overlayTexts),
+    lockedConstraints: [], variables: ['hook'], mode: 'controlled',
+  };
+}
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 const text = (payload: unknown, isError = false): ToolResult => ({
@@ -214,21 +260,36 @@ function lifecycleSteps(e: Experiment): NextStep[] {
   }
 }
 
-/** Re-estimate and refuse when it exceeds what the user approved. */
+/**
+ * Re-estimate, refuse when the fresh estimate exceeds what the user approved,
+ * and hand that estimate back either way.
+ *
+ * Returning it on success matters: the price an agent approved is computed from
+ * the state BEFORE the transition, and after planning that same state reads as
+ * "nothing left to do". Dropping it would leave the only figure in the
+ * conversation attached to a call that was refused.
+ */
+type Gate = { refusal: ToolResult | null; estimate: Awaited<ReturnType<ExperimentToolDeps['estimate']>> };
 async function approvalGate(
   d: ExperimentToolDeps, e: Experiment, stage: 'plan' | 'generate', approvedCredits: number, variantIds?: string[], taskIds?: string[],
-): Promise<ToolResult | null> {
-  const est = await d.estimate(e, stage, variantIds, taskIds);
-  if (est.totalCredits <= approvedCredits) return null;
-  return text({
-    error: 'estimate_exceeds_approval',
-    message: `The current estimate is ${est.totalCredits} credits, above the ${approvedCredits} the user approved. Nothing was started. Show the user this estimate and ask again.`,
-    estimate: est,
-  }, true);
+): Promise<Gate> {
+  const estimate = await d.estimate(e, stage, variantIds, taskIds);
+  if (estimate.totalCredits <= approvedCredits) return { refusal: null, estimate };
+  return {
+    estimate,
+    refusal: text({
+      error: 'estimate_exceeds_approval',
+      message: `The current estimate is ${estimate.totalCredits} credits, above the ${approvedCredits} the user approved. Nothing was started. Show the user this estimate and ask again.`,
+      estimate,
+    }, true),
+  };
 }
 
-function mutationResult(d: ExperimentToolDeps, e: Experiment, message: string): ToolResult {
-  return text(withNextSteps({ message, experiment: d.serialize(e), progress: experimentProgress(e) }, lifecycleSteps(e)));
+function mutationResult(d: ExperimentToolDeps, e: Experiment, message: string, estimate?: Gate['estimate']): ToolResult {
+  return text(withNextSteps({
+    message, experiment: d.serialize(e), progress: experimentProgress(e),
+    ...(estimate ? { estimate, estimateNote: 'Priced from the state before this call started. The worker settles against it job by job.' } : {}),
+  }, lifecycleSteps(e)));
 }
 
 // ---- input schemas ---------------------------------------------------------
@@ -311,32 +372,66 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
 
   // ---- create_experiment ----
   server.tool('create_experiment',
-    'Create draft experiment(s) from Gallery slideshows. Free — a draft spends nothing. Like the site, every source '
-    + 'video becomes its OWN isolated experiment (briefs never mix sources), so N videoIds create N drafts. Sources must '
-    + 'be slideshows or videos with a finished Recreate deck (show_gallery marks them). The slide count follows the '
-    + 'source deck when known. Returns each draft with its planning estimate. '
+    'Create draft experiment(s) from Gallery slideshows. Free — a draft spends nothing. Two modes, matching the site\'s '
+    + 'experiment wizard:\n'
+    + '• mode "create" (default) — one experiment PER source video, because briefs never mix sources, so N videoIds '
+    + 'create N drafts. Give `instructions`: what to vary, the goal, optional creative direction.\n'
+    + '• mode "edit" — the site\'s "Edit slideshow" path: exactly ONE deck, the same images, new overlay copy. Pass `hook` '
+    + '(slide 1) and `overlayTexts` (slides 2, 3, … in order; an empty string strips that slide\'s text) instead of '
+    + '`instructions`; the tool assembles the same brief the site sends — fixed goal, hook as the only varied variable, '
+    + 'controlled mode, 2 variants, a 100-credit cap — with the copy quoted per slide in the site\'s wording. '
+    + 'The source deck\'s own slide count wins when it is known; pass slideCount only if you do not have it.\n'
+    + 'Sources must be slideshows or videos with a finished Recreate deck (show_gallery marks them). '
     + `Credits: analysis ${CREDIT_COSTS.analyzeVideo}/source + ${CREDIT_COSTS.experimentPlanningCall} per planning call at plan time; `
     + `${CREDIT_COSTS.experimentSlide} per slide × ${SLIDE_FANOUT} candidates at generation. ${LIFECYCLE}`,
     {
       workspaceId: workspaceIdField,
-      videoIds: z.array(Id).min(1).max(20).describe('1–20 distinct Gallery video ids; one experiment per video.'),
-      instructions: instructionsInput,
-      variantCount: z.number().int().min(1).max(12).default(3).describe('Variants per experiment, including the baseline (1–12).'),
+      mode: z.enum(['edit', 'create']).default('create').describe(
+        '"create" (default) = new variations from instructions. "edit" = keep the deck, replace the overlay text (one video).',
+      ),
+      videoIds: z.array(Id).min(1).max(20).describe('1–20 distinct Gallery video ids; one experiment per video. Edit mode takes exactly one.'),
+      instructions: instructionsInput.optional().describe('CREATE mode. Required in create mode; not used in edit mode.'),
+      hook: z.string().max(2000).optional().describe(
+        'EDIT mode: the exact words for slide 1. May be empty if the change is a supporting slide\'s text instead.',
+      ),
+      overlayTexts: z.array(z.string().max(2000)).max(7).optional().describe(
+        'EDIT mode: overlay text for slides 2, 3, … in order. Empty string = render no text on that slide.',
+      ),
+      language: z.string().trim().min(1).max(80).optional().describe('EDIT mode: output language for the copy (default English).'),
+      variantCount: z.number().int().min(1).max(12).default(3).describe('CREATE mode: variants per experiment, including the baseline (1–12). Edit mode is always 2.'),
       slideCount: z.number().int().min(3).max(8).default(5).describe('Slides per variant (3–8); overridden by the source deck length when known.'),
       maxCredits: z.number().int().min(1).max(MAX_EXPERIMENT_CREDITS).optional().describe(
-        'Per-experiment credit ceiling (runaway guard). Default: the site\'s automatic cap, 2× the estimate rounded up. An approved estimate may raise it.',
+        'Per-experiment credit ceiling (runaway guard). Default: the site\'s automatic cap, 2× the estimate rounded up; 100 in edit mode. An approved estimate may raise it.',
       ),
       idempotencyKey: idempotencyKeyField,
     },
     { readOnlyHint: false },
-    ({ workspaceId, videoIds, instructions, variantCount, slideCount, maxCredits, idempotencyKey }) => guarded(async () => {
+    ({ workspaceId, mode, videoIds, instructions, hook, overlayTexts, language, variantCount, slideCount, maxCredits, idempotencyKey }) => guarded(async () => {
       const workspace = await d.resolveWorkspace({ workspaceId });
       if (new Set(videoIds).size !== videoIds.length) return text({ error: 'invalid_request', message: 'videoIds must be distinct.' }, true);
-      const cap = maxCredits ?? defaultExperimentCap(variantCount, slideCount);
+      if (mode === 'edit') {
+        // One deck: the site's edit path never fans out, so a second id here
+        // is a caller mistake rather than two experiments to build.
+        if (videoIds.length !== 1) {
+          return text({ error: 'invalid_request', message: 'mode "edit" works on exactly one slideshow — pass a single videoId, or use mode "create".' }, true);
+        }
+        if (!hook?.trim() && !(overlayTexts ?? []).some(t => t.trim())) {
+          return text({ error: 'invalid_request', message: 'mode "edit" needs new copy: a hook for slide 1, or overlay text for a later slide.' }, true);
+        }
+      } else if (!instructions) {
+        return text({ error: 'invalid_request', message: 'mode "create" needs instructions — a goal and at least one variable to test.' }, true);
+      }
+      const edit = mode === 'edit'
+        ? {
+          instructions: editInstructions(hook ?? '', overlayTexts ?? [], language ?? 'English'),
+          variantCount: EDIT_VARIANT_COUNT,
+          maxCredits: EDIT_MAX_CREDITS,
+        }
+        : { instructions: instructions!, variantCount, maxCredits: maxCredits ?? defaultExperimentCap(variantCount, slideCount) };
       const created: Array<Record<string, unknown>> = [];
       const failed: Array<Record<string, unknown>> = [];
       for (const [i, videoId] of videoIds.entries()) {
-        const body = { workspaceId: workspace.id, videoIds: [videoId], instructions, variantCount, slideCount, maxCredits: cap };
+        const body = { workspaceId: workspace.id, videoIds: [videoId], ...edit, slideCount, maxCredits: edit.maxCredits };
         const key = idempotencyKey
           ? (videoIds.length === 1 ? idempotencyKey : `${idempotencyKey}:${i + 1}`)
           : derivedKey('create', body);
@@ -409,11 +504,11 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     ({ workspaceId, experimentId, approvedCredits, allowPartial, idempotencyKey }) => guarded(async () => {
       const workspace = await d.resolveWorkspace({ workspaceId });
       const e = await d.load(workspace.id, experimentId);
-      const refused = await approvalGate(d, e, 'plan', approvedCredits);
-      if (refused) return refused;
+      const gate = await approvalGate(d, e, 'plan', approvedCredits);
+      if (gate.refusal) return gate.refusal;
       const key = idempotencyKey ?? derivedKey('plan', { experimentId, allowPartial: allowPartial ?? false });
       const next = await d.mutate(workspace.id, experimentId, 'plan', { workspaceId: workspace.id, idempotencyKey: key, ...(allowPartial !== undefined ? { allowPartial } : {}) });
-      return mutationResult(d, next, 'Planning started in the background.');
+      return mutationResult(d, next, 'Planning started in the background.', gate.estimate);
     }));
 
   // ---- update_experiment_variant ----
@@ -454,11 +549,11 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     ({ workspaceId, experimentId, variants, approvedCredits, idempotencyKey }) => guarded(async () => {
       const workspace = await d.resolveWorkspace({ workspaceId });
       const e = await d.load(workspace.id, experimentId);
-      const refused = await approvalGate(d, e, 'generate', approvedCredits, variants.map(v => v.id));
-      if (refused) return refused;
+      const gate = await approvalGate(d, e, 'generate', approvedCredits, variants.map(v => v.id));
+      if (gate.refusal) return gate.refusal;
       const key = idempotencyKey ?? derivedKey('generate', { experimentId, variants });
       const next = await d.mutate(workspace.id, experimentId, 'generate', { workspaceId: workspace.id, idempotencyKey: key, variants });
-      return mutationResult(d, next, `Rendering started for ${variants.length} variant${variants.length === 1 ? '' : 's'}.`);
+      return mutationResult(d, next, `Rendering started for ${variants.length} variant${variants.length === 1 ? '' : 's'}.`, gate.estimate);
     }));
 
   // ---- retry_experiment ----
@@ -481,12 +576,12 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       const workspace = await d.resolveWorkspace({ workspaceId });
       const e = await d.load(workspace.id, experimentId);
       // Same pricing the site's approval panel uses for each retry scope.
-      const refused = taskIds
+      const gate = taskIds
         ? await approvalGate(d, e, 'generate', approvedCredits, undefined, taskIds)
         : variantIds
           ? await approvalGate(d, e, 'generate', approvedCredits, variantIds)
           : await approvalGate(d, e, stage ?? (e.report && e.variants.length ? 'generate' : 'plan'), approvedCredits);
-      if (refused) return refused;
+      if (gate.refusal) return gate.refusal;
       // Attempts only move when a job actually ran again, so an identical call
       // after a lost response replays; a genuine second retry gets a new key.
       const attempts = e.tasks.reduce((n, t) => n + t.attempts, 0);
@@ -495,7 +590,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         workspaceId: workspace.id, idempotencyKey: key,
         ...(taskIds ? { taskIds } : {}), ...(variantIds ? { variantIds } : {}),
       });
-      return mutationResult(d, next, 'Retry queued in the background.');
+      return mutationResult(d, next, 'Retry queued in the background.', gate.estimate);
     }));
 
   // ---- cancel_experiment ----
