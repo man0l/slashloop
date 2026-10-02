@@ -20,6 +20,7 @@
     "cf:deploy": "wrangler deploy",
     "postinstall": "prisma generate --schema prisma/schema.prisma; prisma generate --schema prisma/schema.sqlite.prisma; true",
     "test": "bun test",
+    "test:clock-shift": "bun test --preload ./tests/support/shift-clock.ts src/cf/d1-read-budget.test.ts src/lib/refresh-policy.test.ts",
     "test:queue": "bun test src/queue/",
     "test:queue:pg": "QUEUE_TEST_DATABASE_URL=${QUEUE_TEST_DATABASE_URL:?set a scratch PG url} bun test src/queue/pg.test.ts",
     "typecheck": "bunx tsc --noEmit -p tsconfig.json",

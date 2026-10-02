@@ -1,6 +1,7 @@
 # Deploy the whole Cloudflare stack on every push to master/main
 # (direct commits AND merged PRs both land here as push events):
-# verify (typecheck + tests) → sync secrets → prune unreachable secrets →
+# verify (typecheck + tests + date-anchored tests under a shifted clock) →
+# sync secrets → prune unreachable secrets →
 # var-budget check → D1 migrations
 # (skipped when prisma/d1-migrations did not change) → wrangler deploy
 # (Worker + routes + D1/R2/KV bindings + cron triggers) → live smoke check.
@@ -77,6 +78,8 @@ concurrency:
 
 jobs:
   # Gate: nothing deploys unless typecheck + tests pass on the pushed code.
+  # The clock-shift run is additive — it re-runs a scoped subset under a shifted
+  # clock, it does not replace `bun test`.
   verify:
     runs-on: ubuntu-latest
     permissions:
@@ -98,6 +101,17 @@ jobs:
 
       - name: Tests
         run: bun test
+
+      # SLA-323: a suite that stamps one instant with `new Date()` while reading
+      # from a hardcoded date anchor only fails once the calendar moves, so CI
+      # was green on the authoring day and red every day after — and because
+      # `deploy` is `needs: verify`, every later push was blocked with it. This
+      # runs the date-anchored suites under a shifted clock so that class of bug
+      # fails the same day it is written. Scoped on purpose: the queue and
+      # timeout suites measure real elapsed time. See
+      # tests/support/shift-clock.ts for the list and how to re-derive it.
+      - name: Tests (date-anchored suites under a shifted clock)
+        run: bun run test:clock-shift
 
   deploy:
     runs-on: ubuntu-latest
