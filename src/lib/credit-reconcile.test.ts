@@ -171,9 +171,9 @@ test('a ledger row deleted inside the window breaks the chain and is reported', 
 });
 
 test('a hand-edited delta inside the window is reported', () => {
-  // The 2-credit corruption found in production on 2026-09-01 (workspace
-  // 63c754e4): the row says -8 but the balance only moved 6, so the
-  // predecessor it implies (70) is not the 68 that is actually stored.
+  // A real 2-credit corruption found in production on 2026-09-01: the row says
+  // -8 but the balance only moved 6, so the predecessor it implies (70) is not
+  // the 68 that is actually stored.
   const breaks = findLedgerChainBreaks(newestFirst([
     { delta: -6, reason: 'tool_call', tool: null, balanceAfter: 68, refId: 'y:preauth', createdAt: '2026-09-01T13:03:00.000Z' },
     { delta: -8, reason: 'tool_call', tool: null, balanceAfter: 62, refId: 'x:preauth', createdAt: '2026-09-01T13:03:54.779Z' },
@@ -191,7 +191,7 @@ test('a hand-edited delta inside the window is reported', () => {
 });
 
 test('concurrent writes whose committed order differs from createdAt are not breaks', () => {
-  // Production workspace b2967893, 2026-10-01. Two debits 4ms apart: the row
+  // Seen in production on 2026-10-01. Two debits 4ms apart: the row
   // stamped .541 stored balanceAfter 274 and the row stamped .545 stored 282,
   // so the .545 batch committed FIRST. A check that walks rows in createdAt
   // order reports this healthy ledger as corrupt. Set membership does not,
@@ -229,33 +229,34 @@ test('two debits in the same millisecond are not breaks', () => {
 });
 
 test('a real production workspace with debits, refunds and out-of-order commits chains cleanly', () => {
-  // Verbatim from workspace b2967893 on 2026-10-02 (13 rows, its whole ledger),
-  // oldest first. It contains every shape that made earlier versions of this
-  // check report a phantom: a commit order that inverts createdAt (the .541 /
+  // The shape of a real production workspace captured on 2026-10-02 (13 rows,
+  // its whole ledger), oldest first, with refIds shortened — this is a public
+  // repo and the operation ids are customer data. Every structural property the
+  // test guards is preserved: a commit order that inverts createdAt (the .541 /
   // .545 pair), two debits in the same millisecond (the 18:02:00.877 pair), and
-  // refunds interleaved with debits so balanceAfter is not monotonic. The
-  // wallet reads 284, which is this window's newest balanceAfter.
-  const REAL_WORKSPACE_B2967893: LedgerEntry[] = [
-    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 292, refId: '706d6385:preauth', createdAt: '2026-09-28T02:52:05.471Z' },
-    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 284, refId: '4836580d:preauth', createdAt: '2026-09-28T03:22:06.571Z' },
-    { delta: 6, reason: 'usage_settlement', tool: 'refresh_source', balanceAfter: 290, refId: '4836580d:settle', createdAt: '2026-09-28T03:22:32.409Z' },
-    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 274, refId: '955139d8:preauth', createdAt: '2026-10-01T18:01:48.541Z' },
-    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 282, refId: 'b676c8ed:preauth', createdAt: '2026-10-01T18:01:48.545Z' },
-    { delta: 2, reason: 'usage_settlement', tool: 'refresh_source', balanceAfter: 276, refId: 'b676c8ed:settle', createdAt: '2026-10-01T18:01:59.944Z' },
-    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 268, refId: '68b86f70:preauth', createdAt: '2026-10-01T18:02:00.877Z' },
-    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 260, refId: '6f220c7f:preauth', createdAt: '2026-10-01T18:02:00.877Z' },
-    { delta: 8, reason: 'usage_settlement', tool: 'refresh_source', balanceAfter: 268, refId: '6f220c7f:settle', createdAt: '2026-10-01T18:02:03.849Z' },
-    { delta: 8, reason: 'usage_settlement', tool: 'refresh_source', balanceAfter: 276, refId: '68b86f70:settle', createdAt: '2026-10-01T18:02:04.119Z' },
-    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 268, refId: '5fe17f3f:preauth', createdAt: '2026-10-01T18:02:05.054Z' },
-    { delta: 8, reason: 'usage_settlement', tool: 'refresh_source', balanceAfter: 276, refId: '5fe17f3f:settle', createdAt: '2026-10-01T18:02:07.905Z' },
-    { delta: 8, reason: 'call_failed', tool: 'refresh_source', balanceAfter: 284, refId: '955139d8:fail', createdAt: '2026-10-01T18:12:05.648Z' },
+  // refunds interleaved with debits so balanceAfter is not monotonic. The wallet
+  // reads 284, which is this window's newest balanceAfter.
+  const REAL_WORKSPACE_SHAPE: LedgerEntry[] = [
+    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 292, refId: 'a:preauth', createdAt: '2026-09-28T02:52:05.471Z' },
+    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 284, refId: 'b:preauth', createdAt: '2026-09-28T03:22:06.571Z' },
+    { delta: 6, reason: 'usage_settlement', tool: 'refresh_source', balanceAfter: 290, refId: 'b:settle', createdAt: '2026-09-28T03:22:32.409Z' },
+    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 274, refId: 'c:preauth', createdAt: '2026-10-01T18:01:48.541Z' },
+    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 282, refId: 'd:preauth', createdAt: '2026-10-01T18:01:48.545Z' },
+    { delta: 2, reason: 'usage_settlement', tool: 'refresh_source', balanceAfter: 276, refId: 'd:settle', createdAt: '2026-10-01T18:01:59.944Z' },
+    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 268, refId: 'e:preauth', createdAt: '2026-10-01T18:02:00.877Z' },
+    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 260, refId: 'f:preauth', createdAt: '2026-10-01T18:02:00.877Z' },
+    { delta: 8, reason: 'usage_settlement', tool: 'refresh_source', balanceAfter: 268, refId: 'f:settle', createdAt: '2026-10-01T18:02:03.849Z' },
+    { delta: 8, reason: 'usage_settlement', tool: 'refresh_source', balanceAfter: 276, refId: 'e:settle', createdAt: '2026-10-01T18:02:04.119Z' },
+    { delta: -8, reason: 'tool_call', tool: 'refresh_source', balanceAfter: 268, refId: 'g:preauth', createdAt: '2026-10-01T18:02:05.054Z' },
+    { delta: 8, reason: 'usage_settlement', tool: 'refresh_source', balanceAfter: 276, refId: 'g:settle', createdAt: '2026-10-01T18:02:07.905Z' },
+    { delta: 8, reason: 'call_failed', tool: 'refresh_source', balanceAfter: 284, refId: 'c:fail', createdAt: '2026-10-01T18:12:05.648Z' },
   ];
 
   const report = reconcileWallet({
     creditsTotal: 284,
     latestLedgerBalance: 284,
     usageLogCostCents: 0,
-    ledgerRows: newestFirst(REAL_WORKSPACE_B2967893),
+    ledgerRows: newestFirst(REAL_WORKSPACE_SHAPE),
     usageRows: [],
   });
 

@@ -216,7 +216,7 @@ export function chargedWithoutUsageLog(
  * Why this is set-membership and not a walk over consecutive rows:
  * `createdAt` is stamped when the request is built, but the D1 rawBatch
  * commits later, so under concurrency the timestamp order is NOT the write
- * order. On production workspace b2967893 two debits 4ms apart stored
+ * order. On one production workspace two debits 4ms apart stored
  * balanceAfter 274 and 282 in the opposite order to their createdAt, and a
  * consecutive-pair walk reported 6 phantom breaks on a healthy ledger. Two
  * debits landing in the same millisecond are routine, not corruption. Ordering
@@ -228,7 +228,7 @@ export function chargedWithoutUsageLog(
  * Verified against production 2026-10-02: 0 false positives across all 9
  * workspaces with 2+ ledger rows, at take=20. It still fires on a deleted row,
  * a hand-edited delta, and the real 2-credit corruption in the 2026-09-01 rows
- * of workspace 63c754e4.
+ * of one production workspace.
  */
 export function findLedgerChainBreaks(ledgerRows: readonly LedgerEntry[]): LedgerChainBreak[] {
   const balances = new Set(ledgerRows.map((row) => row.balanceAfter));
