@@ -75,19 +75,30 @@ globalThis.Date = ShiftedDate as unknown as DateConstructor;
 function verifyShift(): void {
   const problems: string[] = [];
 
-  // The shifted and real readings are two separate wall-clock reads, so they can
-  // disagree by the few ms that elapsed between them. Anything outside that
-  // window means the offset itself is wrong, not the clock's granularity.
-  const READ_DRIFT_TOLERANCE_MS = 1_000;
-  const checkShift = (label: string, shifted: number, real: number): void => {
-    const delta = shifted - real;
-    if (delta < OFFSET_MS || delta > OFFSET_MS + READ_DRIFT_TOLERANCE_MS) {
-      problems.push(`${label} is off by ${delta}ms, expected ~${OFFSET_MS}ms`);
+  // The shifted reading and the real readings are separate wall-clock reads, so
+  // comparing a single shifted value against a single real one is a coin flip:
+  // which of the two lands first depends on argument evaluation order, and a 1ms
+  // tick between them is enough to look like a broken offset. Bracketing the
+  // shifted read between two real reads removes the ordering question entirely —
+  // the shifted value only has to agree with *some* real instant taken during the
+  // call, so no tolerance and no flake. (An earlier version of this check compared
+  // `shifted - real` against a one-sided band and failed on ~2ms of read drift,
+  // which would have made this guardrail an unreliable gate.)
+  const checkShift = (label: string, readShifted: () => number): void => {
+    const realBefore = RealDate.now();
+    const shifted = readShifted();
+    const realAfter = RealDate.now();
+    if (shifted < realBefore + OFFSET_MS || shifted > realAfter + OFFSET_MS) {
+      const applied = shifted - realBefore;
+      problems.push(
+        `${label} applied a ${applied}ms shift, expected it inside ` +
+          `[${OFFSET_MS}ms, ${OFFSET_MS + (realAfter - realBefore)}ms]`,
+      );
     }
   };
 
-  checkShift('Date.now()', Date.now(), RealDate.now());
-  checkShift('new Date()', new Date().getTime(), new RealDate().getTime());
+  checkShift('Date.now()', () => Date.now());
+  checkShift('new Date()', () => new Date().getTime());
   if (new Date(0).getTime() !== 0) problems.push('new Date(0) was shifted');
   if (new Date('2026-10-01T09:00:00Z').getTime() !== Date.parse('2026-10-01T09:00:00Z')) {
     problems.push('new Date(<ISO string>) was shifted');
