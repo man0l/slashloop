@@ -58,6 +58,7 @@ import { createKindBreaker } from './kind-breaker.js';
 import { describeExperimentTickGate } from './experiment-tick.js';
 import { controlEnabled, filterKindsByControl } from '../lib/worker-control.js';
 import { snapshotD1Usage, deltaD1Usage, formatD1Usage, totalD1Usage } from '../lib/d1-usage.js';
+import { errorDetail, errorMessage } from '../lib/error-detail.js';
 
 // D1 is single-writer with per-request billing: the 3s Postgres poll default
 // would hammer it from every container. In D1 mode (DB_DIALECT=sqlite) the
@@ -408,18 +409,20 @@ while (!shuttingDown) {
       lastRescoreAt = Date.now();
       const rescoreSnap = snapshotD1Usage();
       await rescoreStaleTooFresh()
-        .then(({ creatorsRescraped, sourcesRescoredOnly, creatorsDeduped }) => {
+        .then(({ creatorsRescraped, sourcesRescoredOnly, creatorsDeduped, creatorsDedupedTerminal }) => {
           if (creatorsRescraped || sourcesRescoredOnly || creatorsDeduped) {
             // deduped is printed on purpose: a nonzero value means publishes
             // that created nothing. If it ever climbs while rescraped stays 0,
-            // the queue is not draining this work (see SLA-329).
+            // the queue is not draining this work (see SLA-329). dedupedTerminal
+            // is the sharper signal (SLA-141): those created nothing AND left
+            // nothing in flight, so a nonzero value is an anomaly, not traffic.
             console.log(
-              `[worker] rescoreStaleTooFresh rescraped=${creatorsRescraped} rescored=${sourcesRescoredOnly} deduped=${creatorsDeduped}${formatD1Usage(deltaD1Usage(rescoreSnap))}`,
+              `[worker] rescoreStaleTooFresh rescraped=${creatorsRescraped} rescored=${sourcesRescoredOnly} deduped=${creatorsDeduped} dedupedTerminal=${creatorsDedupedTerminal}${formatD1Usage(deltaD1Usage(rescoreSnap))}`,
             );
           }
         })
         .catch((err) => {
-          console.warn(`[worker] rescoreStaleTooFresh failed: ${(err as Error).message}`);
+          console.warn(`[worker] rescoreStaleTooFresh failed: ${errorMessage(err)}`);
         });
     }
 
@@ -484,7 +487,7 @@ while (!shuttingDown) {
           experimentTickErrorRounds++;
           const delay = errorBackoffMs(experimentTickErrorRounds);
           experimentTickBackoffUntil = Date.now() + delay;
-          const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+          const detail = errorDetail(err);
           console.error(
             `[worker] experiment tick failed (streak ${experimentTickErrorRounds}, next attempt in ~${Math.round(delay / 1000)}s): ${detail}`,
           );

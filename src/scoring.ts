@@ -505,12 +505,22 @@ export async function rescoreStaleTooFresh(): Promise<{
    * 10 minutes while nothing ran.
    */
   creatorsDeduped: number;
+  /**
+   * The subset of `creatorsDeduped` whose holder was already TERMINAL (SLA-141).
+   * A dedupe onto `queued`/`running` is healthy — that work IS in flight. A
+   * dedupe onto `done`/`failed`/`cancelled` means the publish created nothing
+   * and nothing is queued either, which after SLA-329's release-on-terminal is
+   * an anomaly, not a routine outcome. Split out because a climbing in-flight
+   * count is normal traffic and a climbing terminal count is the four-day
+   * silent stall repeating.
+   */
+  creatorsDedupedTerminal: number;
 }> {
   // Kill switch (Phase 4): park the periodic rescrape without a redeploy.
   // Fail-open — a control-plane error keeps the old behaviour.
   try {
     if (!(await controlEnabled('stale_rescrape.enabled'))) {
-      return { creatorsRescraped: 0, sourcesRescoredOnly: 0, creatorsDeduped: 0 };
+      return { creatorsRescraped: 0, sourcesRescoredOnly: 0, creatorsDeduped: 0, creatorsDedupedTerminal: 0 };
     }
   } catch {
     // Fall through to the sweep.
@@ -549,6 +559,7 @@ export async function rescoreStaleTooFresh(): Promise<{
   let creatorsRescraped = 0;
   let sourcesRescoredOnly = 0;
   let creatorsDeduped = 0;
+  let creatorsDedupedTerminal = 0;
 
   // A workspace that cannot cover the pre-auth must not have refresh jobs
   // enqueued for it. Every such job is claimed, refused by debitCredits, and
@@ -640,9 +651,22 @@ export async function rescoreStaleTooFresh(): Promise<{
           // free fallback recompute stays off; a terminal holder gets it.
           creatorsDeduped++;
           queued = job.status === 'queued' || job.status === 'running';
-          console.log(
-            `[scoring] stale too_fresh: ${creatorHandle} NOT rescrape-queued — deduped onto ${job.status} job ${job.id.slice(0, 8)} on ${sourceId.slice(0, 8)}`,
-          );
+          const holder = `${job.status} job ${job.id.slice(0, 8)}`;
+          if (queued) {
+            console.log(
+              `[scoring] stale too_fresh: ${creatorHandle} NOT rescrape-queued — deduped onto ${holder} on ${sourceId.slice(0, 8)}`,
+            );
+          } else {
+            // SLA-141: no job was created and none is in flight, so this
+            // creator will not be rescraped. Since SLA-329 a terminal holder
+            // releases its dedupe key and the publish is retried, so reaching
+            // here means the release did not happen — warn, because the only
+            // other symptom is videos sitting at too_fresh forever.
+            creatorsDedupedTerminal++;
+            console.warn(
+              `[scoring] stale too_fresh: ${creatorHandle} NOT rescrape-queued and nothing in flight — deduped onto TERMINAL ${holder} on ${sourceId.slice(0, 8)} (SLA-141: the dedupe key did not release; this creator will stay stale until it does)`,
+            );
+          }
         } else {
           queued = true;
           creatorsRescraped++;
@@ -665,7 +689,7 @@ export async function rescoreStaleTooFresh(): Promise<{
     }
   }
 
-  return { creatorsRescraped, sourcesRescoredOnly, creatorsDeduped };
+  return { creatorsRescraped, sourcesRescoredOnly, creatorsDeduped, creatorsDedupedTerminal };
 }
 
 /**
