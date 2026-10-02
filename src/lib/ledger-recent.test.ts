@@ -16,9 +16,11 @@
 
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
+import { readFile } from 'node:fs/promises';
 
 import {
   fetchRecentLedgerRows,
+  FULL_LEDGER_AUDIT_SQL,
   mergeRecentLedgerRows,
   RECENT_LEDGER_QUERIES,
   type RawLedgerRow,
@@ -181,6 +183,30 @@ describe('RECENT_LEDGER_QUERIES shape', () => {
     expect(planOf('"createdAt"')).not.toMatch(/TEMP B-TREE/i);
     expect(planOf('CAST("createdAt" AS TEXT) AS "createdAt"')).toMatch(/TEMP B-TREE/i);
     db.close();
+  });
+});
+
+describe('FULL_LEDGER_AUDIT_SQL', () => {
+  // SLA-326: this query used to run inline on every get_usage call. It reads
+  // every CreditLedger row for the workspace (17,332 rows on the largest
+  // production workspace) against a 5,000,000 rows/day account cap, and it
+  // reported a false discrepancy on every production workspace. It is now
+  // opt-in. These assertions are the guard against it creeping back.
+  test('it is the unbounded whole-slice aggregate, not a windowed read', () => {
+    expect(FULL_LEDGER_AUDIT_SQL).toMatch(/SUM\("delta"\)/);
+    expect(FULL_LEDGER_AUDIT_SQL).toMatch(/COUNT\(\*\)/);
+    // No LIMIT, no createdAt range: this is the scan.
+    expect(FULL_LEDGER_AUDIT_SQL).not.toMatch(/LIMIT/i);
+    expect(FULL_LEDGER_AUDIT_SQL).not.toMatch(/createdAt/i);
+  });
+
+  test('get_usage exposes it only as an opt-in that defaults to off', async () => {
+    const settings = await readFile(new URL('../tools/settings.ts', import.meta.url), 'utf8');
+
+    // Reachable, but the parameter defaults to false and the call is guarded
+    // by it, so the scan cannot run unless a caller asks for it by name.
+    expect(settings).toMatch(/auditFullLedger:\s*z\.boolean\(\)\.default\(false\)/);
+    expect(settings).toMatch(/const fullLedgerAudit = auditFullLedger\s*\n?\s*\?/);
   });
 });
 
