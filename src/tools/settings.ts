@@ -12,8 +12,8 @@ import { getApifyCapStatus, getApifySpendBreakdown, decodeApifyRefId } from '../
 import { activeProviderFor, formatProxyCheap, listScrapers, proxyCheapBandwidth, scrapeCapKind, trafficStatus } from '../lib/scrapers/index.js';
 import { proxyConfig } from '../lib/scrapers/proxy-http.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance, resolveBillingWorkspace } from '../lib/credits.js';
-import { normalizeLedgerColumns, reconcileWallet, type LedgerEntry } from '../lib/credit-reconcile.js';
-import { fetchRecentLedgerRows, type RawLedgerRow } from '../lib/ledger-recent.js';
+import { normalizeLedgerColumns, reconcileWallet, type FullLedgerAudit, type LedgerEntry } from '../lib/credit-reconcile.js';
+import { fetchRecentLedgerRows, FULL_LEDGER_AUDIT_SQL, type RawLedgerRow } from '../lib/ledger-recent.js';
 import { retentionCeiling, validateRetentionDays } from '../lib/retention.js';
 import { costBlock } from '../lib/next-steps.js';
 import { failureLines, infoLines } from '../lib/refresh-notes.js';
@@ -31,6 +31,36 @@ function safeParseDigest(json: string): import('../lib/digest.js').DigestPayload
   }
 }
 
+/**
+ * The whole-slice `SUM(delta)` + `COUNT(*)`, kept behind an explicit opt-in.
+ *
+ * This is the query that used to run on every get_usage call: a full scan of
+ * the workspace's CreditLedger, 17,332 rows read on the largest production
+ * workspace, ~99% of the tool's D1 cost. It stays here rather than being
+ * deleted because it is the only view that covers rows older than the
+ * reconciliation window — but a non-zero `driftFromWallet` is EXPECTED, not a
+ * finding: `txSetPlan` records a plan-cycle reset as a new allotment rather
+ * than an increment, so this sum permanently stops equalling the wallet. Read
+ * it as "how far the running total has drifted", never as "the wallet is
+ * wrong". See src/lib/credit-reconcile.ts.
+ */
+async function runFullLedgerAudit(
+  query: (sql: string, ...params: unknown[]) => Promise<Array<{ sumDelta: number | bigint | null; rowCount: number }>>,
+  workspaceId: string,
+  creditsTotal: number,
+): Promise<FullLedgerAudit> {
+  const rows = await query(FULL_LEDGER_AUDIT_SQL, workspaceId);
+  const sumOfLedgerDeltas = Number(rows[0]?.sumDelta ?? 0);
+  return {
+    sumOfLedgerDeltas,
+    rowCount: Number(rows[0]?.rowCount ?? 0),
+    driftFromWallet: creditsTotal - sumOfLedgerDeltas,
+    // The REST/CF query API reports rows read in meta; $queryRaw does not
+    // surface it, so this stays null on the Worker path rather than guessing.
+    rowsRead: null,
+  };
+}
+
 export function registerSettingsTools(server: McpServer) {
 
   // ---- get_usage ----
@@ -39,8 +69,13 @@ export function registerSettingsTools(server: McpServer) {
     {
       workspaceId: workspaceIdField,
       period: z.enum(['this_month', 'last_month', 'all']).default('this_month'),
+      auditFullLedger: z.boolean().default(false)
+        .describe('Also run the whole-slice CreditLedger audit. This reads every ledger row for the workspace '
+          + '(17k+ rows on a large account) so it is off by default — only turn it on when chasing a specific '
+          + 'discrepancy, and expect it to report a non-zero driftFromWallet on a healthy account (plan-cycle '
+          + 'resets make sum(delta) diverge from the wallet by design).'),
     },
-    async ({ workspaceId, period }) => {
+    async ({ workspaceId, period, auditFullLedger }) => {
       const workspace = await resolveToolWorkspace({ workspaceId });
       const billingWorkspace = await resolveBillingWorkspace(workspace);
 
@@ -81,39 +116,52 @@ export function registerSettingsTools(server: McpServer) {
       const budgetRemaining = workspace.monthlyBudgetCents - totalCost;
       const credits = { planCredits: billingWorkspace.planCredits, packCredits: billingWorkspace.packCredits, total: billingWorkspace.planCredits + billingWorkspace.packCredits };
 
-      // CreditLedger, not UsageLog, is the wallet's own log. Sum every delta
-      // (the table is the audit trail; the wallet is its running total) and
-      // keep a short recent window so a debit with no UsageLog row is visible
-      // in this same payload.
+      // CreditLedger, not UsageLog, is the wallet's own log. Keep a short
+      // recent window so a debit with no UsageLog row is visible in this same
+      // payload, and reconcile the wallet against that window.
       //
       // D1 read-budget: the recent window goes through fetchRecentLedgerRows
       // rather than an inline CASE ORDER BY. The CASE ordered the whole
       // workspace slice in a temp B-tree — 34,663 rows read per call against
-      // the 5,000,000/day Workers Free cap, so ~145 get_usage calls/day would
+      // the 5,000,000/day Workers Free cap, so ~144 get_usage calls/day would
       // take the account down until midnight UTC. See src/lib/ledger-recent.ts.
-      // The SUM below is a single index range scan over the same slice and
-      // stays inline: it is the reconciliation's actual subject, not a
-      // bounded window, so it cannot be paged.
-      const [ledgerRecent, ledgerSumRows] = await Promise.all([
-        fetchRecentLedgerRows(
-          (sql, ...params) => db.$queryRawUnsafe<RawLedgerRow[]>(sql, ...params),
-          billingWorkspace.id,
-          20,
-        ),
-        db.$queryRaw<Array<{ sumDelta: number | bigint | null }>>`
-          SELECT COALESCE(SUM("delta"), 0) AS "sumDelta"
-            FROM "CreditLedger"
-           WHERE "workspaceId" = ${billingWorkspace.id}
-        `,
-      ]);
-      const sumOfLedgerDeltas = Number(ledgerSumRows[0]?.sumDelta ?? 0);
+      //
+      // There is deliberately NO `SELECT SUM("delta") ... WHERE "workspaceId" = ?`
+      // here any more. That leg was 17,332 rows read per call on the largest
+      // production workspace — ~99% of this tool's D1 cost, about 288 calls to
+      // the daily cap. It was also the wrong check: a plan-cycle reset
+      // (txSetPlan) records a new allotment rather than an increment, so
+      // sum(delta) permanently stops equalling the wallet and the leg reported
+      // a false discrepancy on every real workspace. `balanceAfter` already
+      // carries the wallet as of each write, so reconciling the chain across
+      // the window we are reading anyway costs zero extra rows. See
+      // src/lib/credit-reconcile.ts and docs/d1-read-budget.md.
+      const RECENT_LEDGER_ROWS = 20;
+      const ledgerRecent = await fetchRecentLedgerRows(
+        (sql, ...params) => db.$queryRawUnsafe<RawLedgerRow[]>(sql, ...params),
+        billingWorkspace.id,
+        RECENT_LEDGER_ROWS,
+      );
+
+      // Opt-in only. One full scan of the workspace ledger, so it stays off
+      // the default path — see the comment above. Useful when someone is
+      // actually chasing a discrepancy and wants the whole slice.
+      const fullLedgerAudit = auditFullLedger
+        ? await runFullLedgerAudit(
+            (sql: string, ...params: unknown[]) =>
+              db.$queryRawUnsafe<Array<{ sumDelta: number | bigint | null; rowCount: number }>>(sql, ...params),
+            billingWorkspace.id,
+            credits.total,
+          )
+        : undefined;
+
       const reconciliation = reconcileWallet({
         creditsTotal: credits.total,
-        sumOfLedgerDeltas,
         latestLedgerBalance: ledgerRecent[0]?.balanceAfter ?? null,
         usageLogCostCents: totalCost,
         ledgerRows: ledgerRecent,
         usageRows: logs,
+        fullLedgerAudit,
       });
 
       // Where to buy more, surfaced BEFORE the balance runs out rather than
@@ -142,8 +190,11 @@ export function registerSettingsTools(server: McpServer) {
           // src/lib/credits.ts). monthlyBudgetCents/budget* below is COGS
           // (what we pay Apify/Google) and is informational only now.
           credits,
-          // credits.total is the remaining wallet. It matches sum(CreditLedger.delta),
-          // not sum(UsageLog.costCents). recentLogs below stays provider COGS.
+          // credits.total is the remaining wallet. It is checked against the
+          // newest CreditLedger.balanceAfter and against the balance chain
+          // across the recent window below — NOT against sum(CreditLedger.delta),
+          // which a plan-cycle reset permanently separates from the wallet, and
+          // not against sum(UsageLog.costCents). recentLogs stays provider COGS.
           reconciliation,
           recentCreditLedger: ledgerRecent,
           billing: {

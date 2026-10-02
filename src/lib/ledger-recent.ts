@@ -16,10 +16,10 @@
 //       20 rows read,  0.8 ms   <- ORDER BY "createdAt" DESC
 //
 // get_usage is a customer-facing tool on a Workers Free D1 database, and the
-// Free tier allows 5,000,000 rows read per DAY (docs/d1 limits). One get_usage
-// call burning 34,663 rows means ~145 calls/day hits the cap and every D1
-// query in the account then fails until midnight UTC. That is exactly the
-// 2026-09-30 outage in docs/queue-phase0-baseline.md and the indiestack
+// Free tier allows 5,000,000 rows read per DAY (docs/d1-read-budget.md). One
+// get_usage call burning 34,663 rows means ~144 calls/day hits the cap and
+// every D1 query in the account then fails until midnight UTC. That is exactly
+// the 2026-09-30 outage in docs/queue-phase0-baseline.md and the indiestack
 // `D1_ERROR: ...exceeded D1's free tier daily row read limit` storm.
 //
 // The fix keeps the exact same result set by splitting the CASE into two
@@ -116,6 +116,26 @@ export function mergeRecentLedgerRows(
   out.sort((a, b) => millis(b.createdAt) - millis(a.createdAt));
   return out.slice(0, take);
 }
+
+/**
+ * The whole-slice ledger aggregate, for the opt-in `fullLedgerAudit` only.
+ *
+ * This is deliberately NOT on the get_usage default path. Measured on
+ * production (workspace with 17,331 ledger rows, 2026-10-02) it reads 17,332
+ * rows — against a 5,000,000 rows/day Workers Free cap that is ~288 calls to
+ * take the account down, and it was ~99% of get_usage's D1 cost. There is no
+ * index that can serve an unbounded SUM over a workspace slice.
+ *
+ * It is kept because it is the only view covering rows older than the
+ * reconciliation window, and because a `test: 'the SQL that scans the whole
+ * slice is never on the default path'` assertion has to be able to point at
+ * the query it is guarding. Do not move this back inline.
+ */
+export const FULL_LEDGER_AUDIT_SQL = `
+    SELECT COALESCE(SUM("delta"), 0) AS "sumDelta",
+           COUNT(*)                   AS "rowCount"
+      FROM "CreditLedger"
+     WHERE "workspaceId" = $1`;
 
 /**
  * Read the newest `take` CreditLedger rows for a workspace using only
