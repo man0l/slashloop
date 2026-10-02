@@ -165,13 +165,17 @@ export async function fetchRecentLedgerRows(
 }
 
 /**
- * `createdAt` as a string, whatever the driver handed back. Bun/Node D1
- * bindings return TEXT as a string, but the declared row type is the contract
- * rather than the driver's behaviour, and `millis`/`normalizeLedgerColumns`
- * both assume a string is what arrives.
+ * `createdAt` as an ISO string, whatever the driver handed back. D1 returns
+ * TEXT as TEXT, so in practice this is already a string — but `isLedgerTimestamp`
+ * matches an ISO pattern, so a Date arriving here must become `.toISOString()`,
+ * not `String(date)` (which is `Thu Oct 01 2026 ...` and matches nothing).
  */
 function asRawLedgerRow(row: RawLedgerRow): RawLedgerRow {
-  return { ...row, createdAt: typeof row.createdAt === 'string' ? row.createdAt : String(row.createdAt) };
+  // `unknown` because the declared type says string and the point of this
+  // function is that the driver might not agree; `never` is the alternative.
+  const createdAt: unknown = row.createdAt;
+  if (typeof createdAt === 'string') return row;
+  return { ...row, createdAt: createdAt instanceof Date ? createdAt.toISOString() : String(createdAt) };
 }
 
 export { isLedgerTimestamp };

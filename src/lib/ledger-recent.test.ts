@@ -125,6 +125,30 @@ describe('RECENT_LEDGER_QUERIES shape', () => {
     db.close();
   });
 
+  // The CAST was moved here, so its contract is asserted here: a driver that
+  // hands back a Date must still produce an ISO string, because
+  // isLedgerTimestamp matches an ISO pattern and would not see it.
+  test('createdAt is coerced to an ISO string, including from a Date', async () => {
+    const swapped: RawLedgerRow = row({
+      refId: '2026-08-15T10:00:00.000Z',
+      createdAt: 'sla16-recreate-canary-grant:cf7b725d',
+    });
+    const stamped: RawLedgerRow = row({
+      refId: 'ws-1:preauth',
+      createdAt: new Date('2026-10-01T14:29:36.875Z') as unknown as string,
+    });
+    const query = async (sql: string) => (sql.includes('"createdAt" >=') ? [stamped] : [swapped]);
+    const merged = await fetchRecentLedgerRows(query, 'ws-1', 20);
+
+    // The Date row is scored by its ISO timestamp, so it ranks by 2026-10-01 and
+    // is not mistaken for a swapped row.
+    expect(merged[0].createdAt).toBe('2026-10-01T14:29:36.875Z');
+    // The swapped row is still recognised: the idempotency key that landed in
+    // createdAt moves back to refId, and the timestamp moves to createdAt.
+    expect(merged[1].createdAt).toBe('2026-08-15T10:00:00.000Z');
+    expect(merged[1].refId).toBe('sla16-recreate-canary-grant:cf7b725d');
+  });
+
   test('a CAST on the ordered column is what reintroduces the temp B-tree', () => {
     // Pins WHY the plan assertion above exists, by reproducing the regression
     // the CAST caused. If a future SQLite changes how it treats an expression
