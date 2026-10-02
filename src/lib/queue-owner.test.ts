@@ -146,15 +146,40 @@ describe('single-owner D1 claims', () => {
     // Single-owner: a kind resolving to pg must never silently fall back to
     // a D1 dual-write. Without queue-api credentials the enqueue fails
     // retryable so the caller retries instead of forking queue state.
+    //
+    // The producer env is neutralised for the duration: db.js is mocked but
+    // the PG publisher's HTTP client is not, so an ambient QUEUE_API_URL /
+    // QUEUE_API_KEY_* made this case take the real publish path. In CI the
+    // ambient env is empty and the test passed; run inside a production worker
+    // container on 2026-10-02 (deploy-verify of SLA-141) it published a real
+    // `thumb:video:v` job into the production queue-api and the expectation
+    // failed. This case is about the UNCONFIGURED publisher, so it must not
+    // depend on whatever the surrounding environment happens to configure.
     resetRoutedPublisherForTests();
     resetTransportCacheForTests();
+    const saved = {
+      backend: process.env.QUEUE_BACKEND,
+      url: process.env.QUEUE_API_URL,
+      keyId: process.env.QUEUE_API_KEY_ID,
+      secret: process.env.QUEUE_API_KEY_SECRET,
+    };
     process.env.QUEUE_BACKEND = 'pg';
+    delete process.env.QUEUE_API_URL;
+    delete process.env.QUEUE_API_KEY_ID;
+    delete process.env.QUEUE_API_KEY_SECRET;
     try {
       seen.creates.length = 0;
       await expect(enqueueThumbJob({ workspaceId: 'ws-1', videoId: 'v' })).rejects.toThrow();
       expect(seen.creates.length).toBe(0);
     } finally {
-      delete process.env.QUEUE_BACKEND;
+      if (saved.backend === undefined) delete process.env.QUEUE_BACKEND;
+      else process.env.QUEUE_BACKEND = saved.backend;
+      if (saved.url === undefined) delete process.env.QUEUE_API_URL;
+      else process.env.QUEUE_API_URL = saved.url;
+      if (saved.keyId === undefined) delete process.env.QUEUE_API_KEY_ID;
+      else process.env.QUEUE_API_KEY_ID = saved.keyId;
+      if (saved.secret === undefined) delete process.env.QUEUE_API_KEY_SECRET;
+      else process.env.QUEUE_API_KEY_SECRET = saved.secret;
       resetRoutedPublisherForTests();
       resetTransportCacheForTests();
     }
