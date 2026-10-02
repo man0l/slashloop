@@ -638,12 +638,38 @@ export async function outstandingJobForVideo(videoId: string): Promise<MediaJobR
   }) as unknown as Promise<MediaJobRow | null>;
 }
 
+/**
+ * What a client should be told about a job row's status.
+ *
+ * QUEUE_FALLBACK_STATUS is real pending work — reconcileFallbackJobs publishes
+ * it and it runs — so it reports as `queued`, the status every existing client
+ * branch already handles. Raw `queued_remote` is a storage detail; leaking it
+ * onto a public response shape turns every `status === 'queued' ||
+ * status === 'running'` check in the web client into "unknown job" and is how
+ * a user ends up clicking recreate again.
+ */
+export function reportedJobStatus(status: string): string {
+  return status === QUEUE_FALLBACK_STATUS ? 'queued' : status;
+}
+
+/**
+ * Newest job of one kind for a video, including a parked fallback row — the
+ * recreate dedupe gate and the detail endpoint's recreateJob both read this.
+ *
+ * QUEUE_FALLBACK_STATUS counts, exactly as it does in outstandingJobForSource
+ * and outstandingJobForVideo, for the same reason: a row parked there is
+ * invisible to every claimer but the reconciler publishes it. Before SLA-341
+ * this filter was ['queued','running','failed'] and the gate below answered
+ * "nothing outstanding" for a parked recreate, so one click on a video whose
+ * first recreate was still parked fell through to a second pre-auth debit and a
+ * second job — the reconciler would then run both.
+ */
 export async function latestJobForVideo(
   videoId: string,
   kind: string,
 ): Promise<MediaJobRow | null> {
   const rows = await db.mediaJob.findMany({
-    where: { videoId, kind, status: { in: ['queued', 'running', 'failed'] } },
+    where: { videoId, kind, status: { in: ['queued', 'running', 'failed', QUEUE_FALLBACK_STATUS] } },
     orderBy: { createdAt: 'desc' },
     take: 1,
   }) as unknown as MediaJobRow[];
