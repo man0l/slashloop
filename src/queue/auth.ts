@@ -144,7 +144,7 @@ export function verifyAuth(
   return { ok: true, key, timestamp, nonce };
 }
 
-/** Workspace authorization for a key (cancel/GET are workspace-scoped). */
+/** Workspace authorization for a key (enqueue/cancel/GET are workspace-scoped). */
 export function keyMayAccessWorkspace(key: ProducerKey, workspaceId: string): boolean {
   const scope = key.workspaceIds ?? '*';
   if (scope === '*') return true;
