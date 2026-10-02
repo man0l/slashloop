@@ -33,11 +33,37 @@ rejected — the model below is the ONLY way.
 7. **Proving it still works after any compose change:** `config --quiet`,
    container health, `GET /healthz` → 200, unsigned `POST /v1/jobs` → 401.
    Full signed-enqueue gate only when auth/env changed.
-8. **Enforcement (not just convention):** salonease
-   `.github/workflows/validate-compose.yml` + `.github/scripts/assert-compose.py`
-   run on every compose edit (PR or master push) and fail on: published
-   queue ports, non-GHCR queue-api image, changed router rule, missing
-   secret file, volumes, healthchecks, or memory budgets. A green check
-   on the commit is the "will it work" answer — VPS pulls only green
-   master. Residual risk it does NOT cover: VPS-local drift (missing
-   secret files, untracked edits) — `git status` on the VPS before pull.
+8. **Enforcement (not just convention), live since SLA-332:** salonease
+   `.github/workflows/validate-compose.yml` +
+   `.github/scripts/assert-compose.py` run on **every pull request** and on
+   **every push to master**. Two steps: `docker compose -f
+   docker-compose.prod.yml config --quiet` (the file is still valid compose),
+   then `python3 .github/scripts/assert-compose.py --self-test` — which also
+   re-runs the assertions against 16 deliberately broken copies of the file,
+   so a guard that stops biting fails the build too. They fail on: a
+   published host port (or changed `expose`) on `queue-db`/`queue-api`; a
+   `queue-api` image off `ghcr.io/man0l/slashloop-queue-api:master`, or a
+   `build:` block on any queue service; a Traefik router rule that is not
+   byte-identical to the expected allowlist, or that appears twice; a moved or
+   missing `slashloop-queue/db_password` secret file, or `queue-api`
+   credentials inlined instead of interpolated from the host `.env`; changed
+   pgdata/backup volume mounts, `queue-db`/`queue-api` healthchecks, or
+   CPU/memory ceilings; `queue-api`/`queue-backup` no longer waiting for a
+   **healthy** `queue-db`. Read-only — `permissions: contents: read`, no
+   secrets, and it reads only the committed compose file, never the VPS
+   `.env`. So a green check answers "this file still says what it must say",
+   which is the "will it work" answer for the compose *edit*. (Until SLA-332
+   this rule described files that did not exist: `master` had only
+   `main.yaml` and no `.github/scripts/`, so "green" meant "GitGuardian
+   ran". If you ever find the workflow absent again, treat that as a
+   regression and say so.)
+9. **What that gate does NOT cover — do not read green as "deployed":**
+   - **VPS-local drift:** missing host secret files, untracked or hand-edited
+     files on the box. `git status` on the VPS before pull (§3).
+   - **The Salonease services** in the same compose file: no invariants are
+     asserted on them. `config --quiet` only proves they parse.
+   - **The other repo:** a green check in *this* repo says nothing about
+     `salonease/docker-compose.prod.yml`, and vice versa. Queue service
+     config has one source (§5); the gate for it lives over there.
+   - **Runtime behaviour:** after any compose change, still do §7 —
+     container health, `GET /healthz` → 200, unsigned `POST /v1/jobs` → 401.
