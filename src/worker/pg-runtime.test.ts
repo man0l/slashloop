@@ -47,16 +47,20 @@ describe('pg-runtime ownership', () => {
       },
     });
 
-    // D1 id: sink returns false/null; D1 path then runs (and will throw without a DB).
-    // We only assert the sink did not claim it.
-    let d1Complete = false;
-    try {
-      await completeJob('d1-1', null);
-    } catch {
-      d1Complete = true;
-    }
+    // D1 id: sink returns false/null, so the call falls through to the D1 path.
+    //
+    // That fall-through used to be asserted by "the D1 path throws without a
+    // DB" — which passed only when this file ran alone. bun shares one module
+    // registry across the whole run and another file's `mock.module('../db.js')`
+    // replaces db with fakes that resolve, so in a full `bun test` the call
+    // succeeded and this assertion failed on master (pre-existing, unrelated to
+    // any behaviour change). Whether the D1 path throws now depends on which
+    // file ran before this one, so the assertion is scoped to what this test is
+    // actually about: the sink's answer. Both ids go through the same code
+    // path here, so the sink declining 'd1-1' and claiming 'pg-1' is the whole
+    // contract.
+    await completeJob('d1-1', null).catch(() => {});
     expect(pg.complete).toEqual([]);
-    expect(d1Complete).toBe(true);
 
     await completeJob('pg-1', null);
     expect(pg.complete).toEqual(['pg-1']);

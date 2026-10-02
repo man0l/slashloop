@@ -409,15 +409,21 @@ while (!shuttingDown) {
       lastRescoreAt = Date.now();
       const rescoreSnap = snapshotD1Usage();
       await rescoreStaleTooFresh()
-        .then(({ creatorsRescraped, sourcesRescoredOnly, creatorsDeduped, creatorsDedupedTerminal }) => {
-          if (creatorsRescraped || sourcesRescoredOnly || creatorsDeduped) {
+        .then(({ creatorsRescraped, sourcesRescoredOnly, creatorsDeduped, creatorsDedupedTerminal, creatorsAttemptCooldown }) => {
+          if (creatorsRescraped || sourcesRescoredOnly || creatorsDeduped || creatorsAttemptCooldown) {
             // deduped is printed on purpose: a nonzero value means publishes
             // that created nothing. If it ever climbs while rescraped stays 0,
             // the queue is not draining this work (see SLA-329). dedupedTerminal
             // is the sharper signal (SLA-141): those created nothing AND left
             // nothing in flight, so a nonzero value is an anomaly, not traffic.
+            // cooldown is the opposite of an anomaly (SLA-140): sweeps that
+            // declined to re-buy a scrape already paid for in the last 6h and
+            // ran the free recompute. A creator stuck at too_fresh across
+            // repeat sweeps shows up as rescraped=0 cooldown=N climbing —
+            // before this counter that state was indistinguishable from an
+            // idle sweep.
             console.log(
-              `[worker] rescoreStaleTooFresh rescraped=${creatorsRescraped} rescored=${sourcesRescoredOnly} deduped=${creatorsDeduped} dedupedTerminal=${creatorsDedupedTerminal}${formatD1Usage(deltaD1Usage(rescoreSnap))}`,
+              `[worker] rescoreStaleTooFresh rescraped=${creatorsRescraped} rescored=${sourcesRescoredOnly} deduped=${creatorsDeduped} dedupedTerminal=${creatorsDedupedTerminal} cooldown=${creatorsAttemptCooldown}${formatD1Usage(deltaD1Usage(rescoreSnap))}`,
             );
           }
         })
