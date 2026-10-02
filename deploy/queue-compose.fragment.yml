@@ -130,6 +130,12 @@ services:
       - "traefik.http.middlewares.queue-ratelimit.ratelimit.average=1"
       - "traefik.http.middlewares.queue-ratelimit.ratelimit.burst=120"
       - "traefik.http.middlewares.queue-ratelimit.ratelimit.period=1s"
+      # SLA-330 mirror: the prod copy in salonease/docker-compose.prod.yml
+      # carries this label. Watchtower runs with --label-enable, so a service
+      # without it is silently skipped and a merged src/queue/** fix is not
+      # live on the VPS. Keep this in sync with the prod file (deploy policy
+      # #5, both ways).
+      - "com.centurylinklabs.watchtower.enable=true"
 
   queue-backup:
     image: postgres:17
