@@ -23,10 +23,16 @@ rejected — the model below is the ONLY way.
 4. **Secrets live ONLY on the host** (`/root/salonease/<svc>/`, mode 600:
    `.env` files + compose `secrets.file` absolutes). Never committed,
    never pasted in chat/comments, never baked into images.
-5. **Two repos, one host:** queue API code + its fragment mirror live in
-   `slashloop` (`deploy/queue-compose.fragment.yml`); the DEPLOYED
-   services live in `salonease/docker-compose.prod.yml`. Mirror changes
-   both ways and say so in the commit.
+5. **Two repos, one host, ONE compose source.** Queue API *code* lives in
+   `slashloop` (`src/queue/**`); queue *service config* is deployed from
+   `salonease/docker-compose.prod.yml` and nowhere else — per rule 1, there
+   is no second `-f` file on the VPS. Edit it there, via a branch + PR.
+   Do NOT mirror it into `slashloop`: `deploy/queue-compose.fragment.yml`
+   was exactly such a mirror, it was never deployed, and it silently
+   drifted until a merged fix sat un-deployed for 4 days (SLA-330). It is
+   now a stub that says so. "Mirror changes both ways" was retracted for
+   that reason — mirroring had no reader and cost a real outage of trust
+   in the deploy path.
 6. **Host paths in compose are `/root/salonease/...` absolutes** where a
    bind mount is needed (relative sources resolve from the project dir;
    a missing source mounts as an empty directory).
