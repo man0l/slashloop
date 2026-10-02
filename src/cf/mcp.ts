@@ -1,7 +1,7 @@
 // Cloudflare-native MCP endpoint — Phase 1 of the backend consolidation.
 //
 // POST /mcp runs here through `createMcpHandler` from `agents/mcp`
-// (stateless, no Durable Object / McpAgent). The 55 tools are untouched:
+// (stateless, no Durable Object / McpAgent). The 63 tools are untouched:
 // every request builds a FRESH McpServer via the existing
 // `buildRemoteMcp()` (whoami + registerAllTools), satisfying the SDK
 // >=1.26 rule against reconnecting an already-connected server instance.
@@ -65,7 +65,7 @@ function methodNotAllowed(): Response {
 
 /**
  * Fresh authenticated server per request. Delegates to the shared
- * buildRemoteMcp() so tool registration (all 55 tools + whoami) stays
+ * buildRemoteMcp() so tool registration (all 63 tools + whoami) stays
  * identical across the Vercel, local-dev, and Workers paths.
  */
 export function createServer(auth: McpAuthProps) {
