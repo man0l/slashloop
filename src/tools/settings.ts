@@ -13,6 +13,7 @@ import { activeProviderFor, formatProxyCheap, listScrapers, proxyCheapBandwidth,
 import { proxyConfig } from '../lib/scrapers/proxy-http.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance, resolveBillingWorkspace } from '../lib/credits.js';
 import { normalizeLedgerColumns, reconcileWallet, type LedgerEntry } from '../lib/credit-reconcile.js';
+import { fetchRecentLedgerRows, type RawLedgerRow } from '../lib/ledger-recent.js';
 import { retentionCeiling, validateRetentionDays } from '../lib/retention.js';
 import { costBlock } from '../lib/next-steps.js';
 import { failureLines, infoLines } from '../lib/refresh-notes.js';
@@ -84,44 +85,27 @@ export function registerSettingsTools(server: McpServer) {
       // (the table is the audit trail; the wallet is its running total) and
       // keep a short recent window so a debit with no UsageLog row is visible
       // in this same payload.
-      // Raw text, not creditLedger.findMany. A slice of historical rows stores
-      // the idempotency key in createdAt (see normalizeLedgerColumns). Prisma's
-      // DateTime decoder rejects that string and fails the whole tool. CAST
-      // keeps the column a string so the decoder never sees it.
-      const [ledgerRaw, ledgerSumRows] = await Promise.all([
-        db.$queryRaw<Array<{
-          delta: number;
-          reason: string;
-          tool: string | null;
-          balanceAfter: number;
-          refId: string;
-          createdAt: string;
-        }>>`
-          SELECT "delta", "reason", "tool", "balanceAfter", "refId",
-                 CAST("createdAt" AS TEXT) AS "createdAt"
-            FROM "CreditLedger"
-           WHERE "workspaceId" = ${billingWorkspace.id}
-           ORDER BY CASE
-             WHEN "createdAt" LIKE '20%' THEN "createdAt"
-             WHEN "refId" LIKE '20%' THEN "refId"
-             ELSE "createdAt"
-           END DESC
-           LIMIT 20
-        `,
+      //
+      // D1 read-budget: the recent window goes through fetchRecentLedgerRows
+      // rather than an inline CASE ORDER BY. The CASE ordered the whole
+      // workspace slice in a temp B-tree — 34,663 rows read per call against
+      // the 5,000,000/day Workers Free cap, so ~145 get_usage calls/day would
+      // take the account down until midnight UTC. See src/lib/ledger-recent.ts.
+      // The SUM below is a single index range scan over the same slice and
+      // stays inline: it is the reconciliation's actual subject, not a
+      // bounded window, so it cannot be paged.
+      const [ledgerRecent, ledgerSumRows] = await Promise.all([
+        fetchRecentLedgerRows(
+          (sql, ...params) => db.$queryRawUnsafe<RawLedgerRow[]>(sql, ...params),
+          billingWorkspace.id,
+          20,
+        ),
         db.$queryRaw<Array<{ sumDelta: number | bigint | null }>>`
           SELECT COALESCE(SUM("delta"), 0) AS "sumDelta"
             FROM "CreditLedger"
            WHERE "workspaceId" = ${billingWorkspace.id}
         `,
       ]);
-      const ledgerRecent: LedgerEntry[] = ledgerRaw.map((row) => normalizeLedgerColumns({
-        delta: Number(row.delta),
-        reason: row.reason,
-        tool: row.tool,
-        balanceAfter: Number(row.balanceAfter),
-        refId: row.refId,
-        createdAt: row.createdAt,
-      }));
       const sumOfLedgerDeltas = Number(ledgerSumRows[0]?.sumDelta ?? 0);
       const reconciliation = reconcileWallet({
         creditsTotal: credits.total,
