@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "slashloop-skills": "./bin/slashloop-skills.js"
+    "slashloop-skills": "bin/slashloop-skills.js"
   },
   "files": [
     "bin",
