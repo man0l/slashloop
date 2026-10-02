@@ -38,11 +38,54 @@ Workspace ids and balances are deliberately omitted — this is a public repo.
 | recent ledger, `createdAt` leg | 34,663 | 34,663 → **20** with [#109](https://github.com/man0l/slashloop/pull/109) | The `CAST("createdAt" AS TEXT)` in the projection forced a row fetch per candidate. Fixed by #109. |
 | recent ledger, `refId` leg | 20 | 20 | Bounded range `['20','21')` on `CreditLedger_workspaceId_refId_key`; a seek. |
 | `SUM(delta)` reconciliation | **17,332** | **0** | Removed. See below. |
-| `UsageLog` for the period | 2,480 | 2,480 | Unchanged. Bounded by the period, not by ledger size. |
-| **Total** | **~54,495** | **~2,520** (or **~60** once #109 lands) | |
+| `UsageLog` for the period | 2,480 | 2,480 → **~30** with [#112](https://github.com/man0l/slashloop/pull/112) | Was reading the whole workspace slice for a 10-row period. See below. |
+| **Total** | **~54,495** | **~60** | |
 
 At the "before" figure, **~91 get_usage calls exhaust the 5M/day cap**, and
 once it is exhausted every D1 read on the account fails until midnight UTC.
+
+### The `UsageLog` leg read the whole workspace for a 10-row period
+
+With the ledger legs fixed, ~2,480 rows per call remained, all from:
+
+```sql
+SELECT * FROM "UsageLog"
+ WHERE "workspaceId" = ? AND "createdAt" >= ?   -- "2026-10-01"
+ ORDER BY "createdAt" DESC
+```
+
+Measured 2026-10-02 on the largest production workspace: **2,480 rows read**,
+for a period containing **ten**. That workspace's rows by month are 27 Jul /
+1,207 Aug / 1,225 Sep / 10 Oct, so ~99.6% of the read was rows the query then
+discarded.
+
+`EXPLAIN QUERY PLAN` says why:
+
+```
+SEARCH UsageLog USING INDEX UsageLog_workspaceId_idx (workspaceId=?)
+USE TEMP B-TREE FOR ORDER BY
+```
+
+No index leads with `(workspaceId, createdAt)`, so SQLite can only seek the
+`workspaceId` equality, then evaluates the date range on every one of the
+workspace's rows and sorts the survivors in a temp B-tree. The 0007 index on
+`(workspaceId, kind, provider, createdAt)` does **not** help: `createdAt` is
+its last column, so it can serve neither the range nor the `ORDER BY`.
+
+**`LIMIT 20` does not fix it** — measured, still 2,480 rows read, because the
+sort happens before the limit. Same failure shape as the `CASE ORDER BY` that
+#103/#109 removed from the ledger read. (The tool's output is
+`recentLogs: logs.slice(0, 20)`, so the temptation is obvious and wrong.)
+
+`prisma/d1-migrations/0015_usage_log_workspace_createdat_idx.sql` adds
+`UsageLog(workspaceId, createdAt)`, which turns it into a bounded range seek
+with no temp B-tree. `src/lib/usage-log-period-index.test.ts` proves the plan
+flip on a replica shaped like production, and asserts the column *order*, since
+having `createdAt` last is exactly the bug.
+
+**Honest limit:** with `period: "all"` the aggregate still has to read every
+row — "total spend" cannot be computed without them. Unlike the ledger `SUM`,
+that read is *correct*; only a daily rollup table would remove it.
 
 ### Why the `SUM(delta)` leg is gone
 
