@@ -12,4 +12,10 @@ if ! git -C "$root" diff --exit-code -- packages/slashloop-skills/skills >/dev/n
   exit 1
 fi
 
-npm publish "$@"
+# Invoke the npm CLI through the Node executable that started this lifecycle.
+# Plain `npm` can resolve to an incompatible Windows/Bun shim in mixed Windows/WSL
+# shells even though the parent `npm run` itself is healthy.
+node_bin="${npm_node_execpath:-node}"
+npm_cli="${npm_execpath:-$(command -v npm)}"
+
+exec "$node_bin" "$npm_cli" publish "$@"
