@@ -443,13 +443,25 @@ const STALE_RESCRAPE_LIMIT = 5;
 export const BASELINE_RESCRAPE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
 
 /**
- * Don't re-mint a refresh the queue just gave up on. A source whose refresh
- * terminally failed recently (out of credits, cap breach, dead proxy) would
- * otherwise be re-enqueued by every sweep until the cooldown below expires —
- * each cycle spending claim + refuse + fail + refund rows to re-prove a
- * condition only a top-up can clear. Fall back to the free recompute instead.
+ * Don't re-mint a refresh this source was already charged for inside the
+ * window — REGARDLESS of how the previous attempt ended.
+ *
+ * The failure this closes (SLA-140): the baseline cooldown above only fires
+ * when a scoring pass touched `Baseline.computedAt`, and `recentRefreshFailure`
+ * only fired on a terminally *failed* job. A refresh that runs to `done` but
+ * leaves the stale video at `too_fresh` satisfies neither — no baseline touch,
+ * no failure — so every sweep re-bought the same 5-video creator scrape.
+ * Measured on production 2026-10-02: @barret.pslgod enqueued at 10:11, 10:21,
+ * 10:32, 10:43, 10:53, 11:04, 11:15, 11:25, 11:36, 11:48, 11:59 UTC, every
+ * sweep `rescored=0`, paid Apify/proxy credits burned each cycle.
+ *
+ * An ATTEMPT is the right currency because the money is spent at enqueue, not
+ * at success. On a hit we fall back to the free recompute, so the video still
+ * leaves `too_fresh` (on stored views) instead of sitting on the placeholder.
+ * 6h matches the baseline cooldown and caps one source at 4 paid attempts a
+ * day whatever the sweep cadence.
  */
-export const RECENT_REFRESH_FAIL_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
+export const RECENT_REFRESH_ATTEMPT_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
 
 /**
  * Videos posted under 48h ago are scored 'too_fresh' with outlierScore 0.
@@ -494,6 +506,13 @@ export const RECENT_REFRESH_FAIL_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
  * Falls back to the old free recompute-from-stored-views behaviour whenever
  * the rescrape itself is refused or fails, so a video still isn't stuck
  * showing the placeholder even when it can't be paid for right now.
+ *
+ * And when we already paid inside RECENT_REFRESH_ATTEMPT_COOLDOWN_MS (SLA-140):
+ * a refresh that completes without clearing the stale score used to be
+ * re-bought by every sweep forever, because the baseline cooldown needs a
+ * scoring pass to fire and the old failure guard only saw terminally `failed`
+ * jobs. Suppressing the repeat buy is the spend bound; the free recompute is
+ * what actually clears the placeholder.
  */
 export async function rescoreStaleTooFresh(): Promise<{
   creatorsRescraped: number;
@@ -515,12 +534,25 @@ export async function rescoreStaleTooFresh(): Promise<{
    * silent stall repeating.
    */
   creatorsDedupedTerminal: number;
+  /**
+   * Groups whose paid rescrape was suppressed because this source already
+   * attempted a refresh inside RECENT_REFRESH_ATTEMPT_COOLDOWN_MS (SLA-140).
+   *
+   * Reported as its own counter, not folded into `creatorsDeduped`: the two
+   * mean opposite things. A dedupe means the publish created no work while
+   * work was believed to be in flight; this means we deliberately declined to
+   * pay again and ran the free recompute instead. Each one is a sweep that used
+   * to spend Apify/proxy credits re-buying a scrape it had already paid for,
+   * which is exactly the loop that logged only "queued creator scrape" for a
+   * day while `rescored=0`.
+   */
+  creatorsAttemptCooldown: number;
 }> {
   // Kill switch (Phase 4): park the periodic rescrape without a redeploy.
   // Fail-open — a control-plane error keeps the old behaviour.
   try {
     if (!(await controlEnabled('stale_rescrape.enabled'))) {
-      return { creatorsRescraped: 0, sourcesRescoredOnly: 0, creatorsDeduped: 0, creatorsDedupedTerminal: 0 };
+      return { creatorsRescraped: 0, sourcesRescoredOnly: 0, creatorsDeduped: 0, creatorsDedupedTerminal: 0, creatorsAttemptCooldown: 0 };
     }
   } catch {
     // Fall through to the sweep.
@@ -560,6 +592,7 @@ export async function rescoreStaleTooFresh(): Promise<{
   let sourcesRescoredOnly = 0;
   let creatorsDeduped = 0;
   let creatorsDedupedTerminal = 0;
+  let creatorsAttemptCooldown = 0;
 
   // A workspace that cannot cover the pre-auth must not have refresh jobs
   // enqueued for it. Every such job is claimed, refused by debitCredits, and
@@ -623,13 +656,24 @@ export async function rescoreStaleTooFresh(): Promise<{
     let queued = false;
     try {
       const outstanding = await outstandingJobForSource(sourceId, 'refresh');
+      // Assigned in the branch condition so the lookup only runs when nothing
+      // is in flight — it is one more D1 read per group per sweep, and
+      // outstandingJobForSource exists precisely to answer without one.
+      let recentAttempt: { id: string; status: string } | null = null;
       if (outstanding) {
         console.log(
           `[scoring] stale too_fresh: ${creatorHandle} skipped — refresh already ${outstanding.status} on ${sourceId.slice(0, 8)}`,
         );
-      } else if (await recentRefreshFailure(sourceId)) {
+      } else if ((recentAttempt = await recentRefreshAttempt(sourceId))) {
+        // The paid scrape already happened for this source inside the cooldown
+        // and it did not clear the stale score — re-buying it is the SLA-140
+        // loop. Name the attempt and its outcome so a reader can tell a failed
+        // refresh (nothing was learned) from a completed-but-ineffective one
+        // (something was learned and still wasn't enough); both fall back to
+        // the free recompute.
+        creatorsAttemptCooldown++;
         console.log(
-          `[scoring] stale too_fresh: ${creatorHandle} skipped — refresh failed recently on ${sourceId.slice(0, 8)}, free recompute instead`,
+          `[scoring] stale too_fresh: ${creatorHandle} skipped — refresh ${recentAttempt.status} ${recentAttempt.id.slice(0, 8)} on ${sourceId.slice(0, 8)} within ${RECENT_REFRESH_ATTEMPT_COOLDOWN_MS / 3_600_000}h, free recompute instead (SLA-140)`,
         );
       } else {
         const job = await enqueueRefreshJob({
@@ -689,28 +733,42 @@ export async function rescoreStaleTooFresh(): Promise<{
     }
   }
 
-  return { creatorsRescraped, sourcesRescoredOnly, creatorsDeduped, creatorsDedupedTerminal };
+  return { creatorsRescraped, sourcesRescoredOnly, creatorsDeduped, creatorsDedupedTerminal, creatorsAttemptCooldown };
 }
 
 /**
- * True when a refresh for this source terminally failed within the cooldown.
+ * The most recent refresh job ATTEMPTED for this source inside the cooldown,
+ * whatever its terminal status — `null` when there is none (or the read failed).
+ *
+ * Status is deliberately NOT filtered. The case that has to be caught is a job
+ * that finished `done` and still didn't clear the stale score; a `failed`-only
+ * filter misses exactly that one, and a `queued`/`running` filter duplicates
+ * outstandingJobForSource, which the caller already checked first.
+ *
+ * `createdAt`, not `finishedAt`: the question is "have we already paid to look
+ * at this source", and that is true from enqueue. A row still `queued` or
+ * `running` is outstandingJobForSource's business, not this guard's — it runs
+ * first and answers without this read.
+ *
  * A best-effort guard, not a correctness gate: a failed read degrades to
  * "enqueue anyway" (the old behaviour) rather than blocking a rescrape.
  */
-async function recentRefreshFailure(sourceId: string): Promise<boolean> {
+async function recentRefreshAttempt(
+  sourceId: string,
+): Promise<{ id: string; status: string } | null> {
   try {
-    const failed = await db.mediaJob.findFirst({
+    const job = await db.mediaJob.findFirst({
       where: {
         sourceId,
         kind: 'refresh',
-        status: 'failed',
-        finishedAt: { gt: new Date(Date.now() - RECENT_REFRESH_FAIL_COOLDOWN_MS) },
+        createdAt: { gt: new Date(Date.now() - RECENT_REFRESH_ATTEMPT_COOLDOWN_MS) },
       },
-      select: { id: true },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, status: true },
     });
-    return Boolean(failed);
+    return job ?? null;
   } catch {
-    return false;
+    return null;
   }
 }
 
