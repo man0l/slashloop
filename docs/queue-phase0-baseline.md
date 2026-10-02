@@ -141,7 +141,9 @@ production producer/worker points at `queue-api` after this issue.
 - DNS: `A queue → 157.173.195.4`, TTL 300, DNS-only (record
   `0187848d…`), via Cloudflare API with the CEO-injected `cf_api_token`.
 - VPS merge: `/root/salonease/slashloop-queue/docker-compose.queue.yml`
-  (derived from `deploy/queue-compose.fragment.yml`: queue-api runs the
+  (originally derived from the now-deleted
+  `deploy/queue-compose.fragment.yml`, itself derived from plan rev 4;
+  queue-api runs the
   CI GHCR image `:master` with `pull_policy: always`; secret file is the
   absolute host path; `app-network` is external name
   `salonease_app-network`). Secrets (`db_password` 40ch alnum,

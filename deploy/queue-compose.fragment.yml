@@ -1,180 +1,31 @@
 # ===========================================================================
-# SLA-14 Phase 1 — queue-db + queue-api compose fragment (DEPLOYABLE ONLY).
+# MOVED (SLA-330) — this file is NOT a compose source. Do not edit it.
 #
-# This file is NOT auto-applied: it is merged into the Contabo compose
-# project (Salonease docker-compose.prod.yml, same app-network + Traefik)
-# by the ingress rollout issue (SLA-15). Nothing here runs in this issue,
-# and no production producer/worker points at it yet.
+# It used to hold a full copy of the queue-db / queue-api / queue-backup
+# service definitions. Nothing ever deployed them: the VPS runs
+# `salonease/docker-compose.prod.yml`, and deploy policy forbids a second
+# `-f` override file on the host. So this was a stale duplicate, drifting
+# from the file that actually runs.
 #
-# Merge: docker compose -f docker-compose.prod.yml \
-#          -f slashloop/deploy/queue-compose.fragment.yml up -d queue-db
+# Concretely, it was wrong in the ways that matter:
+#   - queue-api carried `build:` + `image: slashloop-queue-api:phase1`,
+#     while prod pulls `ghcr.io/man0l/slashloop-queue-api:master`.
+#   - its queue-api interpolated secrets inline
+#     (`${SLASHLOOP_QUEUE_HMAC_SECRET:?missing ...}`), which prod — per
+#     operator preference — keeps in `/root/salonease/.env` + compose
+#     `secrets.file`.
+#   - its header documented an apply command that policy §1 forbids.
 #
-# NOTE (SLA-15 prod): the VPS has no repo checkout at the build context, so
-# production runs queue-api from the CI-built GHCR image
-# (ghcr.io/man0l/slashloop-queue-api:master, pull_policy: always) instead of
-# the `build:` block below, with the secret file at the absolute host path
-# /root/salonease/slashloop-queue/db_password and the app-network declared
-# as external name salonease_app-network. Keep both paths working: local
-# build for staging, GHCR image for prod.
+# Having two files that each claimed to be the source of truth is how a
+# watchtower label came to be added to the mirror and missed in prod: a
+# merged `src/queue/**` fix sat un-deployed for 4 days while the box looked
+# freshly deployed, because the three workers *did* auto-update.
 #
-# Requirements honored (plan rev 4 §VPS deployment):
-# - Postgres port is NOT published (no `ports:` on queue-db).
-# - Both services join the existing internal app-network.
-# - queue-api waits for a HEALTHY queue-db (depends_on condition).
-# - CPU/memory limits so queue backlog/PG maintenance cannot starve Salonease.
-# - Secrets via env file / compose secrets — never baked into the image.
-# - Bounded retention runs inside queue-api (maintenance tick); nightly
-#   pg_dump runs in queue-backup with copies kept off-host (see script).
-# - Traefik: SNI/Host match on queue.slashloop.dev ONLY, TLS via the existing
-#   certresolver, body-size + rate-limit middleware on the queue paths.
+# ==> The deployed config is `man0l/salonease` @ `docker-compose.prod.yml`.
+#     Edit queue service config THERE, via a branch + PR.
+#     Its CI gate — `.github/workflows/validate-compose.yml` +
+#     `assert-compose.py` (SLA-332) — lives in that repo, because it has to
+#     read the deployed file.
+#
+# `deploy/queue-compose.fragment.test.ts` keeps this file a stub.
 # ===========================================================================
-
-networks:
-  app-network:
-    external: true
-
-volumes:
-  slashloop_queue_pgdata:
-    driver: local
-  slashloop_queue_backups:
-    driver: local
-
-services:
-  queue-db:
-    image: postgres:17
-    restart: unless-stopped
-    # NO ports: section on purpose — Postgres stays on the internal network.
-    expose:
-      - "5432"
-    environment:
-      POSTGRES_DB: slashloop_queue
-      POSTGRES_USER: slashloop_queue
-      POSTGRES_PASSWORD_FILE: /run/secrets/slashloop_queue_db_password
-    secrets:
-      - slashloop_queue_db_password
-    volumes:
-      - slashloop_queue_pgdata:/var/lib/postgresql/data
-    networks:
-      - app-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U slashloop_queue -d slashloop_queue"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 1G
-        reservations:
-          memory: 256M
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  queue-api:
-    build:
-      context: ../..
-      dockerfile: slashloop/deploy/queue-api.Dockerfile
-    image: slashloop-queue-api:phase1
-    restart: unless-stopped
-    depends_on:
-      queue-db:
-        condition: service_healthy
-    # NO ports: section — reachable only through Traefik on the internal net.
-    expose:
-      - "4100"
-    environment:
-      QUEUE_API_PORT: "4100"
-      QUEUE_DATABASE_URL: postgresql://slashloop_queue:${SLASHLOOP_QUEUE_DB_PASSWORD:?missing SLASHLOOP_QUEUE_DB_PASSWORD}@queue-db:5432/slashloop_queue
-      QUEUE_API_KEY_ACTIVE_ID: ${SLASHLOOP_QUEUE_KEY_ACTIVE_ID:?missing SLASHLOOP_QUEUE_KEY_ACTIVE_ID}
-      QUEUE_API_KEY_ACTIVE_SECRET: ${SLASHLOOP_QUEUE_HMAC_SECRET:?missing SLASHLOOP_QUEUE_HMAC_SECRET}
-      QUEUE_API_KEY_RETIRING_ID: ${SLASHLOOP_QUEUE_KEY_RETIRING_ID:-}
-      QUEUE_API_KEY_RETIRING_SECRET: ${SLASHLOOP_QUEUE_KEY_RETIRING_SECRET:-}
-    networks:
-      - app-network
-    healthcheck:
-      test: ["CMD-SHELL", "bun -e \"fetch('http://localhost:4100/readyz').then(r=>{if(!r.ok)process.exit(1)})\" || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512M
-        reservations:
-          memory: 128M
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    labels:
-      - "traefik.enable=true"
-      # SNI/Host allowlist: ONLY queue.slashloop.dev routes here.
-      - "traefik.http.routers.queue-api.rule=Host(`queue.slashloop.dev`) && (Path(`/healthz`) || PathPrefix(`/v1/jobs`))"
-      - "traefik.http.routers.queue-api.entrypoints=websecure"
-      - "traefik.http.routers.queue-api.tls.certresolver=myresolver"
-      - "traefik.http.routers.queue-api.middlewares=queue-body-limit@docker,queue-ratelimit@docker"
-      - "traefik.http.services.queue-api.loadbalancer.server.port=4100"
-      - "traefik.http.services.queue-api.loadbalancer.passHostHeader=true"
-      # Body cap mirrors QUEUE_BODY_MAX_BYTES (64 KiB) at the edge.
-      - "traefik.http.middlewares.queue-body-limit.buffering.maxRequestBodyBytes=65536"
-      # Outer rate limit: 60/min sustained, 120 burst, per source IP.
-      # The app enforces finer per-key/workspace/kind budgets behind this.
-      - "traefik.http.middlewares.queue-ratelimit.ratelimit.average=1"
-      - "traefik.http.middlewares.queue-ratelimit.ratelimit.burst=120"
-      - "traefik.http.middlewares.queue-ratelimit.ratelimit.period=1s"
-
-  queue-backup:
-    image: postgres:17
-    restart: unless-stopped
-    depends_on:
-      queue-db:
-        condition: service_healthy
-    environment:
-      PGHOST: queue-db
-      PGDATABASE: slashloop_queue
-      PGUSER: slashloop_queue
-      PGPASSWORD_FILE: /run/secrets/slashloop_queue_db_password
-      BACKUP_RETENTION_DAYS: "14"
-    secrets:
-      - slashloop_queue_db_password
-    volumes:
-      - slashloop_queue_backups:/backups
-      # NOTE (SLA-15): a relative bind-mount source resolves from the FIRST
-      # -f file's directory, not this fragment's. Either co-locate this
-      # fragment + script next to docker-compose.prod.yml, or switch this to
-      # the absolute host path (VPS uses
-      # /root/salonease/slashloop-queue/queue-backup.sh). A missing source
-      # mounts as an empty DIRECTORY and the script fails at 03:00.
-      - ./queue-backup.sh:/usr/local/bin/queue-backup.sh:ro
-    networks:
-      - app-network
-    # Nightly pg_dump (custom format) + local retention. Off-host copy is a
-    # host cron rsync (documented in the Phase 0 baseline — backup age alert
-    # fires when the newest dump goes stale).
-    # NOTE (SLA-15 rollout lesson): stock postgres:17 ships NO cron binaries,
-    # so install Debian cron at container start, then run the same 03:00
-    # schedule. Script + retention unchanged.
-    command: >
-      sh -c "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cron >/dev/null 2>&1 && echo '0 3 * * * /usr/local/bin/queue-backup.sh' | crontab - && cron -f"
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512M
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-secrets:
-  slashloop_queue_db_password:
-    file: ${SLASHLOOP_QUEUE_DB_PASSWORD_FILE:?missing SLASHLOOP_QUEUE_DB_PASSWORD_FILE}

@@ -74,6 +74,17 @@ rejected — the model below is the ONLY way.
      script, currently empty — adding an entry is a reviewed diff with a
      stated reason, never a service quietly going un-managed.
 9. **What that gate does NOT cover — do not read green as "deployed":**
+   - **A config edit to a running service is not applied by watchtower.**
+     watchtower re-pulls *images* for labelled containers (~5 min,
+     `--interval 300`) and recreates them from the container's stored
+     config — it never re-reads compose. So labels, env, volumes, ports,
+     healthchecks and resource limits only land via §2's `git pull` +
+     `docker compose -f docker-compose.prod.yml up -d <service>`. Merging
+     a compose edit is not deploying it; someone has to run that `up -d`.
+     This is the other half of SLA-330: the missing label meant images
+     never arrived, and the label that fixed it also needed one manual
+     `up -d` to take effect (watchtower's own `Scanned=9 → 10` is what
+     proved the container had joined its watch set).
    - **VPS-local drift:** missing host secret files, untracked or hand-edited
      files on the box. `git status` on the VPS before pull (§3).
    - **The Salonease services** in the same compose file: beyond the

@@ -2,7 +2,8 @@
 # ===========================================================================
 # queue-backup.sh — nightly pg_dump of queue-db (custom format) + retention.
 #
-# Runs inside the queue-backup sidecar (see queue-compose.fragment.yml) as a
+# Runs inside the queue-backup sidecar (see the queue-backup service in
+# salonease@docker-compose.prod.yml — the only compose source) as a
 # 03:00 cron. Keeps BACKUP_RETENTION_DAYS (default 14) of local dumps in
 # /backups; an OFF-HOST copy (host cron rsync to the backup destination in
 # the Phase 0 baseline doc) is what survives a full VPS loss.

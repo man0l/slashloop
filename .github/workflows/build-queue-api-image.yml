@@ -9,7 +9,7 @@ name: build-queue-api-image
 #
 # Deliberate difference: NO .env is baked into this image. queue-api takes
 # all secrets at runtime via env (QUEUE_DATABASE_URL, QUEUE_API_KEY_* — see
-# deploy/queue-compose.fragment.yml), so there is nothing to assemble here.
+# salonease@docker-compose.prod.yml), so there is nothing to assemble here.
 #
 # Run the workflow manually (Actions -> build-queue-api-image ->
 # Run workflow) to force a rebuild.
