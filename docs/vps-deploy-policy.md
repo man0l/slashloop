@@ -39,9 +39,12 @@ rejected — the model below is the ONLY way.
    **every push to master**. Two steps: `docker compose -f
    docker-compose.prod.yml config --quiet` (the file is still valid compose),
    then `python3 .github/scripts/assert-compose.py --self-test` — which also
-   re-runs the assertions against 16 deliberately broken copies of the file,
-   so a guard that stops biting fails the build too. They fail on: a
-   published host port (or changed `expose`) on `queue-db`/`queue-api`; a
+   re-runs the assertions against 21 deliberately broken copies of the file,
+   so a guard that stops biting fails the build too, and against 3 legitimate
+   ones that must stay accepted, so the gate cannot pass by being noisy.
+   They fail on: any service on a `ghcr.io/man0l/*` image with a mutable tag
+   that is not watchtower-managed (see below); a published host port (or
+   changed `expose`) on `queue-db`/`queue-api`; a
    `queue-api` image off `ghcr.io/man0l/slashloop-queue-api:master`, or a
    `build:` block on any queue service; a Traefik router rule that is not
    byte-identical to the expected allowlist, or that appears twice; a moved or
@@ -57,11 +60,25 @@ rejected — the model below is the ONLY way.
    `main.yaml` and no `.github/scripts/`, so "green" meant "GitGuardian
    ran". If you ever find the workflow absent again, treat that as a
    regression and say so.)
+   - **Watchtower coverage is swept, not enumerated.** watchtower runs
+     `--label-enable`, so it updates ONLY containers labelled
+     `com.centurylinklabs.watchtower.enable=true`. Any service on a
+     `ghcr.io/man0l/*` image with a mutable tag and no such label is silently
+     never updated: merges go green and stay dead in prod. That is SLA-330
+     (4 days), and it is not queue-specific — so the gate sweeps every service
+     in the file rather than listing them, because a service added tomorrow is
+     covered by the same rule today. In scope: `ghcr.io/man0l/*` on
+     `master`/`main`/`latest`/`edge`/`dev`. Out of scope: third-party images
+     (nobody rebuilds them here) and images on a pinned tag (nothing
+     overwrites them in place). Opting out is `UNMANAGED_BY_DESIGN` in the
+     script, currently empty — adding an entry is a reviewed diff with a
+     stated reason, never a service quietly going un-managed.
 9. **What that gate does NOT cover — do not read green as "deployed":**
    - **VPS-local drift:** missing host secret files, untracked or hand-edited
      files on the box. `git status` on the VPS before pull (§3).
-   - **The Salonease services** in the same compose file: no invariants are
-     asserted on them. `config --quiet` only proves they parse.
+   - **The Salonease services** in the same compose file: beyond the
+     watchtower sweep, no invariants are asserted on them. `config --quiet`
+     only proves they parse.
    - **The other repo:** a green check in *this* repo says nothing about
      `salonease/docker-compose.prod.yml`, and vice versa. Queue service
      config has one source (§5); the gate for it lives over there.
