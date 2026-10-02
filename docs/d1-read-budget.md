@@ -30,7 +30,8 @@ that is the shape to avoid.
 
 ## get_usage — the most-called customer-facing tool
 
-Workspace measured: `cf7b725d…`, 17,331 `CreditLedger` rows.
+Measured on the largest production workspace (17,331 `CreditLedger` rows).
+Workspace ids and balances are deliberately omitted — this is a public repo.
 
 | Leg | Before | After | Why |
 |---|---:|---:|---|
@@ -67,13 +68,13 @@ Worse, `sum(delta)` is not supposed to equal the wallet:
 Measured across every production workspace with a non-trivial ledger, before
 this change:
 
-| workspace | ledger rows | wallet | `sum(delta)` | wallet == `sum` | wallet == newest `balanceAfter` |
-|---|---:|---:|---:|---|---|
-| `cf7b725d…` | 17,331 | 10,215 | 15,297 | **false** | true |
-| `63c754e4…` | 736 | 6 | −296 | **false** | true |
-| `2ea89fa7…` | 35 | 0 | −296 | **false** | false |
-| `b2967893…` | 13 | 284 | −16 | **false** | true |
-| `7c367821…` | 12 | 300 | 0 | **false** | true |
+| workspace | ledger rows | wallet == `sum(delta)` | wallet == newest `balanceAfter` |
+|---|---:|---|---|
+| largest (17,331 rows) | 17,331 | **false** | true |
+| second | 736 | **false** | true |
+| third | 35 | **false** | false |
+| fourth | 13 | **false** | true |
+| fifth | 12 | **false** | true |
 
 Five for five, the check said "your wallet does not reconcile" on healthy
 accounts, at 17,332 rows a call.
@@ -95,7 +96,8 @@ get_usage is **already** reading:
 The second check is **set membership, not a walk over consecutive rows**, and
 that is load-bearing. `createdAt` is stamped when the request is built but the
 D1 `rawBatch` commits later, so under concurrency the timestamp order is *not*
-the write order. On `b2967893…` two debits 4ms apart stored `balanceAfter` 274
+the write order. On one production workspace two debits 4ms apart stored
+`balanceAfter` 274
 and 282 in the opposite order to their `createdAt`; a consecutive-pair walk
 reported **6 phantom breaks on a healthy ledger**. Two debits landing in the
 same millisecond is routine on D1, not corruption. Ordering by `balanceAfter`
@@ -106,7 +108,7 @@ store.
 
 Verified 0 false positives across all 9 production workspaces with 2+ ledger
 rows at take=20. It still fires on a deleted row, a hand-edited delta, and a
-real 2-credit corruption in the 2026-09-01 rows of `63c754e4…` (a row says
+real 2-credit corruption in a workspace's 2026-09-01 rows (a row says
 `-8` where the balance moved 6).
 
 ### The honest limit
