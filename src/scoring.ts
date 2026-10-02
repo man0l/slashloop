@@ -495,12 +495,22 @@ export const RECENT_REFRESH_FAIL_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
  * the rescrape itself is refused or fails, so a video still isn't stuck
  * showing the placeholder even when it can't be paid for right now.
  */
-export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: number; sourcesRescoredOnly: number }> {
+export async function rescoreStaleTooFresh(): Promise<{
+  creatorsRescraped: number;
+  sourcesRescoredOnly: number;
+  /**
+   * Enqueues that resolved to an EXISTING job instead of creating one. Never
+   * counted as work queued — before SLA-329 this is exactly what a permanently
+   * deduping key looked like from here: "queued creator scrape" logged every
+   * 10 minutes while nothing ran.
+   */
+  creatorsDeduped: number;
+}> {
   // Kill switch (Phase 4): park the periodic rescrape without a redeploy.
   // Fail-open — a control-plane error keeps the old behaviour.
   try {
     if (!(await controlEnabled('stale_rescrape.enabled'))) {
-      return { creatorsRescraped: 0, sourcesRescoredOnly: 0 };
+      return { creatorsRescraped: 0, sourcesRescoredOnly: 0, creatorsDeduped: 0 };
     }
   } catch {
     // Fall through to the sweep.
@@ -538,6 +548,7 @@ export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: numbe
 
   let creatorsRescraped = 0;
   let sourcesRescoredOnly = 0;
+  let creatorsDeduped = 0;
 
   // A workspace that cannot cover the pre-auth must not have refresh jobs
   // enqueued for it. Every such job is claimed, refused by debitCredits, and
@@ -610,7 +621,7 @@ export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: numbe
           `[scoring] stale too_fresh: ${creatorHandle} skipped — refresh failed recently on ${sourceId.slice(0, 8)}, free recompute instead`,
         );
       } else {
-        await enqueueRefreshJob({
+        const job = await enqueueRefreshJob({
           workspaceId,
           sourceId,
           videoLimit: STALE_RESCRAPE_LIMIT,
@@ -621,11 +632,24 @@ export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: numbe
             queryOverride: creatorHandle,
           },
         });
-        queued = true;
-        creatorsRescraped++;
-        console.log(
-          `[scoring] stale too_fresh: queued creator scrape @${creatorHandle} via refresh worker (limit=${STALE_RESCRAPE_LIMIT})`,
-        );
+        if (job.deduped) {
+          // No new job: the publish resolved to an existing refresh row. Say
+          // which case this is instead of claiming a queued scrape (SLA-329 —
+          // counting a dedupe as queued is what hid this for four days). An
+          // in-flight holder still means the creator will be rescored, so the
+          // free fallback recompute stays off; a terminal holder gets it.
+          creatorsDeduped++;
+          queued = job.status === 'queued' || job.status === 'running';
+          console.log(
+            `[scoring] stale too_fresh: ${creatorHandle} NOT rescrape-queued — deduped onto ${job.status} job ${job.id.slice(0, 8)} on ${sourceId.slice(0, 8)}`,
+          );
+        } else {
+          queued = true;
+          creatorsRescraped++;
+          console.log(
+            `[scoring] stale too_fresh: queued creator scrape @${creatorHandle} via refresh worker (limit=${STALE_RESCRAPE_LIMIT})`,
+          );
+        }
       }
     } catch (err) {
       console.warn(`[scoring] stale too_fresh enqueue failed for creator ${creatorHandle}: ${(err as Error).message}`);
@@ -641,7 +665,7 @@ export async function rescoreStaleTooFresh(): Promise<{ creatorsRescraped: numbe
     }
   }
 
-  return { creatorsRescraped, sourcesRescoredOnly };
+  return { creatorsRescraped, sourcesRescoredOnly, creatorsDeduped };
 }
 
 /**

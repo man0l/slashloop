@@ -12,7 +12,7 @@
 // importer in the run, so each mock below spreads the REAL module and
 // overrides only what this file drives. db.js can't be spread (same
 // trade-off as the other queue tests).
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 
 const realJobs = await import('./jobs.js');
 const realCredits = await import('./credits.js');
@@ -20,6 +20,9 @@ const realCredits = await import('./credits.js');
 const enqueues: Array<{ workspaceId: string; sourceId: string; videoLimit: number; payload: Record<string, unknown> }> = [];
 let balanceTotal = 100;
 let baselineRow: Record<string, unknown> | null = null;
+/** What the next enqueueRefreshJob resolves to (SLA-329 dedupe reporting). */
+let enqueueResult: { id: string; status: string; deduped: boolean } = { id: 'job-1', status: 'queued', deduped: false };
+const logs: string[] = [];
 
 mock.module('../db.js', () => ({
   db: {
@@ -45,7 +48,7 @@ mock.module('./jobs.js', () => ({
   ...realJobs,
   enqueueRefreshJob: async (opts: any) => {
     enqueues.push({ workspaceId: opts.workspaceId, sourceId: opts.sourceId, videoLimit: opts.videoLimit, payload: opts.payload });
-    return { id: `job-${enqueues.length}` };
+    return { ...enqueueResult, id: `job-${enqueues.length}` };
   },
   outstandingJobForSource: async () => null,
 }));
@@ -57,10 +60,21 @@ mock.module('./credits.js', () => ({
 
 const { rescoreStaleTooFresh } = await import('../scoring.js');
 
+let logSpy: ReturnType<typeof spyOn<Console, 'log'>>;
+
 beforeEach(() => {
   enqueues.length = 0;
   balanceTotal = 100;
   baselineRow = null;
+  enqueueResult = { id: 'job-1', status: 'queued', deduped: false };
+  logs.length = 0;
+  logSpy = spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+    logs.push(args.map(String).join(' '));
+  });
+});
+
+afterEach(() => {
+  logSpy.mockRestore();
 });
 
 describe('rescoreStaleTooFresh — the affordability gate', () => {
@@ -89,5 +103,37 @@ describe('rescoreStaleTooFresh — the affordability gate', () => {
     expect(enqueues).toHaveLength(0);
     expect(res.creatorsRescraped).toBe(0);
     expect(res.sourcesRescoredOnly).toBe(1);
+  });
+});
+
+// SLA-329: a deduped publish creates NO job. Counting it as a queued
+// creator scrape is what logged "queued ... via refresh worker" every sweep
+// for four days while the videos sat at too_fresh and nothing ran.
+describe('rescoreStaleTooFresh — the dedupe guardrail', () => {
+  test('a deduped enqueue onto a RUNNING refresh is not counted as work queued', async () => {
+    enqueueResult = { id: 'job-1', status: 'running', deduped: true };
+    const res = await rescoreStaleTooFresh();
+    expect(res.creatorsRescraped).toBe(0);
+    expect(res.creatorsDeduped).toBe(1);
+    // The in-flight refresh will score the videos, so no free recompute either.
+    expect(res.sourcesRescoredOnly).toBe(0);
+    expect(logs.join('\n')).toContain('NOT rescrape-queued — deduped onto running');
+    expect(logs.join('\n')).not.toContain('queued creator scrape');
+  });
+
+  test('a deduped enqueue onto a TERMINAL job falls back to the free recompute', async () => {
+    enqueueResult = { id: 'job-1', status: 'done', deduped: true };
+    const res = await rescoreStaleTooFresh();
+    expect(res.creatorsRescraped).toBe(0);
+    expect(res.creatorsDeduped).toBe(1);
+    expect(res.sourcesRescoredOnly).toBe(1);
+    expect(logs.join('\n')).toContain('deduped onto done');
+  });
+
+  test('a real publish still logs and counts the queued scrape', async () => {
+    const res = await rescoreStaleTooFresh();
+    expect(res.creatorsRescraped).toBe(1);
+    expect(res.creatorsDeduped).toBe(0);
+    expect(logs.join('\n')).toContain('queued creator scrape');
   });
 });

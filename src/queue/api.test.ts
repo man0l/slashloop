@@ -167,6 +167,21 @@ describe('enqueue', () => {
     expect(state.jobs.size).toBe(1);
   });
 
+  test('a dedupe reports the real state of the row it resolved to (SLA-329)', async () => {
+    const state: StubState = { jobs: new Map(), nonces: new Set(), cancels: [] };
+    const d = deps(state);
+    const r1 = await handleQueueRequest(signedRequest('POST', '/v1/jobs', ENQUEUE, { nonce: 'st1' }), d);
+    expect(JSON.parse(r1.body).state).toBe('queued');
+    // The row the second publish resolves to is finished. Reporting 'queued'
+    // here is what let a permanent dedupe read as fresh work at every call
+    // site, so the 202 must carry the row's own state.
+    for (const row of state.jobs.values()) row.state = 'done';
+    const r2 = await handleQueueRequest(signedRequest('POST', '/v1/jobs', ENQUEUE, { nonce: 'st2' }), d);
+    const b2 = JSON.parse(r2.body);
+    expect(b2.deduped).toBe(true);
+    expect(b2.state).toBe('done');
+  });
+
   test('replayed nonce -> 409 replay_detected, no second enqueue', async () => {
     const state: StubState = { jobs: new Map(), nonces: new Set(), cancels: [] };
     const d = deps(state);

@@ -444,6 +444,13 @@ export async function refreshSourceForWorkspace(
     });
 
     invalidateWorkspaceReads(workspace.id);
+    if (job.deduped) {
+      // The publish resolved to an existing refresh row (in flight — the key
+      // means "already queued", not "has ever existed"). Report it the same
+      // way as the outstandingJobForSource hit above instead of claiming a new
+      // job we did not create (SLA-329).
+      return { kind: 'already_queued', jobId: job.id, status: job.status, sourceId };
+    }
     return {
       kind: 'queued',
       jobId: job.id,
