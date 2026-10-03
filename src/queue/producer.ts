@@ -124,13 +124,30 @@ export const DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS = 60;
  *
  * One limiter window plus slack: a single retry-after that fits is honoured,
  * and that wait then unblocks a whole window's worth of publishes in the
- * calling fan-out loop, so a burst amortizes instead of stalling. A longer
- * ask (or a second 429 inside the same call) does not fit and the caller
- * keeps today's behaviour — park the row and let the reconciler drain it —
- * rather than holding a request open for an unbounded time. In particular a
+ * calling fan-out loop, so a burst amortizes instead of stalling. The slack
+ * also covers the SLA-354 jitter: the server's longest sane retry-after is
+ * one 60s window, and 60s + 3s jitter still fits in 65s. A longer ask (or a
+ * second 429 inside the same call) does not fit and the caller keeps today's
+ * behaviour — park the row and let the reconciler drain it — rather than
+ * holding a request open for an unbounded time. In particular a
  * bogus/absurd retry-after cannot pin a caller for as long as it asks for.
  */
 export const DEFAULT_RATE_LIMIT_WAIT_BUDGET_MS = 65_000;
+
+/**
+ * Random spread added to each `429 retry-after` wait (SLA-354), in ms.
+ *
+ * queue-api's limiter is a fixed 60s window, so every publisher that tripped
+ * it at the same moment asks for the same retry-after and retries at the same
+ * window edge. With WORKER_CONCURRENCY > 1 and one worker container per kind,
+ * two refreshes of one workspace re-burst into the next window's budget
+ * together and the overflow parks. A small spread de-aligns the retries.
+ *
+ * Bounded well under the budget slack: the server's longest sane retry-after
+ * is one window (60s), 60s + 3s still fits inside the default 65s budget, so
+ * the jitter never turns a wait that would have fit into a park.
+ */
+export const DEFAULT_RATE_LIMIT_WAIT_JITTER_MAX_MS = 3_000;
 
 /**
  * True when `err` is a queue-api rate limit, including one rethrown through
@@ -158,6 +175,11 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Uniform spread in [0, DEFAULT_RATE_LIMIT_WAIT_JITTER_MAX_MS] ms. */
+function defaultJitterMs(): number {
+  return Math.floor(Math.random() * (DEFAULT_RATE_LIMIT_WAIT_JITTER_MAX_MS + 1));
+}
+
 export type FetchImpl = (
   url: string,
   init: { method: string; headers: Record<string, string>; body: Uint8Array; signal?: AbortSignal },
@@ -179,6 +201,12 @@ export interface PublishDeps {
   rateLimitWaitBudgetMs?: number;
   /** Sleep impl (injectable for tests; default setTimeout). */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Spread (ms) added to each `429 retry-after` wait (SLA-354). Default is
+   * uniform over [0, DEFAULT_RATE_LIMIT_WAIT_JITTER_MAX_MS]; tests pin it to
+   * a constant so the exact-wait assertions stay deterministic.
+   */
+  jitterMs?: () => number;
 }
 
 const te = new TextEncoder();
@@ -305,6 +333,7 @@ export async function publishJobHttp(
   const nowSeconds = deps.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
   const nonceHex = deps.nonceHex ?? defaultNonceHex;
   const sleep = deps.sleep ?? defaultSleep;
+  const jitterMs = deps.jitterMs ?? defaultJitterMs;
   // Per-call override (the reconciler passes 0) beats the deployment default
   // (env) beats the built-in one-limiter-window default.
   const waitBudgetMs =
@@ -357,9 +386,12 @@ export async function publishJobHttp(
     // Honour the wait the server named, but only while the budget lasts. A
     // wait that does not fit is not truncated into a guaranteed second 429 —
     // it surfaces as rate_limited, and the caller keeps today's behaviour
-    // (park the row; the reconciler drains it).
+    // (park the row; the reconciler drains it). The jitter (SLA-354)
+    // de-aligns publishers that were all refused at the same moment so they
+    // do not re-burst into the next window's budget at the same instant; the
+    // budget check covers jitter + retry-after together.
     if (err.code === 'rate_limited' && waitBudgetMs > 0) {
-      const waitMs = rateLimitWaitMs(err.retryAfterSeconds);
+      const waitMs = rateLimitWaitMs(err.retryAfterSeconds) + jitterMs();
       if (waitedMs + waitMs <= waitBudgetMs) {
         waitedMs += waitMs;
         await sleep(waitMs);

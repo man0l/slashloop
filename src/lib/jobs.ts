@@ -1559,21 +1559,30 @@ export function resetFallbackThrottleLogForTests(): void {
  * republishes them with dedupeKey d1:<MediaJob.id> and the ORIGINAL opId.
  * Legacy D1 claims never select these rows; this sweep is what unparks them.
  *
- * The batch STOPS at the first 429. queue-api caps publishes at 30/minute per
- * workspace and 10/minute per kind+workspace (src/queue/api.ts
- * DEFAULT_RATE_LIMITS), so a burst parked by a failed publish exceeds the
- * budget by construction: the reconciler would then issue one doomed HTTP
- * round-trip per remaining row, log a warning for each, and publish nothing.
- * Stopping leaves the rest parked for the next sweep — they are selected again
- * by the same query, so nothing is lost — and turns N warnings into one. This
- * is what SLA-317's smoke test saw live: `reconciled=0 failed=25` repeating
- * while the backlog drained at the limiter's own 10/minute pace.
+ * The batch STOPS at the first 429. queue-api caps publishes at 60/minute per
+ * workspace, 10/minute per kind+workspace, and 50/minute for the `fetch` kind
+ * specifically (src/queue/api.ts DEFAULT_RATE_LIMITS, SLA-354), so a burst
+ * parked by a failed publish can still exceed the budget: the reconciler
+ * would then issue one doomed HTTP round-trip per remaining row, log a
+ * warning for each, and publish nothing. Stopping leaves the rest parked for
+ * the next sweep — they are selected again by the same query, so nothing is
+ * lost — and turns N warnings into one. This is what SLA-317's smoke test
+ * saw live: `reconciled=0 failed=25` repeating while the backlog drained at
+ * the limiter's own pace.
  *
  * The surviving warning is itself throttled (THROTTLE_LOG_EVERY_MS). Hitting
  * the publish limiter is a self-healing condition, not a fault — the same
  * rows come back on the next sweep — so warning on every pass of a
  * multi-minute drain is a log flood that hides real warnings. See
  * src/lib/log-throttle.ts.
+ *
+ * Backlog visibility (SLA-354): a parked row is invisible to every claimer
+ * until this sweep republishes it, and the PG-side queue metrics cannot see
+ * it (it lives in D1 MediaJob). So the sweep also reports `backlog` (rows
+ * parked at sweep start) and `oldestAt` (the reconcile lag); the maintenance
+ * worker logs both on every pass while a backlog exists, which is the
+ * reconcile-lag metric — silent parking now has a line in the shipped logs
+ * even when every republish succeeds.
  *
  * Two SLA-349 details make "the first 429" mean the same thing on both sides.
  * `reconcileFallbackRow` publishes with rateLimitWaitBudgetMs 0, so the
@@ -1586,7 +1595,7 @@ export function resetFallbackThrottleLogForTests(): void {
 export async function reconcileFallbackJobs(opts?: {
   take?: number;
   publisher?: QueuePublisher;
-}): Promise<{ reconciled: number; failed: number; more: boolean }> {
+}): Promise<{ reconciled: number; failed: number; more: boolean; backlog: number; oldestAt: Date | null }> {
   const take = opts?.take ?? QUEUE_SWEEP_TAKE;
   const rows = await db.mediaJob.findMany({
     where: { queueOwner: 'fallback_d1', status: QUEUE_FALLBACK_STATUS },
@@ -1603,11 +1612,21 @@ export async function reconcileFallbackJobs(opts?: {
       preAuthCredits: true,
       deadlineAt: true,
       analysisId: true,
+      createdAt: true,
     },
   });
   const more = rows.length > take;
   const batch = more ? rows.slice(0, take) : rows;
-  if (batch.length === 0) return { reconciled: 0, failed: 0, more: false };
+  if (batch.length === 0) return { reconciled: 0, failed: 0, more: false, backlog: 0, oldestAt: null };
+  // Backlog snapshot BEFORE any republish (one extra count read, and only
+  // when a backlog exists at all): the worker reports "N were parked, this
+  // sweep drained M" — the gap between successive snapshots is the
+  // reconcile lag. rows[0] is the global oldest (ascending createdAt), so
+  // oldestAt costs nothing extra.
+  const backlog = await db.mediaJob.count({
+    where: { queueOwner: 'fallback_d1', status: QUEUE_FALLBACK_STATUS },
+  });
+  const oldestAt = rows[0].createdAt ?? null;
 
   const pub = opts?.publisher ?? routedQueuePublisher();
   let reconciled = 0;
@@ -1640,13 +1659,13 @@ export async function reconcileFallbackJobs(opts?: {
           `[jobs] fallback reconcile throttled by queue-api after ${reconciled} publish(es); ${parked} row(s) still parked`
           + foldedSuffix(folded));
         if (line) console.warn(line);
-        return { reconciled, failed, more: true };
+        return { reconciled, failed, more: true, backlog, oldestAt };
       }
       failed++;
       console.warn(`[jobs] fallback reconcile failed for ${row.id}: ${(err as Error).message}`);
     }
   }
-  return { reconciled, failed, more };
+  return { reconciled, failed, more, backlog, oldestAt };
 }
 
 /**
