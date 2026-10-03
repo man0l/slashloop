@@ -89,17 +89,21 @@ export interface PublisherD1 {
 
 /** PG publish — the queue-api EnqueueBody shape (producer.ts posts it). */
 export interface PublisherPg {
-  publish(input: {
-    kind: string;
-    workspaceId: string;
-    videoId: string | null;
-    sourceId: string | null;
-    dedupeKey: string;
-    deadlineAt: string | null;
-    payload: Record<string, unknown>;
-    credits: { opId: string; preAuthCredits: number } | null;
-    d1JobId: string | null;
-  }): Promise<{ pgJobId: string; deduped: boolean }>;
+  publish(
+    input: {
+      kind: string;
+      workspaceId: string;
+      videoId: string | null;
+      sourceId: string | null;
+      dedupeKey: string;
+      deadlineAt: string | null;
+      payload: Record<string, unknown>;
+      credits: { opId: string; preAuthCredits: number } | null;
+      d1JobId: string | null;
+    },
+    /** Per-call override; absent means the transport's default. */
+    opts?: { rateLimitWaitBudgetMs?: number },
+  ): Promise<{ pgJobId: string; deduped: boolean }>;
 }
 
 export interface PublisherDeps {
@@ -116,10 +120,27 @@ export interface PublisherDeps {
 export class QueuePublishError extends Error {
   readonly code: 'invalid_target' | 'pg_unavailable' | 'pg_failed';
   readonly retryable: boolean;
-  constructor(code: QueuePublishError['code'], message: string, retryable: boolean) {
+  /**
+   * The underlying transport code, verbatim (SLA-349). `pg_failed` alone
+   * cannot tell a caller whether the publish was refused by the limiter or
+   * actually failed — the two want opposite handling: wait, versus park and
+   * retry later. `rate_limited` is the one callers branch on.
+   */
+  readonly producerCode: string | null;
+  /** Seconds queue-api asked us to wait, when it said. */
+  readonly retryAfterSeconds: number | null;
+  constructor(
+    code: QueuePublishError['code'],
+    message: string,
+    retryable: boolean,
+    opts?: { producerCode?: string | null; retryAfterSeconds?: number | null; cause?: unknown },
+  ) {
     super(message);
     this.code = code;
     this.retryable = retryable;
+    this.producerCode = opts?.producerCode ?? null;
+    this.retryAfterSeconds = opts?.retryAfterSeconds ?? null;
+    if (opts?.cause !== undefined) this.cause = opts.cause;
   }
 }
 
@@ -266,10 +287,27 @@ export class QueuePublisher {
       const fallbackOn = this.deps.fallbackEnabled
         ?? (this.deps.resolveFallbackEnabled ? await this.deps.resolveFallbackEnabled() : false);
       if (!fallbackOn) {
+        // Carry the transport's own code through. A rate limit that reached
+        // here exhausted its per-publish wait budget (producer.ts), and a
+        // caller that has to choose between "come back later" and "this is
+        // broken" cannot do that from `pg_failed` plus a message string.
+        // producerCode wins over code: a PG transport that already wrapped its
+        // failure keeps the transport code, whereas `code` would read as this
+        // wrapper's own pg_failed.
+        const src = err as { code?: unknown; producerCode?: unknown; retryAfterSeconds?: unknown };
+        const producerCode =
+          typeof src?.producerCode === 'string' ? src.producerCode
+          : typeof src?.code === 'string' ? src.code
+          : null;
+        const retryAfterSeconds =
+          typeof src?.retryAfterSeconds === 'number' && Number.isFinite(src.retryAfterSeconds)
+            ? src.retryAfterSeconds
+            : null;
         throw new QueuePublishError(
           'pg_failed',
           `PG publish failed for kind "${req.kind}": ${(err as Error).message}`,
           true,
+          { producerCode, retryAfterSeconds, cause: err },
         );
       }
       // Fallback row: same opId/credits/payload, queueOwner='fallback_d1',
@@ -307,6 +345,13 @@ export class QueuePublisher {
    * on dedupe match adopts the existing PG job (no second billing operation).
    * After acceptance the D1 row becomes queueOwner='pg', status 'queued',
    * retaining the same D1 id (linked via PG d1_job_id by the caller).
+   *
+   * rateLimitWaitBudgetMs 0 on purpose (SLA-349): a fresh publish waits out
+   * `retry-after`, but the reconciler must NOT. It stops its sweep at the
+   * first 429 by design (jobs.ts reconcileFallbackJobs) and runs again on the
+   * WORKER_RECLAIM_INTERVAL_MS cadence, so the window is already being waited
+   * out once — sleeping inside the sweep would only push the rest of the batch
+   * a minute later for every row that is not rate limited at all.
    */
   async reconcileFallbackRow(row: {
     id: string;
@@ -323,18 +368,21 @@ export class QueuePublisher {
     if (!this.deps.pg) {
       throw new QueuePublishError('pg_unavailable', 'reconciliation needs a PG publisher', true);
     }
-    const accepted = await this.deps.pg.publish({
-      kind: row.kind,
-      workspaceId: row.workspaceId,
-      videoId: row.videoId,
-      sourceId: row.sourceId,
-      dedupeKey: fallbackDedupeKey(row.id),
-      deadlineAt: row.deadlineAt ? row.deadlineAt.toISOString() : null,
-      payload: toPayloadRecord(row.payloadJson),
-      credits:
-        row.opId != null ? { opId: row.opId, preAuthCredits: row.preAuthCredits ?? 0 } : null,
-      d1JobId: row.id,
-    });
+    const accepted = await this.deps.pg.publish(
+      {
+        kind: row.kind,
+        workspaceId: row.workspaceId,
+        videoId: row.videoId,
+        sourceId: row.sourceId,
+        dedupeKey: fallbackDedupeKey(row.id),
+        deadlineAt: row.deadlineAt ? row.deadlineAt.toISOString() : null,
+        payload: toPayloadRecord(row.payloadJson),
+        credits:
+          row.opId != null ? { opId: row.opId, preAuthCredits: row.preAuthCredits ?? 0 } : null,
+        d1JobId: row.id,
+      },
+      { rateLimitWaitBudgetMs: 0 },
+    );
     await this.deps.d1.markD1ProjectionPg(row.id, accepted.pgJobId);
     return { d1JobId: row.id, pgJobId: accepted.pgJobId, transport: 'pg', deduped: accepted.deduped };
   }
