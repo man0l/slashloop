@@ -3,13 +3,14 @@
 // (no database, no network).
 import { describe, expect, test } from 'bun:test';
 import { mapKeyStore } from './auth.js';
-import { signRequest } from './auth.js';
+import { signRequest, type ProducerKey } from './auth.js';
 import {
   DEFAULT_RATE_LIMITS,
   handleQueueRequest,
   memoryRateLimiter,
   type QueueApiDeps,
   type QueueHttpRequest,
+  type RateLimiter,
 } from './api.js';
 import type { PgQueue } from './pg.js';
 import type { PgQueueJobRow } from './contract.js';
@@ -97,10 +98,13 @@ function stubQueue(state: StubState): PgQueue {
   return api as unknown as PgQueue;
 }
 
-function deps(state: StubState, opts?: { limiter?: ReturnType<typeof memoryRateLimiter> }): QueueApiDeps {
+function deps(
+  state: StubState,
+  opts?: { limiter?: RateLimiter; keys?: ProducerKey[] },
+): QueueApiDeps {
   return {
     queue: stubQueue(state),
-    keys: mapKeyStore([{ keyId: 'k1', secret: SECRET, state: 'active' }]),
+    keys: mapKeyStore(opts?.keys ?? [{ keyId: 'k1', secret: SECRET, state: 'active' }]),
     limiter: opts?.limiter ?? memoryRateLimiter(),
     limits: DEFAULT_RATE_LIMITS,
     ping: async () => true,
@@ -108,11 +112,23 @@ function deps(state: StubState, opts?: { limiter?: ReturnType<typeof memoryRateL
   };
 }
 
+/** Rate limiter that remembers every bucket key it was asked about. */
+function recordingLimiter(inner: RateLimiter = memoryRateLimiter()): RateLimiter & { taken: string[] } {
+  const taken: string[] = [];
+  return {
+    taken,
+    take(key, limit, windowSeconds) {
+      taken.push(key);
+      return inner.take(key, limit, windowSeconds);
+    },
+  };
+}
+
 function signedRequest(
   method: string,
   path: string,
   body: string,
-  opts?: { nonce?: string; timestamp?: string; secret?: string; query?: string },
+  opts?: { nonce?: string; timestamp?: string; secret?: string; query?: string; keyId?: string },
 ): QueueHttpRequest {
   const timestamp = opts?.timestamp ?? String(NOW);
   const nonce = opts?.nonce ?? `n-${Math.random().toString(36).slice(2)}`;
@@ -121,7 +137,7 @@ function signedRequest(
     path,
     query: opts?.query ?? '',
     headers: {
-      'X-SLQ-Key-Id': 'k1',
+      'X-SLQ-Key-Id': opts?.keyId ?? 'k1',
       'X-SLQ-Timestamp': timestamp,
       'X-SLQ-Nonce': nonce,
       'X-SLQ-Signature': signRequest(opts?.secret ?? SECRET, method, path, timestamp, nonce, body),
@@ -139,6 +155,25 @@ const ENQUEUE = JSON.stringify({
   payload: {},
   credits: { opId: 'op-1', preAuthCredits: 5 },
 });
+
+function enqueueFor(workspaceId: string, videoId: string): string {
+  return JSON.stringify({
+    kind: 'analyze',
+    workspaceId,
+    videoId,
+    sourceId: null,
+    dedupeKey: `analyze:video:${videoId}`,
+    payload: {},
+  });
+}
+
+// A scoped producer key exactly as QUEUE_API_KEYS_JSON can express it
+// (server.ts loadKeys): the optional `workspaceIds` is the ONLY thing that
+// narrows a key, and prod env keys (QUEUE_API_KEY_ACTIVE_*) have none.
+const SCOPED_KEYS_JSON = `[{"keyId":"k-scoped","secret":"${SECRET}","state":"active","workspaceIds":["ws1"]}]`;
+const SCOPED_KEYS = JSON.parse(SCOPED_KEYS_JSON) as ProducerKey[];
+/** A second scope, so "ws1 only" vs "ws9 only" can be told apart. */
+const OTHER_KEYS: ProducerKey[] = [{ keyId: 'k-other', secret: SECRET, state: 'active', workspaceIds: ['ws9'] }];
 
 describe('health checks', () => {
   test('healthz/readyz need no auth', async () => {
@@ -276,6 +311,98 @@ describe('enqueue', () => {
       now += 100;
     }
     expect(limited).toBeGreaterThan(0);
+  });
+});
+
+describe('workspace scope (SLA-351)', () => {
+  const scopedDeps = (state: StubState, limiter?: RateLimiter) =>
+    deps(state, { keys: SCOPED_KEYS, limiter });
+
+  test('a scoped key still publishes into its own workspace', async () => {
+    const state: StubState = { jobs: new Map(), nonces: new Set(), cancels: [] };
+    const r = await handleQueueRequest(
+      signedRequest('POST', '/v1/jobs', ENQUEUE, { nonce: 'ok1', keyId: 'k-scoped' }),
+      scopedDeps(state),
+    );
+    expect(r.status).toBe(202);
+    expect(state.jobs.size).toBe(1);
+  });
+
+  test('a scoped key cannot publish into another workspace', async () => {
+    const state: StubState = { jobs: new Map(), nonces: new Set(), cancels: [] };
+    const r = await handleQueueRequest(
+      signedRequest('POST', '/v1/jobs', enqueueFor('ws2', 'v2'), { nonce: 'no1', keyId: 'k-scoped' }),
+      scopedDeps(state),
+    );
+    expect(r.status).toBe(403);
+    const body = JSON.parse(r.body);
+    expect(body.error.code).toBe('forbidden');
+    expect(body.error.retryable).toBe(false);
+    // Nothing enqueued, and the nonce is NOT burned so the producer can retry
+    // the same publish under a workspace its key actually owns.
+    expect(state.jobs.size).toBe(0);
+    expect(state.nonces.has('k-scoped:no1')).toBe(false);
+  });
+
+  test('a rejected cross-workspace publish never spends the target workspace budget', async () => {
+    const state: StubState = { jobs: new Map(), nonces: new Set(), cancels: [] };
+    const limiter = recordingLimiter();
+    const d = scopedDeps(state, limiter);
+    for (let i = 0; i < 5; i++) {
+      const r = await handleQueueRequest(
+        signedRequest('POST', '/v1/jobs', enqueueFor('ws2', `x${i}`), { nonce: `drain-${i}`, keyId: 'k-scoped' }),
+        d,
+      );
+      expect(r.status).toBe(403);
+    }
+    // The buckets are keyed on the client-supplied workspaceId, so this is the
+    // cross-tenant quota drain the scope check has to stop: only the attacker's
+    // own per-key budget may move.
+    expect(limiter.taken).not.toContain('ws:ws2');
+    expect(limiter.taken.some((k) => k.startsWith('kind:'))).toBe(false);
+    // ws2 still has its full budget: 10 kind+workspace publishes/minute.
+    for (let i = 0; i < DEFAULT_RATE_LIMITS.perKindWorkspacePerMinute; i++) {
+      const ok = await handleQueueRequest(
+        signedRequest('POST', '/v1/jobs', enqueueFor('ws2', `ok-${i}`), { nonce: `ws2-${i}` }),
+        deps(state),
+      );
+      expect(ok.status).toBe(202);
+    }
+  });
+
+  test('an unscoped key (no workspaceIds) still publishes anywhere', async () => {
+    const state: StubState = { jobs: new Map(), nonces: new Set(), cancels: [] };
+    const r = await handleQueueRequest(
+      signedRequest('POST', '/v1/jobs', enqueueFor('ws2', 'v2'), { nonce: 'star1' }),
+      deps(state),
+    );
+    expect(r.status).toBe(202);
+  });
+
+  test('GET and cancel enforce the same scope as enqueue', async () => {
+    const state: StubState = { jobs: new Map(), nonces: new Set(), cancels: [] };
+    const enq = await handleQueueRequest(
+      signedRequest('POST', '/v1/jobs', ENQUEUE, { nonce: 'seed1' }),
+      deps(state),
+    );
+    const jobId = (JSON.parse(enq.body) as { jobId: string }).jobId;
+    const d = scopedDeps(state);
+    const get = await handleQueueRequest(
+      signedRequest('GET', `/v1/jobs/${jobId}`, '', { nonce: 'sg1', keyId: 'k-scoped' }),
+      d,
+    );
+    expect(get.status).toBe(200); // ws1 is in scope
+    const other = await handleQueueRequest(
+      signedRequest('GET', `/v1/jobs/${jobId}`, '', { nonce: 'sg2', keyId: 'k-other' }),
+      deps(state, { keys: OTHER_KEYS }),
+    );
+    expect(other.status).toBe(403);
+    const cancel = await handleQueueRequest(
+      signedRequest('POST', `/v1/jobs/${jobId}/cancel`, '', { nonce: 'sc1', keyId: 'k-other' }),
+      deps(state, { keys: OTHER_KEYS }),
+    );
+    expect(cancel.status).toBe(403);
+    expect(state.cancels).toEqual([]);
   });
 });
 

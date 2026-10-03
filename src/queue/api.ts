@@ -9,9 +9,10 @@
 //   POST /v1/jobs/{jobId}/cancel   queued -> cancelled (one refund)
 //
 // Ordering per request: raw-body preservation -> auth (timestamp+signature)
-// -> rate/body limits -> Zod validation -> nonce commit with the business
-// transaction. The service reads the RAW body before JSON parsing; no generic
-// JSON middleware may sit in front of the signed routes (see server.ts).
+// -> rate/body limits -> Zod validation -> workspace scope -> target matrix
+// -> nonce commit with the business transaction. The service reads the RAW
+// body before JSON parsing; no generic JSON middleware may sit in front of the
+// signed routes (see server.ts).
 //
 // Nonce rule: the nonce is committed only when the business transaction
 // succeeds. Enqueue inserts it atomically alongside the job row. For
@@ -276,6 +277,18 @@ export async function handleQueueRequest(
     return json(422, queueError('invalid_job', `invalid job: ${zod.error.issues[0]?.message ?? 'validation failed'}`));
   }
   const body = zod.data;
+
+  // Workspace authorization for the publish target (SLA-351). GET/cancel
+  // enforce it against the stored row; enqueue has to enforce it against the
+  // client-supplied `workspaceId` or a scoped key gets a publish-side bypass.
+  // It runs BEFORE the limiter buckets below: those are keyed on the same
+  // unvalidated workspace id, so an unauthorized publish would otherwise spend
+  // another tenant's per-workspace and per-kind budget (SLA-346). No nonce is
+  // committed on a 403, matching the forbidden GET/cancel paths — a producer
+  // can retry the same request under the key's own scope.
+  if (!keyMayAccessWorkspace(auth.key, body.workspaceId)) {
+    return json(403, queueError('forbidden', 'key is not authorized for this workspace'));
+  }
 
   const targetError = validateJobTargets(body.kind, body.videoId, body.sourceId);
   if (targetError) {
