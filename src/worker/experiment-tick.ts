@@ -14,6 +14,40 @@
 // makes that dependency explicit).
 // ---------------------------------------------------------------------------
 
+import { errorDetail } from '../lib/error-detail.js';
+
+/**
+ * Detail for the tick-failure log line. The line must never end at the
+ * colon: 2026-10-02 production logged
+ * `[worker] experiment tick failed (streak 1, next attempt in ~5s): `
+ * with nothing after it — the running build's catch was
+ * `err.stack ?? err.message`, and both can be empty strings on a real
+ * Error (`??` only falls through on null/undefined).
+ *
+ * errorDetail() already returns a non-empty string for every thrown shape,
+ * but the guarantee lives next to the log line so a future change to
+ * errorDetail cannot silently recreate the blind spot (SLA-362). The
+ * fallback names the thrown value's shape — typeof + constructor + safe
+ * JSON — so a non-Error throw is diagnosable from the log line alone.
+ */
+export function experimentTickFailureDetail(err: unknown): string {
+  const detail = errorDetail(err);
+  if (detail) return detail;
+  let shape = '';
+  try {
+    const json = JSON.stringify(err);
+    if (json && json !== '{}') shape = json;
+  } catch {
+    // Circular / non-serialisable — fall through to String().
+  }
+  if (!shape) shape = String(err);
+  const ctor =
+    err && typeof err === 'object' && typeof err.constructor === 'function'
+      ? ` ctor=${err.constructor.name}`
+      : '';
+  return `no detail extractable from thrown value (typeof ${typeof err}${ctor}): ${shape || '?'}`;
+}
+
 /** True when this container owns the experiment tick. */
 export function experimentsTickEnabled(
   kinds: string[],
