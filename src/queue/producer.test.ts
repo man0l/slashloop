@@ -5,6 +5,7 @@ import { describe, expect, test } from 'bun:test';
 import { mapKeyStore, verifyAuth } from './auth.js';
 import {
   DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS,
+  DEFAULT_RATE_LIMIT_WAIT_JITTER_MAX_MS,
   isRateLimitedError,
   loadProducerConfig,
   ProducerHttpError,
@@ -184,7 +185,13 @@ describe('producer honours retry-after', () => {
         : { status: 202, text: JSON.stringify({ jobId: 'pg-3', deduped: false }) };
     });
     const { slept, sleep } = fakeSleep();
-    const accepted = await publishJobHttp(cfg, body, { fetchImpl: fetch, sleep, nonceHex: () => `nonce-${nonces.length}` });
+    // Pinned jitter: this case asserts the wait queue-api named, verbatim.
+    const accepted = await publishJobHttp(cfg, body, {
+      fetchImpl: fetch,
+      sleep,
+      jitterMs: () => 0,
+      nonceHex: () => `nonce-${nonces.length}`,
+    });
 
     expect(accepted).toEqual({ pgJobId: 'pg-3', deduped: false });
     expect(slept).toEqual([7000]);
@@ -205,7 +212,11 @@ describe('producer honours retry-after', () => {
         : { status: 202, text: JSON.stringify({ jobId: 'pg-4', deduped: false }) };
     });
     const { slept, sleep } = fakeSleep();
-    const accepted = await publishJobHttp(cfg, body, { fetchImpl: fetch, sleep });
+    const accepted = await publishJobHttp(cfg, body, {
+      fetchImpl: fetch,
+      sleep,
+      jitterMs: () => 0, // pinned: asserts the window fallback verbatim
+    });
     expect(accepted.pgJobId).toBe('pg-4');
     // DEFAULT_RATE_LIMITS are all per-minute and memoryRateLimiter's window
     // default is 60s, so a missing header means "come back in a minute".
@@ -219,7 +230,11 @@ describe('producer honours retry-after', () => {
       text: JSON.stringify({ error: { code: 'rate_limited', message: 'per-workspace publish limit exceeded', retryable: true, jobId: null } }),
     }));
     const { slept, sleep } = fakeSleep();
-    const err = await publishJobHttp(cfg, body, { fetchImpl: fetch, sleep, rateLimitWaitBudgetMs: 65_000 }).catch((e) => e);
+    const err = await publishJobHttp(
+      cfg,
+      body,
+      { fetchImpl: fetch, sleep, rateLimitWaitBudgetMs: 65_000, jitterMs: () => 0 },
+    ).catch((e) => e);
 
     // 30s + 30s fits, a third does not: the wait is never truncated into a
     // guaranteed second 429, it surfaces and the caller parks the row.
@@ -228,6 +243,55 @@ describe('producer honours retry-after', () => {
     expect((err as ProducerHttpError).code).toBe('rate_limited');
     expect((err as ProducerHttpError).retryAfterSeconds).toBe(30);
     expect(isRateLimitedError(err)).toBe(true);
+  });
+
+  // SLA-354: publishers refused at the same moment all retry at the same
+  // window edge. The jitter spreads that retry, and the spread must stay
+  // inside the budget so a legal retry-after can never be parked by it.
+  test('maximum jitter on a full-window retry-after still fits the default budget', async () => {
+    let n = 0;
+    const fetch = fakeFetch(() => {
+      n++;
+      return n === 1
+        ? {
+            status: 429,
+            headers: { 'retry-after': '60' },
+            text: JSON.stringify({ error: { code: 'rate_limited', message: 'per-kind publish limit exceeded', retryable: true, jobId: null } }),
+          }
+        : { status: 202, text: JSON.stringify({ jobId: 'pg-6', deduped: false }) };
+    });
+    const { slept, sleep } = fakeSleep();
+    const accepted = await publishJobHttp(cfg, body, {
+      fetchImpl: fetch,
+      sleep,
+      jitterMs: () => DEFAULT_RATE_LIMIT_WAIT_JITTER_MAX_MS,
+    });
+    expect(accepted.pgJobId).toBe('pg-6');
+    // 60s + 3s is the worst legal case and still fits the default 65s budget.
+    expect(slept).toEqual([63_000]);
+    expect(fetch.calls).toBe(2);
+  });
+
+  test('jitter that does not fit the budget surfaces instead of sleeping', async () => {
+    const fetch = fakeFetch(() => ({
+      status: 429,
+      headers: { 'retry-after': '7' },
+      text: JSON.stringify({ error: { code: 'rate_limited', message: 'slow down', retryable: true, jobId: null } }),
+    }));
+    const { slept, sleep } = fakeSleep();
+    // The budget holds the bare 7s wait but not 7s + 5s of jitter: the
+    // publish must not sleep toward a guaranteed second 429 — it surfaces
+    // and the caller parks the row for the reconciler.
+    await expect(
+      publishJobHttp(cfg, body, {
+        fetchImpl: fetch,
+        sleep,
+        rateLimitWaitBudgetMs: 7_001,
+        jitterMs: () => 5_000,
+      }),
+    ).rejects.toMatchObject({ code: 'rate_limited' } satisfies Partial<ProducerHttpError>);
+    expect(slept).toEqual([]);
+    expect(fetch.calls).toBe(1);
   });
 
   test('a retry-after larger than the budget surfaces instead of sleeping', async () => {
@@ -301,7 +365,11 @@ describe('producer honours retry-after', () => {
       return { status: 202, text: JSON.stringify({ jobId: 'pg-5', deduped: false }) };
     });
     const { slept, sleep } = fakeSleep();
-    const accepted = await publishJobHttp(cfg, body, { fetchImpl: fetch, sleep });
+    const accepted = await publishJobHttp(cfg, body, {
+      fetchImpl: fetch,
+      sleep,
+      jitterMs: () => 0, // pinned: asserts the 2s wait verbatim
+    });
     expect(accepted.pgJobId).toBe('pg-5');
     // Two independent loops: the replay was retried before the wait existed,
     // and the post-wait retry is still a first-class attempt.

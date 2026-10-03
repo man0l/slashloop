@@ -360,6 +360,9 @@ describe('QueuePublisher under the queue-api limiter', () => {
             fetchImpl,
             nowSeconds: () => Math.floor(clock.now / 1000),
             nonceHex: () => `nonce-${requests.length + 1}`,
+            // Pinned: this case asserts the server's 60s wait verbatim on the
+            // virtual clock; the SLA-354 jitter would otherwise spread it.
+            jitterMs: () => 0,
             sleep: async (ms) => { slept.push(ms); clock.now += ms; },
             ...(opts?.rateLimitWaitBudgetMs != null
               ? { rateLimitWaitBudgetMs: opts.rateLimitWaitBudgetMs }

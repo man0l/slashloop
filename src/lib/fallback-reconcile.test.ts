@@ -18,6 +18,8 @@ afterAll(() => {
 
 const seen: {
   findWhere: unknown;
+  countWhere: unknown;
+  countCalls: number;
   reconcile: Array<Record<string, unknown>>;
   /** Ids of rows the mocked findMany should return, oldest first. */
   rows: string[];
@@ -25,12 +27,17 @@ const seen: {
   warns: string[];
 } = {
   findWhere: null,
+  countWhere: null,
+  countCalls: 0,
   reconcile: [],
   rows: [],
   warns: [],
 };
 
-function parkedRow(id: string): Record<string, unknown> {
+/** Sweep-start instant of the oldest mocked row; later rows step +1min. */
+const PARKED_CREATED_AT = new Date('2026-10-02T18:16:00.000Z');
+
+function parkedRow(id: string, index = 0): Record<string, unknown> {
   return {
     id,
     kind: 'thumb',
@@ -42,6 +49,9 @@ function parkedRow(id: string): Record<string, unknown> {
     preAuthCredits: 0,
     deadlineAt: null,
     analysisId: null,
+    // The real query orders by createdAt asc, so index 0 is the global
+    // oldest — the row the sweep must report as the reconcile lag.
+    createdAt: new Date(PARKED_CREATED_AT.getTime() + index * 60_000),
   };
 }
 
@@ -50,7 +60,12 @@ mock.module('../db.js', () => ({
     mediaJob: {
       findMany: async ({ where }: { where: unknown }) => {
         seen.findWhere = where;
-        return seen.rows.map((id) => parkedRow(id));
+        return seen.rows.map((id, index) => parkedRow(id, index));
+      },
+      count: async ({ where }: { where: unknown }) => {
+        seen.countWhere = where;
+        seen.countCalls++;
+        return seen.rows.length;
       },
     },
   },
@@ -94,6 +109,8 @@ beforeEach(() => {
   seen.reconcile.length = 0;
   seen.rows = [];
   seen.warns.length = 0;
+  seen.countWhere = null;
+  seen.countCalls = 0;
   // The throttle window is process-wide by design, so each case starts from a
   // clean slate and can assert on the FIRST occurrence.
   resetFallbackThrottleLogForTests();
@@ -115,7 +132,13 @@ describe('reconcileFallbackJobs', () => {
     seen.rows = ['fb-1'];
     const out = await reconcileFallbackJobs({ take: 50, publisher: okPublisher() as never });
     expect(seen.findWhere).toEqual({ queueOwner: 'fallback_d1', status: QUEUE_FALLBACK_STATUS });
-    expect(out).toEqual({ reconciled: 1, failed: 0, more: false });
+    expect(out).toEqual({
+      reconciled: 1,
+      failed: 0,
+      more: false,
+      backlog: 1,
+      oldestAt: PARKED_CREATED_AT,
+    });
     expect(seen.reconcile).toEqual([{ id: 'fb-1', opId: 'op-fb-1', dedupe: 'd1:fb-1' }]);
   });
 
@@ -137,7 +160,14 @@ describe('reconcileFallbackJobs', () => {
     // 2 published, then one refused publish stopped the sweep — 2 further rows
     // were never attempted even though they were selected.
     expect(calls).toBe(3);
-    expect(out).toEqual({ reconciled: 2, failed: 0, more: true });
+    expect(out).toEqual({
+      reconciled: 2,
+      failed: 0,
+      more: true,
+      // All 5 were parked at sweep start; the 429 stopped the sweep partway.
+      backlog: 5,
+      oldestAt: PARKED_CREATED_AT,
+    });
     expect(seen.reconcile.map((r) => r.id)).toEqual(['fb-1', 'fb-2', 'fb-3']);
   });
 
@@ -145,7 +175,14 @@ describe('reconcileFallbackJobs', () => {
     seen.rows = ['fb-1', 'fb-2'];
     const publisher = { reconcileFallbackRow: async () => { throw rateLimited(); } };
     const out = await reconcileFallbackJobs({ take: 50, publisher: publisher as never });
-    expect(out).toEqual({ reconciled: 0, failed: 0, more: true });
+    expect(out).toEqual({
+      reconciled: 0,
+      failed: 0,
+      more: true,
+      // Nothing drained, so the full 2-row backlog is still parked.
+      backlog: 2,
+      oldestAt: PARKED_CREATED_AT,
+    });
   });
 
   test('a non-429 error still counts as failed and does not stop the batch', async () => {
@@ -158,7 +195,14 @@ describe('reconcileFallbackJobs', () => {
       },
     };
     const out = await reconcileFallbackJobs({ take: 50, publisher: publisher as never });
-    expect(out).toEqual({ reconciled: 2, failed: 1, more: false });
+    expect(out).toEqual({
+      reconciled: 2,
+      failed: 1,
+      more: false,
+      // The failed row stays parked, so the 3-row backlog is still there.
+      backlog: 3,
+      oldestAt: PARKED_CREATED_AT,
+    });
     expect(seen.reconcile.map((r) => r.id)).toEqual(['fb-1', 'fb-2', 'fb-3']);
   });
 
@@ -174,7 +218,13 @@ describe('reconcileFallbackJobs', () => {
     };
     const out = await reconcileFallbackJobs({ take: 50, publisher: publisher as never });
     expect(calls).toBe(1);
-    expect(out).toEqual({ reconciled: 0, failed: 0, more: true });
+    expect(out).toEqual({
+      reconciled: 0,
+      failed: 0,
+      more: true,
+      backlog: 2,
+      oldestAt: PARKED_CREATED_AT,
+    });
   });
 
   // SLA-349: a rate limit that reached the sweep through QueuePublisher's
@@ -199,7 +249,13 @@ describe('reconcileFallbackJobs', () => {
     };
     const out = await reconcileFallbackJobs({ take: 50, publisher: publisher as never });
     expect(calls).toBe(2);
-    expect(out).toEqual({ reconciled: 1, failed: 0, more: true });
+    expect(out).toEqual({
+      reconciled: 1,
+      failed: 0,
+      more: true,
+      backlog: 3,
+      oldestAt: PARKED_CREATED_AT,
+    });
   });
 
   // Founder feedback on SLA-317: "can you cool down this error if being
@@ -224,7 +280,13 @@ describe('reconcileFallbackJobs', () => {
     expect(seen.warns).toHaveLength(1);
     // Backlog drained: the next sweep publishes and warns about nothing.
     const out = await reconcileFallbackJobs({ take: 50, publisher: okPublisher() as never });
-    expect(out).toEqual({ reconciled: 1, failed: 0, more: false });
+    expect(out).toEqual({
+      reconciled: 1,
+      failed: 0,
+      more: false,
+      backlog: 1,
+      oldestAt: PARKED_CREATED_AT,
+    });
     expect(seen.warns).toHaveLength(1);
   });
 
@@ -236,8 +298,36 @@ describe('reconcileFallbackJobs', () => {
       },
     };
     const out = await reconcileFallbackJobs({ take: 50, publisher: publisher as never });
-    expect(out).toEqual({ reconciled: 0, failed: 2, more: false });
+    expect(out).toEqual({
+      reconciled: 0,
+      failed: 2,
+      more: false,
+      // Both rows stay parked after the failed republish.
+      backlog: 2,
+      oldestAt: PARKED_CREATED_AT,
+    });
     expect(seen.warns).toHaveLength(2);
     expect(seen.warns[0]).toContain('fallback reconcile failed for fb-1: pg_unavailable:fb-1');
+  });
+
+  // SLA-354: a parked row is invisible to every claimer and to the PG-side
+  // queue metrics (it lives in D1 MediaJob). The sweep reports the backlog
+  // size and the reconcile lag so the maintenance worker can log a metric.
+  test('reports the parked backlog and the oldest row (reconcile lag)', async () => {
+    seen.rows = ['fb-1', 'fb-2', 'fb-3'];
+    const out = await reconcileFallbackJobs({ take: 50, publisher: okPublisher() as never });
+    expect(out.backlog).toBe(3);
+    // Oldest of the ascending selection is the global oldest.
+    expect(out.oldestAt).toEqual(PARKED_CREATED_AT);
+    // The count reads the same fallback selection as findMany.
+    expect(seen.countWhere).toEqual({ queueOwner: 'fallback_d1', status: QUEUE_FALLBACK_STATUS });
+  });
+
+  test('an empty backlog skips the count query entirely', async () => {
+    seen.rows = [];
+    const out = await reconcileFallbackJobs({ take: 50, publisher: okPublisher() as never });
+    expect(out).toEqual({ reconciled: 0, failed: 0, more: false, backlog: 0, oldestAt: null });
+    // No backlog, no extra D1 read.
+    expect(seen.countCalls).toBe(0);
   });
 });

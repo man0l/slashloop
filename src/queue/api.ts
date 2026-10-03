@@ -71,16 +71,37 @@ export type EnqueueBody = z.infer<typeof enqueueSchema>;
 export interface RateLimits {
   /** Per key: 120 burst / 60 sustained per minute. */
   perKeyPerMinute: number;
-  /** Per workspace: 30 publishes/minute. */
+  /** Per workspace: 60 publishes/minute (across all kinds combined). */
   perWorkspacePerMinute: number;
   /** Per kind+workspace: 10 publishes/minute. */
   perKindWorkspacePerMinute: number;
+  /**
+   * Per-kind override of perKindWorkspacePerMinute (SLA-354). Kinds whose
+   * legitimate single-call burst exceeds the generic ceiling name their own
+   * higher one here; everything else keeps perKindWorkspacePerMinute. An
+   * override only binds when it is above the generic ceiling AND below
+   * perWorkspacePerMinute — otherwise the workspace gate fires first.
+   */
+  perKindOverrides?: Partial<Record<string, number>>;
 }
 
 export const DEFAULT_RATE_LIMITS: RateLimits = {
   perKeyPerMinute: 120,
-  perWorkspacePerMinute: 30,
+  perWorkspacePerMinute: 60,
   perKindWorkspacePerMinute: 10,
+  // `fetch` is the only kind a single sweep can legitimately burst:
+  // refresh_source queues one fetch per new photo post and the fetch_videos
+  // tool accepts up to 50 in one call. At the flat 10/minute every burst of
+  // that size tripped the kind limit and parked the tail on the fallback D1
+  // (SLA-354: 8 fetch parks in ~30s on 2026-10-02, drained by the reconciler
+  // a sweep later). Downloads are cost-gated upstream by the download path's
+  // own cap (proxy traffic / Apify spend), so the app gate only has to stay
+  // above the largest legitimate single-call burst — hence 50, matching the
+  // tool's hard cap. perWorkspacePerMinute moved 30 -> 60 to sit ABOVE the
+  // fetch override so the kind cap is the binding one for fetch bursts
+  // (a kind cap at or below the workspace cap can never fire); the per-key
+  // 120 remains the outer bound and every non-fetch kind keeps its 10.
+  perKindOverrides: { fetch: 50 },
 };
 
 export interface RateLimiter {
@@ -303,9 +324,13 @@ export async function handleQueueRequest(
       'retry-after': String(wsRetry),
     });
   }
+  // body.kind is already zod-validated, so the override lookup can never
+  // read an unknown kind; absent kinds keep the generic ceiling.
+  const kindLimit =
+    deps.limits.perKindOverrides?.[body.kind] ?? deps.limits.perKindWorkspacePerMinute;
   const kindRetry = deps.limiter.take(
     `kind:${body.kind}:${body.workspaceId}`,
-    deps.limits.perKindWorkspacePerMinute,
+    kindLimit,
   );
   if (kindRetry != null) {
     return json(429, queueError('rate_limited', 'per-kind publish limit exceeded'), {

@@ -312,6 +312,73 @@ describe('enqueue', () => {
     }
     expect(limited).toBeGreaterThan(0);
   });
+
+  // SLA-354: a refresh sweep bursts one fetch per new photo post and the
+  // fetch_videos tool accepts up to 50 in one call, so `fetch` carries its
+  // own higher per-kind budget while every other kind keeps the generic one.
+  const burstBody = (kind: string, i: number) =>
+    ENQUEUE
+      .replace('"kind":"analyze"', `"kind":"${kind}"`)
+      .replace('analyze:video:v1', `${kind}:video:vk-${i}`)
+      .replace('"videoId":"v1"', `"videoId":"vk-${i}"`);
+
+  test('fetch gets the raised 50/minute per-kind budget', async () => {
+    const state: StubState = { jobs: new Map(), nonces: new Set(), cancels: [] };
+    const d = deps(state, { limiter: memoryRateLimiter() });
+    // All 50 fetch publishes fit: the fetch override is 50 and the workspace
+    // budget (60) still has headroom, so the KIND budget is the binding one.
+    for (let i = 0; i < 50; i++) {
+      const res = await handleQueueRequest(
+        signedRequest('POST', '/v1/jobs', burstBody('fetch', i), { nonce: `fk-${i}` }),
+        d,
+      );
+      expect(res.status).toBe(202);
+    }
+    const overFetch = await handleQueueRequest(
+      signedRequest('POST', '/v1/jobs', burstBody('fetch', 51), { nonce: 'fk-51' }),
+      d,
+    );
+    expect(overFetch.status).toBe(429);
+    expect(JSON.parse(overFetch.body).error.message).toBe('per-kind publish limit exceeded');
+    expect(overFetch.headers['retry-after']).toBeDefined();
+  });
+
+  test('non-overridden kinds keep the generic 10/minute budget', async () => {
+    const state: StubState = { jobs: new Map(), nonces: new Set(), cancels: [] };
+    const d = deps(state, { limiter: memoryRateLimiter() });
+    // 10 analyze fit; the 11th is refused by the KIND budget even though the
+    // workspace budget has room.
+    for (let i = 0; i < 10; i++) {
+      const res = await handleQueueRequest(
+        signedRequest('POST', '/v1/jobs', burstBody('analyze', i), { nonce: `an-${i}` }),
+        d,
+      );
+      expect(res.status).toBe(202);
+    }
+    const overAnalyze = await handleQueueRequest(
+      signedRequest('POST', '/v1/jobs', burstBody('analyze', 11), { nonce: 'an-11' }),
+      d,
+    );
+    expect(overAnalyze.status).toBe(429);
+    expect(JSON.parse(overAnalyze.body).error.message).toBe('per-kind publish limit exceeded');
+  });
+
+  test('the per-workspace budget still bounds a mixed-kind burst', async () => {
+    const state: StubState = { jobs: new Map(), nonces: new Set(), cancels: [] };
+    const d = deps(state, { limiter: memoryRateLimiter() });
+    const post = async (kind: string, nonce: string, i = 0) =>
+      handleQueueRequest(signedRequest('POST', '/v1/jobs', burstBody(kind, i), { nonce }), d);
+
+    // 50 fetch + 10 analyze = exactly the 60/minute workspace budget.
+    for (let i = 0; i < 50; i++) expect((await post('fetch', `wf-${i}`, i)).status).toBe(202);
+    for (let i = 0; i < 10; i++) expect((await post('analyze', `wa-${i}`, i)).status).toBe(202);
+
+    // The 61st publish of ANY kind is a per-workspace refusal: the shared
+    // workspace cap still bounds bursts the kind caps let through.
+    const overWs = await post('fetch', 'wf-51', 51);
+    expect(overWs.status).toBe(429);
+    expect(JSON.parse(overWs.body).error.message).toBe('per-workspace publish limit exceeded');
+  });
 });
 
 describe('workspace scope (SLA-351)', () => {

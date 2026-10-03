@@ -358,12 +358,27 @@ while (!shuttingDown) {
       }
       const fallback = await reconcileFallbackJobs().catch((err) => {
         console.warn(`[worker] fallback reconcile sweep failed: ${(err as Error).message}`);
-        return { reconciled: 0, failed: 0, more: false };
+        return { reconciled: 0, failed: 0, more: false, backlog: 0, oldestAt: null };
       });
       if (fallback.reconciled || fallback.failed) {
         console.log(
           `[worker] fallback reconcile reconciled=${fallback.reconciled} failed=${fallback.failed}`
           + (fallback.more ? ' (more remain)' : ''),
+        );
+      }
+      // Backlog visibility (SLA-354): a parked row is invisible to every
+      // claimer until this sweep republishes it, and the PG-side queue
+      // metrics cannot see it (it lives in D1 MediaJob). While a backlog
+      // exists, one line per maintenance sweep reports its size and the
+      // reconcile lag (age of the oldest parked row, the sweep-start
+      // snapshot) — silent parking now has a metric in the shipped logs.
+      if (fallback.backlog > 0) {
+        const oldestSec = fallback.oldestAt
+          ? Math.max(0, Math.round((Date.now() - fallback.oldestAt.getTime()) / 1000))
+          : -1;
+        console.log(
+          `[worker] fallback backlog parked=${fallback.backlog} oldest=${oldestSec}s `
+          + `— reconciled=${fallback.reconciled} failed=${fallback.failed} this sweep`,
         );
       }
       if (pgQueue) {
