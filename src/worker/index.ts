@@ -55,10 +55,10 @@ import { refundCredits } from '../lib/credits.js';
 import { initLogShipping } from './ship-logs.js';
 import { tick as experimentTick } from '../experiments/engine.js';
 import { createKindBreaker } from './kind-breaker.js';
-import { describeExperimentTickGate } from './experiment-tick.js';
+import { describeExperimentTickGate, experimentTickFailureDetail } from './experiment-tick.js';
 import { controlEnabled, filterKindsByControl } from '../lib/worker-control.js';
 import { snapshotD1Usage, deltaD1Usage, formatD1Usage, totalD1Usage } from '../lib/d1-usage.js';
-import { errorDetail, errorMessage } from '../lib/error-detail.js';
+import { errorMessage } from '../lib/error-detail.js';
 
 // D1 is single-writer with per-request billing: the 3s Postgres poll default
 // would hammer it from every container. In D1 mode (DB_DIALECT=sqlite) the
@@ -508,7 +508,7 @@ while (!shuttingDown) {
           experimentTickErrorRounds++;
           const delay = errorBackoffMs(experimentTickErrorRounds);
           experimentTickBackoffUntil = Date.now() + delay;
-          const detail = errorDetail(err);
+          const detail = experimentTickFailureDetail(err);
           console.error(
             `[worker] experiment tick failed (streak ${experimentTickErrorRounds}, next attempt in ~${Math.round(delay / 1000)}s): ${detail}`,
           );

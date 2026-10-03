@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describeExperimentTickGate, experimentsTickEnabled } from './experiment-tick.js';
+import { describeExperimentTickGate, experimentsTickEnabled, experimentTickFailureDetail } from './experiment-tick.js';
 
 describe('experimentsTickEnabled', () => {
   test('explicit env wins over kinds', () => {
@@ -64,5 +64,60 @@ describe('worker entry evaluation order', () => {
     expect(kindsDecl).toBeLessThan(firstUse);
     // And no zero-arg call that could close over a later global.
     expect(src).not.toContain('describeExperimentTickGate()');
+  });
+});
+
+describe('experimentTickFailureDetail', () => {
+  // 2026-10-02 production logged `[worker] experiment tick failed (streak 1,
+  // next attempt in ~5s): ` — nothing after the colon — because the running
+  // build's catch was `err.stack ?? err.message` and both were empty strings.
+  // The log line must never end at the colon again, for any thrown shape.
+  const thrownShapes: Array<[string, unknown]> = [
+    ['Error with message', new Error('ConnectionRefused: Unable to connect. Is the computer able to access the url?')],
+    ['Error with empty message and stack', Object.assign(new Error(''), { stack: '' })],
+    ['anonymous Error subclass with no message', new (class extends Error {})()],
+    ['whitespace-only Error message', new Error('   ')],
+    ['empty string', ''],
+    ['whitespace string', '   '],
+    ['plain string', 'upstream 503'],
+    ['null', null],
+    ['undefined', undefined],
+    ['zero', 0],
+    ['number', 42],
+    ['boolean', true],
+    ['symbol', Symbol('sym')],
+    ['bigint', 10n],
+    ['empty object', {}],
+    ['plain object', { code: 'ECONNREFUSED', errno: -111 }],
+    ['circular object', (() => { const c: Record<string, unknown> = {}; c.self = c; return c; })()],
+  ];
+
+  test('never returns an empty string', () => {
+    for (const [label, err] of thrownShapes) {
+      const detail = experimentTickFailureDetail(err);
+      expect(detail, `for ${label}`).not.toBe('');
+      expect(detail.trim(), `for ${label}`).not.toBe('');
+    }
+  });
+
+  test('keeps the errorDetail rendering for normal throws', () => {
+    const err = new Error('boom\n  at frame');
+    expect(experimentTickFailureDetail(err)).toBe(err.stack!);
+    expect(experimentTickFailureDetail('upstream 503')).toBe('upstream 503');
+    expect(experimentTickFailureDetail({ code: 'ECONNREFUSED' })).toBe('{"code":"ECONNREFUSED"}');
+  });
+
+  test('index.ts tick-failure line routes through the non-empty guard', () => {
+    // Static guard: index.ts has a top-level drain loop, so it cannot be
+    // imported in tests — assert on the source instead. A future edit that
+    // drops back to a bare `err.stack ?? err.message` would re-open the
+    // empty-detail blind spot (SLA-362).
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(join(here, 'index.ts'), 'utf8');
+    const line = src.indexOf('[worker] experiment tick failed');
+    expect(line).toBeGreaterThan(-1);
+    const catchWindow = src.slice(Math.max(0, line - 500), line);
+    expect(catchWindow).toContain('experimentTickFailureDetail(');
+    expect(catchWindow).not.toContain('err.stack ?? err.message');
   });
 });
