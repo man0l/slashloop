@@ -1295,6 +1295,65 @@ export function setJobLifecycleSink(sink: JobLifecycleSink | null): void {
   jobLifecycleSink = sink;
 }
 
+// ---------------------------------------------------------------------------
+// D1 projection miss accounting (SLA-361).
+//
+// A PG-owned job that reaches a terminal state is mirrored onto its D1
+// projection row (forceD1). When that row is absent — the claim path never
+// projected it, or it was deleted — the mirror hits record-not-found. PG is
+// the source of truth, so the gap is benign, but it must stay visible: it
+// used to surface as a bare P2025 warn (2026-10-03 log) or not at all, which
+// is how projection gaps stay silent. Every miss is counted once and logged
+// once per job; the totals pair with the reconcile-lag visibility from
+// SLA-353/SLA-354.
+// ---------------------------------------------------------------------------
+
+/** Prisma's error code for record-not-found on update (same on both dialects). */
+export function isPrismaRecordNotFound(err: unknown): boolean {
+  return (
+    typeof err === 'object' && err !== null &&
+    (err as { code?: unknown }).code === 'P2025'
+  );
+}
+
+export type D1ProjectionMissCause = 'complete' | 'fail';
+
+export interface D1ProjectionMisses {
+  complete: number;
+  fail: number;
+  total: number;
+}
+
+const d1ProjectionMisses: D1ProjectionMisses = { complete: 0, fail: 0, total: 0 };
+
+export function recordD1ProjectionMiss(cause: D1ProjectionMissCause): D1ProjectionMisses {
+  d1ProjectionMisses[cause]++;
+  d1ProjectionMisses.total++;
+  return snapshotD1ProjectionMisses();
+}
+
+/** Diagnostics/tests: the process-wide projection-miss totals. */
+export function snapshotD1ProjectionMisses(): D1ProjectionMisses {
+  return { ...d1ProjectionMisses };
+}
+
+/** Test seam: the counters are process-wide, so tests need a way back to zero. */
+export function resetD1ProjectionMissesForTests(): void {
+  d1ProjectionMisses.complete = 0;
+  d1ProjectionMisses.fail = 0;
+  d1ProjectionMisses.total = 0;
+}
+
+/** Count the miss and say so ONCE per job — an expected gap, not a fault. */
+function logD1ProjectionMiss(cause: D1ProjectionMissCause, id: string): void {
+  const misses = recordD1ProjectionMiss(cause);
+  console.log(
+    `[jobs] D1 projection row missing on ${cause} for ${id.slice(0, 8)} `
+    + `(PG is source of truth) — projection misses: `
+    + `total=${misses.total} complete=${misses.complete} fail=${misses.fail}`,
+  );
+}
+
 export async function yieldJob(
   id: string,
   reason: string,
@@ -1337,16 +1396,30 @@ export async function completeJob(
   if (jobLifecycleSink && !flags?.forceD1) {
     if (await jobLifecycleSink.completeJob(id, analysisId, payloadJson)) return;
   }
-  const job = await db.mediaJob.update({
-    where: { id },
-    data: {
-      status: 'done',
-      analysisId,
-      finishedAt: new Date(),
-      lastError: null,
-      ...(payloadJson !== undefined ? { payloadJson } : {}),
-    },
-  });
+  let job: Awaited<ReturnType<typeof db.mediaJob.update>>;
+  try {
+    job = await db.mediaJob.update({
+      where: { id },
+      data: {
+        status: 'done',
+        analysisId,
+        finishedAt: new Date(),
+        lastError: null,
+        ...(payloadJson !== undefined ? { payloadJson } : {}),
+      },
+    });
+  } catch (err) {
+    // Only the forced path — the PG→D1 projection mirror — may expect a
+    // missing row (SLA-361): PG is the source of truth and the row is
+    // best-effort, so a P2025 is an expected gap to count and log once per
+    // job, not a warn. The non-forced path owns the row itself, so a P2025
+    // there is still a real anomaly and throws.
+    if (flags?.forceD1 && isPrismaRecordNotFound(err)) {
+      logD1ProjectionMiss('complete', id);
+      return;
+    }
+    throw err;
+  }
   // A finished scrape ends the outage episode — re-arm the failure email.
   // Fire-and-forget: the job is already done; alerting must not be able to
   // turn a success into an error.
@@ -1397,22 +1470,40 @@ export async function failJob(
     if (handled) return handled;
   }
   const job = await db.mediaJob.findUnique({ where: { id } });
-  if (!job) return { terminal: false };
+  if (!job) {
+    // The forced path mirrors a PG terminal state, so a missing row is the
+    // same expected gap as on complete (SLA-361): count it, log once per
+    // job, and report non-terminal as before — the PG-side result already
+    // carries the terminal bit. The non-forced path just means "no such
+    // job" and is not a miss.
+    if (opts?.forceD1) logD1ProjectionMiss('fail', id);
+    return { terminal: false };
+  }
 
   const terminal = opts?.terminal === true || job.attempts >= MAX_ATTEMPTS;
-  await db.mediaJob.update({
-    where: { id },
-    data: {
-      status: terminal ? 'failed' : 'queued',
-      lastError: message.slice(0, 1000),
-      finishedAt: terminal ? new Date() : null,
-      startedAt: terminal ? job.startedAt : null,
-      // A requeued failure waits out its backoff before any worker may claim
-      // it (see availableAt + the claim filters). Terminal rows leave the
-      // column alone — they are never claimed again.
-      ...(terminal ? {} : { availableAt: new Date(Date.now() + requeueBackoffMs(job.attempts)) }),
-    },
-  });
+  try {
+    await db.mediaJob.update({
+      where: { id },
+      data: {
+        status: terminal ? 'failed' : 'queued',
+        lastError: message.slice(0, 1000),
+        finishedAt: terminal ? new Date() : null,
+        startedAt: terminal ? job.startedAt : null,
+        // A requeued failure waits out its backoff before any worker may claim
+        // it (see availableAt + the claim filters). Terminal rows leave the
+        // column alone — they are never claimed again.
+        ...(terminal ? {} : { availableAt: new Date(Date.now() + requeueBackoffMs(job.attempts)) }),
+      },
+    });
+  } catch (err) {
+    // Row deleted between findUnique and update (retention). Only the forced
+    // mirror path can care — same expected gap, same accounting.
+    if (opts?.forceD1 && isPrismaRecordNotFound(err)) {
+      logD1ProjectionMiss('fail', id);
+      return { terminal: false };
+    }
+    throw err;
+  }
   // Fire-and-forget: scrape-outage email (one per outage episode, deduped in
   // the DB so both worker containers cannot double-send). Alerting must never
   // be able to fail or slow the job path.
