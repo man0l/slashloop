@@ -21,10 +21,18 @@
  * stable across attempts, so retrying cannot fix them — the rest (a generic
  * `kind: "sqlite"` / internal error, network/HTTP failures) are treated as
  * transient and retried.
+ *
+ * The kind set is intentionally kept in sync with what `@prisma/adapter-d1`
+ * actually emits (dist mapDriverError): UniqueConstraintViolation,
+ * NullConstraintViolation, ForeignKeyConstraintViolation, TableDoesNotExist,
+ * ColumnNotFound. Each is deterministic — a retry gets the same answer — so
+ * the cost of a misclassification here is pure wasted backoff (~817ms per
+ * deterministic failure, in a sweep the worker loop awaits inline).
  */
 const PERMANENT_SQLITE_KINDS = new Set([
   'TableDoesNotExist',
   'ColumnNotFound',
+  'UniqueConstraintViolation',
   'NullConstraintViolation',
   'ForeignKeyConstraintViolation',
 ]);

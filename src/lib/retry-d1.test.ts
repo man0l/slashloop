@@ -19,6 +19,7 @@ describe('isTransientD1Error', () => {
   test('a permanent schema/constraint kind is NOT transient', () => {
     expect(isTransientD1Error(d1Error('TableDoesNotExist'))).toBe(false);
     expect(isTransientD1Error(d1Error('ColumnNotFound'))).toBe(false);
+    expect(isTransientD1Error(d1Error('UniqueConstraintViolation'))).toBe(false);
     expect(isTransientD1Error(d1Error('NullConstraintViolation'))).toBe(false);
     expect(isTransientD1Error(d1Error('ForeignKeyConstraintViolation'))).toBe(false);
   });
