@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import {
   COVER_URI_TEMPLATE,
   VIDEO_URI_TEMPLATE,
@@ -153,5 +154,33 @@ describe('renderGallery media wiring', () => {
     // form only appears on real card attributes.
     expect(html).not.toContain('data-cover-uri="');
     expect(html).not.toContain('data-video-uri="');
+  });
+});
+
+// ── SLA-431: the edit wizard must emit the exact copy structurally ──────────
+//
+// The wizard's inline script runs in a sandboxed iframe and cannot call a module
+// helper, so buildPayload() cannot be invoked from a unit test. These are
+// source-level guards, the same shape as the data-slide-count guard above: they
+// fail if the emission sites are deleted or renamed. Without them the F1 defect
+// (prose-only copy, so the pin never engages on the product's own path) can
+// return unnoticed while every behavioural test still passes.
+describe('edit-mode payload emission (source guards)', () => {
+  const source = readFileSync(new URL('../ui/gallery.ts', import.meta.url), 'utf8');
+
+  test('the edit payload carries structured copyOverrides next to the prose', () => {
+    // Exact values keyed by 0-based slide index, including explicit blanks.
+    expect(source).toContain("var copyOverrides = { '0': hook };");
+    expect(source).toContain("copyOverrides[String(k + 1)] = t;");
+    expect(source).toContain('copyOverrides: copyOverrides,');
+  });
+
+  test('the host/chat payload is a real edit call, not a prose-only create', () => {
+    // Deleting surveyMode alone left the pasted call with no mode, so it fell
+    // through to create mode and the requested copy was never pinned.
+    expect(source).toContain("mode: 'edit', videoIds: p.videoIds,");
+    expect(source).toContain('hook: ov[\'0\'], overlayTexts: ovs');
+    // And the overlay list is built from sorted keys, not a contiguous scan.
+    expect(source).toContain('.sort(function (a, b) { return Number(a) - Number(b); })');
   });
 });

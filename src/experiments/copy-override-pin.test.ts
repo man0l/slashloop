@@ -50,7 +50,7 @@ test('the requested support and blanks reach the effective brief of every varian
   alternate.brief.slides[0]!.overlayText = SOURCE_COPY[0]!;
   const e = experiment({ '0': 'New hook', '1': 'New support', '2': '' });
 
-  const [pinnedBaseline, pinnedAlternate] = pinCopyOverrides([baseline, alternate], e)!;
+  const [pinnedBaseline, pinnedAlternate] = pinCopyOverrides([baseline, alternate], e).proposals;
   // Slide 2+ is pinned identically on BOTH variants: exact user support/blanks.
   for (const p of [pinnedBaseline!, pinnedAlternate!]!) {
     expect(p.brief.slides.slice(1).map(s => s.overlayText)).toEqual(['New support', '']);
@@ -74,7 +74,7 @@ test('the requested support and blanks reach the effective brief of every varian
 test('omitted supporting copy is left to the resolved source, not blanked', () => {
   const baseline = proposal(SOURCE_COPY[0]!, SOURCE_COPY[1]!, SOURCE_COPY[2]!);
   // Only slide 2 was requested. Slide 3 keeps whatever the source said.
-  const [pinned] = pinCopyOverrides([baseline], experiment({ '1': 'New support' }))!;
+  const [pinned] = pinCopyOverrides([baseline], experiment({ '1': 'New support' })).proposals;
   expect(pinned!.brief.slides[1]!.overlayText).toBe('New support');
   expect(pinned!.brief.slides[2]!.overlayText).toBe(SOURCE_COPY[2]);
   expect(pinned!.brief.copyOverrides).toEqual({ '1': 'New support' });
@@ -83,7 +83,7 @@ test('omitted supporting copy is left to the resolved source, not blanked', () =
 
 test('a blank slide 1 is carried by the override, never by a falsy hook fallback', () => {
   const baseline = proposal(SOURCE_COPY[0]!, SOURCE_COPY[1]!, SOURCE_COPY[2]!);
-  const [pinned] = pinCopyOverrides([baseline], experiment({ '0': '', '1': 'New support' }))!;
+  const [pinned] = pinCopyOverrides([baseline], experiment({ '0': '', '1': 'New support' })).proposals;
   expect(pinned!.brief.copyOverrides!['0']).toBe('');
   expect(pinned!.brief.slides[0]!.overlayText).toBe('');
   // Brief.hook is min(1), so the prose field keeps a non-empty value; the
@@ -91,17 +91,27 @@ test('a blank slide 1 is carried by the override, never by a falsy hook fallback
   expect(pinned!.brief.hook.length).toBeGreaterThan(0);
 });
 
-test('a non-numeric or out-of-range override index fails before any provider call', () => {
-  // F3: key format alone is not enough. An index beyond the effective slide
-  // count would be silently inert in the render path, dropping requested copy.
+test('a non-numeric override index is refused; an unrenderable one is reported, not fatal', () => {
+  // A malformed key is a real caller error and still fails loudly.
   expect(() => pinCopyOverrides([proposal('h', 's', 'p')], experiment({ slides: 'x' as never })))
     .toThrow(/is not a slide index/);
-  expect(() => pinCopyOverrides([proposal('h', 's', 'p')], experiment({ '9': 'x' })))
-    .toThrow(/outside this experiment's 3 slides/);
-  expect(() => pinCopyOverrides([proposal('h', 's', 'p')], experiment({ '3': 'x' })))
-    .toThrow(/outside this experiment's 3 slides/);
-  // The last in-range index is fine.
   expect(() => pinCopyOverrides([proposal('h', 's', 'p')], experiment({ '2': 'x' }))).not.toThrow();
+
+  // M1: an index past the effective slide count is NORMAL input, not a caller
+  // mistake. The wizard sizes its form from the raw card length while the
+  // experiment drops a CTA last slide and prefers the recreation deck, so a
+  // user is shown a box for a slide that will not render. This runs inside the
+  // paid briefs execute(), where a refusal requeues four times and then fails
+  // the run outright — so it must clamp and report instead.
+  const e = experiment({ '0': 'New hook', '1': 'New support', '2': '', '4': 'Unrenderable slide' });
+  const { proposals, dropped } = pinCopyOverrides([proposal('Old hook', 'Old support', 'Old payoff')], e);
+  expect(dropped).toEqual(['4']);
+  // Every in-range value is still honoured exactly; only the slide with nowhere
+  // to go is skipped.
+  expect(proposals[0]!.brief.slides.map(s => s.overlayText)).toEqual(['New hook', 'New support', '']);
+  expect(proposals[0]!.brief.copyOverrides).toEqual({ '0': 'New hook', '1': 'New support', '2': '' });
+  // It never rejects the run.
+  expect(validateVariants(e as Experiment, proposals)).toBeUndefined();
 });
 
 // ---- render request: the value must survive all the way to the model --------
@@ -110,7 +120,7 @@ function sourceReferenced(copyOverrides?: Record<string, string>) {
   process.env.R2_THUMB_PUBLIC_BASE = 'https://assets.example.test';
   process.env.OPENROUTER_API_KEY = 'test-only';
   const videos = ['src'].map(id => ({ id, mediaStatus: 'slideshow', rawJson: JSON.stringify({ slideshowKeys: [0, 1, 2].map(i => `w/${id}/slides/0${i}.jpg`) }) } as Video));
-  const [pinned] = pinCopyOverrides([proposal('Old hook', 'Old support', 'Old payoff')], experiment(copyOverrides))!;
+  const [pinned] = pinCopyOverrides([proposal('Old hook', 'Old support', 'Old payoff')], experiment(copyOverrides)).proposals;
   const brief = { ...pinned!.brief, slides: pinned!.brief.slides };
   const e = {
     id: 'e', workspaceId: 'w', status: 'generating', generationBasis: 'source-referenced',
@@ -212,7 +222,7 @@ test('a variant that collapses onto the baseline after pinning is dropped, not f
   collapsed.changedVariables = [{ name: 'hook', value: 'Requested hook' }];
   collapsed.brief.slides[0]!.overlayText = 'Board hook';
 
-  const pinned = pinCopyOverrides([baseline, collapsed], e);
+  const pinned = pinCopyOverrides([baseline, collapsed], e).proposals;
   // Every field the dedupe key reads is now identical: the brief copy matches,
   // and only the per-variant hook field differs — which the pin equalised.
   expect(pinned[1]!.brief.slides).toEqual(pinned[0]!.brief.slides);
@@ -232,7 +242,7 @@ test('the stored slide record reports the requested copy, including a blank slid
   // N5: the frame is blank, so the record and the site's image alt text must not
   // claim the generated hook. Brief.hook cannot be blank (min 1), so index 0
   // cannot fall back to it.
-  const [pinned] = pinCopyOverrides([proposal('Generated board hook', 'Old support', 'Old payoff')], experiment({ '0': '', '1': 'New support' }))!;
+  const [pinned] = pinCopyOverrides([proposal('Generated board hook', 'Old support', 'Old payoff')], experiment({ '0': '', '1': 'New support' })).proposals;
   const brief = pinned!.brief;
   expect(brief.hook).toBe('Generated board hook');
   expect(persistedOverlayText(brief, 0)).toBe('');

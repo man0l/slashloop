@@ -317,23 +317,29 @@ export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pic
  * Slide 1 mirrors the authoritative hook; `Brief.hook` itself cannot hold an
  * empty string, so an explicitly blank slide 1 is carried by the override and
  * its `slides[0].overlayText`, which is what the overlay decision reads.
+ *
+ * Returns the dropped out-of-range indices instead of throwing. This runs inside
+ * the briefs `execute()`, after grok's generation and Jev scoring, so a refusal
+ * here is a deterministic error on the paid retry loop: the run requeues four
+ * times and then fails. A caller legitimately cannot know the effective count —
+ * the wizard sizes its form from the raw card length while the experiment's count
+ * drops a CTA last slide and prefers the recreation deck — so a superset is
+ * normal input, not a caller mistake. Copy for a slide that will not render has
+ * nowhere to go, so it is reported and skipped; every in-range index is still
+ * honoured verbatim, which is the hazard that actually mattered.
  */
-export function pinCopyOverrides(proposals: Proposal[], e: Pick<Experiment, 'instructions' | 'slideCount'>): Proposal[] {
+export function pinCopyOverrides(proposals: Proposal[], e: Pick<Experiment, 'instructions' | 'slideCount'>): { proposals: Proposal[]; dropped: string[] } {
   const overrides = e.instructions.copyOverrides;
-  if (!overrides) return proposals;
+  if (!overrides) return { proposals, dropped: [] };
   const indexes = Object.keys(overrides);
   const bad = indexes.find(k => !/^\d+$/.test(k));
   if (bad !== undefined) throw new ExperimentError(422, 'invalid_slide_mapping', `Copy override index "${bad}" is not a slide index.`);
-  // Key format alone is not enough: the render path only looks up indices below
-  // the effective slide count, so an out-of-range key would be silently inert
-  // and the requested copy quietly dropped. e.slideCount is already resolved
-  // from the source deck before the pin runs.
-  const outOfRange = indexes.find(k => Number(k) >= e.slideCount);
-  if (outOfRange !== undefined) throw new ExperimentError(422, 'invalid_slide_mapping', `Copy override index "${outOfRange}" is outside this experiment's ${e.slideCount} slides.`);
-  const requestedHook = overrides['0'];
-  const support = new Map(indexes.filter(k => Number(k) > 0).map(k => [Number(k), String(overrides[k])]));
+  const inRange = indexes.filter(k => Number(k) < e.slideCount);
+  const dropped = indexes.filter(k => !inRange.includes(k)).sort((a, b) => Number(a) - Number(b));
+  const requestedHook = inRange.includes('0') ? overrides['0'] : undefined;
+  const support = new Map(inRange.filter(k => Number(k) > 0).map(k => [Number(k), String(overrides[k])]));
   const supportOverrides = Object.fromEntries(support);
-  return proposals.map((p, n) => {
+  const pinned = proposals.map((p, n) => {
     const baseline = n === 0;
     const pinHook = requestedHook !== undefined;
     const slides = p.brief.slides.map((s, i) => {
@@ -352,6 +358,7 @@ export function pinCopyOverrides(proposals: Proposal[], e: Pick<Experiment, 'ins
     const copyOverrides = baseline && pinHook ? { ...supportOverrides, '0': String(requestedHook) } : { ...supportOverrides };
     return { ...p, brief: { ...p.brief, slides, hook, copyOverrides } };
   });
+  return { proposals: pinned, dropped };
 }
 /** Hand-written JSON Schema for grok structured outputs (additionalProperties:false, no $ref). */
 const BRIEF_DELTA_SLIDES={type:'array',minItems:3,maxItems:8,items:{type:'object',additionalProperties:false,required:['role','scene','overlayText'],properties:{role:{type:'string'},scene:{type:'string'},overlayText:{type:'string'}}}};
@@ -727,7 +734,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     const proposals=[generated.baseline,...picked.map(c=>{const s=scoredAll.find(x=>x.c===c);return {...c,jev:{score:s?.score??0,confidence:s?.confidence}};})];
     // SLA-431: pin the requested exact copy before validation, so the supporting
     // slides are identical across variants instead of reading as a retell.
-    const pinned=pinCopyOverrides(proposals,e);
+    const { proposals: pinned, dropped } = pinCopyOverrides(proposals,e);
     // Pinning can collapse a candidate onto the baseline — a model that honours
     // the request for its "new hook" hook self-collapses the A/B. The dedupe
     // above cannot catch it because the baseline's hook changes after
@@ -736,8 +743,15 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     // treats fewer variants than requested as a degraded success.
     const baseFp=pinned.length?fingerprint(pinned[0]!):'';
     const kept=baseFp?pinned.filter((p,i)=>i===0||fingerprint(p)!==baseFp):pinned;
-    if(kept.length!==pinned.length)console.log(`[experiments] briefs ${e.id} dropped ${pinned.length-kept.length} variant(s) identical to the baseline after pinning requested copy`);
-    validateVariants(e,kept);return {proposals:kept,briefJudge,styleFormula:e.styleFormula??null,slideCount:e.slideCount};
+    const collapsed=pinned.length-kept.length;
+    // Both adjustments are visible on the experiment, not only in worker logs: a
+    // caller who paid for a two-variant A/B should see it became one, and a
+    // requested slide that will not render should not vanish silently.
+    const notices:string[]=[];
+    if(collapsed)notices.push(`Requested copy made the alternate variant identical to the baseline, so this run has ${kept.length} variant(s) instead of ${pinned.length}.`);
+    if(dropped.length)notices.push(`Requested copy for slide(s) ${dropped.map(d=>Number(d)+1).join(', ')} was not applied: this experiment renders ${e.slideCount} slides.`);
+    if(notices.length)console.log(`[experiments] briefs ${e.id} ${notices.join(' ')}`);
+    validateVariants(e,kept);return {proposals:kept,briefJudge,styleFormula:e.styleFormula??null,slideCount:e.slideCount,notices};
   }};
   const v=e.variants.find(v=>v.id===t.target);if(!v?.frozenBrief)throw new SafeFailure('missing_frozen_brief');
   if(!process.env.OPENROUTER_API_KEY)throw new SafeFailure('openrouter_not_configured');

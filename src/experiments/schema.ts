@@ -161,6 +161,10 @@ export interface Experiment {
   commands: Record<string, string>; allowPartial: boolean; createFingerprint: string;
   /** Classified from the source analyses during planning; constrains briefs and renders. */
   styleFormula?: { medium: string; density: string } | null;
+  /** Plain-language adjustments planning had to make, shown on the experiment so a
+   *  caller who paid for two variants, or asked for copy on a slide that will not
+   *  render, is not left guessing. Never an error: the run still completes. */
+  notices?: string[] | null;
   /** Briefs-stage fan-out: every candidate with its Jev viral score, and which were picked. */
   briefJudge?: { candidates: Array<{ title: string; hook: string; score: number; confidence?: number }>; picked?: string[];
     /** Resolved explicit winner id (choice ?? value), null on missing/invalid answers. */
