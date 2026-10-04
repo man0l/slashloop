@@ -866,7 +866,10 @@ ${cards.length ? toolbarHtml(filters) : ''}
       };
     }
 
-    function reviewHtml(p) {
+    // sourceSlides is display-only and is passed separately, never attached to
+    // the payload: create mode copies the whole object into the host/chat box,
+    // so a property here would be pasted as a parameter that does not exist.
+    function reviewHtml(p, sourceSlides) {
       var rows = [
         ['Mode', p.surveyMode === 'edit' ? 'Edit slideshow (same images, new text)' : 'Create variations'],
         ['Videos', p.videoIds.length + ' slideshow' + (p.videoIds.length === 1 ? '' : 's')],
@@ -878,8 +881,14 @@ ${cards.length ? toolbarHtml(filters) : ''}
         rows.push(['Goal', p.instructions.goal || '—']);
       } else {
         rows.push(['Direction', p.instructions.direction]);
-        if (p.sourceSlides && p.sourceSlides > p.slideCount) {
-          rows.push(['Not rendered', 'Slides ' + (p.slideCount + 1) + '–' + p.sourceSlides
+        // This row only knows the wizard's own clamp, which runs client-side. The
+        // server derives the effective count separately and can come back lower
+        // (a deck whose last slide reads like a call to action is planned one
+        // slide shorter). That later drop is reported by the planning notice, not
+        // here, so treat this row as the floor and not the whole story.
+        if (sourceSlides && sourceSlides > p.slideCount) {
+          rows.push(['Not rendered', (sourceSlides === p.slideCount + 1 ? 'Slide ' : 'Slides ')
+            + (p.slideCount + 1) + (sourceSlides > p.slideCount + 1 ? '–' + sourceSlides : '')
             + ' of this deck will not be rendered, so copy typed there is ignored.']);
         }
       }
@@ -930,8 +939,8 @@ ${cards.length ? toolbarHtml(filters) : ''}
         var problem = validate();
         if (problem) { err(problem); return; }
         var p = buildPayload();
-        p.sourceSlides = parseInt(document.getElementById('edit-overlays').dataset.slides || '0', 10) || 0;
-        document.getElementById('exp-review').innerHTML = reviewHtml(p);
+        var srcSlides = parseInt(document.getElementById('edit-overlays').dataset.slides || '0', 10) || 0;
+        document.getElementById('exp-review').innerHTML = reviewHtml(p, srcSlides);
         document.getElementById('exp-host-payload-wrap').hidden = !inHost;
         if (inHost) {
           var chatPayload;

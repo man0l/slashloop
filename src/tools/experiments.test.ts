@@ -10,7 +10,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Command, Create, EditBrief, Generate, Plan, Retry, ExperimentError, Key, type Experiment } from '../experiments/schema.js';
 import {
   registerExperimentTools, defaultExperimentCap, derivedKey, editSlideDirection, editInstructions,
-  EDIT_GOAL, EDIT_MAX_CREDITS, EDIT_VARIANT_COUNT, type ExperimentToolDeps,
+  EDIT_COPY_MAX, EDIT_GOAL, EDIT_MAX_CREDITS, EDIT_VARIANT_COUNT, type ExperimentToolDeps,
 } from './experiments.js';
 
 const TOOLS = [
@@ -300,6 +300,32 @@ describe('create_experiment', () => {
     expect(Create.safeParse(body0).success).toBe(true);
   });
 
+  test('the tool refuses copy that would overflow the direction it has to quote', async () => {
+    // The wizard and this tool are the two producers of the same quoted prose.
+    // The wizard bounds each box at 200; the tool used to accept 2000, so an edit
+    // of 4 x 600-char slides produced a 16k direction and was refused at create.
+    // A schema rejection comes back as a non-JSON MCP error body, so assert on
+    // the refusal and on the service never being reached.
+    const refused = async (args: Record<string, unknown>) => {
+      const client = await connect();
+      const res = await client.callTool({ name: 'create_experiment', arguments: args }) as { isError?: boolean };
+      expect(Boolean(res.isError)).toBe(true);
+      expect(callsOf('createExperiment')).toHaveLength(0);
+    };
+    await refused({ mode: 'edit', videoIds: ['vid1'], hook: 'C'.repeat(600), overlayTexts: ['D'.repeat(600)] });
+    await refused({ mode: 'edit', videoIds: ['vid1'], hook: 'C'.repeat(200), overlayTexts: ['D'.repeat(201)] });
+    // The maximum the tool now accepts still fits the 2000-char direction field,
+    // so an accepted edit can never be refused by the schema that stores it.
+    const worst = editInstructions('C'.repeat(EDIT_COPY_MAX), Array(7).fill('D'.repeat(EDIT_COPY_MAX)), 'English');
+    expect(worst.direction.length).toBeLessThanOrEqual(2000);
+    expect(Create.safeParse({
+      workspaceId: 'w1', idempotencyKey: 'gallery:abc123', videoIds: ['vid1'], instructions: worst,
+      variantCount: EDIT_VARIANT_COUNT, slideCount: 8, maxCredits: EDIT_MAX_CREDITS,
+    }).success).toBe(true);
+    // 200 chars per value is the site's own input maxlength — one bound, two paths.
+    expect(EDIT_COPY_MAX).toBe(200);
+  });
+
   test('the gallery wizard payload and the host edit payload reach the same exact copy', async () => {
     // SLA-431 F1: the site wizard POSTed a prose-only instructions object, so the
     // reported defect was live on the product's own path, and the host/chat copy
@@ -337,7 +363,11 @@ describe('create_experiment', () => {
     // per box would exceed the per-slide cap and be refused at create time, so a
     // 9+ slide deck could not be edited through the product's own wizard at all.
     // The emission bound itself is pinned by a source guard in gallery.test.ts.
-    for (const [sourceSlides, perBox] of [[9, 200], [12, 200], [35, 200], [35, 52], [35, 20]] as const) {
+    // Deck length only matters BELOW the clamp, where Math.max(3, …) engages;
+    // at 9+ every deck collapses to the same 8-slide payload, so those rows were
+    // the same input three times. Rows 3/5/7 exercise the lower clamp, 8 the
+    // upper, and the last two vary copy length at the top of the range.
+    for (const [sourceSlides, perBox] of [[3, 200], [5, 200], [7, 200], [8, 200], [9, 200], [35, 52], [35, 20]] as const) {
       const slideCount = Math.min(8, Math.max(3, sourceSlides));
       // 200 chars per box is the input's own maxlength, not a stress value.
       const box = 'C'.repeat(perBox);
@@ -366,8 +396,7 @@ describe('create_experiment', () => {
         variantCount: EDIT_VARIANT_COUNT, slideCount, maxCredits: EDIT_MAX_CREDITS,
       };
       const parsed = Create.safeParse(body);
-      expect(parsed.error?.issues[0]?.message ?? '').toBe('');
-      expect(parsed.success).toBe(true);
+      expect(parsed.success ? '' : parsed.error.issues[0]!.message).toBe('');
     }
   });
 

@@ -77,6 +77,12 @@ export const defaultExperimentToolDeps: ExperimentToolDeps = {
 export const EDIT_GOAL = 'Edit the slideshow overlay text, keeping the same images.';
 /** Two variants: the original hook and the replacement. */
 export const EDIT_VARIANT_COUNT = 2;
+/** Per-value copy ceiling for an edit request, matching the site's own input
+ *  maxlength. It bounds the quoted direction: hook + 7 overlays at this size,
+ *  plus the per-slide framing, stays under Instructions.direction's 2000-char
+ *  cap. The wizard and this tool are two producers of that prose and must
+ *  agree, so the bound lives on both. */
+export const EDIT_COPY_MAX = 200;
 /** Hard ceiling for an edit run, as on the site. */
 export const EDIT_MAX_CREDITS = 100;
 
@@ -410,10 +416,14 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       ),
       videoIds: z.array(Id).min(1).max(20).describe('1–20 distinct Gallery video ids; one experiment per video. Edit mode takes exactly one.'),
       instructions: instructionsInput.optional().describe('CREATE mode. Required in create mode; not used in edit mode.'),
-      hook: z.string().max(2000).optional().describe(
-        'EDIT mode: the exact words for slide 1. May be empty if the change is a supporting slide\'s text instead.',
+      // The 200-character caps match the site's own input maxlength, and they
+      // are what keeps the quoted direction under Instructions.direction's
+      // 2000-char limit: 8 values x 200 + the per-slide framing is ~1968. At the
+      // old max(2000) an edit of 4 x 600-char slides was refused outright.
+      hook: z.string().max(EDIT_COPY_MAX).optional().describe(
+        'EDIT mode: the exact words for slide 1. OMIT this field to leave slide 1 unchanged; send an empty string only to strip slide 1\'s text.',
       ),
-      overlayTexts: z.array(z.string().max(2000)).max(7).optional().describe(
+      overlayTexts: z.array(z.string().max(EDIT_COPY_MAX)).max(7).optional().describe(
         'EDIT mode: overlay text for slides 2, 3, … in order. Empty string = render no text on that slide.',
       ),
       language: z.string().trim().min(1).max(80).optional().describe('EDIT mode: output language for the copy (default English).'),

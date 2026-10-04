@@ -178,6 +178,10 @@ describe('served page script parses', () => {
     const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new Function(script!)).not.toThrow();
+    // Parseability alone is not the intent: deleting the separator outright
+    // still parses, and the label silently loses its line break. The served
+    // script must carry the ESCAPE, which JS reads as the newline.
+    expect(script).toContain("tool:\\n'");
   });
 });
 
@@ -201,6 +205,21 @@ describe('edit-mode payload emission (source guards)', () => {
     expect(slice).toBeGreaterThan(-1);
     expect(lines).toBeGreaterThan(slice);
     expect(keys).toBeGreaterThan(slice);
+  });
+
+  test('review-only data never rides on the payload object', () => {
+    // Should-fix 4: create mode builds the host/chat box with
+    // Object.assign({}, p), so a property attached to p for display is pasted
+    // out as a create_experiment parameter that does not exist.
+    expect(source).toContain('function reviewHtml(p, sourceSlides)');
+    expect(source).toContain('reviewHtml(p, srcSlides)');
+    expect(source).not.toContain('p.sourceSlides');
+  });
+
+  test('the not-rendered row reads correctly for a single dropped slide', () => {
+    // Should-fix 5: a 9-photo deck is the most likely trigger and is the bottom
+    // of the clamped range, so "Slides 9-9" is the common case, not an edge one.
+    expect(source).toContain("sourceSlides === p.slideCount + 1 ? 'Slide ' : 'Slides '");
   });
 
   test('the host/chat payload is a real edit call, not a prose-only create', () => {
