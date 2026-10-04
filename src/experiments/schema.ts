@@ -8,6 +8,11 @@ export const Key = z.string().min(8).max(128).regex(/^[a-zA-Z0-9_.:-]+$/);
 const text = z.string().trim().max(2000);
 export const VARIABLE_FIELDS = ['hook', 'character', 'visualStyle', 'caption', 'cta', 'concept', 'slides'] as const;
 const constraints = z.union([z.array(text.min(1)).max(20), text]).transform(v => typeof v === 'string' ? (v ? [v] : []) : v);
+/** Explicit per-slide copy override (SLA-430 D3, SLA-431 request carrier). Keys are
+ *  0-based slide indices; property presence decides — `""` clears the overlay, an
+ *  omitted index preserves the resolved source copy. Optional so instructions and
+ *  briefs stored before it keep working. */
+export const CopyOverrides = z.record(z.string().regex(/^\d+$/), z.string().max(2000));
 export const Instructions = z.object({
   goal: text.min(1), brand: text, audience: text, language: z.string().trim().min(1).max(80),
   direction: text, lockedConstraints: constraints,
@@ -17,6 +22,10 @@ export const Instructions = z.object({
   // Optional so older experiments (stored without the key) keep working —
   // absent/falsy means slide-1-hook-only, as before.
   varySupportingOverlays: z.boolean().optional(),
+  // SLA-431: the exact per-slide copy the user asked for, carried as structured
+  // values instead of quoted prose in `direction`. This is what survives
+  // normalization into the brief and the render request; prose alone does not.
+  copyOverrides: CopyOverrides.optional(),
 }).strict().superRefine((v, ctx) => {
   if (new Set(v.variables).size !== v.variables.length) ctx.addIssue({ code: 'custom', message: 'Duplicate variables' });
   if (v.mode === 'controlled' && v.variables.some(x => x === 'concept' || x === 'slides')) {
@@ -24,10 +33,6 @@ export const Instructions = z.object({
   }
 });
 export const BriefSlide = z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text.default('') });
-/** Explicit per-slide copy override (SLA-430 D3). Keys are 0-based slide indices;
- *  property presence decides — `""` clears the overlay, an omitted index preserves
- *  the resolved source copy. Optional so briefs stored before it keep working. */
-const CopyOverrides = z.record(z.string().regex(/^\d+$/), z.string().max(2000));
 export const Brief = z.object({
   concept: text.min(1), hook: text.min(1), character: text, visualStyle: text.min(1), caption: text,
   cta: text, lockedConstraints: z.array(text.min(1)).max(20),

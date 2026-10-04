@@ -95,11 +95,20 @@ export function editSlideDirection(hook: string, overlayTexts: string[]): string
 }
 
 /** Edit mode is a single deck, so the "one experiment per source" loop is length 1 by definition. */
-export function editInstructions(hook: string, overlayTexts: string[], language: string): InstructionsData {
+export function editInstructions(hook: string | undefined, overlayTexts: string[], language: string): InstructionsData {
+  // SLA-431: the requested copy travels as structured values, not only as quoted
+  // prose in `direction`. Property presence is the whole signal — an explicit ""
+  // is a blank that must reach the renderer, and an omitted index is NOT a blank,
+  // it is "keep the resolved source copy". A truthiness test here collapses those
+  // two cases and silently re-injects stripped source words.
+  const copyOverrides: Record<string, string> = {};
+  if (hook !== undefined) copyOverrides['0'] = hook.trim();
+  overlayTexts.forEach((value, index) => { copyOverrides[String(index + 1)] = value.trim(); });
   return {
     goal: EDIT_GOAL, brand: '', audience: '', language: language.trim() || 'English',
-    direction: editSlideDirection(hook, overlayTexts),
+    direction: editSlideDirection(hook ?? '', overlayTexts),
     lockedConstraints: [], variables: ['hook'], mode: 'controlled',
+    copyOverrides,
   };
 }
 
@@ -423,7 +432,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       }
       const edit = mode === 'edit'
         ? {
-          instructions: editInstructions(hook ?? '', overlayTexts ?? [], language ?? 'English'),
+          instructions: editInstructions(hook, overlayTexts ?? [], language ?? 'English'),
           variantCount: EDIT_VARIANT_COUNT,
           maxCredits: EDIT_MAX_CREDITS,
         }

@@ -9,7 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Command, Create, EditBrief, Generate, Plan, Retry, ExperimentError, Key, type Experiment } from '../experiments/schema.js';
 import {
-  registerExperimentTools, defaultExperimentCap, derivedKey, editSlideDirection,
+  registerExperimentTools, defaultExperimentCap, derivedKey, editSlideDirection, editInstructions,
   EDIT_GOAL, EDIT_MAX_CREDITS, EDIT_VARIANT_COUNT, type ExperimentToolDeps,
 } from './experiments.js';
 
@@ -203,6 +203,8 @@ describe('create_experiment', () => {
       lockedConstraints: [],
       variables: ['hook'],
       mode: 'controlled',
+      // SLA-431: the same exact copy as structured values, blank included.
+      copyOverrides: { '0': 'Stop doing this', '1': 'Three things I wish I knew', '2': '' },
     });
     expect(body0.variantCount).toBe(EDIT_VARIANT_COUNT);
     expect(body0.maxCredits).toBe(EDIT_MAX_CREDITS);
@@ -220,6 +222,40 @@ describe('create_experiment', () => {
       .toBe('Render the exact overlay texts. Slide 1 (hook): "A hook" (empty clears it too) '
         + 'Slide 2: "second" Slide 3: "" (strip — no text) Slide 4: "fourth"');
     expect(editSlideDirection('Only a hook', [])).toBe('Render the exact overlay texts. Slide 1 (hook): "Only a hook" (empty clears it too)');
+  });
+
+  test('edit mode carries the requested copy as structured values, not prose alone', () => {
+    // The exact user values, trimmed the same way the quoted prose is. Slide 1 is
+    // the hook and slides 2..N are the requested supporting copy.
+    expect(editInstructions(' New hook ', [' New support ', ''], 'English').copyOverrides)
+      .toEqual({ '0': 'New hook', '1': 'New support', '2': '' });
+    // An explicit "" stays present: it is a blank that must reach the renderer.
+    const blank = editInstructions('H', ['  '], 'English').copyOverrides!;
+    expect(Object.keys(blank)).toEqual(['0', '1']);
+    expect(blank['1']).toBe('');
+    // An omitted hook is NOT a blank. It means "keep the resolved source copy",
+    // so there must be no slide-1 key at all.
+    const omitted = editInstructions(undefined, ['New support'], 'English').copyOverrides!;
+    expect(Object.keys(omitted)).toEqual(['1']);
+    expect(omitted).not.toHaveProperty('0');
+    // Prose is still emitted for the model's benefit; the structured values are
+    // what the effective brief and render request are built from.
+    const both = editInstructions('H', ['S'], 'Danish');
+    expect(both.direction).toContain('Slide 2: "S"');
+    expect(both.variables).toEqual(['hook']);
+    expect(both.varySupportingOverlays).toBeUndefined();
+  });
+
+  test('the edit request keeps an omitted hook omitted instead of blanking slide 1', async () => {
+    await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], overlayTexts: ['New support', ''] });
+    const body = callsOf('createExperiment')[0]![0] as any;
+    expect(body.instructions.copyOverrides).toEqual({ '1': 'New support', '2': '' });
+    expect(body.instructions.copyOverrides).not.toHaveProperty('0');
+    expect(Create.safeParse(body).success).toBe(true);
+    // An explicit blank hook is a real request and is carried as one.
+    await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], hook: '', overlayTexts: ['New support'] });
+    const blank = callsOf('createExperiment')[1]![0] as any;
+    expect(blank.instructions.copyOverrides).toEqual({ '0': '', '1': 'New support' });
   });
 
   test('edit mode refuses several decks and empty copy before creating anything', async () => {
