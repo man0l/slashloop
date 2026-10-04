@@ -4,10 +4,10 @@ import { ZodError } from 'zod/v4';
 import { InsufficientCreditsError } from '../lib/credits.js';
 import { classifyOpenRouterError } from '../lib/openrouter.js';
 import * as store from './store.js';
-import { prepare, SafeFailure, HydrationPending, locksToBaselineVisual, type Prepared } from './providers.js';
+import { prepare, SafeFailure, TerminalFailure, HydrationPending, locksToBaselineVisual, type Prepared } from './providers.js';
 import { experimentVisualLock } from './render-prompt.js';
 import { taskCost } from './service.js';
-import { ExperimentError, MAX_TASK_ATTEMPTS, PARALLEL_SLIDES, retryBackoffMs, type Experiment, type Task, type Input, type ReportData, type Proposal } from './schema.js';
+import { ExperimentError, MAX_TASK_ATTEMPTS, PARALLEL_SLIDES, retryBackoffMs, type Experiment, type SlideQaRecord, type StepStatus, type Task, type Input, type ReportData, type Proposal } from './schema.js';
 export interface EngineDeps {
   load: typeof store.load; save: typeof store.save;
   prepare(e:Experiment,t:Task):Promise<Prepared>;
@@ -133,13 +133,17 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
         const input=e.inputs.find(i=>i.videoId===t.target);if(input&&!input.jobId){input.jobId=err.jobId;input.status='hydrating';input.error=null;}
         await deps.save(e);return false;
       }
+      // Preparation issues are deterministic (contradictory casting targets,
+      // unknown source copy, conflicting label policy). Spending attempts on them
+      // only delays the surface, so they fail fast with their precise code.
+      const prepError=err instanceof SafeFailure?err.message:err instanceof ExperimentError?err.code:'preparation_failed';
       t.attempts++;
-      if(t.attempts<MAX_TASK_ATTEMPTS){
-        t.status='pending';t.error=err instanceof SafeFailure?err.message:'preparation_failed';t.nextAttemptAt=deps.now()+retryBackoffMs(t.attempts);
+      if(t.attempts<MAX_TASK_ATTEMPTS&&!(err instanceof ExperimentError)){
+        t.status='pending';t.error=prepError;t.nextAttemptAt=deps.now()+retryBackoffMs(t.attempts);
         const input=e.inputs.find(i=>i.videoId===t.target);if(input){input.status='pending';input.error=t.error;}
         await deps.save(e);return e.status==='planning';
       }
-      t.status='failed';t.error=err instanceof SafeFailure?err.message:'preparation_failed';
+      t.status='failed';t.error=prepError;
       // workerd hides stack traces from container logs; record the actual cause
       // or every non-SafeFailure reads as the generic preparation_failed.
       if(!(err instanceof SafeFailure))console.error(`[experiments] prepare ${t.kind}${t.index!==undefined?`#${t.index}`:''} for ${e.id} failed`,err);
@@ -189,12 +193,20 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
         const cause=rejectionCause(failure);
         const terminalQuota=/^(credits_exhausted|auth)/.test(cause??'');
         const known=failure instanceof SafeFailure || failure instanceof ZodError || failure instanceof ExperimentError || terminalQuota;
+        // SLA-430 D8: a verified QA failure or an unverifiable check is terminal.
+        // It is never requeued into a pass, and it never settles the slide,
+        // variant or experiment as completed.
+        const verdict=failure instanceof TerminalFailure?failure.verdict:null;
         receipt.error=jobError(known,cause);
         if(isActive(latest))latest.error=receipt.error;
         if(known && receipt.chargeRef && charge) { refund = charge; receipt.charged -= refund; }
         const input=latest.inputs.find(i=>i.videoId===t.target);
         const v=latest.variants.find(v=>v.id===t.target);
-        if(receipt.attempts<MAX_TASK_ATTEMPTS && !terminalQuota){
+        // Auditable QA survives the failure: persist the verdict, checks and prompt.
+        if(verdict&&failure instanceof TerminalFailure&&failure.audit!==undefined&&v&&t.index!==undefined&&v.slides[t.index!]){
+          v.slides[t.index!]!.qa=failure.audit as SlideQaRecord;
+        }
+        if(receipt.attempts<MAX_TASK_ATTEMPTS && !terminalQuota && !verdict){
           // Self-heal: requeue with backoff, keep the experiment running. Known failures
           // are refunded above; unknown receipts keep their retained charge.
           // Provider throttles (429 / in-flight budget) carry retry_after=N — honor it.
@@ -203,10 +215,13 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
           if(t.kind==='analysis'&&input){input.status='pending';}
           if(v){v.status='generating';v.error=receipt.error;if(t.index!==undefined){v.slides[t.index]!.status='pending';v.slides[t.index]!.error=receipt.error;}}
         }else{
-          receipt.status=known?'failed':'unknown';
+          // `failed` is a verified negative; `unknown` is unverified and keeps a
+          // review posture. A QA terminal failure already knows which it is.
+          const outcome:StepStatus=verdict?(verdict==='unverified'?'unknown':'failed'):(known?'failed':'unknown');
+          receipt.status=outcome;
           if(t.kind==='analysis'&&input){input.status='failed';input.error=receipt.error;}
-          if(v){v.status=known?'failed':'paused';v.error=receipt.error;if(t.index!==undefined){v.slides[t.index]!.status=receipt.status;v.slides[t.index]!.error=receipt.error;}}
-          if(isActive(latest)&&!(known&&t.kind==='analysis'&&latest.allowPartial)) {latest.status=known?'failed':'paused';latest.error=receipt.error;}
+          if(v){v.status=outcome==='unknown'?'paused':'failed';v.error=receipt.error;if(t.index!==undefined){v.slides[t.index]!.status=outcome;v.slides[t.index]!.error=receipt.error;}}
+          if(isActive(latest)&&!(known&&t.kind==='analysis'&&latest.allowPartial)) {latest.status=outcome==='unknown'?'paused':'failed';latest.error=receipt.error;}
         }
       }else settle(latest,receipt,result);
       if(await deps.save(latest,-refund,refund ? receipt.chargeRef : undefined))return isActive(latest);

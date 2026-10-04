@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildVariantSlidePrompt, effectiveOverlayText, visualLockForChanges, renderContract, identitySubject, lockCarouselIdentity, styleContract } from './render-prompt.js';
+import { buildVariantSlidePrompt, compileSlideContract, effectiveOverlayText, labelPolicy, visualLockForChanges, renderContract, identitySubject, lockCarouselIdentity, styleContract } from './render-prompt.js';
 import type { BriefData } from './schema.js';
 
 const baseline: BriefData = {
@@ -63,18 +63,31 @@ describe('variant slide rendering', () => {
     expect(characterPrompt).toContain('taper fade');
   });
 
-  test('non-edit locks must erase source text, never preserve it', () => {
+  test('non-edit locks erase only what the label policy removes', () => {
     const ctx = { language: 'English', brand: '', audience: '' };
-    const characterPrompt = buildVariantSlidePrompt(
+    // No compiled contract (legacy caller): the blanket erase rule still applies.
+    const legacyCharacter = buildVariantSlidePrompt(
       { ...baseline, character: 'A fitness coach holding a phone' },
       1, { ...ctx, unlocked: ['character'] }, 'character');
-    expect(characterPrompt).toContain('erase EVERY word');
-    expect(characterPrompt).toContain('Do not copy any text');
-    const stylePrompt = buildVariantSlidePrompt(
-      { ...baseline, visualStyle: 'Neon infographic' },
-      1, { ...ctx, unlocked: ['visualStyle'] }, 'visualStyle');
-    expect(stylePrompt).toContain('erase EVERY word');
-    expect(stylePrompt).toContain('must be gone');
+    expect(legacyCharacter).toContain('erase EVERY word');
+    expect(legacyCharacter).toContain('Do not copy any text');
+    // With a contract, the D6 policy replaces the blanket erase: enumerated source
+    // prop labels survive while platform marks are removed.
+    const labels = labelPolicy(["preserve label: Nutella", 'keep the brand logo out']);
+    expect(labels.preserve).toEqual(['Nutella']);
+    const characterPrompt = buildVariantSlidePrompt(
+      { ...baseline, character: 'A fitness coach holding a phone' },
+      1, { ...ctx, unlocked: ['character'] }, 'character',
+      compileSlideContract({
+        slideIndex: 1, role: 'proof', medium: 'photograph', scene: baseline.slides[1]!.scene,
+        overlay: { mode: 'preserve', text: baseline.slides[1]!.overlayText, origin: 'source' },
+        observedCopy: { state: 'observed_text', text: baseline.slides[1]!.overlayText },
+        sourceMap: { videoId: 'v', analysisId: 'a', sourceIndex: 1, referenceKind: 'slide', path: 'p' }, labels,
+      }));
+    expect(characterPrompt).toContain('SOURCE LABELS');
+    expect(characterPrompt).toContain('Nutella');
+    expect(characterPrompt).toContain('platform usernames');
+    expect(characterPrompt).not.toContain('erase EVERY word');
   });
 
   test('collage and drawing sources lock medium, not a photoreal face', () => {    expect(identitySubject({ medium: 'collage', density: 'rich' })).toBe('collage');

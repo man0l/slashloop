@@ -24,10 +24,15 @@ export const Instructions = z.object({
   }
 });
 export const BriefSlide = z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text.default('') });
+/** Explicit per-slide copy override (SLA-430 D3). Keys are 0-based slide indices;
+ *  property presence decides — `""` clears the overlay, an omitted index preserves
+ *  the resolved source copy. Optional so briefs stored before it keep working. */
+const CopyOverrides = z.record(z.string().regex(/^\d+$/), z.string().max(2000));
 export const Brief = z.object({
   concept: text.min(1), hook: text.min(1), character: text, visualStyle: text.min(1), caption: text,
   cta: text, lockedConstraints: z.array(text.min(1)).max(20),
   slides: z.array(BriefSlide).min(3).max(8),
+  copyOverrides: CopyOverrides.optional(),
 }).strict();
 /** One storyboard grok returns at the briefs fan-out. Candidates are deltas, not full carousels. */
 export const BriefStoryboard = z.object({
@@ -87,17 +92,47 @@ export type BriefData = z.infer<typeof Brief>;
 export type ReportData = z.infer<typeof Report>;
 export type Proposal = z.infer<typeof VariantProposal>;
 export type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'unknown';
+/** Source overlay-copy state per mapped slide. `unknown` is an evidence gap and is
+ *  never treated as a verified blank (SLA-430 D2/D3). */
+export type CopyState = 'observed_text' | 'observed_empty' | 'unknown';
+export interface ObservedCopy { state: CopyState; text: string | null }
+/** Per-check QA outcome. A composite pass requires every check to pass; `unknown`
+ *  is unverified, never a pass (SLA-430 D8). */
+export interface QaCheck { check: string; status: 'pass' | 'fail' | 'unknown'; reason?: string }
+export interface SlideVerification {
+  verdict: 'pass' | 'fail' | 'error' | 'skipped';
+  reasons: string[];
+  checks: QaCheck[];
+  contractHash: string;
+  corrected: boolean;
+  attempts: number;
+}
+/** Auditable QA record persisted even when the slide does not complete. */
+export interface SlideQaRecord {
+  verdict: SlideVerification['verdict'];
+  contractHash: string;
+  corrected: boolean;
+  attempts: number;
+  reasons: string[];
+  checks: QaCheck[];
+  prompt?: string;
+}
 export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide'; target?: string; index?: number;
   status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number; }
 export interface Input { videoId: string; status: string; analysisId: string | null; jobId: string | null; error: string | null;
-  coverage: { basis: string; observed: number; total: number | null; complete: boolean } | null; evidence: Array<{ location: string; observation: string }>; }
+  coverage: { basis: string; observed: number; total: number | null; complete: boolean } | null; evidence: Array<{ location: string; observation: string }>;
+  /** Recorded source copy state per slide, kept outside the truncated prose so a
+   *  blank can be distinguished from a failed extraction (SLA-430 D2). */
+  copy?: Array<{ slideIndex: number; state: CopyState; text: string | null }>; }
 export type GenerationBasis = 'text-directed' | 'source-referenced';
 export interface Variant extends Proposal { id: string; revision: number; status: string; baselineId: string | null;
   generationBasis: GenerationBasis; history: Array<{ revision: number; brief: BriefData }>;
   /** Viral-potential score Jev assigned when this variant won the briefs fan-out. */
   jev?: { score: number; confidence?: number };
   frozenBrief: BriefData | null; slides: Array<{ index: number; status: string; url: string | null; path: string | null; error: string | null; overlayText: string;
-    prompt?: string; fanout?: { requested: number; rendered: number; chosen: number; judge: unknown; styleViolation?: boolean }; reference?: { kind: string; videoId: string; index?: number | null; path: string } | null }>; error: string | null; }
+    prompt?: string; fanout?: { requested: number; rendered: number; chosen: number; judge: unknown; styleViolation?: boolean }; reference?: { kind: string; videoId: string; index?: number | null; path: string } | null;
+    /** QA audit for this slide. Present on success AND on failure/unverified. */
+    qa?: SlideQaRecord | null }>; error: string | null; }
 export interface Experiment {
   id: string; workspaceId: string; status: string; createdAt: string; updatedAt: string; instructions: InstructionsData;
   variantCount: number; slideCount: number; maxCredits: number; creditsCharged: number;
