@@ -18,6 +18,42 @@ describe('formatMessage', () => {
     circular.self = circular;
     expect(() => formatMessage([circular])).not.toThrow();
   });
+
+  // SLA-386: the Prisma D1 adapter logs `console.error("Error in performIO:
+  // %O", err)`. The old formatter joined args verbatim, shipping the LITERAL
+  // `%O` and dropping the driver's detail object entirely.
+  test('expands a printf %O spec so the object is rendered, not a literal %O', () => {
+    const cause = { kind: 'sqlite', extendedCode: 1, message: 'internal error' };
+    const err = new Error('internal error; reference = e_PVSMDp_9815dd15af20413aa71d75290955446f');
+    err.name = 'DriverAdapterError';
+    err.cause = cause;
+
+    const line = formatMessage(['Error in performIO: %O', err]);
+    expect(line).not.toContain('%O');
+    // the reference id survives (it was only inside the dropped object before)
+    expect(line).toContain('e_PVSMDp_9815dd15af20413aa71d75290955446f');
+    // the driver cause object is rendered, not dropped
+    expect(line).toContain('sqlite');
+    // stays one line for the shipper
+    expect(line).not.toContain('\n');
+  });
+
+  test('renders a bare Error arg as name: message + cause + reference', () => {
+    const cause = { kind: 'sqlite', extendedCode: 5, message: 'locked' };
+    const err = new Error('database is locked');
+    err.name = 'DriverAdapterError';
+    err.cause = cause;
+
+    const line = formatMessage([err]);
+    expect(line).toContain('DriverAdapterError: database is locked');
+    expect(line).toContain('locked');
+    expect(line).not.toContain('%O');
+  });
+
+  test('percent with no specifier does not treat a following arg as a spec', () => {
+    // "50% done" has no %<directive>, so the trailing arg is just appended.
+    expect(formatMessage(['50% done', 5])).toBe('50% done 5');
+  });
 });
 
 describe('createLogShipper', () => {

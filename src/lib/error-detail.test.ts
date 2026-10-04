@@ -62,6 +62,38 @@ describe('errorDetail', () => {
     circular.self = circular;
     expect(errorDetail(circular).length).toBeGreaterThan(0);
   });
+
+  // SLA-386: a DriverAdapterError's real detail lives on `error.cause` and its
+  // provider handle in a `reference = e_...` id. errorDetail must surface both
+  // so the next D1 blip is diagnosable from the log.
+  test('appends the cause chain and the provider reference id', () => {
+    const ref = 'e_PVSMDp_9815dd15af20413aa71d75290955446f';
+    const cause = { kind: 'sqlite', extendedCode: 1, message: 'internal error' };
+    const err = new Error(`internal error; reference = ${ref}`);
+    err.name = 'DriverAdapterError';
+    err.cause = cause;
+
+    const detail = errorDetail(err);
+    expect(detail).toContain('internal error');
+    expect(detail).toContain(ref);
+    // the driver cause object is rendered, not dropped
+    expect(detail).toContain('sqlite');
+    // the cause is labelled, so it reads as a cause, not the head message
+    expect(detail).toMatch(/cause:/);
+  });
+
+  test('a cause with its own reference id is surfaced too', () => {
+    const causeRef = 'e_abc123';
+    const cause = new Error(`boom; reference = ${causeRef}`);
+    cause.name = 'HttpError';
+    const err = new Error('outer failure');
+    err.name = 'DriverAdapterError';
+    err.cause = cause;
+
+    const detail = errorDetail(err);
+    expect(detail).toContain(causeRef);
+    expect(detail).toContain('HttpError: boom');
+  });
 });
 
 describe('errorMessage', () => {

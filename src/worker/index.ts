@@ -58,7 +58,7 @@ import { createKindBreaker } from './kind-breaker.js';
 import { describeExperimentTickGate } from './experiment-tick.js';
 import { controlEnabled, filterKindsByControl } from '../lib/worker-control.js';
 import { snapshotD1Usage, deltaD1Usage, formatD1Usage, totalD1Usage } from '../lib/d1-usage.js';
-import { errorDetail, errorMessage } from '../lib/error-detail.js';
+import { errorDetail } from '../lib/error-detail.js';
 
 // D1 is single-writer with per-request billing: the 3s Postgres poll default
 // would hammer it from every container. In D1 mode (DB_DIALECT=sqlite) the
@@ -443,7 +443,10 @@ while (!shuttingDown) {
           }
         })
         .catch((err) => {
-          console.warn(`[worker] rescoreStaleTooFresh failed: ${errorMessage(err)}`);
+          // Full detail (cause chain + provider reference id), not just the
+          // first line: a rescore failure must be diagnosable from the log.
+          // SLA-386.
+          console.warn(`[worker] rescoreStaleTooFresh failed: ${errorDetail(err)}`);
         });
     }
 

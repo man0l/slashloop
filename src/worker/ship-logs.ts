@@ -49,9 +49,66 @@ export interface LogShipper {
   size(): number;
 }
 
+/**
+ * The `reference = e_...` id D1/Prisma driver adapters attach to their errors
+ * — the handle into the provider's own error log. Surfaced explicitly so it
+ * survives both the one-line shipper view and `errorMessage` first-line
+ * truncation (SLA-386: it used to live only inside the dropped `%O` object).
+ */
+function referenceId(err: Error): string | undefined {
+  const fromMessage = /reference\s*=\s*(e_[A-Za-z0-9_]+)/.exec(err.message ?? '')?.[1];
+  if (fromMessage) return fromMessage;
+  const cand = err as unknown as Record<string, unknown>;
+  const sources = [cand, cand.cause as Record<string, unknown> | undefined];
+  for (const s of sources) {
+    if (!s || typeof s !== 'object') continue;
+    for (const key of ['reference', 'refId', 'ref']) {
+      const v = s[key];
+      if (typeof v === 'string' && v) return v;
+    }
+  }
+  return undefined;
+}
+
+/** One compact rendering of an Error's cause chain (empty array when none). */
+function causeChain(err: Error): string[] {
+  const parts: string[] = [];
+  let cur: unknown = err.cause;
+  while (cur !== undefined && parts.length < 3) {
+    if (cur instanceof Error) {
+      const head = `${cur.name}: ${cur.message}`.trim();
+      const ref = referenceId(cur);
+      parts.push(ref ? `${head} (reference=${ref})` : head);
+      cur = cur.cause;
+    } else {
+      try {
+        const s = JSON.stringify(cur);
+        if (s && s !== '{}') parts.push(s);
+      } catch {
+        const s = String(cur);
+        if (s && s !== 'undefined') parts.push(s);
+      }
+      break;
+    }
+  }
+  return parts;
+}
+
 function formatArg(arg: unknown): string {
   if (typeof arg === 'string') return arg;
-  if (arg instanceof Error) return `${arg.name}: ${arg.message}`;
+  if (arg instanceof Error) {
+    // Compact single-line form: `name: message`, then the cause chain and the
+    // provider reference id (SLA-386). The full stack stays in `docker logs`
+    // via the original console passthrough; indiestack gets the diagnostic
+    // essentials on one line.
+    const head = `${arg.name}: ${arg.message}`.trim();
+    const extras = causeChain(arg);
+    const ref = referenceId(arg);
+    if (ref && !extras.some((p) => p.includes(`reference=${ref}`))) {
+      extras.push(`reference=${ref}`);
+    }
+    return extras.length ? `${head} ${extras.join(' ')}` : head;
+  }
   try {
     const s = JSON.stringify(arg);
     return typeof s === 'string' ? s : String(arg);
@@ -60,9 +117,48 @@ function formatArg(arg: unknown): string {
   }
 }
 
-/** Console args → one message string, truncated. Pure (unit-tested). */
+/**
+ * Expand printf-style specifiers in the first arg against the rest, rendering
+ * each substituted value through `formatArg` (so an Error becomes its compact
+ * one-line form rather than a multi-line inspect that the char cap would clip
+ * before the cause). Mirrors `util.format`'s directive set without its
+ * single-quoting of string args. Unknown directives and `%%` pass through.
+ */
+function expandSpecs(spec: string, args: unknown[]): string {
+  let out = '';
+  let argIndex = 0;
+  for (let i = 0; i < spec.length; i++) {
+    const ch = spec[i];
+    if (ch === '%' && i + 1 < spec.length) {
+      const next = spec[i + 1];
+      if (next === '%') { out += '%'; i += 1; continue; }
+      if (/^[sdifjoOc]$/.test(next)) {
+        out += formatArg(args[argIndex]);
+        argIndex += 1;
+        i += 1;
+        continue;
+      }
+    }
+    out += ch;
+  }
+  while (argIndex < args.length) out += ` ${formatArg(args[argIndex])}`;
+  return out;
+}
+
+/**
+ * Console args → one message string, truncated. Pure (unit-tested).
+ *
+ * When the first arg is a printf-style spec string with further args — the
+ * shape the Prisma D1 adapter uses, `console.error("Error in performIO: %O",
+ * err)` — the specifiers are expanded so `%O` renders the object instead of
+ * shipping the literal `%O` with the detail object dropped. Error args become
+ * their compact one-line form (name + message + cause + provider reference id,
+ * SLA-386); the full stack stays in `docker logs` via the original console
+ * passthrough.
+ */
 export function formatMessage(args: unknown[]): string {
-  const text = args.map(formatArg).join(' ');
+  const usesSpecs = args.length > 1 && typeof args[0] === 'string' && /%[sdifjoOc%]/.test(args[0]);
+  const text = usesSpecs ? expandSpecs(args[0] as string, args.slice(1)) : args.map(formatArg).join(' ');
   return text.length > MAX_MESSAGE_CHARS ? `${text.slice(0, MAX_MESSAGE_CHARS)}…` : text;
 }
 
