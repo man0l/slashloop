@@ -107,7 +107,9 @@ export interface Experiment {
   /** Classified from the source analyses during planning; constrains briefs and renders. */
   styleFormula?: { medium: string; density: string } | null;
   /** Briefs-stage fan-out: every candidate with its Jev viral score, and which were picked. */
-  briefJudge?: { candidates: Array<{ title: string; hook: string; score: number; confidence?: number }>; picked?: string[] } | null;
+  briefJudge?: { candidates: Array<{ title: string; hook: string; score: number; confidence?: number }>; picked?: string[];
+    /** Resolved explicit winner id (choice ?? value), null on missing/invalid answers. */
+    winner?: string | null; fallback?: string | null; reportPresent?: boolean; state?: unknown } | null;
 }
 export function same(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b); }
 export function assertBrief(e: Experiment, b: BriefData) {

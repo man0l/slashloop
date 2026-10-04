@@ -2,6 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import type { Video } from '@prisma/client';
 import { prepare, selectSlideReference } from './providers.js';
 import type { Experiment, Task } from './schema.js';
+import type { JevAnswer } from '../lib/typesafe.js';
 
 const env = { base: process.env.R2_THUMB_PUBLIC_BASE, key: process.env.OPENROUTER_API_KEY };
 const restores: Array<() => void> = [];
@@ -138,4 +139,71 @@ test('judge failure falls back to the first candidate instead of losing the rend
   expect(result.fanout.chosen).toBe(0);
   expect(JSON.stringify(result.fanout.judge)).toContain('grok down');
   expect(uploads).toHaveLength(1);
+});
+
+// SLA-429: the saved judge record matches the effective render selection.
+function fanoutDeps(classifyAnswer: JevAnswer | null, classifyError?: Error) {
+  const renders: number[] = [];
+  const uploads: number[] = [];
+  return {
+    renders,
+    uploads,
+    deps: {
+      findSources: async () => [] as never[],
+      generateImage: async () => { renders.push(600 + renders.length); return { buffer: Buffer.alloc(600 + renders.length), contentType: 'image/jpeg', costUsd: 0 }; },
+      upload: async (opts: { body: Buffer }) => { uploads.push(opts.body.length); return { path: 'stored', sizeBytes: opts.body.length }; },
+      generateBriefCandidates: async () => { throw new Error('not used'); },
+      jevScores: async () => ({}),
+      describeCandidates: async (buffers: Buffer[]) => buffers.map((_, i) => ({ id: `c${i}`, description: `candidate ${i} vivid ${'x'.repeat(400)}` })),
+      classify: async (): Promise<JevAnswer> => { if (classifyError) throw classifyError; return classifyAnswer as JevAnswer; },
+    },
+  };
+}
+function slideFixture() {
+  process.env.OPENROUTER_API_KEY = 'test-only';
+  const { e, videos } = fixture();
+  return { e, videos };
+}
+
+test('choice-only answer records the resolved id and index (was: choice:undefined)', async () => {
+  const { e, videos } = slideFixture();
+  const { deps } = fanoutDeps({ choice: 'c2', confidence: 0.77 });
+  const prepared = await prepare(e, { id: 't', kind: 'slide', target: 'v', index: 0 } as Task, { ...deps, findSources: async () => videos });
+  const result = await prepared.execute() as { fanout: { rendered: number; chosen: number; judge: Array<{ choice: string; index: number; confidence: number; candidates: Array<{ id: string; description: string }> }> } };
+  expect(result.fanout.chosen).toBe(2);
+  expect(result.fanout.judge[0]).toMatchObject({ choice: 'c2', index: 2, confidence: 0.77 });
+  expect(result.fanout.judge[0]!.candidates).toHaveLength(3);
+  expect(result.fanout.judge[0]!.candidates.every(c => c.description.length <= 300)).toBe(true);
+});
+
+test('invalid judge id falls back to the first candidate with an explicit reason', async () => {
+  const { e, videos } = slideFixture();
+  const { deps } = fanoutDeps({ choice: 'c9', confidence: 0.5 });
+  const prepared = await prepare(e, { id: 't', kind: 'slide', target: 'v', index: 0 } as Task, { ...deps, findSources: async () => videos });
+  const result = await prepared.execute() as { fanout: { chosen: number; judge: Array<{ choice: string; index: number; fallback?: string }> } };
+  expect(result.fanout.chosen).toBe(0);
+  expect(result.fanout.judge[0]).toMatchObject({ choice: 'c0', index: 0, fallback: 'invalid_answer:c9' });
+});
+
+test('checker exception falls back with the error recorded, not an empty reason', async () => {
+  const { e, videos } = slideFixture();
+  const { deps } = fanoutDeps(null, new Error('typesafe down'));
+  const prepared = await prepare(e, { id: 't', kind: 'slide', target: 'v', index: 0 } as Task, { ...deps, findSources: async () => videos });
+  const result = await prepared.execute() as { fanout: { chosen: number; judge: Array<{ choice: string; index: number; fallback?: string }> } };
+  expect(result.fanout.chosen).toBe(0);
+  expect(result.fanout.judge[0]).toMatchObject({ choice: 'c0', index: 0 });
+  expect(result.fanout.judge[0]!.fallback).toContain('typesafe down');
+});
+
+test('rendered index and provenance agree: the uploaded bytes are the judged winner', async () => {
+  const { e, videos } = slideFixture();
+  const { renders, uploads, deps } = fanoutDeps({ value: 'c1', confidence: 0.82 });
+  const prepared = await prepare(e, { id: 't', kind: 'slide', target: 'v', index: 0 } as Task, { ...deps, findSources: async () => videos });
+  const result = await prepared.execute() as { fanout: { rendered: number; chosen: number; judge: Array<{ choice: string; index: number }> } };
+  expect(result.fanout.rendered).toBe(3);
+  expect(result.fanout.chosen).toBe(1);
+  expect(result.fanout.judge[0]).toMatchObject({ choice: 'c1', index: 1 });
+  // Buffers are 601/602/603 bytes in render order; the upload must be the judged index.
+  expect(renders).toEqual([600, 601, 602]);
+  expect(uploads).toEqual([602]);
 });

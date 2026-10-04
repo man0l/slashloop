@@ -410,6 +410,40 @@ export const renderDeps:RenderDeps={
     return {ok:parsed.ok!==false&&reasons.length===0,reasons};
   },
 };
+/**
+ * Deterministic judge-answer resolution (SLA-429).
+ * Normalizes a Jev choice/value answer against the valid candidate ids.
+ * A valid explicit winner always takes precedence; score ranking only orders
+ * the remaining slots with stable ties. Missing/invalid answers fall back
+ * deterministically (grok/describe order) with an explicit reason.
+ */
+export interface ResolvedJudgeAnswer { id: string | null; index: number; confidence: number | null; fallback: string | null; }
+export function resolveJudgeAnswer(
+  answer: { choice?: unknown; value?: unknown; confidence?: unknown } | null | undefined,
+  ids: readonly string[],
+): ResolvedJudgeAnswer {
+  const norm = (v: unknown) => typeof v === 'string' ? v.trim() : '';
+  const rawConf = (answer && typeof answer === 'object' ? (answer as { confidence?: unknown }).confidence : undefined);
+  const confidence = typeof rawConf === 'number' && Number.isFinite(rawConf) ? rawConf : null;
+  if (!answer || typeof answer !== 'object') return { id: null, index: -1, confidence, fallback: 'missing_answer' };
+  const rawChoice = norm((answer as { choice?: unknown }).choice);
+  const rawValue = norm((answer as { value?: unknown }).value);
+  const pick = ids.includes(rawChoice) ? rawChoice : ids.includes(rawValue) ? rawValue : null;
+  if (pick) return { id: pick, index: ids.indexOf(pick), confidence, fallback: null };
+  const raw = rawChoice || rawValue;
+  return { id: null, index: -1, confidence, fallback: raw ? `invalid_answer:${raw.slice(0, 32)}` : 'missing_answer' };
+}
+/** Explicit winner first, then score rank (desc) with stable input-order ties. */
+export function rankBriefOrder(count: number, scores: readonly number[], explicitIndex: number): number[] {
+  const order = Array.from({ length: count }, (_, i) => i);
+  if (explicitIndex >= 0 && explicitIndex < count) {
+    order.splice(order.indexOf(explicitIndex), 1);
+    order.sort((a, b) => scores[b]! - scores[a]! || a - b);
+    return [explicitIndex, ...order];
+  }
+  order.sort((a, b) => scores[b]! - scores[a]! || a - b);
+  return order;
+}
 export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Prepared> {
   if(t.kind==='analysis'){
     const video=await db.video.findFirst({where:{id:t.target,source:{workspaceId:e.workspaceId}}});
@@ -520,30 +554,46 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       generated.candidates=generated.candidates.map(c=>({...c,brief:lockCarouselIdentity(c.brief,e.styleFormula??null)}));
     }
     const shots=e.inputs.filter(i=>i.status==='ready').flatMap(i=>i.evidence.slice(0,2).map(v=>v.observation)).join(' | ').slice(0,800);
+    // The report task is independently scheduled and may finish in either
+    // order — record only whether its context was present, never imply it
+    // was awaited.
+    const reportPresent=!!(e.report && typeof e.report.summary==='string' && e.report.summary.length);
+    // Bounded complete candidate snapshot for the selection state: overlay
+    // copy, storyboard scenes, hypothesis, mechanism, changes and locks.
+    // Slices preserve the request budget (the Jev call stays small).
     const state={
       goal:e.instructions.goal,
       audience:e.instructions.audience,
       direction:e.instructions.direction,
-      original_pattern:e.report?.summary??'',
+      original_pattern:reportPresent?(e.report!.summary as string).slice(0,500):'',
+      reportPresent,
       original_shots:shots,
-      candidates:generated.candidates.map((c,i)=>({id:`c${i}`,title:c.title,hook:c.brief?.hook??'',mechanism:c.mechanism??null,changes:Array.isArray(c.changedVariables)?c.changedVariables.map(v=>`${v.name}=${v.value}`).join('; '):'none'})),
+      locks:e.instructions.lockedConstraints.slice(0,8).map(l=>String(l).slice(0,200)),
+      candidates:generated.candidates.map((c,i)=>({id:`c${i}`,title:String(c.title??'').slice(0,200),hook:String(c.brief?.hook??'').slice(0,300),
+        hypothesis:String(c.hypothesis??'').slice(0,300),mechanism:c.mechanism??null,
+        overlays:Array.isArray(c.brief?.slides)?c.brief.slides.map(s=>String(s.overlayText??'').slice(0,120)):[],
+        storyboard:Array.isArray(c.brief?.slides)?c.brief.slides.map(s=>String(s.scene??'').slice(0,120)):[],
+        changes:Array.isArray(c.changedVariables)?c.changedVariables.map(v=>`${v.name}=${v.value}`).join('; ').slice(0,500):'none'})),
     };
     const keep=Math.max(0,e.variantCount-1);
     let picked=generated.candidates.slice(0,keep);
     const scoredAll=generated.candidates.map((c,i)=>({c,i,score:0,confidence:0}));
+    let winnerId: string | null = null;
+    let fallback: string | null = null;
     try{
-      const criteria=Object.fromEntries(generated.candidates.map((c,i)=>[`c${i}`,`[${c.mechanism??'delta'}] ${c.title}: ${c.brief?.hook??''}`]));
+      const criteria=Object.fromEntries(generated.candidates.map((c,i)=>[`c${i}`,`[${c.mechanism??'delta'}] ${c.title}: ${c.brief?.hook??''}`.slice(0,300)]));
       const answers=await render.jevScores(state,{winner:{type:'choice',instructions:'Which ONE candidate is most likely to get more views than the original source content in original_pattern / original_shots, with this audience?',criteria}});
-      const winner=answers.winner;
-      const probs=winner?.probabilities??{};
-      for(const s of scoredAll){s.score=Number(probs[`c${s.i}`]??0);s.confidence=winner?.confidence??0;}
-      if(winner?.choice){
-        const idx=generated.candidates.findIndex((_,i)=>`c${i}`===winner.choice);
-        if(idx>=0)scoredAll[idx]!.score=Math.max(scoredAll[idx]!.score,scoredAll.reduce((m,x)=>Math.max(m,x.score),0));
-      }
-      picked=keep? [...scoredAll].sort((a,b)=>b.score-a.score).slice(0,keep).map(s=>s.c) : [];
-    }catch{/* Jev unavailable: keep grok's leading candidates in order with zero scores */}
-    const briefJudge={candidates:scoredAll.map(s=>({title:s.c.title,hook:s.c.brief?.hook??'',score:s.score,confidence:s.confidence})),picked:picked.map(c=>c.title)};
+      const winner=answers?.winner;
+      const probs=((winner && typeof winner.probabilities==='object' && winner.probabilities) || {}) as Record<string,unknown>;
+      for(const s of scoredAll){const v=Number(probs[`c${s.i}`]);s.score=Number.isFinite(v)?v:0;s.confidence=typeof winner?.confidence==='number'&&Number.isFinite(winner.confidence)?winner.confidence:0;}
+      // A valid explicit winner takes deterministic precedence; score rank
+      // (stable ties) only orders the remaining slots.
+      const resolved=resolveJudgeAnswer(winner,generated.candidates.map((_,i)=>`c${i}`));
+      winnerId=resolved.id;fallback=resolved.fallback;
+      const order=rankBriefOrder(generated.candidates.length,scoredAll.map(s=>s.score),resolved.index);
+      picked=keep?order.slice(0,keep).map(idx=>scoredAll[idx]!.c):[];
+    }catch(err){fallback=`judge_error:${String(err instanceof Error?err.message:err).replace(/\s+/g,' ').slice(0,80)}`;}
+    const briefJudge={candidates:scoredAll.map(s=>({title:s.c.title,hook:s.c.brief?.hook??'',score:s.score,confidence:s.confidence})),picked:picked.map(c=>c.title),winner:winnerId,fallback,reportPresent,state};
     // Jev score rides on each winning proposal for provenance.
     const proposals=[generated.baseline,...picked.map(c=>{const s=scoredAll.find(x=>x.c===c);return {...c,jev:{score:s?.score??0,confidence:s?.confidence}};})];
     validateVariants(e,proposals);return {proposals,briefJudge,styleFormula:e.styleFormula??null,slideCount:e.slideCount};
@@ -633,15 +683,20 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       catch(err){return {described:buffers.map((_,i)=>({id:`c${i}`,description:`Candidate ${i+1}`})),error:String(err instanceof Error?err.message:err)};}
     };
     const chooseSafe=async(described:Array<{id:string;description:string}>)=>{
+      // Bounded candidate descriptions ride into provenance so the saved
+      // record matches the effective selection without bloating the row.
+      const bounded=described.map(d=>({id:d.id,description:String(d.description??'').slice(0,300)}));
+      const ids=bounded.map(d=>d.id);
       try{
         const answer=await render.classify(
-          {brief:{hook:brief.hook,concept:brief.concept,visualStyle:brief.visualStyle,role:brief.slides[t.index!]!.role,overlayText:effectiveOverlayText(brief,t.index!)},candidates:described},
+          {brief:{hook:brief.hook,concept:brief.concept,visualStyle:brief.visualStyle,role:brief.slides[t.index!]!.role,overlayText:effectiveOverlayText(brief,t.index!)},candidates:bounded},
           'Which candidate image has the highest viral potential for short-form video platforms, while staying truest to the brief and looking native rather than over-designed?',
-          Object.fromEntries(described.map(d=>[d.id,d.description])),
+          Object.fromEntries(bounded.map(d=>[d.id,d.description])),
         );
-        const idx=described.findIndex(d=>d.id===(answer.choice??answer.value));
-        return {winner:idx>=0?idx:0,judge:{choice:answer.value,confidence:answer.confidence??null}};
-      }catch(err){return {winner:0,judge:{error:String(err instanceof Error?err.message:err)}};}
+        const resolved=resolveJudgeAnswer(answer,ids);
+        const winner=resolved.index>=0?resolved.index:0;
+        return {winner,judge:{choice:resolved.id??bounded[winner]!.id,index:winner,confidence:resolved.confidence,candidates:bounded,...(resolved.fallback?{fallback:resolved.fallback}:{})}};
+      }catch(err){return {winner:0,judge:{choice:bounded[0]?.id??'c0',index:0,confidence:null,candidates:bounded,fallback:`judge_error:${String(err instanceof Error?err.message:err).replace(/\s+/g,' ').slice(0,80)}`}};}
     };
     const styleViolated=(d:Record<string, unknown>|undefined)=>!!d&&(
       d.overdesigned===true||!!(formulaMedium&&d.medium&&d['medium']!==formulaMedium));
@@ -650,7 +705,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     let wave=await renderWave(basePrompt+referenceLine);
     let described:{id:string;description:string}[]=[];
     let describeError:string|null=null;
-    let pick:{winner:number;judge:unknown}={winner:0,judge:{choice:'c0',note:'single-render'}};
+    let pick:{winner:number;judge:unknown}={winner:0,judge:{choice:'c0',index:0,note:'single-render'}};
     if(fanout>1){
       const d=await describeSafe(wave);
       described=d.described;describeError=d.error;
