@@ -62,6 +62,38 @@ describe('errorDetail', () => {
     circular.self = circular;
     expect(errorDetail(circular).length).toBeGreaterThan(0);
   });
+
+  // SLA-386: a DriverAdapterError's real detail lives on `error.cause` and its
+  // provider handle in a `reference = e_...` id. errorDetail must surface both
+  // so the next D1 blip is diagnosable from the log.
+  test('appends the cause chain and the provider reference id', () => {
+    const ref = 'e_PVSMDp_9815dd15af20413aa71d75290955446f';
+    const cause = { kind: 'sqlite', extendedCode: 1, message: 'internal error' };
+    const err = new Error(`internal error; reference = ${ref}`);
+    err.name = 'DriverAdapterError';
+    err.cause = cause;
+
+    const detail = errorDetail(err);
+    expect(detail).toContain('internal error');
+    expect(detail).toContain(ref);
+    // the driver cause object is rendered, not dropped
+    expect(detail).toContain('sqlite');
+    // the cause is labelled, so it reads as a cause, not the head message
+    expect(detail).toMatch(/cause:/);
+  });
+
+  test('a cause with its own reference id is surfaced too', () => {
+    const causeRef = 'e_abc123';
+    const cause = new Error(`boom; reference = ${causeRef}`);
+    cause.name = 'HttpError';
+    const err = new Error('outer failure');
+    err.name = 'DriverAdapterError';
+    err.cause = cause;
+
+    const detail = errorDetail(err);
+    expect(detail).toContain(causeRef);
+    expect(detail).toContain('HttpError: boom');
+  });
 });
 
 describe('errorMessage', () => {
@@ -79,5 +111,34 @@ describe('errorMessage', () => {
 
   test('a thrown string is returned verbatim', () => {
     expect(errorMessage('rate limited')).toBe('rate limited');
+  });
+
+  // SLA-400 / SLA-386 follow-up: the reference id often lives only on the
+  // cause object, not in err.message. errorMessage (the first line) must carry
+  // it, otherwise the scoring warns ship `DriverAdapterError: internal error`
+  // with no id — the exact gap the SLA-386 PR was meant to close.
+  test('carries the reference id on the head line even when it is only in the cause', () => {
+    const ref = 'e_PVSMDp_9815dd15af20413aa71d75290955446f';
+    const err = new Error('internal error');
+    err.name = 'DriverAdapterError';
+    err.cause = { kind: 'sqlite', extendedCode: 1, message: 'internal error', reference: ref };
+
+    expect(errorMessage(err)).toBe(`DriverAdapterError: internal error (reference=${ref})`);
+    expect(errorMessage(err)).not.toContain('\n');
+    // the cause is still labelled a cause (not the head), and the head carries
+    // the id once — not re-labelled as `cause: reference=…`
+    expect(errorDetail(err)).toContain(`(reference=${ref})`);
+    expect(errorDetail(err)).not.toMatch(/cause: reference=/);
+  });
+
+  test('does not duplicate the id when it is already in the message', () => {
+    const ref = 'e_abc123';
+    const err = new Error(`internal error; reference = ${ref}`);
+    err.name = 'DriverAdapterError';
+    const head = errorMessage(err);
+    // the existing `reference = …` in the message is kept verbatim; no second
+    // `(reference=…)` is bolted onto the head
+    expect(head).toBe(`DriverAdapterError: internal error; reference = ${ref}`);
+    expect(head).not.toContain(`(reference=${ref})`);
   });
 });

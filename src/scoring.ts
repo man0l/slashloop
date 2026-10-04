@@ -4,6 +4,8 @@ import { subHours } from 'date-fns';
 import { enqueueRefreshJob, outstandingJobForSource } from './lib/jobs.js';
 import { controlEnabled } from './lib/worker-control.js';
 import { CREDIT_COSTS, creditBalance } from './lib/credits.js';
+import { errorMessage } from './lib/error-detail.js';
+import { retryTransientD1 } from './lib/retry-d1.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -559,14 +561,17 @@ export async function rescoreStaleTooFresh(): Promise<{
   }
   const startedAt = Date.now();
   const cutoff = subHours(new Date(), 48);
-  const stale = await db.video.findMany({
+  // A transient D1/edge blip on this first read used to abort the ENTIRE sweep
+  // for the round (every group skipped). Retry the transient case; a permanent
+  // failure still throws to the worker's catch. SLA-386.
+  const stale = await retryTransientD1(() => db.video.findMany({
     where: { postedAt: { lte: cutoff }, score: { is: { scoreType: 'too_fresh' } } },
     select: { creatorHandle: true, platform: true, sourceId: true, postedAt: true, source: { select: { workspaceId: true } } },
     // Cast a wider net than the group cap below — many stale videos collapse
     // into few distinct creators, so scanning more rows costs nothing extra
     // (one indexed query) but yields a fuller, more useful set of groups.
     take: RESCORE_STALE_GROUP_CAP * 5,
-  });
+  }));
 
   const groups = new Map<string, { creatorHandle: string; platform: string; workspaceId: string; sourceId: string; latestStalePostedAt: Date }>();
   for (const v of stale) {
@@ -610,7 +615,12 @@ export async function rescoreStaleTooFresh(): Promise<{
     if (cached !== undefined) return cached >= staleRescrapeCost;
     // A failed balance read counts as cannot-pay: enqueueing blind is the
     // churn this gate exists to stop, and the next sweep retries the read.
-    const total = await creditBalance(workspaceId).then((b) => b.total).catch(() => -1);
+    // A TRANSIENT D1 blip is retried first, though — before this, a
+    // DriverAdapterError burst was swallowed here verbatim (surfacing only as
+    // the adapter's own `Error in performIO` console.error) while an
+    // affordable workspace was downgraded to the stale free recompute.
+    // SLA-386.
+    const total = await retryTransientD1(() => creditBalance(workspaceId).then((b) => b.total)).catch(() => -1);
     balanceByWorkspace.set(workspaceId, total);
     return total >= staleRescrapeCost;
   };
@@ -622,7 +632,7 @@ export async function rescoreStaleTooFresh(): Promise<{
 
     if (!(await workspaceCanAfford(workspaceId))) {
       await batchScoreVideos(sourceId).catch((err) => {
-        console.warn(`[scoring] fallback rescore failed for source ${sourceId}: ${(err as Error).message}`);
+        console.warn(`[scoring] fallback rescore failed for source ${sourceId}: ${errorMessage(err)}`);
       });
       sourcesRescoredOnly++;
       continue;
@@ -647,7 +657,7 @@ export async function rescoreStaleTooFresh(): Promise<{
     const withinCooldown = baseline && Date.now() - baseline.computedAt.getTime() < BASELINE_RESCRAPE_COOLDOWN_MS;
     if (alreadyCoveredByLastCheck && withinCooldown) {
       await batchScoreVideos(sourceId).catch((err) => {
-        console.warn(`[scoring] fallback rescore failed for source ${sourceId}: ${(err as Error).message}`);
+        console.warn(`[scoring] fallback rescore failed for source ${sourceId}: ${errorMessage(err)}`);
       });
       sourcesRescoredOnly++;
       continue;
@@ -720,14 +730,14 @@ export async function rescoreStaleTooFresh(): Promise<{
         }
       }
     } catch (err) {
-      console.warn(`[scoring] stale too_fresh enqueue failed for creator ${creatorHandle}: ${(err as Error).message}`);
+      console.warn(`[scoring] stale too_fresh enqueue failed for creator ${creatorHandle}: ${errorMessage(err)}`);
     }
 
     // The refresh worker will persist + score. Only fall back to the free,
     // stale-data recompute when we could not even queue the scrape.
     if (!queued) {
       await batchScoreVideos(sourceId).catch((err) => {
-        console.warn(`[scoring] fallback rescore failed for source ${sourceId}: ${(err as Error).message}`);
+        console.warn(`[scoring] fallback rescore failed for source ${sourceId}: ${errorMessage(err)}`);
       });
       sourcesRescoredOnly++;
     }
@@ -757,7 +767,11 @@ async function recentRefreshAttempt(
   sourceId: string,
 ): Promise<{ id: string; status: string } | null> {
   try {
-    const job = await db.mediaJob.findFirst({
+    // Retry the transient D1 case: a blip here used to read as "no recent
+    // attempt", which then fell through to enqueueRefreshJob and risked
+    // double-buying a scrape we'd already paid for. A PERMANENT failure still
+    // degrades to "enqueue anyway" below. SLA-386.
+    const job = await retryTransientD1(() => db.mediaJob.findFirst({
       where: {
         sourceId,
         kind: 'refresh',
@@ -765,7 +779,7 @@ async function recentRefreshAttempt(
       },
       orderBy: { createdAt: 'desc' },
       select: { id: true, status: true },
-    });
+    }));
     return job ?? null;
   } catch {
     return null;

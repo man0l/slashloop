@@ -21,6 +21,8 @@
 
 import { hostname } from 'node:os';
 
+import { causeChain, referenceId } from '../lib/error-detail.js';
+
 /** Longest single message kept; TikTok API error dumps can run to KBs. */
 const MAX_MESSAGE_CHARS = 2000;
 /** Most entries retained between flushes (memory bound). */
@@ -51,7 +53,19 @@ export interface LogShipper {
 
 function formatArg(arg: unknown): string {
   if (typeof arg === 'string') return arg;
-  if (arg instanceof Error) return `${arg.name}: ${arg.message}`;
+  if (arg instanceof Error) {
+    // Compact single-line form: `name: message`, then the cause chain and the
+    // provider reference id (SLA-386). The full stack stays in `docker logs`
+    // via the original console passthrough; indiestack gets the diagnostic
+    // essentials on one line.
+    const head = `${arg.name}: ${arg.message}`.trim();
+    const extras = causeChain(arg);
+    const ref = referenceId(arg);
+    if (ref && !extras.some((p) => p.includes(`reference=${ref}`))) {
+      extras.push(`reference=${ref}`);
+    }
+    return extras.length ? `${head} ${extras.join(' ')}` : head;
+  }
   try {
     const s = JSON.stringify(arg);
     return typeof s === 'string' ? s : String(arg);
@@ -60,9 +74,48 @@ function formatArg(arg: unknown): string {
   }
 }
 
-/** Console args → one message string, truncated. Pure (unit-tested). */
+/**
+ * Expand printf-style specifiers in the first arg against the rest, rendering
+ * each substituted value through `formatArg` (so an Error becomes its compact
+ * one-line form rather than a multi-line inspect that the char cap would clip
+ * before the cause). Mirrors `util.format`'s directive set without its
+ * single-quoting of string args. Unknown directives and `%%` pass through.
+ */
+function expandSpecs(spec: string, args: unknown[]): string {
+  let out = '';
+  let argIndex = 0;
+  for (let i = 0; i < spec.length; i++) {
+    const ch = spec[i];
+    if (ch === '%' && i + 1 < spec.length) {
+      const next = spec[i + 1];
+      if (next === '%') { out += '%'; i += 1; continue; }
+      if (/^[sdifjoOc]$/.test(next)) {
+        out += formatArg(args[argIndex]);
+        argIndex += 1;
+        i += 1;
+        continue;
+      }
+    }
+    out += ch;
+  }
+  while (argIndex < args.length) out += ` ${formatArg(args[argIndex++])}`;
+  return out;
+}
+
+/**
+ * Console args → one message string, truncated. Pure (unit-tested).
+ *
+ * When the first arg is a printf-style spec string with further args — the
+ * shape the Prisma D1 adapter uses, `console.error("Error in performIO: %O",
+ * err)` — the specifiers are expanded so `%O` renders the object instead of
+ * shipping the literal `%O` with the detail object dropped. Error args become
+ * their compact one-line form (name + message + cause + provider reference id,
+ * SLA-386); the full stack stays in `docker logs` via the original console
+ * passthrough.
+ */
 export function formatMessage(args: unknown[]): string {
-  const text = args.map(formatArg).join(' ');
+  const usesSpecs = args.length > 1 && typeof args[0] === 'string' && /%[sdifjoOc%]/.test(args[0]);
+  const text = usesSpecs ? expandSpecs(args[0] as string, args.slice(1)) : args.map(formatArg).join(' ');
   return text.length > MAX_MESSAGE_CHARS ? `${text.slice(0, MAX_MESSAGE_CHARS)}…` : text;
 }
 
