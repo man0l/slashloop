@@ -11,7 +11,15 @@ import {
   type QueueApiDeps,
   type QueueHttpRequest,
   type RateLimiter,
+  type RateLimits,
 } from './api.js';
+import {
+  recordApiEvent,
+  renderPrometheus,
+  resetApiCountersForTests,
+  snapshotApiCounters,
+  type RateLimitGate,
+} from './metrics.js';
 import type { PgQueue } from './pg.js';
 import type { PgQueueJobRow } from './contract.js';
 
@@ -100,15 +108,21 @@ function stubQueue(state: StubState): PgQueue {
 
 function deps(
   state: StubState,
-  opts?: { limiter?: RateLimiter; keys?: ProducerKey[] },
+  opts?: {
+    limiter?: RateLimiter;
+    keys?: ProducerKey[];
+    limits?: RateLimits;
+    onOutcome?: QueueApiDeps['onOutcome'];
+  },
 ): QueueApiDeps {
   return {
     queue: stubQueue(state),
     keys: mapKeyStore(opts?.keys ?? [{ keyId: 'k1', secret: SECRET, state: 'active' }]),
     limiter: opts?.limiter ?? memoryRateLimiter(),
-    limits: DEFAULT_RATE_LIMITS,
+    limits: opts?.limits ?? DEFAULT_RATE_LIMITS,
     ping: async () => true,
     nowSeconds: () => NOW,
+    onOutcome: opts?.onOutcome,
   };
 }
 
@@ -470,6 +484,174 @@ describe('workspace scope (SLA-351)', () => {
     );
     expect(cancel.status).toBe(403);
     expect(state.cancels).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SLA-350: a refused publish has to move a counter.
+//
+// deps.onPublish used to be called from exactly one place — inside the 202
+// branch, with `status: 202` hardcoded — and all three 429 gates returned
+// before reaching it. recordApiEvent's `status === 429` branch was therefore
+// dead code from the HTTP path, slashloop_queue_api_rejects_total
+// {cause="rate_limit"} rendered a permanent 0, and QueueApiRejectsSpike could
+// never fire on rate limiting. The 401/409/413/422 branches were unreachable
+// the same way.
+//
+// These drive the real limiter with limits widened on the gates under test so
+// each gate is the ONLY thing that can refuse, then assert on the counter the
+// alert actually reads. The workspace and per-kind gates had no coverage at all
+// before this ticket.
+// ---------------------------------------------------------------------------
+
+/** Limits that refuse on exactly one gate, so a 429 names that gate by cause. */
+function limitsFor(gate: RateLimitGate): RateLimits {
+  return {
+    perKeyPerMinute: 1000,
+    perWorkspacePerMinute: 1000,
+    perKindWorkspacePerMinute: 1000,
+    ...(gate === 'per_key' ? { perKeyPerMinute: 2 } : {}),
+    ...(gate === 'per_workspace' ? { perWorkspacePerMinute: 2 } : {}),
+    ...(gate === 'per_kind_workspace' ? { perKindWorkspacePerMinute: 2 } : {}),
+  };
+}
+
+describe('outcome reporting (SLA-350)', () => {
+  /** A distinct dedupe key + nonce per attempt, so only the limiter can refuse. */
+  function attempt(i: number, workspaceId = 'ws1', kind = 'analyze'): QueueHttpRequest {
+    const body = JSON.stringify({
+      kind,
+      workspaceId,
+      videoId: `v${i}`,
+      sourceId: null,
+      dedupeKey: `${kind}:video:v${i}:${workspaceId}`,
+      payload: {},
+    });
+    return signedRequest('POST', '/v1/jobs', body, { nonce: `g-${workspaceId}-${kind}-${i}` });
+  }
+
+  for (const gate of ['per_key', 'per_workspace', 'per_kind_workspace'] as const) {
+    test(`${gate} refuses -> one 429, one report, and the counter moves`, async () => {
+      resetApiCountersForTests();
+      const state: StubState = { jobs: new Map(), nonces: new Set(), cancels: [] };
+      const reports: Array<{ status: number; gate?: RateLimitGate }> = [];
+      const d = deps(state, {
+        limits: limitsFor(gate),
+        onOutcome: (info) => {
+          reports.push({ status: info.status, gate: info.gate });
+          recordApiEvent(info);
+        },
+      });
+
+      // Two publishes fill the budget of 2; the third is the refusal.
+      const allowed: number[] = [];
+      let refused = 0;
+      for (let i = 0; i < 3; i++) {
+        const res = await handleQueueRequest(attempt(i), d);
+        if (res.status === 429) refused++;
+        else allowed.push(res.status);
+      }
+
+      expect(allowed).toEqual([202, 202]);
+      expect(refused).toBe(1);
+
+      // Exactly one report per request — a double-count would make every rate
+      // in the alert wrong by a factor nobody could see.
+      expect(reports).toEqual([
+        { status: 202 },
+        { status: 202 },
+        { status: 429, gate },
+      ]);
+
+      const api = snapshotApiCounters();
+      expect(api.publishTotal).toBe(2);
+      expect(api.rateLimitRejects).toBe(1);
+      expect(api.rateLimitRejectsPerKey).toBe(gate === 'per_key' ? 1 : 0);
+      expect(api.rateLimitRejectsPerWorkspace).toBe(gate === 'per_workspace' ? 1 : 0);
+      expect(api.rateLimitRejectsPerKindWorkspace).toBe(gate === 'per_kind_workspace' ? 1 : 0);
+
+      // The gate series is what an operator reads to know which limiter to tune.
+      const text = renderPrometheus({ api, depth: [], oldestAge: [], running: 0, expiredLeases: 0, collectedAt: '' });
+      expect(text).toContain(`slashloop_queue_api_rejects_total{cause="rate_limit",gate="${gate}"} 1`);
+    });
+  }
+
+  test('the per-kind gate is not the per-workspace gate, and the series say which', async () => {
+    resetApiCountersForTests();
+    const state: StubState = { jobs: new Map(), nonces: new Set(), cancels: [] };
+    const d = deps(state, {
+      // Budget 2 per kind+workspace, but 6 for the workspace as a whole, so the
+      // third `analyze` publish is stopped by the kind gate while `thumb` — a
+      // different kind in the same workspace — keeps getting through. One
+      // undifferentiated "rate_limited" number could not tell these apart.
+      limits: { perKeyPerMinute: 1000, perWorkspacePerMinute: 6, perKindWorkspacePerMinute: 2 },
+      onOutcome: (info) => recordApiEvent(info),
+    });
+    const statuses: number[] = [];
+    statuses.push((await handleQueueRequest(attempt(1, 'ws1', 'analyze'), d)).status);
+    statuses.push((await handleQueueRequest(attempt(2, 'ws1', 'thumb'), d)).status);
+    statuses.push((await handleQueueRequest(attempt(3, 'ws1', 'analyze'), d)).status);
+    statuses.push((await handleQueueRequest(attempt(4, 'ws1', 'analyze'), d)).status); // kind gate
+    statuses.push((await handleQueueRequest(attempt(5, 'ws1', 'thumb'), d)).status);
+    expect(statuses).toEqual([202, 202, 202, 429, 202]);
+
+    const api = snapshotApiCounters();
+    expect(api.rateLimitRejectsPerKindWorkspace).toBe(1);
+    expect(api.rateLimitRejectsPerWorkspace).toBe(0);
+  });
+
+  test('the gate series always sum back to the total, including an unattributed reject', async () => {
+    resetApiCountersForTests();
+    recordApiEvent({ kind: 'analyze', deduped: false, latencyMs: 0, status: 429, gate: 'per_key' });
+    recordApiEvent({ kind: 'analyze', deduped: false, latencyMs: 0, status: 429, gate: 'per_workspace' });
+    recordApiEvent({ kind: 'analyze', deduped: false, latencyMs: 0, status: 429 });
+    const api = snapshotApiCounters();
+    const gateSum =
+      api.rateLimitRejectsPerKey
+      + api.rateLimitRejectsPerWorkspace
+      + api.rateLimitRejectsPerKindWorkspace
+      + api.rateLimitRejectsUnattributed;
+    expect(gateSum).toBe(api.rateLimitRejects);
+
+    const text = renderPrometheus({ api, depth: [], oldestAge: [], running: 0, expiredLeases: 0, collectedAt: '' });
+    expect(text).toContain('slashloop_queue_api_rejects_total{cause="rate_limit",gate="per_key"} 1');
+    expect(text).toContain('slashloop_queue_api_rejects_total{cause="rate_limit",gate="per_workspace"} 1');
+    expect(text).toContain('slashloop_queue_api_rejects_total{cause="rate_limit",gate="unknown"} 1');
+  });
+
+  test('the non-429 reject causes are reachable too, with their real status', async () => {
+    resetApiCountersForTests();
+    const state: StubState = { jobs: new Map(), nonces: new Set(), cancels: [] };
+    const d = deps(state, { onOutcome: (info) => recordApiEvent(info) });
+
+    await handleQueueRequest({ method: 'POST', path: '/v1/jobs', query: '', headers: {}, rawBody: new Uint8Array() }, d); // 401
+    await handleQueueRequest(signedRequest('POST', '/v1/jobs', 'x'.repeat(64 * 1024 + 1), { nonce: 'nb' }), d); // 413
+    await handleQueueRequest(signedRequest('POST', '/v1/jobs', '{"kind":"nope"}', { nonce: 'iv' }), d); // 422
+    await handleQueueRequest(signedRequest('POST', '/v1/jobs', ENQUEUE, { nonce: 'rp' }), d); // 202
+    await handleQueueRequest(signedRequest('POST', '/v1/jobs', ENQUEUE, { nonce: 'rp' }), d); // 409 replay
+
+    const api = snapshotApiCounters();
+    expect(api.authRejects).toBe(1);
+    expect(api.bodyTooLargeRejects).toBe(1);
+    expect(api.validationRejects).toBe(1);
+    expect(api.replayRejects).toBe(1);
+    expect(api.publishTotal).toBe(1);
+    expect(api.rateLimitRejects).toBe(0);
+  });
+
+  test('health checks do not move producer-facing counters', async () => {
+    resetApiCountersForTests();
+    const d = deps({ jobs: new Map(), nonces: new Set(), cancels: [] }, {
+      onOutcome: (info) => recordApiEvent(info),
+    });
+    const h = await handleQueueRequest({ method: 'GET', path: '/healthz', query: '', headers: {}, rawBody: new Uint8Array() }, d);
+    const r = await handleQueueRequest({ method: 'GET', path: '/readyz', query: '', headers: {}, rawBody: new Uint8Array() }, d);
+    expect(h.status).toBe(200);
+    expect(r.status).toBe(200);
+    const api = snapshotApiCounters();
+    expect(api.publishTotal).toBe(0);
+    expect(api.rateLimitRejects).toBe(0);
+    expect(api.authRejects).toBe(0);
   });
 });
 
