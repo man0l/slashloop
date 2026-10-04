@@ -44,7 +44,10 @@ function jobError(known:boolean,cause:string|null):string {
   const prefix=known?'provider_result_rejected':'provider_outcome_unknown';
   return cause?`${prefix}:${cause}`:prefix;
 }
-function settle(e:Experiment,t:Task,result:unknown) {
+/** Fold a finished task's result into the experiment. Pure with respect to
+ *  everything but `e` and `t`, so tests can drive the briefs settlement — where
+ *  the planning notices a caller needs to see are recorded — without a database. */
+export function settle(e:Experiment,t:Task,result:unknown) {
   t.status='done';t.error=undefined;if(isActive(e))e.error=null;
   if(t.kind==='analysis') {
     const input=result as Input; e.inputs[e.inputs.findIndex(i=>i.videoId===t.target)]=input;
@@ -62,7 +65,10 @@ function settle(e:Experiment,t:Task,result:unknown) {
     const extra=Array.isArray(payload)?undefined:payload as {styleFormula?:Experiment['styleFormula'];slideCount?:number;notices?:string[]};
     if(extra?.styleFormula)e.styleFormula=extra.styleFormula;
     if(typeof extra?.slideCount==='number')e.slideCount=extra.slideCount;
-    if(Array.isArray(extra?.notices)&&extra!.notices!.length)e.notices=extra!.notices!;
+    // Always overwritten from this attempt, so a retry that needed no adjustment
+    // cannot leave a stale collapse/drop notice behind on the experiment.
+    const notices=Array.isArray(extra?.notices)?extra!.notices!:[];
+    if(notices.length)e.notices=notices;else delete e.notices;
     e.variants=proposals.map((v,i)=>({...v,id:i===0?baselineId:randomUUID(),baselineId:i===0?null:baselineId,revision:1,status:'draft',generationBasis:e.generationBasis,history:[],frozenBrief:null,slides:[],error:null}));
     // Report (Gemini) and briefs (OpenRouter) may finish in either order.
     if(isActive(e)&&e.tasks.filter(x=>x.kind==='report').every(x=>x.status==='done'))e.status='review';

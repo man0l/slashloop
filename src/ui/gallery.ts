@@ -922,12 +922,13 @@ ${cards.length ? toolbarHtml(filters) : ''}
             // Dropping surveyMode alone left the call with no mode at all, so it
             // fell through to create mode and became a prose-only experiment.
             var ov = p.instructions.copyOverrides || { '0': '' };
-            // Iterate the sorted keys, not a contiguous scan from 1: a gap would
-            // silently truncate overlayTexts and drop every later slide.
+            // overlayTexts is POSITIONAL, so a gap in the keys cannot be
+            // represented. buildPayload only ever emits dense keys, so this is
+            // unreachable; truncating is the safer failure if it ever happens,
+            // because a slide with no entry keeps its resolved copy instead of
+            // silently receiving another slide's words.
             var ovs = [];
-            Object.keys(ov).filter(function (key) { return key !== '0'; })
-              .sort(function (a, b) { return Number(a) - Number(b); })
-              .forEach(function (key) { ovs.push(ov[key]); });
+            for (var k = 1; ov[String(k)] !== undefined; k++) ovs.push(ov[String(k)]);
             chatPayload = {
               mode: 'edit', videoIds: p.videoIds,
               hook: ov['0'], overlayTexts: ovs, language: p.instructions.language,

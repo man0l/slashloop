@@ -180,7 +180,8 @@ describe('edit-mode payload emission (source guards)', () => {
     // through to create mode and the requested copy was never pinned.
     expect(source).toContain("mode: 'edit', videoIds: p.videoIds,");
     expect(source).toContain('hook: ov[\'0\'], overlayTexts: ovs');
-    // And the overlay list is built from sorted keys, not a contiguous scan.
-    expect(source).toContain('.sort(function (a, b) { return Number(a) - Number(b); })');
+    // The overlay list is rebuilt positionally, which is the only shape
+    // overlayTexts can express.
+    expect(source).toContain('for (var k = 1; ov[String(k)] !== undefined; k++) ovs.push(ov[String(k)]);');
   });
 });

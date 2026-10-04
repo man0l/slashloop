@@ -33,7 +33,7 @@ import { load, list, serialize } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
 import {
-  ExperimentError, Id, MAX_MANUAL_ATTEMPTS, SLIDE_FANOUT, VARIABLE_FIELDS, type Experiment, type InstructionsData,
+  CopyOverrides, ExperimentError, Id, MAX_MANUAL_ATTEMPTS, SLIDE_FANOUT, VARIABLE_FIELDS, type Experiment, type InstructionsData,
 } from '../experiments/schema.js';
 
 // ---- dependencies ----------------------------------------------------------
@@ -113,7 +113,7 @@ export function editInstructions(hook: string | undefined, overlayTexts: string[
   overlayTexts.forEach((value, index) => { copyOverrides[String(index + 1)] = value.trim(); });
   return {
     goal: EDIT_GOAL, brand: '', audience: '', language: language.trim() || 'English',
-    direction: editSlideDirection(hook ?? '', overlayTexts),
+    direction: editSlideDirection(hook, overlayTexts),
     lockedConstraints: [], variables: ['hook'], mode: 'controlled',
     copyOverrides,
   };
@@ -343,6 +343,9 @@ const briefInput = z.object({
   visualStyle: z.string().min(1).max(2000), caption: z.string().max(2000), cta: z.string().max(2000),
   lockedConstraints: z.array(z.string().min(1).max(2000)).max(20),
   slides: z.array(briefSlideInput).min(3).max(8),
+  // SLA-431: must be accepted here or zod strips it silently and an explicitly
+  // blank slide 1 loses both of its carriers on the documented review step.
+  copyOverrides: CopyOverrides.optional(),
 });
 
 // ---- tools -----------------------------------------------------------------

@@ -7,6 +7,7 @@
 import { expect, test } from 'bun:test';
 import type { Video } from '@prisma/client';
 import { pinCopyOverrides, prepare } from './providers.js';
+import { settle } from './engine.js';
 import { Instructions, validateVariants, type Experiment, type Input, type Proposal, type Task } from './schema.js';
 import { persistedOverlayText, type SlideContract } from './render-prompt.js';
 
@@ -209,6 +210,25 @@ test('exact copy overrides refuse to ride along with a supporting-copy retell', 
   expect(Instructions.safeParse({ ...base, copyOverrides: undefined, varySupportingOverlays: true }).success).toBe(true);
 });
 
+test('override keys must be canonical slide indices and fit the deck', () => {
+  // N1: '00' and '0' name the same slide. A string-keyed lookup silently drops
+  // one of them, so the value vanishes with no dropped notice.
+  const base = {
+    goal: 'g', brand: '', audience: '', language: 'English', direction: '',
+    lockedConstraints: [], variables: ['hook'], mode: 'controlled',
+  };
+  expect(Instructions.safeParse({ ...base, copyOverrides: { '0': 'a', '1': 'b' } }).success).toBe(true);
+  for (const key of ['00', '007', '-1', 'x', '1.0', ' 1']) {
+    expect(Instructions.safeParse({ ...base, copyOverrides: { [key]: 'a' } }).success).toBe(false);
+  }
+  // N3: instructions are interpolated into the report prompt, where an oversized
+  // value blows the prompt budget and fails a paid task on the retry loop.
+  const eight = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [String(i), 'x']));
+  expect(Instructions.safeParse({ ...base, copyOverrides: eight }).success).toBe(true);
+  const nine = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [String(i), 'x']));
+  expect(Instructions.safeParse({ ...base, copyOverrides: nine }).success).toBe(false);
+});
+
 // ---- post-pin collapse (F2) and the stored record (N5) ---------------------
 
 test('a variant that collapses onto the baseline after pinning is dropped, not fatal', () => {
@@ -265,3 +285,43 @@ test('supporting copy that was never requested keeps its resolved source value',
   expect(payoff.contract.overlay.origin).not.toBe('override');
   expect(payoff.prompt).toContain(SOURCE_COPY[2]!);
 });
+
+// ---- the notices a caller actually sees (N6/N7) ---------------------------
+
+test('planning records its notices on the experiment, and clears stale ones', () => {
+  // The user-visible half of the two degradations: a variant that collapsed to
+  // the baseline, and requested copy for a slide that will not render. Before
+  // this existed both were worker-log-only, so a caller who paid for a
+  // two-variant A/B saw `variants: 1` against `variantCount: 2` with no
+  // explanation.
+  const withNotices = [
+    'Requested copy made the alternate variant identical to the baseline, so this run has 1 variant(s) instead of 2.',
+    'Requested copy for slide(s) 5 was not applied: this experiment renders 4 slides.',
+  ];
+  const briefs = (notices?: string[]) => ({
+    id: 't', kind: 'briefs', target: '', index: null, status: 'running',
+    error: null, attempts: 1, nextAttemptAt: null, startedAt: null,
+  } as unknown as Task);
+
+  const stale = { ...experimentFixture(), notices: ['left over from an earlier attempt'] } as unknown as Experiment;
+  settle(stale, briefs(), { proposals: [proposal('h', 's', 'p')], notices: withNotices });
+  expect(stale.notices).toEqual(withNotices);
+  expect(stale.variants).toHaveLength(1);
+
+  // A retry that produced nothing must not leave yesterday's notice behind.
+  const retry = { ...experimentFixture(), notices: withNotices } as unknown as Experiment;
+  settle(retry, briefs(), { proposals: [proposal('h', 's', 'p')] });
+  expect(retry.notices).toBeUndefined();
+  // An older caller that sends a plain proposal array still settles fine.
+  const legacy = experimentFixture() as unknown as Experiment;
+  expect(() => settle(legacy, briefs(), [proposal('h', 's', 'p')])).not.toThrow();
+  expect(legacy.variants).toHaveLength(1);
+});
+
+function experimentFixture() {
+  return {
+    id: 'e', workspaceId: 'w', status: 'planning', variantCount: 2, slideCount: 3,
+    generationBasis: 'source-referenced', report: null, variants: [], tasks: [],
+    styleFormula: null, error: null, instructions: experiment().instructions,
+  };
+}

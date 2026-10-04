@@ -246,6 +246,25 @@ describe('create_experiment', () => {
     expect(both.varySupportingOverlays).toBeUndefined();
   });
 
+  test('an omitted hook reads as unchanged in prose too, not as a cleared slide', () => {
+    // M2: `editSlideDirection(hook ?? '', ...)` collapsed undefined -> '' before
+    // the omitted-hook branch could be tested, so the two carriers disagreed —
+    // the structured one said "unchanged" while the prose said "empty clears it".
+    // direction reaches the briefs prompt and every render request, so on a paid
+    // render that contradiction blanks slide 1.
+    const omitted = editInstructions(undefined, ['Better support'], 'English');
+    expect(omitted.copyOverrides).not.toHaveProperty('0');
+    expect(omitted.direction).toContain('Slide 1 (hook): unchanged');
+    expect(omitted.direction).not.toContain('(empty clears it too)');
+    // An EXPLICIT empty hook is still a blank, and says so.
+    const explicit = editInstructions('', ['Better support'], 'English');
+    expect(explicit.copyOverrides!['0']).toBe('');
+    expect(explicit.direction).toContain('Slide 1 (hook): "" (empty clears it too)');
+    // The prose helper is also reachable directly.
+    expect(editSlideDirection(undefined, [])).toBe('Render the exact overlay texts. Slide 1 (hook): unchanged — no new hook was requested');
+    expect(editSlideDirection(' A hook ', [])).toBe('Render the exact overlay texts. Slide 1 (hook): "A hook" (empty clears it too)');
+  });
+
   test('the edit request keeps an omitted hook omitted instead of blanking slide 1', async () => {
     await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], overlayTexts: ['New support', ''] });
     const body = callsOf('createExperiment')[0]![0] as any;
@@ -412,6 +431,25 @@ describe('edits, cancel and delete', () => {
     expect(m[3]).toEqual({ workspaceId: 'w1', revision: 1, brief });
     expect(EditBrief.safeParse(m[3]).success).toBe(true);
     expect(m[4]).toBe('v1');
+  });
+
+  test('update_experiment_variant keeps the pinned copy overrides on the brief', async () => {
+    // M3: briefInput used to be a plain z.object, so it silently STRIPPED
+    // copyOverrides. An explicitly blank slide 1 has exactly two carriers
+    // (copyOverrides['0'] and slides[0].overlayText) and Brief.hook cannot be
+    // blank, so the strip resurrected the generated board hook on the very
+    // review step that exists to show the user what will render.
+    const blank = { ...brief, hook: 'Generated board hook', copyOverrides: { '0': '', '1': 'New support' } };
+    store.set('e1', exp('e1', { status: 'review' }));
+    const res = await call('update_experiment_variant', { experimentId: 'e1', variantId: 'v1', revision: 1, brief: blank });
+    expect(res.isError).toBe(false);
+    const forwarded = callsOf('mutate')[0]![3] as any;
+    expect(forwarded.brief.copyOverrides).toEqual({ '0': '', '1': 'New support' });
+    expect(EditBrief.safeParse(forwarded).success).toBe(true);
+    // A brief without overrides is still accepted and stays without them.
+    store.set('e1', exp('e1', { status: 'review' }));
+    await call('update_experiment_variant', { experimentId: 'e1', variantId: 'v1', revision: 1, brief });
+    expect((callsOf('mutate')[1]![3] as any).brief).not.toHaveProperty('copyOverrides');
   });
 
   test('service refusals come back as isError with the code and a hint', async () => {

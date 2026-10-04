@@ -9,12 +9,17 @@ const text = z.string().trim().max(2000);
 export const VARIABLE_FIELDS = ['hook', 'character', 'visualStyle', 'caption', 'cta', 'concept', 'slides'] as const;
 const constraints = z.union([z.array(text.min(1)).max(20), text]).transform(v => typeof v === 'string' ? (v ? [v] : []) : v);
 /** Explicit per-slide copy override (SLA-430 D3, SLA-431 request carrier). Keys are
- *  0-based slide indices; property presence decides — `""` clears the overlay and
- *  an omitted index is NOT a blank, it leaves that slide's copy unresolved so the
- *  value that would otherwise apply (resolved source copy, or the brief's own
- *  copy on a hook-varying experiment) stands. Optional so instructions and
- *  briefs stored before it keep working. */
-export const CopyOverrides = z.record(z.string().regex(/^\d+$/), z.string().max(2000));
+ *  canonical 0-based slide indices — no leading zeros, because `'00'` and `'0'`
+ *  name the same slide and a lookup by string would silently drop one of them.
+ *  Property presence decides: `""` clears the overlay and an omitted index is NOT
+ *  a blank, it leaves that slide's copy unresolved so the value that would
+ *  otherwise apply (resolved source copy, or the brief's own copy on a
+ *  hook-varying experiment) stands. Optional so instructions and briefs stored
+ *  before it keep working. Capped at 8 keys: more slides than the deck can hold
+ *  is meaningless, and `instructions` is interpolated into the report prompt,
+ *  where an oversized value would blow the prompt budget and fail a paid task. */
+export const CopyOverrides = z.record(z.string().regex(/^(?:0|[1-9]\d*)$/), z.string().max(2000))
+  .refine(v => Object.keys(v).length <= 8, { message: 'At most 8 per-slide copy overrides: one per slide.' });
 export const Instructions = z.object({
   goal: text.min(1), brand: text, audience: text, language: z.string().trim().min(1).max(80),
   direction: text, lockedConstraints: constraints,
