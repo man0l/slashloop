@@ -21,6 +21,8 @@
 
 import { hostname } from 'node:os';
 
+import { causeChain, referenceId } from '../lib/error-detail.js';
+
 /** Longest single message kept; TikTok API error dumps can run to KBs. */
 const MAX_MESSAGE_CHARS = 2000;
 /** Most entries retained between flushes (memory bound). */
@@ -47,51 +49,6 @@ export interface LogShipper {
   flush(): Promise<void>;
   /** Buffered entry count (tests/diagnostics). */
   size(): number;
-}
-
-/**
- * The `reference = e_...` id D1/Prisma driver adapters attach to their errors
- * — the handle into the provider's own error log. Surfaced explicitly so it
- * survives both the one-line shipper view and `errorMessage` first-line
- * truncation (SLA-386: it used to live only inside the dropped `%O` object).
- */
-function referenceId(err: Error): string | undefined {
-  const fromMessage = /reference\s*=\s*(e_[A-Za-z0-9_]+)/.exec(err.message ?? '')?.[1];
-  if (fromMessage) return fromMessage;
-  const cand = err as unknown as Record<string, unknown>;
-  const sources = [cand, cand.cause as Record<string, unknown> | undefined];
-  for (const s of sources) {
-    if (!s || typeof s !== 'object') continue;
-    for (const key of ['reference', 'refId', 'ref']) {
-      const v = s[key];
-      if (typeof v === 'string' && v) return v;
-    }
-  }
-  return undefined;
-}
-
-/** One compact rendering of an Error's cause chain (empty array when none). */
-function causeChain(err: Error): string[] {
-  const parts: string[] = [];
-  let cur: unknown = err.cause;
-  while (cur !== undefined && parts.length < 3) {
-    if (cur instanceof Error) {
-      const head = `${cur.name}: ${cur.message}`.trim();
-      const ref = referenceId(cur);
-      parts.push(ref ? `${head} (reference=${ref})` : head);
-      cur = cur.cause;
-    } else {
-      try {
-        const s = JSON.stringify(cur);
-        if (s && s !== '{}') parts.push(s);
-      } catch {
-        const s = String(cur);
-        if (s && s !== 'undefined') parts.push(s);
-      }
-      break;
-    }
-  }
-  return parts;
 }
 
 function formatArg(arg: unknown): string {
