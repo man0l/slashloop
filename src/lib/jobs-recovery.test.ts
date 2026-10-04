@@ -6,7 +6,7 @@
 //   - deadlineAt is 5 minutes, so most refresh jobs run AFTER their deadline
 //   - reclaimStuckJobs only ever inspected status='running', so a job that was
 //     never claimed could hold a pre-auth forever
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 
 type JobRow = {
   id: string; workspaceId: string; kind: string; status: string;
@@ -23,6 +23,8 @@ const refunds: Array<{ workspaceId: string; amount: number; kind: string; refId:
 const batchedRefunds: Array<{ workspaceId: string; amount: number; kind: string; refId: string }> = [];
 const executeRawCalls: unknown[][] = [];
 const findManyCalls: Array<{ take?: number; orderBy?: unknown }> = [];
+/** When set, db.mediaJob.update throws it (P2025 projection-miss tests). */
+let updateError: Error | null = null;
 
 const realCredits = await import('./credits.js');
 
@@ -39,7 +41,11 @@ mock.module('../db.js', () => ({
           && (where.startedAt === null ? j.startedAt === null : true)
           && (notAvail ? (j as any).availableAt == null || (j as any).availableAt <= notAvail : true));
       },
-      update: async ({ where, data }: any) => { updates.push({ id: where.id, data }); return {}; },
+      update: async ({ where, data }: any) => {
+        updates.push({ id: where.id, data });
+        if (updateError) throw updateError;
+        return {};
+      },
       findUnique: async ({ where }: any) => jobs.find(j => j.id === where.id) ?? null,
     },
     $executeRaw: async (...args: any[]) => { executeRawCalls.push(args); return 1; },
@@ -60,7 +66,7 @@ mock.module('./credits.js', () => ({
   creditBalance: async () => ({ planCredits: 100, packCredits: 0, total: 100 }),
 }));
 
-const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds, jobTimeoutMs, QUEUE_SWEEP_TAKE, failJob, yieldJob, requeueBackoffMs, MAX_ATTEMPTS } = await import('./jobs.js');
+const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds, jobTimeoutMs, QUEUE_SWEEP_TAKE, failJob, yieldJob, requeueBackoffMs, MAX_ATTEMPTS, completeJob, setJobLifecycleSink, isPrismaRecordNotFound, recordD1ProjectionMiss, snapshotD1ProjectionMisses, resetD1ProjectionMissesForTests } = await import('./jobs.js');
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
 
@@ -297,5 +303,113 @@ describe('failJob — forced terminal for deterministic refusals', () => {
     const res = await failJob('job-1', 'scrape died');
     expect(res.terminal).toBe(true);
     expect(updates[0]!.data.status).toBe('failed');
+  });
+});
+
+describe('D1 projection mirror — missing row (SLA-361)', () => {
+  // The VPS worker mirrors PG terminal states onto the D1 projection row
+  // (forceD1). When the row is absent the mirror used to warn P2025 on
+  // complete and stay silent on fail. Both are expected gaps (PG is the
+  // source of truth) that must be counted and logged once per job, never
+  // warned.
+  let logCalls: string[] = [];
+  let warnCalls: string[] = [];
+  let realLog: typeof console.log;
+  let realWarn: typeof console.warn;
+
+  const p2025 = () => Object.assign(new Error('No record was found for an update'), { code: 'P2025' });
+
+  beforeEach(() => {
+    updateError = null;
+    resetD1ProjectionMissesForTests();
+    // Another test file may have left a lifecycle sink installed; the mirror
+    // path bypasses it via forceD1, but keep the non-forced cases honest.
+    setJobLifecycleSink(null);
+    logCalls = [];
+    warnCalls = [];
+    realLog = console.log;
+    realWarn = console.warn;
+    console.log = (msg?: unknown) => { logCalls.push(String(msg)); };
+    console.warn = (msg?: unknown) => { warnCalls.push(String(msg)); };
+  });
+
+  afterEach(() => {
+    console.log = realLog;
+    console.warn = realWarn;
+  });
+
+  test('a complete mirror on a missing row resolves, counts, logs once — no warn', async () => {
+    updateError = p2025();
+    await expect(completeJob('d0294603', null, undefined, { forceD1: true })).resolves.toBeUndefined();
+    expect(snapshotD1ProjectionMisses()).toEqual({ complete: 1, fail: 0, total: 1 });
+    expect(warnCalls).toEqual([]);
+    expect(logCalls).toHaveLength(1);
+    expect(logCalls[0]).toContain('d0294603');
+    expect(logCalls[0]).toContain('total=1');
+  });
+
+  test('a P2025 on the non-forced complete still throws (that path owns the row)', async () => {
+    updateError = p2025();
+    await expect(completeJob('job-1', null)).rejects.toThrow();
+    expect(snapshotD1ProjectionMisses()).toEqual({ complete: 0, fail: 0, total: 0 });
+  });
+
+  test('a healthy complete mirror still writes the row and counts nothing', async () => {
+    await completeJob('job-1', 'analysis-1', '{"ok":1}', { forceD1: true });
+    expect(updates[0]).toMatchObject({ id: 'job-1' });
+    expect(updates[0]!.data.status).toBe('done');
+    expect(snapshotD1ProjectionMisses()).toEqual({ complete: 0, fail: 0, total: 0 });
+    expect(warnCalls).toEqual([]);
+  });
+
+  test('a fail mirror on a missing row counts, logs once, reports non-terminal', async () => {
+    jobs = [];
+    const res = await failJob('d0294603', 'boom', { terminal: true, forceD1: true });
+    expect(res).toEqual({ terminal: false });
+    expect(snapshotD1ProjectionMisses()).toEqual({ complete: 0, fail: 1, total: 1 });
+    expect(warnCalls).toEqual([]);
+    expect(logCalls).toHaveLength(1);
+    expect(logCalls[0]).toContain('d0294603');
+  });
+
+  test('a missing row on the non-forced fail path is just "no such job"', async () => {
+    jobs = [];
+    const res = await failJob('job-1', 'boom');
+    expect(res).toEqual({ terminal: false });
+    expect(snapshotD1ProjectionMisses()).toEqual({ complete: 0, fail: 0, total: 0 });
+  });
+
+  test('a fail mirror that loses its row between find and update counts, not throws', async () => {
+    jobs = [job({ status: 'running', attempts: 1 })];
+    updateError = p2025();
+    const res = await failJob('job-1', 'boom', { terminal: true, forceD1: true });
+    expect(res).toEqual({ terminal: false });
+    expect(snapshotD1ProjectionMisses()).toEqual({ complete: 0, fail: 1, total: 1 });
+    expect(warnCalls).toEqual([]);
+  });
+
+  test('a non-P2025 error on a forced mirror still propagates and is not counted', async () => {
+    jobs = [job({ status: 'running', attempts: 1 })];
+    updateError = new Error('boom');
+    await expect(completeJob('job-1', null, undefined, { forceD1: true })).rejects.toThrow('boom');
+    await expect(failJob('job-1', 'x', { forceD1: true })).rejects.toThrow('boom');
+    expect(snapshotD1ProjectionMisses()).toEqual({ complete: 0, fail: 0, total: 0 });
+  });
+
+  test('misses accumulate per cause and the snapshot/reset seam works', () => {
+    recordD1ProjectionMiss('complete');
+    recordD1ProjectionMiss('fail');
+    recordD1ProjectionMiss('fail');
+    expect(snapshotD1ProjectionMisses()).toEqual({ complete: 1, fail: 2, total: 3 });
+    resetD1ProjectionMissesForTests();
+    expect(snapshotD1ProjectionMisses()).toEqual({ complete: 0, fail: 0, total: 0 });
+  });
+
+  test('isPrismaRecordNotFound recognises P2025 and nothing else', () => {
+    expect(isPrismaRecordNotFound(Object.assign(new Error('x'), { code: 'P2025' }))).toBe(true);
+    expect(isPrismaRecordNotFound(Object.assign(new Error('x'), { code: 'P2003' }))).toBe(false);
+    expect(isPrismaRecordNotFound(new Error('x'))).toBe(false);
+    expect(isPrismaRecordNotFound(null)).toBe(false);
+    expect(isPrismaRecordNotFound('P2025')).toBe(false);
   });
 });
