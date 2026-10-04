@@ -67,10 +67,12 @@ export const defaultExperimentToolDeps: ExperimentToolDeps = {
  * there are exactly two variants and the cap is 100 credits — a hook A/B on a
  * deck whose images do not move.
  *
- * The overlay copy goes into `direction` as the planner's only brief, so the
- * per-slide lines are quoted in the wizard's own wording and order: slide 1 is
- * the tested hook, slides 2..N are supporting copy, and "(strip — no text)"
- * means render nothing at all, which is NOT the same as "leave the original".
+ * `copyOverrides` carries the exact requested copy as structured values; the
+ * `direction` prose below is only the planner's hint, quoted in the wizard's own
+ * wording and order (slide 1 is the tested hook, slides 2..N are supporting
+ * copy, and "(strip — no text)" means render nothing at all). SLA-431: prose
+ * alone lost the requested copy, so the two carriers must agree — an omitted
+ * slide is described as unchanged, never as cleared.
  */
 export const EDIT_GOAL = 'Edit the slideshow overlay text, keeping the same images.';
 /** Two variants: the original hook and the replacement. */
@@ -85,8 +87,13 @@ export const EDIT_MAX_CREDITS = 100;
  * inside the sentence, so leading or trailing whitespace would be rendered as
  * part of the overlay text instead of being a typo in the request.
  */
-export function editSlideDirection(hook: string, overlayTexts: string[]): string {
-  const lines = [`Slide 1 (hook): "${hook.trim()}" (empty clears it too)`];
+export function editSlideDirection(hook: string | undefined, overlayTexts: string[]): string {
+  // An omitted hook must not be described as a cleared slide: the structured
+  // carrier treats an omitted index as "unchanged", and prose that says the
+  // opposite would instruct the planner to blank a slide the user never touched.
+  const lines = [hook === undefined
+    ? 'Slide 1 (hook): unchanged — no new hook was requested'
+    : `Slide 1 (hook): "${hook.trim()}" (empty clears it too)`];
   overlayTexts.forEach((text, index) => {
     const trimmed = text.trim();
     lines.push(`Slide ${index + 2}: "${trimmed}"${trimmed ? '' : ' (strip — no text)'}`);

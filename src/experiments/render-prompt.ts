@@ -104,6 +104,21 @@ export function effectiveOverlayText(brief: BriefData, index: number): string {
   return slide.overlayText;
 }
 
+/** The overlay text to STORE and display for a slide (SLA-431).
+ *  An explicit per-slide override is what the renderer was asked for, so it is
+ *  also what the saved record and the site's image alt text must say. Without
+ *  this an explicitly blank slide 1 renders empty while the record claims the
+ *  generated hook — `Brief.hook` cannot be blank (min 1), so index 0 cannot fall
+ *  back to it. Presence decides, never truthiness. */
+export function persistedOverlayText(brief: BriefData, index: number): string {
+  const overrides = brief.copyOverrides as Record<string, unknown> | null | undefined;
+  if (overrides && typeof overrides === 'object' && Object.prototype.hasOwnProperty.call(overrides, String(index))) {
+    const value = overrides[String(index)];
+    if (typeof value === 'string') return value;
+  }
+  return effectiveOverlayText(brief, index);
+}
+
 export function styleContract(formula: StyleFormula): string {
   const m = (formula?.medium ?? '').toLowerCase();
   const density = formula?.density ?? 'moderate';

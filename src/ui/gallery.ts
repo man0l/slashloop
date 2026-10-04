@@ -815,6 +815,11 @@ ${cards.length ? toolbarHtml(filters) : ''}
         overlays.forEach(function (t, k) {
           lines.push('Slide ' + (k + 2) + ': "' + t + '"' + (t ? '' : ' (strip — no text)'));
         });
+        // The exact requested copy also travels as structured values. The prose
+        // above is only the planner's hint; without these the requested words
+        // reach the renderer as whatever the model felt like writing.
+        var copyOverrides = { '0': hook };
+        overlays.forEach(function (t, k) { copyOverrides[String(k + 1)] = t; });
         return {
           videoIds: selected.slice(0, 1),
           surveyMode: 'edit',
@@ -824,6 +829,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
             direction: 'Render the exact overlay texts. ' + lines.join(' '),
             lockedConstraints: [],
             variables: ['hook'], mode: 'controlled',
+            copyOverrides: copyOverrides,
           },
           variantCount: 2, slideCount: slideCount, maxCredits: 100,
         };
@@ -910,8 +916,23 @@ ${cards.length ? toolbarHtml(filters) : ''}
         document.getElementById('exp-review').innerHTML = reviewHtml(p);
         document.getElementById('exp-host-payload-wrap').hidden = !inHost;
         if (inHost) {
-          var chatPayload = Object.assign({}, p);
-          delete chatPayload.surveyMode;
+          var chatPayload;
+          if (mode === 'edit') {
+            // An edit must be pasted as mode:"edit" with hook/overlayTexts.
+            // Dropping surveyMode alone left the call with no mode at all, so it
+            // fell through to create mode and became a prose-only experiment.
+            var ov = p.instructions.copyOverrides || { '0': '' };
+            var ovs = [];
+            for (var k = 1; ov[String(k)] !== undefined; k++) ovs.push(ov[String(k)]);
+            chatPayload = {
+              mode: 'edit', videoIds: p.videoIds,
+              hook: ov['0'], overlayTexts: ovs, language: p.instructions.language,
+              slideCount: p.slideCount, maxCredits: p.maxCredits,
+            };
+          } else {
+            chatPayload = Object.assign({}, p);
+            delete chatPayload.surveyMode;
+          }
           document.getElementById('exp-host-payload').textContent =
             'Create this slideshow experiment with the create_experiment tool:\n' + JSON.stringify(chatPayload, null, 2);
         }

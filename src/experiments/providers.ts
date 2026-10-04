@@ -311,17 +311,25 @@ export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pic
  * delete the experiment. `supportRetell` stays off: this pins exact values, it
  * does not authorize a supporting-copy rewrite.
  *
- * An omitted index is never touched, so it keeps the resolved source copy.
+ * An omitted index is never touched, so it keeps whatever copy would otherwise
+ * resolve for that slide — the resolved source copy when copy is locked, or the
+ * brief's own copy when the experiment varies `hook`. It is never a blank.
  * Slide 1 mirrors the authoritative hook; `Brief.hook` itself cannot hold an
  * empty string, so an explicitly blank slide 1 is carried by the override and
  * its `slides[0].overlayText`, which is what the overlay decision reads.
  */
-export function pinCopyOverrides(proposals: Proposal[], e: Pick<Experiment, 'instructions'>): Proposal[] {
+export function pinCopyOverrides(proposals: Proposal[], e: Pick<Experiment, 'instructions' | 'slideCount'>): Proposal[] {
   const overrides = e.instructions.copyOverrides;
   if (!overrides) return proposals;
   const indexes = Object.keys(overrides);
   const bad = indexes.find(k => !/^\d+$/.test(k));
   if (bad !== undefined) throw new ExperimentError(422, 'invalid_slide_mapping', `Copy override index "${bad}" is not a slide index.`);
+  // Key format alone is not enough: the render path only looks up indices below
+  // the effective slide count, so an out-of-range key would be silently inert
+  // and the requested copy quietly dropped. e.slideCount is already resolved
+  // from the source deck before the pin runs.
+  const outOfRange = indexes.find(k => Number(k) >= e.slideCount);
+  if (outOfRange !== undefined) throw new ExperimentError(422, 'invalid_slide_mapping', `Copy override index "${outOfRange}" is outside this experiment's ${e.slideCount} slides.`);
   const requestedHook = overrides['0'];
   const support = new Map(indexes.filter(k => Number(k) > 0).map(k => [Number(k), String(overrides[k])]));
   const supportOverrides = Object.fromEntries(support);
@@ -720,7 +728,16 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     // SLA-431: pin the requested exact copy before validation, so the supporting
     // slides are identical across variants instead of reading as a retell.
     const pinned=pinCopyOverrides(proposals,e);
-    validateVariants(e,pinned);return {proposals:pinned,briefJudge,styleFormula:e.styleFormula??null,slideCount:e.slideCount};
+    // Pinning can collapse a candidate onto the baseline — a model that honours
+    // the request for its "new hook" hook self-collapses the A/B. The dedupe
+    // above cannot catch it because the baseline's hook changes after
+    // normalization. Rejecting the run would waste the analysis and planning
+    // credits already spent, so drop the duplicate instead: validateVariants
+    // treats fewer variants than requested as a degraded success.
+    const baseFp=pinned.length?fingerprint(pinned[0]!):'';
+    const kept=baseFp?pinned.filter((p,i)=>i===0||fingerprint(p)!==baseFp):pinned;
+    if(kept.length!==pinned.length)console.log(`[experiments] briefs ${e.id} dropped ${pinned.length-kept.length} variant(s) identical to the baseline after pinning requested copy`);
+    validateVariants(e,kept);return {proposals:kept,briefJudge,styleFormula:e.styleFormula??null,slideCount:e.slideCount};
   }};
   const v=e.variants.find(v=>v.id===t.target);if(!v?.frozenBrief)throw new SafeFailure('missing_frozen_brief');
   if(!process.env.OPENROUTER_API_KEY)throw new SafeFailure('openrouter_not_configured');

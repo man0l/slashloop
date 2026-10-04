@@ -281,6 +281,37 @@ describe('create_experiment', () => {
     expect(Create.safeParse(body0).success).toBe(true);
   });
 
+  test('the gallery wizard payload and the host edit payload reach the same exact copy', async () => {
+    // SLA-431 F1: the site wizard POSTed a prose-only instructions object, so the
+    // reported defect was live on the product's own path, and the host/chat copy
+    // of that payload lost `mode` entirely and fell through to create mode.
+    // The wizard's inline script runs in its own iframe and cannot call a module
+    // helper, so this pins the CONTRACT both paths must satisfy rather than the
+    // UI line itself; a browser check is tracked separately.
+    const hook = 'Stop doing this';
+    const overlays = ['Three things I wish I knew', ''];
+    // 1. What the browser POSTs: instructions now carry copyOverrides.
+    const gallerySurvey = {
+      videoIds: ['vid1'], surveyMode: 'edit',
+      instructions: {
+        goal: EDIT_GOAL, brand: '', audience: '', language: 'English',
+        direction: 'Render the exact overlay texts.',
+        lockedConstraints: [], variables: ['hook'], mode: 'controlled',
+        copyOverrides: editInstructions(hook, overlays, 'English').copyOverrides,
+      },
+      variantCount: EDIT_VARIANT_COUNT, slideCount: 3, maxCredits: EDIT_MAX_CREDITS,
+    };
+    // api/gallery.ts strips only surveyMode and forwards the rest verbatim.
+    const { surveyMode: _mode, ...fields } = gallerySurvey;
+    expect(Create.safeParse({ workspaceId: 'w1', idempotencyKey: 'gallery:abc123', ...fields }).success).toBe(true);
+    expect((fields.instructions as any).copyOverrides).toEqual({ '0': hook, '1': overlays[0], '2': '' });
+    // 2. What the host is told to paste: mode edit + hook/overlayTexts.
+    await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], hook, overlayTexts: overlays });
+    const viaTool = (callsOf('createExperiment')[0]![0] as any).instructions.copyOverrides;
+    // Both paths must agree exactly, blanks included, or the defect survives on one.
+    expect(viaTool).toEqual((fields.instructions as any).copyOverrides);
+  });
+
   test('an identical edit retry derives the same key (no duplicate drafts)', async () => {
     const args = { mode: 'edit', videoIds: ['vid1'], hook: 'H', overlayTexts: ['B'] };
     await call('create_experiment', args);

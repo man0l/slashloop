@@ -9,8 +9,10 @@ const text = z.string().trim().max(2000);
 export const VARIABLE_FIELDS = ['hook', 'character', 'visualStyle', 'caption', 'cta', 'concept', 'slides'] as const;
 const constraints = z.union([z.array(text.min(1)).max(20), text]).transform(v => typeof v === 'string' ? (v ? [v] : []) : v);
 /** Explicit per-slide copy override (SLA-430 D3, SLA-431 request carrier). Keys are
- *  0-based slide indices; property presence decides — `""` clears the overlay, an
- *  omitted index preserves the resolved source copy. Optional so instructions and
+ *  0-based slide indices; property presence decides — `""` clears the overlay and
+ *  an omitted index is NOT a blank, it leaves that slide's copy unresolved so the
+ *  value that would otherwise apply (resolved source copy, or the brief's own
+ *  copy on a hook-varying experiment) stands. Optional so instructions and
  *  briefs stored before it keep working. */
 export const CopyOverrides = z.record(z.string().regex(/^\d+$/), z.string().max(2000));
 export const Instructions = z.object({
@@ -25,11 +27,24 @@ export const Instructions = z.object({
   // SLA-431: the exact per-slide copy the user asked for, carried as structured
   // values instead of quoted prose in `direction`. This is what survives
   // normalization into the brief and the render request; prose alone does not.
+  // It pins exact values, so it cannot be combined with a mode that deliberately
+  // lets the model retell that same copy (see the superRefine guard below).
   copyOverrides: CopyOverrides.optional(),
 }).strict().superRefine((v, ctx) => {
   if (new Set(v.variables).size !== v.variables.length) ctx.addIssue({ code: 'custom', message: 'Duplicate variables' });
   if (v.mode === 'controlled' && v.variables.some(x => x === 'concept' || x === 'slides')) {
     ctx.addIssue({ code: 'custom', message: 'Controlled variables: hook, character, visualStyle, caption, cta. Concept/slides require exploration.' });
+  }
+  if (v.copyOverrides && Object.keys(v.copyOverrides).length) {
+    // Exact overrides and a supporting-copy retell are contradictory contracts:
+    // one says "these words are the answer", the other "the model may rewrite
+    // them". Refuse instead of silently letting one defeat the other.
+    if (v.varySupportingOverlays) {
+      ctx.addIssue({ code: 'custom', message: 'copyOverrides pins exact per-slide copy and cannot be combined with varySupportingOverlays, which authorizes the model to retell supporting copy.' });
+    }
+    if (v.variables.some(x => x === 'concept' || x === 'slides')) {
+      ctx.addIssue({ code: 'custom', message: 'copyOverrides pins exact per-slide copy and cannot be combined with the concept or slides variable, whose own axis is retelling that copy.' });
+    }
   }
 });
 export const BriefSlide = z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text.default('') });

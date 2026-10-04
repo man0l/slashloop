@@ -7,8 +7,13 @@
 import { expect, test } from 'bun:test';
 import type { Video } from '@prisma/client';
 import { pinCopyOverrides, prepare } from './providers.js';
-import { validateVariants, type Experiment, type Input, type Proposal, type Task } from './schema.js';
-import type { SlideContract } from './render-prompt.js';
+import { Instructions, validateVariants, type Experiment, type Input, type Proposal, type Task } from './schema.js';
+import { persistedOverlayText, type SlideContract } from './render-prompt.js';
+
+/** The same dedupe key the plan flow uses after pinning. */
+const fingerprintOf = (p: Proposal) => JSON.stringify([
+  p.brief.hook, p.brief.concept, p.brief.character, p.brief.visualStyle, p.brief.caption, p.brief.cta, p.brief.slides,
+]).toLowerCase();
 
 /** Source decks whose slides 2-3 say something the request does NOT ask for. */
 const SOURCE_COPY = ['Old hook', 'Old support', 'Old payoff'];
@@ -32,7 +37,7 @@ const experiment = (copyOverrides?: Record<string, string>) => ({
     goal: 'g', brand: '', audience: '', language: 'English', direction: 'prose', lockedConstraints: [],
     variables: ['hook'], mode: 'controlled', ...(copyOverrides ? { copyOverrides } : {}),
   },
-}) as unknown as Pick<Experiment, 'instructions'>;
+}) as unknown as Pick<Experiment, 'instructions' | 'slideCount'>;
 
 test('the requested support and blanks reach the effective brief of every variant', () => {
   // The fan-out retold supporting copy in the alternate variant; the pin must
@@ -86,9 +91,17 @@ test('a blank slide 1 is carried by the override, never by a falsy hook fallback
   expect(pinned!.brief.hook.length).toBeGreaterThan(0);
 });
 
-test('an out-of-range or non-numeric override index fails before any provider call', () => {
+test('a non-numeric or out-of-range override index fails before any provider call', () => {
+  // F3: key format alone is not enough. An index beyond the effective slide
+  // count would be silently inert in the render path, dropping requested copy.
   expect(() => pinCopyOverrides([proposal('h', 's', 'p')], experiment({ slides: 'x' as never })))
-    .toThrow(/invalid_slide_mapping|not a slide index/);
+    .toThrow(/is not a slide index/);
+  expect(() => pinCopyOverrides([proposal('h', 's', 'p')], experiment({ '9': 'x' })))
+    .toThrow(/outside this experiment's 3 slides/);
+  expect(() => pinCopyOverrides([proposal('h', 's', 'p')], experiment({ '3': 'x' })))
+    .toThrow(/outside this experiment's 3 slides/);
+  // The last in-range index is fine.
+  expect(() => pinCopyOverrides([proposal('h', 's', 'p')], experiment({ '2': 'x' }))).not.toThrow();
 });
 
 // ---- render request: the value must survive all the way to the model --------
@@ -159,8 +172,80 @@ test('an explicit blank strips the source words instead of letting them back in'
   expect(payoff.prompt).toContain('the only ADDED text rendered in the image is ""');
 });
 
+// ---- the contradictory-combination guard (F4) -----------------------------
+
+test('exact copy overrides refuse to ride along with a supporting-copy retell', () => {
+  // F4: copyOverrides says "these words are the answer". varySupportingOverlays
+  // and the concept/slides variable say "the model may rewrite them". One
+  // silently defeating the other is how the decision became a convention only.
+  const base = {
+    goal: 'g', brand: '', audience: '', language: 'English', direction: '',
+    lockedConstraints: [], variables: ['hook'], mode: 'controlled',
+    copyOverrides: { '0': 'New hook', '1': 'New support' },
+  };
+  expect(Instructions.safeParse(base).success).toBe(true);
+  // The authorized retell and exact overrides are mutually exclusive.
+  const retell = Instructions.safeParse({ ...base, varySupportingOverlays: true });
+  expect(retell.success).toBe(false);
+  expect(String(retell.error?.issues[0]?.message)).toMatch(/varySupportingOverlays/);
+  for (const variable of ['concept', 'slides']) {
+    const structural = Instructions.safeParse({ ...base, mode: 'exploration', variables: [variable] });
+    expect(structural.success).toBe(false);
+    expect(String(structural.error?.issues[0]?.message)).toMatch(new RegExp(variable));
+  }
+  // An absent/empty override set keeps every existing caller working.
+  expect(Instructions.safeParse({ ...base, copyOverrides: undefined }).success).toBe(true);
+  expect(Instructions.safeParse({ ...base, copyOverrides: {}, varySupportingOverlays: true }).success).toBe(true);
+  expect(Instructions.safeParse({ ...base, copyOverrides: undefined, varySupportingOverlays: true }).success).toBe(true);
+});
+
+// ---- post-pin collapse (F2) and the stored record (N5) ---------------------
+
+test('a variant that collapses onto the baseline after pinning is dropped, not fatal', () => {
+  // F2: the exact hook is quoted in the direction and both planner prompts, so a
+  // model that honours the request for its "new hook" produces the requested
+  // hook as the ALTERNATE too. Pinning then makes both decks identical. That is
+  // a degenerate A/B, not a reason to 422 and burn the analysis/planning credits.
+  const e = experiment({ '0': 'Requested hook', '1': 'New support', '2': '' });
+  const baseline = proposal('Board hook', SOURCE_COPY[1]!, SOURCE_COPY[2]!);
+  const collapsed = proposal('Requested hook', 'A retold angle nobody asked for', 'A retold payoff');
+  collapsed.changedVariables = [{ name: 'hook', value: 'Requested hook' }];
+  collapsed.brief.slides[0]!.overlayText = 'Board hook';
+
+  const pinned = pinCopyOverrides([baseline, collapsed], e);
+  // Every field the dedupe key reads is now identical: the brief copy matches,
+  // and only the per-variant hook field differs — which the pin equalised.
+  expect(pinned[1]!.brief.slides).toEqual(pinned[0]!.brief.slides);
+  expect(pinned[1]!.brief.hook).toBe(pinned[0]!.brief.hook);
+  expect(fingerprintOf(pinned[1]!)).toBe(fingerprintOf(pinned[0]!));
+  // Validation used to throw unapproved_variable here, failing the whole run.
+  expect(() => validateVariants(e as Experiment, pinned)).toThrow(/unapproved_variable|not_one_variable/);
+  // The plan flow drops the duplicate instead, and a single variant is a
+  // degraded success that validateVariants accepts.
+  const baseFp = fingerprintOf(pinned[0]!);
+  const kept = pinned.filter((p, i) => i === 0 || fingerprintOf(p) !== baseFp);
+  expect(kept).toHaveLength(1);
+  expect(validateVariants(e as Experiment, kept)).toBeUndefined();
+});
+
+test('the stored slide record reports the requested copy, including a blank slide 1', () => {
+  // N5: the frame is blank, so the record and the site's image alt text must not
+  // claim the generated hook. Brief.hook cannot be blank (min 1), so index 0
+  // cannot fall back to it.
+  const [pinned] = pinCopyOverrides([proposal('Generated board hook', 'Old support', 'Old payoff')], experiment({ '0': '', '1': 'New support' }))!;
+  const brief = pinned!.brief;
+  expect(brief.hook).toBe('Generated board hook');
+  expect(persistedOverlayText(brief, 0)).toBe('');
+  expect(persistedOverlayText(brief, 1)).toBe('New support');
+  // An omitted index keeps the record's own value rather than inventing one.
+  expect(persistedOverlayText(brief, 2)).toBe('Old payoff');
+  // Without an override the helper is exactly the old behaviour.
+  const plain = proposal('H', 'S', 'P').brief;
+  expect(persistedOverlayText(plain, 0)).toBe('H');
+  expect(persistedOverlayText(plain, 1)).toBe('S');
+});
+
 test('supporting copy that was never requested keeps its resolved source value', async () => {
-  // Only slide 2 is overridden, so slide 3 must keep its source-derived copy.
   const { e, videos } = sourceReferenced({ '0': 'New hook', '1': 'New support' });
   const payoff = await render(e, videos, 2);
   // No override for this slide, so the value is the resolved source copy — the
