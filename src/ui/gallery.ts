@@ -818,8 +818,16 @@ ${cards.length ? toolbarHtml(filters) : ''}
         // The exact requested copy also travels as structured values. The prose
         // above is only the planner's hint; without these the requested words
         // reach the renderer as whatever the model felt like writing.
+        // The form still offers a box for every SOURCE slide — the user must be
+        // able to blank a CTA slide the experiment may drop — but the emission
+        // is bounded by the clamped slideCount this payload declares, so a long
+        // deck (TikTok runs to 35 photos) cannot emit more keys than the
+        // experiment can hold and be refused at create time. The server-side
+        // clamp still covers whatever the derived count drops below this one,
+        // and reports it as a notice.
         var copyOverrides = { '0': hook };
-        overlays.forEach(function (t, k) { copyOverrides[String(k + 1)] = t; });
+        var emit = Math.min(overlays.length, Math.max(0, slideCount - 1));
+        overlays.slice(0, emit).forEach(function (t, k) { copyOverrides[String(k + 1)] = t; });
         return {
           videoIds: selected.slice(0, 1),
           surveyMode: 'edit',

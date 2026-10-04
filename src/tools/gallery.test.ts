@@ -171,8 +171,14 @@ describe('edit-mode payload emission (source guards)', () => {
   test('the edit payload carries structured copyOverrides next to the prose', () => {
     // Exact values keyed by 0-based slide index, including explicit blanks.
     expect(source).toContain("var copyOverrides = { '0': hook };");
-    expect(source).toContain("copyOverrides[String(k + 1)] = t;");
+    expect(source).toContain('copyOverrides[String(k + 1)] = t;');
     expect(source).toContain('copyOverrides: copyOverrides,');
+    // The emission is bounded by the clamped slideCount. A long deck shows a box
+    // for every source slide, but emitting a key per box would exceed the
+    // per-slide cap and be refused at create time — a 9+ slide deck could not be
+    // edited through the wizard at all.
+    expect(source).toContain('var emit = Math.min(overlays.length, Math.max(0, slideCount - 1));');
+    expect(source).toContain('overlays.slice(0, emit).forEach(');
   });
 
   test('the host/chat payload is a real edit call, not a prose-only create', () => {

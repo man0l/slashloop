@@ -331,6 +331,32 @@ describe('create_experiment', () => {
     expect(viaTool).toEqual((fields.instructions as any).copyOverrides);
   });
 
+  test('a long deck never emits more per-slide overrides than the experiment can hold', () => {
+    // The wizard shows an overlay box for every SOURCE slide (TikTok decks reach
+    // 35 photos) while the payload's slideCount is clamped to 3..8. Emitting a key
+    // per box would exceed the per-slide cap and be refused at create time, so a
+    // 9+ slide deck could not be edited through the product's own wizard at all.
+    // The emission bound itself is pinned by a source guard in gallery.test.ts.
+    for (const sourceSlides of [9, 12, 35]) {
+      const slideCount = Math.min(8, Math.max(3, sourceSlides));
+      const overlays = Array.from({ length: sourceSlides - 1 }, (_, i) => 'copy ' + (i + 2));
+      // What buildPayload emits: hook + at most slideCount-1 supporting keys.
+      const emitted = Object.fromEntries([['0', 'New hook'],
+        ...overlays.slice(0, Math.max(0, slideCount - 1)).map((t, k) => [String(k + 1), t])]);
+      expect(Object.keys(emitted).length).toBe(slideCount);
+      const body = {
+        workspaceId: 'w1', idempotencyKey: 'gallery:abc123', videoIds: ['vid1'],
+        instructions: {
+          goal: EDIT_GOAL, brand: '', audience: '', language: 'English', direction: 'prose',
+          lockedConstraints: [], variables: ['hook'], mode: 'controlled', copyOverrides: emitted,
+        },
+        variantCount: EDIT_VARIANT_COUNT, slideCount, maxCredits: EDIT_MAX_CREDITS,
+      };
+      const parsed = Create.safeParse(body);
+      expect(parsed.success).toBe(true);
+    }
+  });
+
   test('an identical edit retry derives the same key (no duplicate drafts)', async () => {
     const args = { mode: 'edit', videoIds: ['vid1'], hook: 'H', overlayTexts: ['B'] };
     await call('create_experiment', args);
