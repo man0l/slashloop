@@ -54,6 +54,15 @@ describe('formatMessage', () => {
     // "50% done" has no %<directive>, so the trailing arg is just appended.
     expect(formatMessage(['50% done', 5])).toBe('50% done 5');
   });
+
+  // Regression for the tail-loop hang: a `%%` (or a string with fewer
+  // specifiers than extra args) left `argIndex` unincremented in the tail
+  // loop, which appended the same arg forever and OOM'd the process.
+  test('a %% does not consume an arg, and the tail never loops', () => {
+    expect(formatMessage(['[x] 100%% sure', 'y'])).toBe('[x] 100% sure y');
+    expect(formatMessage(['[x] done 100%% (%d)', 5])).toBe('[x] done 100% (5)');
+    expect(formatMessage(['[x] %s', 'a', 'b'])).toBe('[x] a b');
+  });
 });
 
 describe('createLogShipper', () => {

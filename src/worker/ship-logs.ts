@@ -141,7 +141,7 @@ function expandSpecs(spec: string, args: unknown[]): string {
     }
     out += ch;
   }
-  while (argIndex < args.length) out += ` ${formatArg(args[argIndex])}`;
+  while (argIndex < args.length) out += ` ${formatArg(args[argIndex++])}`;
   return out;
 }
 
