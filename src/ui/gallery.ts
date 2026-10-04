@@ -811,6 +811,12 @@ ${cards.length ? toolbarHtml(filters) : ''}
         var overlays = [];
         for (var i = 2; i <= n; i++) overlays.push(str('edit-ov-' + i));
         var hook = str('edit-hook');
+        // Slice ONCE, here, before either carrier is built. The direction field
+        // is a capped field (2000 chars) of the same validated object, so an
+        // unbounded prose makes a long deck uncreatable — the same refusal as an
+        // unbounded key set, one field over. Slicing first keeps the prose and
+        // copyOverrides describing the same slides, so the two carriers agree.
+        overlays = overlays.slice(0, Math.min(overlays.length, Math.max(0, slideCount - 1)));
         var lines = ['Slide 1 (hook): "' + hook + '" (empty clears it too)'];
         overlays.forEach(function (t, k) {
           lines.push('Slide ' + (k + 2) + ': "' + t + '"' + (t ? '' : ' (strip — no text)'));
@@ -826,8 +832,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
         // clamp still covers whatever the derived count drops below this one,
         // and reports it as a notice.
         var copyOverrides = { '0': hook };
-        var emit = Math.min(overlays.length, Math.max(0, slideCount - 1));
-        overlays.slice(0, emit).forEach(function (t, k) { copyOverrides[String(k + 1)] = t; });
+        overlays.forEach(function (t, k) { copyOverrides[String(k + 1)] = t; });
         return {
           videoIds: selected.slice(0, 1),
           surveyMode: 'edit',
@@ -873,6 +878,10 @@ ${cards.length ? toolbarHtml(filters) : ''}
         rows.push(['Goal', p.instructions.goal || '—']);
       } else {
         rows.push(['Direction', p.instructions.direction]);
+        if (p.sourceSlides && p.sourceSlides > p.slideCount) {
+          rows.push(['Not rendered', 'Slides ' + (p.slideCount + 1) + '–' + p.sourceSlides
+            + ' of this deck will not be rendered, so copy typed there is ignored.']);
+        }
       }
       rows.push(['Max credits', String(p.maxCredits)]);
       rows.push(['Cost now', 'Nothing — this creates a draft. Planning and rendering spend credits later.']);
@@ -921,6 +930,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
         var problem = validate();
         if (problem) { err(problem); return; }
         var p = buildPayload();
+        p.sourceSlides = parseInt(document.getElementById('edit-overlays').dataset.slides || '0', 10) || 0;
         document.getElementById('exp-review').innerHTML = reviewHtml(p);
         document.getElementById('exp-host-payload-wrap').hidden = !inHost;
         if (inHost) {
@@ -947,7 +957,12 @@ ${cards.length ? toolbarHtml(filters) : ''}
             delete chatPayload.surveyMode;
           }
           document.getElementById('exp-host-payload').textContent =
-            'Create this slideshow experiment with the create_experiment tool:\n' + JSON.stringify(chatPayload, null, 2);
+            // The separator is written as an escaped backslash-n, not a real
+            // newline: this string lives inside the page's inline script, and a
+            // literal newline inside a single-quoted JS string is a SyntaxError
+            // that stops EVERY handler on the gallery page from registering.
+            // Escaped here, the served JS reads it as the newline it should be.
+            'Create this slideshow experiment with the create_experiment tool:\\n' + JSON.stringify(chatPayload, null, 2);
         }
         setStep(3);
         return;
@@ -976,7 +991,8 @@ ${cards.length ? toolbarHtml(filters) : ''}
       }).then(function (out) {
         btn.disabled = false;
         if (!out.ok) {
-          res.textContent = 'Could not create: ' + ((out.body && out.body.error) || 'request failed');
+          res.textContent = 'Could not create: ' + ((out.body && out.body.error) || 'request failed')
+            + ((out.body && out.body.message) ? ' — ' + out.body.message : '');
           return;
         }
         var e = out.body.experiment || {};

@@ -165,6 +165,22 @@ describe('renderGallery media wiring', () => {
 // fail if the emission sites are deleted or renamed. Without them the F1 defect
 // (prose-only copy, so the pin never engages on the product's own path) can
 // return unnoticed while every behavioural test still passes.
+// The inline script is emitted through a TypeScript template literal, so a
+// source-level look at gallery.ts is not what the browser receives. Template
+// escapes are resolved before serving: a real newline written inside a
+// single-quoted JS string survives into the served script as a SyntaxError and
+// stops EVERY handler on the page from registering, leaving the gallery inert
+// while the TypeScript still compiles and every source guard still passes.
+// So parse the SERVED script, not the source.
+describe('served page script parses', () => {
+  test('the inline script the browser receives is syntactically valid', () => {
+    const html = renderGallery([fakeCard({ isSlideshow: true, experimentEligible: true })], undefined, {});
+    const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
+    expect(script).toBeTruthy();
+    expect(() => new Function(script!)).not.toThrow();
+  });
+});
+
 describe('edit-mode payload emission (source guards)', () => {
   const source = readFileSync(new URL('../ui/gallery.ts', import.meta.url), 'utf8');
 
@@ -173,12 +189,18 @@ describe('edit-mode payload emission (source guards)', () => {
     expect(source).toContain("var copyOverrides = { '0': hook };");
     expect(source).toContain('copyOverrides[String(k + 1)] = t;');
     expect(source).toContain('copyOverrides: copyOverrides,');
-    // The emission is bounded by the clamped slideCount. A long deck shows a box
-    // for every source slide, but emitting a key per box would exceed the
-    // per-slide cap and be refused at create time — a 9+ slide deck could not be
-    // edited through the wizard at all.
-    expect(source).toContain('var emit = Math.min(overlays.length, Math.max(0, slideCount - 1));');
-    expect(source).toContain('overlays.slice(0, emit).forEach(');
+    // Bounded by the clamped slideCount, ONCE, before either carrier is built.
+    // A long deck still shows a box per source slide, but a key per box — or a
+    // prose line per box — would exceed a cap and be refused at create time.
+    expect(source).toContain('overlays = overlays.slice(0, Math.min(overlays.length, Math.max(0, slideCount - 1)));');
+    // The slice must come BEFORE the prose lines are built, or direction stays
+    // unbounded and a 10-slide deck fails on the 2000-char field instead.
+    const slice = source.indexOf('overlays = overlays.slice(0,');
+    const lines = source.indexOf('var lines = [\'Slide 1 (hook)');
+    const keys = source.indexOf('copyOverrides[String(k + 1)] = t;');
+    expect(slice).toBeGreaterThan(-1);
+    expect(lines).toBeGreaterThan(slice);
+    expect(keys).toBeGreaterThan(slice);
   });
 
   test('the host/chat payload is a real edit call, not a prose-only create', () => {
