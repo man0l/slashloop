@@ -338,3 +338,98 @@ test('a 10-variant experiment degrades to the 9 deliverable proposals instead of
   expect(() => validateVariants(e, [base, ...variants, extra])).not.toThrow();
   expect(() => validateVariants(e, [base, ...variants, extra, { ...extra, title: 'VY', brief: { ...baseBrief, hook: 'Hook Y' } }])).toThrow('variant_count');
 });
+
+// SLA-429: deterministic experiment selection — explicit winner precedence,
+// score ranking with stable ties, explicit deterministic fallbacks, and
+// provenance that matches the effective selection. All mocked, no network.
+function selectionFixture(winnerAnswer: unknown, variantCount = 3) {
+  const locks = ['keep it calm'];
+  const lockedBrief = { ...baseBrief, lockedConstraints: locks };
+  const mk = (i: number) => ({ title: `V${i}`, hypothesis: `why ${i}`, changedVariables: [{ name: 'hook' as const, value: `Hook ${i}` }], brief: { ...lockedBrief, hook: `Hook ${i}` } });
+  const baseline = { title: 'B', hypothesis: 'h', changedVariables: [] as [], brief: { ...lockedBrief } };
+  const candidates = Array.from({ length: 4 }, (_, i) => mk(i + 1));
+  const e = {
+    id: 'e', workspaceId: 'w', status: 'planning', version: 0, createdAt: '', updatedAt: '', creditsCharged: 0, maxCredits: 100,
+    instructions: { goal: 'Go viral', brand: '', audience: '', language: 'English', direction: '', lockedConstraints: locks, variables: ['hook'], mode: 'controlled' },
+    variantCount, slideCount: 3, report: { summary: 'R' }, error: null, generationBasis: 'text-directed', assetPolicy: 'retained',
+    inputs: [{ videoId: 'v', status: 'ready', analysisId: 'a', jobId: null, error: null, coverage: null, evidence: [{ location: 'second:0', observation: 'A cup' }] }],
+    variants: [], commands: {}, allowPartial: false, createFingerprint: 'x', styleFormula: null,
+    tasks: [{ id: 't', kind: 'briefs', status: 'pending', attempts: 0, charged: 0 }],
+  } as unknown as Experiment;
+  const seenStates: unknown[] = [];
+  const deps = {
+    findSources: async () => [] as never[],
+    generateImage: async () => { throw new Error('not used'); },
+    upload: async () => ({ path: 's', sizeBytes: 1 }),
+    describeCandidates: async () => [] as never[],
+    classify: async () => ({ value: 'photograph' }),
+    generateBriefCandidates: async () => ({ baseline, candidates }),
+    jevScores: async (state: unknown) => {
+      seenStates.push(state);
+      if (winnerAnswer instanceof Error) throw winnerAnswer;
+      return { winner: winnerAnswer };
+    },
+  };
+  return { e, deps, seenStates };
+}
+
+test('choice-only C7 wins without any probabilities (was: tied at zero, stable sort picked C0)', async () => {
+  const { e, deps } = selectionFixture({ choice: 'c3', confidence: 0.7 });
+  const prepared = await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never);
+  const { proposals, briefJudge } = await prepared.execute() as { proposals: Proposal[]; briefJudge: { picked: string[]; winner: string | null; fallback: string | null } };
+  expect(proposals[1]!.title).toBe('V4'); // explicit c3 winner honored first
+  expect(briefJudge.picked).toEqual(['V4', 'V1']); // winner, then stable grok order for the tie
+  expect(briefJudge.winner).toBe('c3');
+  expect(briefJudge.fallback).toBeNull();
+});
+
+test('value-only ID is honored as the explicit winner', async () => {
+  const { e, deps } = selectionFixture({ value: 'c2', confidence: 0.6 });
+  const prepared = await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never);
+  const { proposals, briefJudge } = await prepared.execute() as { proposals: Proposal[]; briefJudge: { picked: string[]; winner: string | null } };
+  expect(proposals[1]!.title).toBe('V3');
+  expect(briefJudge.winner).toBe('c2');
+});
+
+test('probability ranking orders the rest; full ties keep grok order', async () => {
+  const { e, deps } = selectionFixture({ choice: 'c1', confidence: 0.9, probabilities: { c0: 0.1, c1: 0.2, c2: 0.8, c3: 0.8 } });
+  const prepared = await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never);
+  const { proposals, briefJudge } = await prepared.execute() as { proposals: Proposal[]; briefJudge: { picked: string[] } };
+  expect(proposals[1]!.title).toBe('V2'); // explicit c1 first despite lower probability
+  expect(briefJudge.picked).toEqual(['V2', 'V3']); // then top probability, stable tie broken by grok order (c2 before c3)
+});
+
+test('invalid ID falls back deterministically with an explicit reason', async () => {
+  const { e, deps } = selectionFixture({ choice: 'c9', confidence: 0.5, probabilities: { c2: 0.9 } });
+  const prepared = await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never);
+  const { proposals, briefJudge } = await prepared.execute() as { proposals: Proposal[]; briefJudge: { picked: string[]; winner: string | null; fallback: string | null } };
+  expect(briefJudge.winner).toBeNull();
+  expect(briefJudge.fallback).toBe('invalid_answer:c9');
+  expect(briefJudge.picked).toEqual(['V3', 'V1']); // score order, stable ties
+  expect(proposals[1]!.title).toBe('V3');
+});
+
+test('checker exception keeps grok order with zero scores and records the reason', async () => {
+  const { e, deps } = selectionFixture(new Error('typesafe_500'));
+  const prepared = await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never);
+  const { proposals, briefJudge } = await prepared.execute() as { proposals: Proposal[]; briefJudge: { picked: string[]; candidates: Array<{ score: number }>; fallback: string | null } };
+  expect(briefJudge.picked).toEqual(['V1', 'V2']);
+  expect(briefJudge.candidates.every(c => c.score === 0)).toBe(true);
+  expect(briefJudge.fallback).toContain('typesafe_500');
+});
+
+test('saved provenance matches the effective selection: winner, state, report presence', async () => {
+  const { e, deps, seenStates } = selectionFixture({ choice: 'c3', confidence: 0.7 });
+  const prepared = await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never);
+  const { proposals, briefJudge } = await prepared.execute() as { proposals: Proposal[]; briefJudge: { winner: string | null; reportPresent: boolean; state: { candidates: Array<{ id: string; overlays: string[]; storyboard: string[]; hypothesis: string }>; locks: string[]; reportPresent: boolean } } };
+  expect(seenStates).toHaveLength(1);
+  expect(JSON.stringify(briefJudge.state)).toBe(JSON.stringify(seenStates[0])); // the actual state used is saved
+  expect(briefJudge.reportPresent).toBe(true); // report context was present (not awaited)
+  expect(briefJudge.state.reportPresent).toBe(true);
+  expect(briefJudge.state.locks).toEqual(['keep it calm']);
+  const c3 = briefJudge.state.candidates.find(c => c.id === 'c3')!;
+  expect(c3.hypothesis).toBe('why 4');
+  expect(c3.overlays).toHaveLength(3);
+  expect(c3.storyboard).toHaveLength(3);
+  expect(proposals[1]!.brief.hook).toBe('Hook 4'); // effective selection agrees with recorded winner c3
+});
