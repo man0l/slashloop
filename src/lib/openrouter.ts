@@ -147,6 +147,38 @@ export function sanitizeRequestId(value: unknown): string | undefined {
   return /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : undefined;
 }
 
+/** A failed call can still be traced: the gateway's own request id travels on
+ *  the thrown error so the caller can quote it. Only the sanitized id is kept —
+ *  never the provider body. */
+interface OpenRouterRequestError extends Error { requestId?: string }
+function withRequestId(err: Error, requestId: string | undefined): Error {
+  if (requestId) (err as OpenRouterRequestError).requestId = requestId;
+  return err;
+}
+/** The sanitized upstream id carried by a thrown failure, if the gateway sent
+ *  one. Absent for a transport failure with no response at all (a timeout or a
+ *  dropped socket), and no id is ever invented. */
+export function requestIdOf(err: unknown): string | undefined {
+  const id = err && typeof err === 'object' ? (err as { requestId?: unknown }).requestId : undefined;
+  return typeof id === 'string' ? id : undefined;
+}
+interface OpenRouterChatBody {
+  id?: string;
+  choices?: Array<{ message?: { content?: string } }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
+  error?: { message?: string; code?: number };
+}
+/** Parse a chat body defensively: a 200 that is not JSON is a failure the
+ *  caller must be able to categorize, not an uncaught `res.json()` throw. */
+function readChatBody(text: string): OpenRouterChatBody | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed && typeof parsed === 'object' ? (parsed as OpenRouterChatBody) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Pull the first JSON object out of raw model text. Reasoning models
  * (qwen3.7, stepfun, glm-4.6v) emit a "Thinking process" preamble even in JSON
@@ -300,24 +332,29 @@ export async function callOpenRouterText(
     }),
   });
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`OpenRouter API error ${res.status}: ${text}`);
-  }
+  // The gateway's id is read before the outcome is judged, so a REFUSED or
+  // malformed call is as traceable as a successful one (SLA-511).
+  const headerId = sanitizeRequestId(res.headers.get('x-request-id'));
 
-  const data = (await res.json()) as {
-    id?: string;
-    choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
-    error?: { message?: string; code?: number };
-  };
+  // The body is read ONCE and judged defensively, so a response that is not
+  // JSON at all fails here — with the gateway's id still attached — instead of
+  // throwing out of `res.json()` with nothing traceable on the error (SLA-511).
+  const bodyText = await res.text();
+  const data = readChatBody(bodyText);
+
+  // A refusal keeps its status in the message (classifyOpenRouterError reads it)
+  // and gains the gateway's id, whether it came from the header or the body.
+  if (!res.ok) {
+    throw withRequestId(new Error(`OpenRouter API error ${res.status}: ${bodyText}`), headerId ?? sanitizeRequestId(data?.id));
+  }
+  if (!data) throw withRequestId(new Error('Failed to parse OpenRouter response as JSON'), headerId);
 
   if (data.error) {
-    throw new Error(`OpenRouter API error ${data.error.code ?? ''}: ${data.error.message ?? ''}`);
+    throw withRequestId(new Error(`OpenRouter API error ${data.error.code ?? ''}: ${data.error.message ?? ''}`), headerId ?? sanitizeRequestId(data.id));
   }
 
   const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error('OpenRouter returned no content');
+  if (!content) throw withRequestId(new Error('OpenRouter returned no content'), headerId ?? sanitizeRequestId(data.id));
 
   let raw = content.trim();
   // Strip markdown fences if present.
@@ -332,10 +369,12 @@ export async function callOpenRouterText(
       inputTokens: data.usage?.prompt_tokens ?? 0,
       outputTokens: data.usage?.completion_tokens ?? 0,
       costUsd: Number(data.usage?.cost ?? 0),
-      requestId: sanitizeRequestId(res.headers.get('x-request-id') ?? data.id),
+      requestId: headerId ?? sanitizeRequestId(data.id),
     };
   } catch {
-    throw new Error('Failed to parse OpenRouter response as JSON');
+    // A body that arrived but did not parse is still a real generation the
+    // gateway logged: keep its id on the failure.
+    throw withRequestId(new Error('Failed to parse OpenRouter response as JSON'), headerId ?? sanitizeRequestId(data.id));
   }
 }
 
