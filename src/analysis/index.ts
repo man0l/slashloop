@@ -30,6 +30,13 @@ import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls, isPhotoPost, sli
 import { classifyGeminiError } from '../lib/gemini-errors.js';
 import { classifyOpenRouterError } from '../lib/openrouter.js';
 import { openRouterVideoEnabled } from '../lib/llm.js';
+import {
+  loadFailureMap as loadFailureMapFrom,
+  recordFailure as recordFailureIn,
+  recordSuccess as recordSuccessIn,
+  MAX_FAILURES_BEFORE_FALLBACK,
+  type FailureCountsColumn,
+} from './failure-map.js';
 
 /**
  * A Gemini Files handle for this video that has not expired yet (Phase 2.2).
@@ -154,82 +161,31 @@ export function planBackendAttempts(
 }
 
 // ---------------------------------------------------------------------------
-// Consecutive failure tracking (DB-backed, per workspace)
+// Consecutive failure tracking — Workspace.failureCountsJson
 //
-// MCP servers spawned by Claude Code / OpenCode are short-lived processes.
-// An in-memory Map would reset on every tool call. We persist counts in
-// Workspace.failureCountsJson as { "<backendId>": { count, lastAt, hard? } }.
-// `hard` marks an account-level failure that cannot fix itself inside the
-// window (an exhausted OpenRouter balance answers 402 forever); today only the
-// OpenRouter balance 402 sets it. It is what parks the backend in the penalty
-// box instead of just counting toward the fallback threshold.
-// Rows written before this flag existed have no `hard` and keep behaving
-// exactly as before.
+// The rules (counts, the one-hour decay, the SLA-460 `hard` penalty box, and
+// the per-backend success clearing) live in ./failure-map.js; this is only the
+// Prisma wiring for the one column they own.
 // ---------------------------------------------------------------------------
 
-const MAX_FAILURES_BEFORE_FALLBACK = 2;
-const FAILURE_TTL_MS = 1000 * 60 * 60; // a "consecutive" failure window — older counts decay
+const failureCounts: FailureCountsColumn = {
+  read: async (workspaceId) => {
+    const ws = await db.workspace.findUnique({ where: { id: workspaceId }, select: { failureCountsJson: true } });
+    return ws?.failureCountsJson ?? null;
+  },
+  write: async (workspaceId, json) => {
+    await db.workspace.update({
+      where: { id: workspaceId },
+      data: { failureCountsJson: json },
+    }).catch(err => console.error('[analysis] Failed to persist failure map:', err));
+  },
+};
 
-interface FailureEntry {
-  count: number;
-  lastAt: number;
-  /** Account-level failure: park the backend now, don't re-call it to confirm. */
-  hard?: true;
-}
-
-type FailureMap = Record<string, FailureEntry>;
-
-async function loadFailureMap(workspaceId: string): Promise<FailureMap> {
-  const ws = await db.workspace.findUnique({ where: { id: workspaceId }, select: { failureCountsJson: true } });
-  if (!ws?.failureCountsJson) return {};
-  try {
-    const parsed = JSON.parse(ws.failureCountsJson);
-    // Decay: drop entries older than FAILURE_TTL_MS so a transient outage
-    // 1h ago doesn't keep us in fallback mode forever.
-    const cutoff = Date.now() - FAILURE_TTL_MS;
-    const out: FailureMap = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      const entry = v as FailureEntry;
-      if (entry.lastAt >= cutoff) out[k] = entry;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-async function saveFailureMap(workspaceId: string, map: FailureMap): Promise<void> {
-  await db.workspace.update({
-    where: { id: workspaceId },
-    data: { failureCountsJson: JSON.stringify(map) },
-  }).catch(err => console.error('[analysis] Failed to persist failure map:', err));
-}
-
-/**
- * `hard` failures jump straight to the penalty-box threshold instead of
- * counting one by one: the same answer will come back, so there is nothing to
- * be gained from spending a second paid call to reach the same count. A later
- * transient failure on the same backend drops the flag, since it means the
- * backend is answering again.
- */
-async function recordFailure(workspaceId: string, backendId: string, hard = false): Promise<number> {
-  const map = await loadFailureMap(workspaceId);
-  const cur = map[backendId]?.count ?? 0;
-  const newCount = hard ? Math.max(cur, MAX_FAILURES_BEFORE_FALLBACK) : cur + 1;
-  map[backendId] = hard
-    ? { count: newCount, lastAt: Date.now(), hard: true }
-    : { count: newCount, lastAt: Date.now() };
-  await saveFailureMap(workspaceId, map);
-  return newCount;
-}
-
-async function recordSuccess(workspaceId: string): Promise<void> {
-  // Clear ALL failure counters — a successful analysis from any backend
-  // means the system is working. We should not keep paid backends
-  // (openrouter-video, gemini-native) in penalty box based on stale
-  // failures from a transient outage or a bug that has since been fixed.
-  await saveFailureMap(workspaceId, {});
-}
+const loadFailureMap = (workspaceId: string) => loadFailureMapFrom(failureCounts, workspaceId);
+const recordFailure = (workspaceId: string, backendId: string, hard = false) =>
+  recordFailureIn(failureCounts, workspaceId, backendId, hard);
+const recordSuccess = (workspaceId: string, backendId: string) =>
+  recordSuccessIn(failureCounts, workspaceId, backendId);
 
 // ---------------------------------------------------------------------------
 // analyzeVideo — main entry point
@@ -387,8 +343,10 @@ export async function analyzeVideo(
         ? getCostCents(backendId, output.model, true)
         : output.costCents;
 
+      // Only this attempt's backend's streak ends. A different backend
+      // answering is not evidence about this one — see recordSuccess.
       if (workspaceId !== 'unknown') {
-        await recordSuccess(workspaceId);
+        await recordSuccess(workspaceId, backendId);
       }
 
       // 6. Store in DB

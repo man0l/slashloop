@@ -321,7 +321,7 @@ evidence → pick from verified suggestions to track. The site's Discover screen
 
 - **Stateless per request:** each `POST /mcp` builds a fresh transport + `McpServer` (`WebStandardStreamableHTTPServerTransport`), scoped by the JWT `sub` via `runWithUser` (AsyncLocalStorage) → `requireWorkspace()`.
 - **Multi-tenant:** every workspace lookup keys off the Supabase user id; JWT scoping isolates users.
-- **Failure tracking is DB-backed** (`Workspace.failureCountsJson`) so the "2 consecutive failures → fallback" rule survives across stateless requests.
+- **Failure tracking is DB-backed** (`Workspace.failureCountsJson`) so the "2 consecutive failures → fallback" rule survives across stateless requests. Entries decay after an hour, and a success clears only the streak of the backend that succeeded — an account-level failure (OpenRouter out of balance) also parks that backend in a penalty box for the rest of the window.
 - **No in-process scheduler:** `run_auto_analyze` is an on-demand tool; for nightly batch use `bun src/scripts/auto_analyze_cron.ts`.
 - **Batch discount:** `run_auto_analyze` passes `batch: true` → `BATCH_COST_ESTIMATES` (50% Gemini Batch API discount). Single `analyze_video` uses interactive rates.
 - **Schema is the contract:** both analyzers emit the same `VideoAnalysisData` Zod schema; unfilled fields are `null` with an `analysisBasis` tag.
