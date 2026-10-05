@@ -312,8 +312,15 @@ describe('create_experiment', () => {
       expect(Boolean(res.isError)).toBe(true);
       expect(callsOf('createExperiment')).toHaveLength(0);
     };
-    await refused({ mode: 'edit', videoIds: ['vid1'], hook: 'C'.repeat(600), overlayTexts: ['D'.repeat(600)] });
-    await refused({ mode: 'edit', videoIds: ['vid1'], hook: 'C'.repeat(200), overlayTexts: ['D'.repeat(201)] });
+    // HOOK-ONLY cases. Both caps are 200 and a case that carries an over-length
+    // overlay still passes if only the overlay cap is reverted, so the two
+    // producers' caps have to be exercised separately or the suite cannot tell
+    // them apart. `hook` is the largest single value in the direction.
+    await refused({ mode: 'edit', videoIds: ['vid1'], hook: 'C'.repeat(600) });
+    await refused({ mode: 'edit', videoIds: ['vid1'], hook: 'C'.repeat(201) });
+    // OVERLAY-ONLY cases, same reason.
+    await refused({ mode: 'edit', videoIds: ['vid1'], hook: 'H', overlayTexts: ['D'.repeat(600)] });
+    await refused({ mode: 'edit', videoIds: ['vid1'], hook: 'H', overlayTexts: ['D'.repeat(201)] });
     // The maximum the tool now accepts still fits the 2000-char direction field,
     // so an accepted edit can never be refused by the schema that stores it.
     const worst = editInstructions('C'.repeat(EDIT_COPY_MAX), Array(7).fill('D'.repeat(EDIT_COPY_MAX)), 'English');
@@ -324,6 +331,22 @@ describe('create_experiment', () => {
     }).success).toBe(true);
     // 200 chars per value is the site's own input maxlength — one bound, two paths.
     expect(EDIT_COPY_MAX).toBe(200);
+  });
+
+  test('the hook parameter documents presence, not emptiness', async () => {
+    // The tool description is the contract an agent actually reads, and it was
+    // the half that was stale: it said an empty hook meant "the change is a
+    // supporting slide's text", while presence is the signal and "" is an
+    // explicit clear of slide 1. Re-wording it back would be invisible otherwise.
+    const client = await connect();
+    const listed = await client.listTools();
+    const schema = listed.tools.find(t => t.name === 'create_experiment')!.inputSchema as {
+      properties?: Record<string, { description?: string }>;
+    };
+    const hook = schema.properties!.hook!.description!;
+    expect(hook).toContain('OMIT this field to leave slide 1 unchanged');
+    expect(hook).toContain('empty string only to strip');
+    expect(hook).not.toContain('May be empty if the change');
   });
 
   test('the gallery wizard payload and the host edit payload reach the same exact copy', async () => {
