@@ -464,8 +464,10 @@ export function resolvedCopyBlock(e:Pick<Experiment,'inputs'>):string{
   if(!rows.length)return '';
   return rows.map((i,n)=>`- carousel ${n+1} (${i.videoId}):\n${[...i.copy!].sort((a,b)=>a.slideIndex-b.slideIndex).map(c=>`  - slide ${c.slideIndex}: overlay ${c.state==='observed_empty'?'is "" (observed blank — render NO added text)':c.state==='unknown'?'is UNKNOWN (no usable extraction — do not invent copy)':`is ${JSON.stringify(c.text)}`}`).join('\n')}`).join('\n');
 }
-/** Normalise a returned check label for matching against the requested list:
- *  whitespace is collapsed and trimmed, casing and punctuation are NOT — a
+/** Canonical key for matching a returned check label against a requested one:
+ *  whitespace is collapsed and trimmed on BOTH sides, and this happens BEFORE
+ *  the 200-character display truncation, so a long label can neither be matched
+ *  by its prefix nor lost to it. Casing and punctuation are NOT normalised: a
  *  check is only the check the contract asked for when its label says so. */
 function qaCheckKey(label:unknown):string|null{
   return typeof label==='string'?label.replace(/\s+/g,' ').trim():null;
@@ -476,9 +478,7 @@ function qaCheckKey(label:unknown):string|null{
  * A composite pass used to mean "the model returned some passing entries", so a
  * response that answered ONE of the fifteen requested checks verified the whole
  * slide. Coverage is now a precondition of a pass: every requested label is
- * answered exactly once, and nothing else is answered at all. Matching happens
- * on RAW labels, before the display truncation, so a long check cannot be
- * matched by its prefix or lost to it.
+ * answered exactly once, and nothing else is answered at all.
  *
  * Returns null when coverage is complete, else a short bounded reason naming the
  * first problem found — which is also what makes the answer `invalid_response`
@@ -486,23 +486,35 @@ function qaCheckKey(label:unknown):string|null{
  */
 export function qaCoverageProblem(rawChecks:unknown,expected:readonly string[]):string|null{
   if(!Array.isArray(rawChecks))return 'qa_response_malformed:checks_not_an_array';
-  const wanted=new Set(expected);
+  // BOTH sides go through the same canonical key. Contract labels quote the
+  // overlay verbatim through JSON.stringify, so a user string with repeated
+  // spaces is a legitimate label: `the on-image overlay matches exactly:
+  // "Take  a break"`. Canonicalising only the returned side would reject an
+  // identical echo of it, which is a bug, not the deliberate strictness this
+  // function exists to enforce. The RAW label is still what gets compared —
+  // this happens before the 200-character display truncation.
+  const wanted=new Map(expected.map(label=>[qaCheckKey(label)??'',label]));
   const seen=new Map<string,number>();
   for(const entry of rawChecks){
     if(!entry||typeof entry!=='object')return 'qa_response_malformed:check_entry_not_an_object';
     const x=entry as {check?:unknown;status?:unknown};
+    const rawLabel=typeof x.check==='string'?x.check:'';
     const label=qaCheckKey(x.check);
     if(!label)return 'qa_response_malformed:check_label_not_a_string';
     // A status outside the vocabulary is a malformed answer, not an `unknown`
     // check: `unknown` means "the image cannot settle this", which is a real
     // verdict the contract defines.
-    if(x.status!=='pass'&&x.status!=='fail'&&x.status!=='unknown')return `qa_response_malformed:status_for_check:${label.slice(0,80)}`;
-    if(!wanted.has(label))return `qa_unexpected_check:${label.slice(0,120)}`;
+    if(x.status!=='pass'&&x.status!=='fail'&&x.status!=='unknown')return `qa_response_malformed:status_for_check:${rawLabel.slice(0,80)}`;
+    // Reported with what the model actually sent, so the operator can see it.
+    if(!wanted.has(label))return `qa_unexpected_check:${rawLabel.slice(0,120)}`;
     seen.set(label,(seen.get(label)??0)+1);
   }
   const duplicate=[...seen].find(([,n])=>n>1);
-  if(duplicate)return `qa_duplicate_check:${duplicate[0].slice(0,120)}`;
-  const missing=expected.filter(label=>!seen.has(label));
+  if(duplicate)return `qa_duplicate_check:${(wanted.get(duplicate[0])??duplicate[0]).slice(0,120)}`;
+  // Missing is judged on the same key: an expected label the model answered
+  // under different spacing is answered, not missing. Two requested labels that
+  // differ only in whitespace are the same check, so one answer covers both.
+  const missing=expected.filter(label=>!seen.has(qaCheckKey(label)??''));
   if(missing.length)return `qa_incomplete_coverage:missing=${missing.length} first=${missing[0]!.slice(0,120)}`;
   return null;
 }
