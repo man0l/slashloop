@@ -378,6 +378,16 @@ export function labelRenderInstruction(policy?: LabelPolicy): string {
   return `Erase ONLY the marks listed for removal (${policy.remove.join(', ')}) and the overlay region you are replacing. Preserve the listed source labels (${keep}) exactly where they are. Never invent a label or logo.`;
 }
 
+/** Appearance qualifiers that appear in saved casting fields and must be part
+ *  of the attribute span. A qualifier left outside the span survives the
+ *  replacement next to the new value, so the scene states both ("a patchy
+ *  patchy beard"). */
+const EXTRA_SPAN_QUALIFIERS = ['patchy', 'buzz', 'buzz-cut', 'buzzcut', 'copper-red', 'copper', 'rust-red', 'rust', 'ginger', 'platinum', 'platinum-blonde', 'sandy', 'receding', 'wavy', 'neat', 'side-parted', 'side-part', 'oval', 'square', 'diamond', 'moon-round', 'moon', 'recessed', 'tousled'];
+/** A compound ending in a colour ("blue-green", "copper-red") qualifies the noun
+ *  it modifies. Left out of the span, it survives the replacement in front of
+ *  the new value ("blue-green ice-blue eyes") — the scene states both. */
+const SPAN_COLOURS = ['black', 'blue', 'green', 'brown', 'blonde', 'blond', 'auburn', 'red', 'ginger', 'grey', 'gray', 'silver', 'white', 'golden', 'gold', 'hazel', 'amber', 'copper', 'rust', 'platinum', 'dark', 'light', 'dirty', 'ash', 'chestnut'];
+const COLOUR_QUALIFIER = new RegExp(`^[a-z]+-(?:${SPAN_COLOURS.join('|')})$`);
 /** Appearance attributes a casting request may unlock. Anything not named here is
  *  carried as a preserved lock — including wardrobe, jewelry, expression, gaze,
  *  background, layout, camera and medium (D4). */
@@ -385,7 +395,7 @@ const APPEARANCE_NOUNS: Record<string, RegExp> = {
   role: /\b(?:men|man|women|woman|boys?|girls?|males?|females?|gentleman|gentlemen|lady|ladies|guy|guys)\b/gi,
   hair: /\b(?:hair|hairstyle)\b/gi,
   eyes: /\b(?:eyes?|eyecolou?rs?)\b/gi,
-  'facial-hair': /\b(?:beards?|mustaches?|moustaches?|stubble|facial\s+hair|goatees?)\b/gi,
+  'facial-hair': /\b(?:beards?|mustaches?|moustaches?|stubble|facial\s+hair|goatees?|clean-?shaven)\b/gi,
   complexion: /\b(?:skin|complexion|freckles?)\b/gi,
   wardrobe: /\b(?:tops?|t-?shirts?|tees?|shirts?|jerseys?|sweaters?|hoodies?|blouses?|dresses?|polos?|tank\s+tops?|uniforms?|kits?|shirtless|topless)\b/gi,
   jewelry: /\b(?:earrings?|necklaces?|bracelets?|hoops?|studs?|pendants?)\b/gi,
@@ -412,6 +422,10 @@ const SPAN_QUALIFIERS = new Set([
   'off-camera', 'on-camera', 'light-blue', 'dark-blue', 'studio', 'background', 'varsity', 'college', 'school', 'club', 'sports',
   'hockey', 'soccer', 'football', 'basketball', 'baseball', 'track', 'jersey', 'cotton', 'denim', 'leather', 'wool', 'knit',
   'ribbed', 'striped', 'checked', 'floral', 'zip', 'hooded', 'long-sleeve', 'short-sleeve', 'button', 'half-sleeve', 'tank',
+  // SLA-510: qualifiers that appear in saved casting fields. Left out of a
+  // span, they survive the replacement next to the new value and the scene
+  // ends up stating both ("a patchy patchy beard").
+  ...EXTRA_SPAN_QUALIFIERS,
 ]);
 
 type Span = { start: number; end: number; text: string };
@@ -419,6 +433,11 @@ const WORD = /[A-Za-z][A-Za-z'-]*/g;
 /** Words that join two noun phrases ("dark hair and brown eyes") must never join
  *  an attribute span, in either direction. */
 const NP_JOINERS = new Set(['and', 'or', 'with', 'in', 'of', 'plus', 'while', 'beside', 'next', 'near', 'against', 'behind']);
+/** A possessive or demonstrative opens the noun phrase, so a span never starts on
+ *  one ("his blue eyes" keeps "his"). Articles are NOT here: they are recorded
+ *  qualifiers today ("A woman", "a black t-shirt") and changing that would move
+ *  every recorded lock value in the QA payload. */
+const SPAN_STARTERS = new Set(['his', 'her', 'their', 'its', 'this', 'that', 'these', 'those']);
 
 /** Literal scene phrases that state one appearance attribute, e.g. "dark hair
  *  pulled back" or "dangling silver earrings". Values are NEVER guessed: an
@@ -433,6 +452,8 @@ export function appearanceSpans(scene: string, attribute: string): Span[] {
   const boundaryBefore=(pos:number)=>{const m=/[,;.]/g;let last=-1;for(const h of scene.slice(0,pos).matchAll(m))last=h.index!;return last+1;};
   const boundaryAfter=(pos:number)=>{const m=/[,;.]/g;const h=m.exec(scene.slice(pos));return h?pos+h.index:scene.length;};
   const out: Span[] = [];
+  // A determiner or possessive opens the noun phrase, so the span never starts on it.
+  const isQualifier = (word: string) => SPAN_QUALIFIERS.has(word) || COLOUR_QUALIFIER.test(word);
   for (const hit of scene.matchAll(noun)) {
     const nounIndex = words.findIndex(w => w.start === hit.index);
     if (nounIndex < 0) continue;
@@ -440,13 +461,13 @@ export function appearanceSpans(scene: string, attribute: string): Span[] {
     let start = words[nounIndex]!.start, left = 0;
     for (let i = nounIndex - 1; i >= 0 && left < 5; i--, left++) {
       const w = words[i]!;
-      if (w.end > start || w.start < floor || NP_JOINERS.has(w.word) || !SPAN_QUALIFIERS.has(w.word)) break;
+      if (w.end > start || w.start < floor || NP_JOINERS.has(w.word) || SPAN_STARTERS.has(w.word) || !isQualifier(w.word)) break;
       start = w.start;
     }
     let end = words[nounIndex]!.end, right = 0;
     for (let i = nounIndex + 1; i < words.length && right < 4; i++, right++) {
       const w = words[i]!;
-      if (w.start < end || w.end > ceiling || NP_JOINERS.has(w.word) || !SPAN_QUALIFIERS.has(w.word)) break;
+      if (w.start < end || w.end > ceiling || NP_JOINERS.has(w.word) || SPAN_STARTERS.has(w.word) || !isQualifier(w.word)) break;
       end = w.end;
     }
     const text = scene.slice(start, end).trim();
@@ -469,6 +490,43 @@ const UNRESOLVED_TARGET_PATTERNS: RegExp[] = [
   /\b(?:similar|peer)\b/i,
   /\b(?:european|nordic|scandinavian|mediterranean|latino|latina|asian|african|arab|middle-eastern|eastern-european)\b/i,
 ];
+/** Words that describe hair without naming it ("buzzed sides", "side-parted").
+ *  A clause built from these is a hair value: without this, "buzzed sides and
+ *  longer top" reduced to the bare garment noun and rewrote a t-shirt. */
+const HAIR_DESCRIPTOR = /\b(?:buzz\w*|buzzcut|crop\w*|undercut|fringes?|bangs?|side-?part\w*|parted|ponytail|updo|afro|braids?|dreadlocks?|locs?)\b/i;
+/** "longer top" in a casting field is hair length, never a garment. Normalised
+ *  before parsing so it cannot be read as the wardrobe attribute. */
+const HAIR_LENGTH_TOP = /\b(longer|shorter|higher|sleeker|fuller)\s+top\b/gi;
+/** "a young man with platinum-blonde buzzed sides": the appearance clause is
+ *  what follows the role, and the role itself stays a lock. */
+const ROLE_THEN_APPEARANCE = /^(.*\b(?:male|female|men|women|man|woman|boy|girl|boys|girls|males|females|gentleman|lady)\b[^,]{0,40}?)\bwith\b\s+(.+)$/i;
+/**
+ * Split a casting request into appearance clauses. A clause of the form
+ * "<role> with <appearance>" contributes only its appearance part: reading the
+ * whole sentence as the ROLE turned a hair instruction into a role lock and
+ * discarded the hair change entirely. The role half is never a clause — the
+ * subject role stays a lock unless something names it as the head noun.
+ */
+export function splitRequestClauses(request: string): string[] {
+  return String(request ?? '')
+    .replace(HAIR_LENGTH_TOP, '$1 hair')
+    .split(/[,;.]|\band\b|&/i)
+    .flatMap(part => {
+      const clause = part.trim().replace(/^[-–—]\s*/, '');
+      if (!clause) return [];
+      const m = ROLE_THEN_APPEARANCE.exec(clause);
+      if (!m) return [clause];
+      const appearance = m[2]!.trim();
+      // Only peel the role off when the remainder really states an appearance.
+      return HAIR_DESCRIPTOR.test(appearance) || [...mentionedAttributes(appearance)].length ? [appearance] : [clause];
+    })
+    .filter(Boolean);
+}
+/** Attributes a preservation clause names. Such a clause exists precisely to say
+ *  an attribute must NOT change, so the name is a lock — never a target. */
+export function mentionedAttributes(text: string): string[] {
+  return APPEARANCE_ATTRIBUTES.filter(a => new RegExp(APPEARANCE_NOUNS[a]!.source, 'i').test(text));
+}
 /** A clause like "Nordic females with long blonde hair" states an attribute phrase,
  *  not a new subject role. Drop the role so the compiled scene reads naturally. */
 const ROLE_PREFIX = /^[^\n]*?\b(?:male|female|men|women|man|woman|boy|girl|boys|girls|males|females|gentleman|lady)\b\s*(?:with|who|whose|that|and|,)?\s*/i;
@@ -479,14 +537,17 @@ export function parseCastingRequest(request: string): { targets: CastingTarget[]
   const seen = new Set<string>();
   // Split into short clauses, then take each clause's HEAD appearance noun.
   // Never unlock an attribute the clause only mentions in passing, and never
-  // copy another slide's subject into this one.
-  for (const raw of text.split(/[,;.]|\band\b|&/i)) {
-    const clause = raw.trim().replace(/^[-–—]\s*/, '');
-    if (!clause) continue;
+  // copy another slide's subject into this one. A preservation clause
+  // ("Unchanged: gaze, backgrounds") names attributes precisely so they are NOT
+  // changed, so it can never unlock one — in a deck-level field or alone.
+  for (const clause of splitRequestClauses(text)) {
+    if (PRESERVATION_CLAUSE.test(clause)) continue;
     const hits: Array<{ attribute: string; at: number }> = [];
     for (const [attribute, noun] of Object.entries(APPEARANCE_NOUNS)) {
       for (const m of clause.matchAll(noun)) hits.push({ attribute, at: m.index });
     }
+    // A hair clause that never says "hair" still is a hair clause.
+    if (!hits.length && HAIR_DESCRIPTOR.test(clause)) hits.push({ attribute: 'hair', at: 0 });
     if (!hits.length) continue;
     hits.sort((a, b) => b.at - a.at);
     const head = hits[0]!;
@@ -515,6 +576,130 @@ export interface SubjectContract {
    *  does not state it, in which case the reference frame is the authority. */
   lockedAttributes: Array<{ attribute: string; observed: string | null }>;
   request: string | null;
+  /** How a DECK-LEVEL character field resolved for THIS slide (SLA-510). Absent
+   *  when the caller supplied a request already scoped to one subject. */
+  resolution?: CastingResolution | null;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Per-slide casting resolution (SLA-510 defect B).
+ *
+ * A saved brief carries ONE `character` field for the whole deck and one `scene`
+ * per slide. For a deck with several subjects that field is a roster
+ * ("Sub 5: … Sub 3: … Chad: …"), and feeding the roster to every slide made each
+ * slide inherit the FIRST subject's attributes — so the slide describing Sub 3
+ * was told "dark hair buzz, no beard" while its own scene said red hair and a
+ * patchy beard. Two instructions, one subject, no way to satisfy both.
+ *
+ * Resolution is per slide and deterministic:
+ *   - preservation clauses ("Unchanged: …", "same …") never unlock anything, and
+ *     an attribute named in one can never also be a casting target;
+ *   - a labelled roster clause applies only to the slide whose scene names that
+ *     label; a slide naming none keeps its own subjects, and a slide matching
+ *     two labels is ambiguous and therefore also keeps them;
+ *   - a single-subject field still applies to every slide, unchanged.
+ *
+ * Nothing here edits saved experiments. It decides what THIS slide's render and
+ * QA records are allowed to say about casting.
+ * ------------------------------------------------------------------------- */
+
+/** Attributes whose value is a short category, never a multi-attribute sentence. */
+const SHORT_CATEGORY_ATTRIBUTES = new Set(['role', 'wardrobe', 'jewelry', 'setting', 'gaze']);
+const MAX_CATEGORY_WORDS = 5;
+
+const PRESERVATION_CLAUSE = /^\s*(?:unchanged|same|keep|preserve|preserved|locked|no change|unmodified|not? changed)\b/i;
+const wordCount = (value: string): number => value.trim().split(/\s+/).filter(Boolean).length;
+const labelPattern = /^([^:]{1,24}):\s*(.+)$/;
+
+/** Clauses that only say what must not move. Never casting targets. */
+function preservationClauses(clauses: readonly { body: string }[]): string[] {
+  return clauses.filter(c => PRESERVATION_CLAUSE.test(c.body)).map(c => c.body);
+}
+
+/**
+ * Split a deck-level character field into labelled clauses.
+ * "Sub 5: buzz cut. Sub 3: red hair, patchy beard. Unchanged: gaze." →
+ * [{label:'Sub 5', body:'buzz cut'}, {label:'Sub 3', body:'red hair, patchy beard'}, {label:'Unchanged', body:'gaze'}]
+ */
+export function splitCastingClauses(field: string): Array<{ label: string | null; body: string }> {
+  return String(field ?? '')
+    .split(/(?<=\.)\s+/)
+    .flatMap(sentence => sentence.split(/(?<=;)\s*/))
+    // A preservation list opens with "<keyword>:"; everything from there to the
+    // end of the field is preservation, whatever punctuation separates its items.
+    .flatMap(sentence => sentence.split(/,(?=\s*(?:unchanged|unmodified|preserve|preserved)\s*:)/i))
+    .map(part => part.trim())
+    .filter(Boolean)
+    .map(part => {
+      const m = labelPattern.exec(part);
+      return m && !PRESERVATION_CLAUSE.test(part)
+        ? { label: String(m[1]).trim(), body: String(m[2]).trim() }
+        : { label: null, body: part };
+    })
+    .filter(c => c.body.length > 0);
+}
+
+const namedIn = (text: string, label: string): boolean =>
+  new RegExp(`(?:^|[^\\p{L}\\p{N}])${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'iu').test(text);
+
+export interface CastingResolution {
+  /** The clause text that applies to this slide's subject, or null when no
+   *  clause applies (a roster whose labels this slide's scene never names). */
+  request: string | null;
+  /** Roster label this slide resolved to, or null for a single-subject field. */
+  subject: string | null;
+  /** Attribute targets for this slide only. */
+  targets: CastingTarget[];
+  /** Scale/celebrity/nationality prose naming no visible attribute, when the
+   *  selected clause states one. Preparation stops on it (D5). */
+  unresolved: string | null;
+  /** Clauses deliberately NOT applied to this slide, each with its reason. */
+  skipped: Array<{ clause: string; reason: CastingSkipReason }>;
+}
+export type CastingSkipReason = 'not_this_slide' | 'preservation' | 'attribute_preserved' | 'descriptive_clause' | 'ambiguous_subject';
+
+/** Resolve a deck-level character field against one slide's scene. */
+export function resolveSlideCasting(scene: string, field: string): CastingResolution {
+  const clauses = splitCastingClauses(field);
+  const preserved = preservationClauses(clauses);
+  const preservedAttributes = new Set(preserved.flatMap(mentionedAttributes));
+  const casting = clauses.filter(c => !PRESERVATION_CLAUSE.test(c.body));
+  const labelled = casting.filter(c => c.label);
+  const skipped: CastingResolution['skipped'] = [
+    ...preserved.map(clause => ({ clause, reason: 'preservation' as const })),
+  ];
+  let selected: Array<{ label: string | null; body: string }> = casting.filter(c => !c.label);
+  let subject: string | null = null;
+  if (labelled.length) {
+    const matched = labelled.filter(c => namedIn(scene, c.label!));
+    if (matched.length === 1) {
+      selected = matched;
+      subject = matched[0]!.label;
+      // Every other labelled subject is explicitly out of scope for this slide.
+      for (const c of labelled) if (c !== matched[0]) skipped.push({ clause: c.body, reason: 'not_this_slide' });
+    } else {
+      for (const c of casting) skipped.push({ clause: c.body, reason: matched.length ? 'ambiguous_subject' : 'not_this_slide' });
+      selected = [];
+    }
+  }
+  const request = selected.map(c => c.body).join('; ') || null;
+  const parsed = parseCastingRequest(request ?? '');
+  const targets: CastingTarget[] = [];
+  for (const target of parsed.targets) {
+    if (preservedAttributes.has(target.attribute)) {
+      skipped.push({ clause: target.value, reason: 'attribute_preserved' });
+      continue;
+    }
+    // A long clause value is a sentence spanning several attributes, not one
+    // category. Applying it as a single attribute silently deleted the source's
+    // wording for a DIFFERENT attribute (a hair phrase rewriting a wardrobe).
+    if (SHORT_CATEGORY_ATTRIBUTES.has(target.attribute) && wordCount(target.value) > MAX_CATEGORY_WORDS) {
+      skipped.push({ clause: target.value, reason: 'descriptive_clause' });
+      continue;
+    }
+    targets.push(target);
+  }
+  return { request: targets.length ? request : null, subject, targets, unresolved: parsed.unresolved, skipped };
 }
 
 /** Apply a compiled casting target to the source scene prose. The source's own
@@ -585,6 +770,9 @@ export function compileSlideContract(opts: {
   slideIndex: number; role: string; medium: string; scene: string;
   overlay: OverlayDecision; observedCopy: ObservedCopy | null;
   castingRequest?: string | null; identityLocked?: boolean;
+  /** SLA-510: the DECK-level character field, resolved per slide. When given,
+   *  it is the authority for this slide's casting and `castingRequest` is ignored. */
+  deckCasting?: string | null;
   sourceMap: SlideContract['sourceMap']; sceneLocks?: readonly string[];
   labels?: LabelPolicy; included?: boolean; dispositionReason?: string;
 }): SlideContract {
@@ -597,7 +785,26 @@ export function compileSlideContract(opts: {
   });
   let subject: SubjectContract;
   let compiledScene = opts.scene;
-  if (identityLocked === false && castingRequest && castingRequest.trim()) {
+  if (identityLocked === false && opts.deckCasting && opts.deckCasting.trim()) {
+    // SLA-510: resolve the roster against THIS slide before compiling anything.
+    // A slide whose subject the roster never names keeps its own scene casting —
+    // the alternative was another subject's attributes arriving as instructions
+    // for this subject.
+    const resolution = resolveSlideCasting(opts.scene, opts.deckCasting);
+    if (resolution.unresolved) contractError('unresolved_casting_target', `Casting target "${resolution.unresolved}" states no concrete visible attribute; supply them or an approved reference.`);
+    if (resolution.targets.length) {
+      const compiled = compileCasting(opts.scene, resolution.targets);
+      subject = { ...compiled.subject, slotId, resolution };
+      compiledScene = compiled.effectiveScene;
+    } else if (resolution.request) {
+      // The roster names this slide's subject but states no visible attribute for
+      // it: keep the deck prose for this subject and lock every attribute to the
+      // reference frame rather than guessing one from another subject's clause.
+      subject = { ...preserveSubject(), identityMode: 'replace', request: resolution.request, resolution };
+    } else {
+      subject = { ...preserveSubject(), resolution };
+    }
+  } else if (identityLocked === false && castingRequest && castingRequest.trim()) {
     const parsed = parseCastingRequest(castingRequest);
     if (parsed.unresolved) contractError('unresolved_casting_target', `Casting target "${parsed.unresolved}" states no concrete visible attribute; supply them or an approved reference.`);
     if (parsed.targets.length) {
@@ -676,6 +883,13 @@ export function contractPromptLines(c: SlideContract): string[] {
   const target = Object.entries(c.subject.castingTarget);
   if (target.length) {
     lines.push(`CASTING TARGET (this slide's subject only — replaces the source subject's identity): ${target.map(([a, v]) => `${a} = ${v}`).join('; ')}. Every other attribute of this slide's subject stays exactly as the attached reference and this slide's PRESERVE list show. Never require the source's own ${target.map(([a]) => a).join('/')} wording at the same time — it is superseded.`);
+  }
+  // SLA-510: when a deck-level roster named OTHER subjects, say so explicitly.
+  // The renderer is looking at one slide's scene; without this line it reads an
+  // unrelated subject's absence as permission to invent a replacement.
+  const otherSubjects = (c.subject.resolution?.skipped ?? []).filter(s => s.reason === 'not_this_slide');
+  if (otherSubjects.length) {
+    lines.push(`CASTING SCOPE (this slide only): the deck's character field describes other subjects (${otherSubjects.map(s => s.clause).join(' | ')}). None of them is this slide's subject, so do NOT apply them here, do not add a face this slide's scene does not describe, and keep this slide's own subjects exactly as the scene and PRESERVE list state.`);
   }
   if (c.subject.lockedAttributes.length) {
     lines.push(`PRESERVE (this slide's subject, unchanged from the attached reference): ${c.subject.lockedAttributes.map(l => l.observed ? `${l.attribute} ("${l.observed}")` : l.attribute).join('; ')}.`);

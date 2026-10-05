@@ -433,3 +433,98 @@ test('saved provenance matches the effective selection: winner, state, report pr
   expect(c3.storyboard).toHaveLength(3);
   expect(proposals[1]!.brief.hook).toBe('Hook 4'); // effective selection agrees with recorded winner c3
 });
+
+// SLA-510 defect A: the evidence contract the briefs-stage judge is handed.
+// Fixtures are offline and mocked — no provider, no network, no credits.
+type JudgeState = {
+  original_pattern: string; reportPresent: boolean; original_shots: string[];
+  original_evidence: { expectedSlides: number; observedSlides: number; missingSlides: number[]; complete: boolean; notes: string[]; sufficient: boolean; report: { status: string }; sources: Array<{ source: string; slides: Array<{ location: string }> }> };
+  candidates: Array<{ id: string; storyboard: string[]; storyboardTruncated: boolean }>;
+};
+
+function evidenceFixture(opts: { report: { summary: string } | null; slides: number }) {
+  const brief = { ...baseBrief, slides: Array.from({ length: opts.slides }, (_, i) => ({ role: 's', scene: `scene ${i + 1}`, overlayText: `copy ${i + 1}` })) };
+  const e = {
+    id: 'e', workspaceId: 'w', status: 'planning', version: 0, createdAt: '', updatedAt: '', creditsCharged: 0, maxCredits: 100,
+    instructions: { goal: 'Go viral', brand: '', audience: 'looksmaxxers', language: 'English', direction: '', lockedConstraints: [], variables: ['hook'], mode: 'controlled' },
+    variantCount: 3, slideCount: opts.slides, report: opts.report, error: null, generationBasis: 'text-directed', assetPolicy: 'retained',
+    inputs: [{ videoId: 'v', status: 'ready', analysisId: 'a', jobId: null, error: null, coverage: null,
+      evidence: Array.from({ length: opts.slides }, (_, i) => ({ location: `slide:${i + 1}`, observation: `source slide ${i + 1}` })) }],
+    variants: [], commands: {}, allowPartial: false, createFingerprint: 'x', styleFormula: null,
+    tasks: [{ id: 't', kind: 'briefs', status: 'pending', attempts: 0, charged: 0 }],
+  } as unknown as Experiment;
+  const calls: Array<{ state: unknown; instructions: string }> = [];
+  const deps = {
+    findSources: async () => [] as never[],
+    generateImage: async () => { throw new Error('not used'); },
+    upload: async () => ({ path: 's', sizeBytes: 1 }),
+    describeCandidates: async () => [] as never[],
+    classify: async () => ({ value: 'photograph' }),
+    generateBriefCandidates: async () => ({
+      baseline: { title: 'B', hypothesis: 'h', changedVariables: [] as [], brief: { ...brief } },
+      candidates: Array.from({ length: 4 }, (_, i) => ({ title: `V${i}`, hypothesis: `why ${i}`, changedVariables: [{ name: 'hook' as const, value: `Hook ${i}` }], brief: { ...brief, hook: `Hook ${i}` } })),
+    }),
+    jevScores: async (state: unknown, questions: { winner: { instructions: string } }) => {
+      calls.push({ state, instructions: questions.winner.instructions });
+      return { winner: { choice: 'c0', confidence: 0.5, probabilities: { c0: 0.4 } } };
+    },
+  };
+  return { e, deps, calls };
+}
+
+test('every source slide reaches the judge, with later slides included', async () => {
+  const { e, deps, calls } = evidenceFixture({ report: null, slides: 7 });
+  await (await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never)).execute();
+  const state = calls[0]!.state as JudgeState;
+  // The old state described two slides of seven and said nothing about the rest.
+  expect(state.original_evidence.sources[0]!.slides.map(s => s.location)).toHaveLength(7);
+  expect(state.original_shots).toHaveLength(7);
+  expect(state.original_evidence.expectedSlides).toBe(7);
+  expect(state.original_evidence.missingSlides).toEqual([]);
+  expect(state.original_evidence.complete).toBe(true);
+});
+
+test('an absent report is explicit absence and the judge is still asked', async () => {
+  const { e, deps, calls } = evidenceFixture({ report: null, slides: 3 });
+  const { briefJudge } = await (await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never)).execute() as { briefJudge: { reportPresent: boolean; fallback: string | null; state: JudgeState } };
+  expect(calls).toHaveLength(1); // source slides exist, so the question is answerable
+  expect(briefJudge.reportPresent).toBe(false);
+  expect(briefJudge.fallback).toBeNull(); // a real answer, not an evidence fallback
+  expect(briefJudge.state.original_pattern).toBe('');
+  expect(briefJudge.state.original_evidence.notes.join(' ')).toContain('independently');
+  expect(calls[0]!.instructions).toContain('original_evidence.notes');
+});
+
+test('a present report contributes its summary to the same state', async () => {
+  const { e, deps, calls } = evidenceFixture({ report: { summary: 'hooks are negative questions' }, slides: 3 });
+  await (await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never)).execute();
+  const state = calls[0]!.state as JudgeState;
+  expect(state.reportPresent).toBe(true);
+  expect(state.original_pattern).toBe('hooks are negative questions');
+  expect(state.original_evidence.report.status).toBe('present');
+});
+
+test('with no evidence at all the judge is not called and the reason is recorded', async () => {
+  const { e, deps, calls } = evidenceFixture({ report: null, slides: 0 });
+  e.inputs = [];
+  const { proposals, briefJudge } = await (await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never)).execute() as { proposals: Proposal[]; briefJudge: { picked: string[]; candidates: Array<{ score: number }>; winner: string | null; fallback: string } };
+  expect(calls).toHaveLength(0); // no confident ranking about an absent original
+  expect(briefJudge.winner).toBeNull();
+  expect(briefJudge.fallback).toContain('insufficient_evidence');
+  expect(briefJudge.candidates.every(c => c.score === 0)).toBe(true);
+  expect(briefJudge.picked).toEqual(['V0', 'V1']); // generated order, deterministic
+  expect(proposals).toHaveLength(3);
+});
+
+test('every candidate slide reaches the judge, flagged when a scene was truncated', async () => {
+  const { e, deps, calls } = evidenceFixture({ report: { summary: 'S' }, slides: 7 });
+  await (await prepare(e, { id: 't', kind: 'briefs' } as Task, deps as never)).execute();
+  const state = calls[0]!.state as JudgeState;
+  for (const candidate of state.candidates) {
+    expect(candidate.storyboard).toHaveLength(7);
+    // Every slide is described, including the last; the fixture's identity lock
+    // wraps each later beat, which is exactly why a per-slide list is needed.
+    expect(candidate.storyboard[6]).toContain('scene 7');
+    expect(candidate.storyboardTruncated).toBe(false);
+  }
+});
