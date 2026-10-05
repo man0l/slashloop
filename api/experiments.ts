@@ -4,7 +4,7 @@ import { requireWorkspaceAccess, jsonResponse } from '../src/lib/authz.js';
 import { corsPreflight } from '../src/lib/cors.js';
 import { InsufficientCreditsError } from '../src/lib/credits.js';
 import { ExperimentError, Id, Estimate } from '../src/experiments/schema.js';
-import { createExperiment, estimate, mutate } from '../src/experiments/service.js';
+import { createExactEdit, createExperiment, estimate, isExactEditRequest, mutate } from '../src/experiments/service.js';
 import { load, list, serialize } from '../src/experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../src/experiments/delete.js';
 
@@ -21,7 +21,7 @@ async function body(request:Request):Promise<Record<string,unknown>> {
 async function handle(request:Request):Promise<Response> {
   try{
     const url=new URL(request.url);
-    const match=/^\/api\/experiments(?:\/([^/]+))?(?:\/(estimate|plan|generate|cancel|retry)|\/variants\/([^/]+))?$/.exec(url.pathname);
+    const match=/^\/api\/experiments(?:\/([^/]+))?(?:\/(estimate|plan|generate|cancel|retry|exact-edit)|\/variants\/([^/]+))?$/.exec(url.pathname);
     if(!match)return jsonResponse(404,{error:'not_found'},request);
     const id=match[1]?Id.parse(match[1]):null;const action=match[2];const variantId=match[3]?Id.parse(match[3]):undefined;
     const b=request.method==='GET'?null:await body(request);
@@ -40,7 +40,7 @@ async function handle(request:Request):Promise<Response> {
         response={experiments:rows.slice(0,limit).map(serialize),nextOffset};
       }
     }
-    else if(request.method==='POST'&&!id)response={experiment:serialize(await createExperiment(b))};
+    else if(request.method==='POST'&&!id)response={experiment:serialize(isExactEditRequest(b)?await createExactEdit(b):await createExperiment(b))};
     else if(request.method==='POST'&&id&&action==='estimate'){
       const parsed=Estimate.parse(b);response={estimate:await estimate(await load(workspaceId,id),parsed.stage,parsed.variantIds,parsed.taskIds)};
     }else if(request.method==='POST'&&id&&action)response={experiment:serialize(await mutate(workspaceId,id,action,b))};

@@ -9,6 +9,7 @@ import { experimentSourceKeys, hasExperimentSlides, isPhotoPost } from '../lib/m
 import { persistedOverlayText } from './render-prompt.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { applyApprovedEstimate } from './budget.js';
+import { compileExactEdit } from './exact-edit.js';
 
 export const fingerprint = (v: unknown): string => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 /** Compact view count for experiment title differentiators: 8200000 -> 8.2M, 75600 -> 75.6k. */
@@ -25,7 +26,56 @@ export function sourceTag(v: { creatorHandle?: string | null; caption?: string |
   const views = typeof v.views === 'number' ? ` (${formatCompactViews(v.views)})` : '';
   return `${handle} · ${snippet}${views}`;
 }
+/** Actions that belong exclusively to the versioned exact_edit operation. */
+export const EXACT_EDIT_ACTIONS = new Set(['exact-edit']);
+/** An explicit opt-in marker: a legacy create/edit body carries no `operation`,
+ *  so it can never reach the exact_edit path. */
+export function isExactEditRequest(raw: unknown): boolean {
+  return !!raw && typeof raw === 'object' && (raw as { operation?: unknown }).operation === S.EXACT_EDIT_OPERATION;
+}
+
+/**
+ * SLA-451: create one source-preserving exact_edit deck.
+ *
+ * A separate entry point rather than a flag on the legacy create: no planner, no
+ * briefs, no ranking, no selector, no variant fan-out, no credits. The contract is
+ * compiled BEFORE any row exists, so a preparation failure never leaves a
+ * half-prepared experiment behind.
+ */
+export async function createExactEdit(raw: unknown) {
+  const b = S.ExactEditRequest.parse(raw);
+  const now = new Date().toISOString();
+  const contract = compileExactEdit(b);
+  const v = await db.video.findFirst({ where: { id: b.source.videoId, source: { workspaceId: b.workspaceId } } });
+  if (!v) throw new S.ExperimentError(404,'video_not_found');
+  if (!isPhotoPost(v) && !hasExperimentSlides(v.rawJson)) throw new S.ExperimentError(400,'video_not_slideshow','Only slideshows can be edited.');
+  return store.create({
+    id: randomUUID(), workspaceId: b.workspaceId, status: 'review', createdAt: now, updatedAt: now,
+    instructions: {
+      goal: `exact_edit: preserve the source deck and change only the approved ${contract.openerEdit ? 'opener overlay' : 'per-slide copy'}.`,
+      brand: '', audience: '', language: 'English',
+      direction: `Exact edit of ${contract.slides.length} mapped source slide(s) under contract ${contract.contractId}.`,
+      lockedConstraints: contract.locks.locked.map(String), variables: ['hook'], mode: 'controlled',
+    },
+    operation: { kind: S.EXACT_EDIT_OPERATION, contractVersion: contract.contractVersion },
+    exactEdit: contract,
+    // One deck, one variant. No alternatives are drafted or ranked, so there is
+    // no baseline sibling and no selector record on this row.
+    variants: [], variantCount: contract.variantCount, slideCount: contract.slides.length,
+    maxCredits: 0, creditsCharged: 0, report: null, error: null,
+    inputs: [await compatibleInput(v)],
+    generationBasis: 'source-referenced',
+    assetPolicy: 'Generated outputs retained until explicit deletion; never swept with source media. No Stream copies.',
+    version: 0, tasks: [], commands: {}, allowPartial: false,
+    notices: ['exact_edit: one deck, one variant, no alternatives were generated.'],
+    createFingerprint: fingerprint(b),
+  }, b.idempotencyKey);
+}
+
 export async function createExperiment(raw: unknown) {
+  // Legacy create: the two-variant planner path, unchanged. An exact_edit body
+  // has its own entry point and must not be coerced through this schema.
+  if (isExactEditRequest(raw)) throw new S.ExperimentError(409,'exact_edit_requires_exact_edit_action','Create an exact_edit deck with create_exact_edit; it does not use the legacy planner.');
   const b = S.Create.parse(raw);
   const now = new Date().toISOString();
   const inputs: S.Input[] = [];
@@ -111,9 +161,19 @@ export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: 
 }
 const task = (kind:S.Task['kind'], target?:string,index?:number):S.Task => ({id:randomUUID(),kind,target,index,status:'pending',attempts:0,charged:0});
 export async function mutate(workspaceId:string,id:string,action:string,raw:unknown,variantId?:string) {
-  const schema = action==='plan' ? S.Plan : action==='generate' ? S.Generate : action==='retry' ? S.Retry : action==='edit' ? S.EditBrief : S.Command;
+  // SLA-451: exact_edit is a separately selected operation. Its actions are
+  // refused on a legacy experiment and legacy actions are refused on it, so a
+  // legacy client can never be migrated into this contract implicitly.
+  if (EXACT_EDIT_ACTIONS.has(action) && !isExactEditRequest(raw))
+    throw new S.ExperimentError(409,'exact_edit_not_requested','This action is only available to an explicit exact_edit request.');
+  const schema = action==='exact-edit' ? S.ExactEditRequest
+    : action==='plan' ? S.Plan : action==='generate' ? S.Generate : action==='retry' ? S.Retry : action==='edit' ? S.EditBrief : S.Command;
   const b = schema.parse(raw);
   const e = await store.load(workspaceId,id);
+  if (EXACT_EDIT_ACTIONS.has(action) && e.operation?.kind !== S.EXACT_EDIT_OPERATION)
+    throw new S.ExperimentError(409,'exact_edit_not_requested','This experiment is not an exact_edit operation.');
+  if (!EXACT_EDIT_ACTIONS.has(action) && e.operation?.kind === S.EXACT_EDIT_OPERATION)
+    throw new S.ExperimentError(409,'exact_edit_action_required','This experiment is an exact_edit operation; only exact-edit actions apply.');
   const key = 'idempotencyKey' in b ? b.idempotencyKey as string : null;
   const hash = fingerprint({action,body:b});
   if (key && e.commands[key]) {
@@ -121,7 +181,24 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     return e;
   }
   if (Object.keys(e.commands).length >= 100) throw new S.ExperimentError(409,'command_limit');
-  if (action==='cancel') {
+  if (action==='exact-edit') {
+    // Compile the immutable contract and store it as the ONE hash that the
+    // effective brief, the compositor and QA all bind to. No planner call, no
+    // ranking, no selector, no variant fan-out and no credits.
+    const contract = compileExactEdit(b);
+    if (e.exactEdit && e.exactEdit.canonicalSha256 !== contract.canonicalSha256) {
+      // Mutating any field after preparation requires a new contract; silently
+      // swapping it under an existing one is exactly what the hash prevents.
+      throw new S.ExperimentError(409,'exact_edit_contract_changed','The submitted exact_edit contract differs from the prepared one; cancel and re-create rather than mutate it.');
+    }
+    e.exactEdit = contract;
+    e.operation = { kind: S.EXACT_EDIT_OPERATION, contractVersion: contract.contractVersion };
+    e.variantCount = contract.variantCount;
+    e.slideCount = contract.slides.length;
+    e.status = 'review';
+    e.error = null;
+    e.notices = ['exact_edit: one deck, one variant, no alternatives were generated.'];
+  } else if (action==='cancel') {
     e.status='cancelled'; e.error=null;
     for (const v of e.variants) if (v.status==='generating') v.status='cancelled';
   } else if (action==='plan') {
