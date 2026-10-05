@@ -106,4 +106,35 @@ test('no duplicate when fallback backend equals native (model-fallback only)', (
 			'gemini-native:gemini-3.5-flash-lite',
 		]);
 	});
+
+	// ---- penalty box: a backend parked by a deterministic failure (SLA-460) ----
+
+	test('penalty box drops the openrouter-video fallback slot', () => {
+		const attempts = planBackendAttempts(DEFAULT_CONFIG, { orVideoEnabled: true, skipBackends: ['openrouter-video'] });
+		expect(attempts.map(a => a.backendId + (a.model ? ':' + a.model : ''))).toEqual([
+			'gemini-native',
+			'gemini-native:gemini-3.5-flash-lite',
+			'gemini-text',
+		]);
+	});
+
+	test('penalty box on the primary still plans the model fallback and the text fallback', () => {
+		const attempts = planBackendAttempts(cfg({ backend: 'openrouter-video', fallback: 'gemini-text' }), { skipBackends: ['openrouter-video'] });
+		expect(attempts.map(a => a.backendId + (a.model ? ':' + a.model : ''))).toEqual([
+			'gemini-native:gemini-3.5-flash-lite',
+			'gemini-text',
+		]);
+	});
+
+	test('penalty box never empties the chain — a parked-only config still runs something', () => {
+		const attempts = planBackendAttempts(cfg({ backend: 'openrouter-video', fallback: 'openrouter-video', fallbackModel: undefined }), { skipBackends: ['openrouter-video'] });
+		expect(attempts.map(a => a.backendId)).toEqual(['openrouter-video']);
+	});
+
+	test('a backend that is not in the penalty box is untouched', () => {
+		const withSkip = planBackendAttempts(DEFAULT_CONFIG, { orVideoEnabled: true, skipBackends: [] });
+		const withoutSkip = planBackendAttempts(DEFAULT_CONFIG, { orVideoEnabled: true });
+		expect(withSkip).toEqual(withoutSkip);
+		expect(withSkip.map(a => a.backendId)).toContain('openrouter-video');
+	});
 });
