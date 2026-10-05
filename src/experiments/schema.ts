@@ -179,7 +179,13 @@ export interface Experiment {
   /** Briefs-stage fan-out: every candidate with its Jev viral score, and which were picked. */
   briefJudge?: { candidates: Array<{ title: string; hook: string; score: number; confidence?: number }>; picked?: string[];
     /** Resolved explicit winner id (choice ?? value), null on missing/invalid answers. */
-    winner?: string | null; fallback?: string | null; reportPresent?: boolean; state?: unknown } | null;
+    winner?: string | null; fallback?: string | null; reportPresent?: boolean; state?: unknown;
+    /** SLA-510: false when the judge's evidence block had a gap or a budget cut,
+     *  so a reader never treats the recorded scores as a complete comparison. */
+    evidenceComplete?: boolean
+    /** SLA-510: the block was incomplete because a candidate scene or overlay
+     *  was cut, not because of a source gap. Named so the cause is inspectable. */
+    candidateTruncated?: boolean } | null;
 }
 export function same(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b); }
 export function assertBrief(e: Experiment, b: BriefData) {

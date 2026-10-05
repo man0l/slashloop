@@ -10,6 +10,7 @@ import { buildVariantSlidePrompt, compileSlideContract, contractQaBlock, effecti
 import { jevPick, jevAsk, type JevQuestion, type JevAnswer } from '../lib/typesafe.js';
 import { putObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
 import { ExperimentError, Report, VariantProposal, BriefStoryboard, BriefDelta, BRIEF_CANDIDATES, VARIABLE_FIELDS, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type QaCheck, type SlideVerification, type Task } from './schema.js';
+import { candidateSlides, jevEvidence } from './jev-evidence.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { batch } from './store.js';
 import { D1_PARAM_CHUNK } from '../store.js';
@@ -770,36 +771,54 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       generated.baseline.brief=lockCarouselIdentity(generated.baseline.brief,e.styleFormula??null);
       generated.candidates=generated.candidates.map(c=>({...c,brief:lockCarouselIdentity(c.brief,e.styleFormula??null)}));
     }
-    const shots=e.inputs.filter(i=>i.status==='ready').flatMap(i=>i.evidence.slice(0,2).map(v=>v.observation)).join(' | ').slice(0,800);
+    // SLA-510: the evidence block covers every ready source slide and every
+    // candidate slide inside a fixed budget, and states what it left out. The
+    // report is NOT awaited here — it is scheduled independently — so an absent
+    // summary is recorded as absent context, never as "no pattern exists".
+    const evidence=jevEvidence(e.inputs,e.report);
     // The report task is independently scheduled and may finish in either
     // order — record only whether its context was present, never imply it
     // was awaited.
-    const reportPresent=!!(e.report && typeof e.report.summary==='string' && e.report.summary.length);
+    const reportPresent=evidence.report.status==='present';
     // Bounded complete candidate snapshot for the selection state: overlay
     // copy, storyboard scenes, hypothesis, mechanism, changes and locks.
     // Slices preserve the request budget (the Jev call stays small).
+    // SLA-510: the candidate storyboards are part of the judge's evidence
+    // block, so a cut scene OR a cut overlay makes the block incomplete —
+    // `story.truncated` already covers both, and the per-slide cut is recorded
+    // so the judge can see which slide it was.
+    const storyboards=generated.candidates.map(c=>candidateSlides(c.brief));
+    const candidateTruncated=storyboards.some(s=>s.truncated);
     const state={
       goal:e.instructions.goal,
       audience:e.instructions.audience,
       direction:e.instructions.direction,
-      original_pattern:reportPresent?(e.report!.summary as string).slice(0,500):'',
+      original_pattern:evidence.report.summary,
       reportPresent,
-      original_shots:shots,
+      original_shots:evidence.sources.flatMap(s=>s.slides.map(v=>`${s.source} ${v.location}: ${v.observation}`)),
+      original_evidence:evidence,
       locks:e.instructions.lockedConstraints.slice(0,8).map(l=>String(l).slice(0,200)),
-      candidates:generated.candidates.map((c,i)=>({id:`c${i}`,title:String(c.title??'').slice(0,200),hook:String(c.brief?.hook??'').slice(0,300),
+      candidates:generated.candidates.map((c,i)=>{const story=storyboards[i]!;return {id:`c${i}`,title:String(c.title??'').slice(0,200),hook:String(c.brief?.hook??'').slice(0,300),
         hypothesis:String(c.hypothesis??'').slice(0,300),mechanism:c.mechanism??null,
-        overlays:Array.isArray(c.brief?.slides)?c.brief.slides.map(s=>String(s.overlayText??'').slice(0,120)):[],
-        storyboard:Array.isArray(c.brief?.slides)?c.brief.slides.map(s=>String(s.scene??'').slice(0,120)):[],
-        changes:Array.isArray(c.changedVariables)?c.changedVariables.map(v=>`${v.name}=${v.value}`).join('; ').slice(0,500):'none'})),
+        overlays:story.slides.map(s=>s.overlayText),
+        storyboard:story.slides.map(s=>s.scene),
+        storyboardTruncated:story.truncated,
+        truncatedSlides:story.slides.filter(s=>s.truncated||s.overlayTruncated).map(s=>s.role),
+        changes:Array.isArray(c.changedVariables)?c.changedVariables.map(v=>`${v.name}=${v.value}`).join('; ').slice(0,500):'none'};}),
     };
     const keep=Math.max(0,e.variantCount-1);
     let picked=generated.candidates.slice(0,keep);
     const scoredAll=generated.candidates.map((c,i)=>({c,i,score:0,confidence:0}));
     let winnerId: string | null = null;
     let fallback: string | null = null;
-    try{
+    // Deterministic safe handling when evidence is insufficient: with no report
+    // and no observed source slide there is no original to beat, so asking the
+    // judge would buy a confident answer about nothing. Skip the call, keep the
+    // generated order, and record why. Ranking semantics are unchanged — this
+    // is the same zero-score, fallback-labelled path a judge error takes.
+    if(evidence.sufficient)try{
       const criteria=Object.fromEntries(generated.candidates.map((c,i)=>[`c${i}`,`[${c.mechanism??'delta'}] ${c.title}: ${c.brief?.hook??''}`.slice(0,300)]));
-      const answers=await render.jevScores(state,{winner:{type:'choice',instructions:'Which ONE candidate is most likely to get more views than the original source content in original_pattern / original_shots, with this audience?',criteria}});
+      const answers=await render.jevScores(state,{winner:{type:'choice',instructions:`Which ONE candidate is most likely to get more views than the ORIGINAL SOURCE CONTENT in original_evidence (sources with per-slide observations, plus the report summary when present), with this audience? original_evidence.notes states which source slides or observations are missing or truncated — do not assume absent context is absent in the original. Judge only from the evidence given; never invent source detail that is not in it.`,criteria}});
       const winner=answers?.winner;
       const probs=((winner && typeof winner.probabilities==='object' && winner.probabilities) || {}) as Record<string,unknown>;
       for(const s of scoredAll){const v=Number(probs[`c${s.i}`]);s.score=Number.isFinite(v)?v:0;s.confidence=typeof winner?.confidence==='number'&&Number.isFinite(winner.confidence)?winner.confidence:0;}
@@ -810,7 +829,11 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       const order=rankBriefOrder(generated.candidates.length,scoredAll.map(s=>s.score),resolved.index);
       picked=keep?order.slice(0,keep).map(idx=>scoredAll[idx]!.c):[];
     }catch(err){fallback=`judge_error:${String(err instanceof Error?err.message:err).replace(/\s+/g,' ').slice(0,80)}`;}
-    const briefJudge={candidates:scoredAll.map(s=>({title:s.c.title,hook:s.c.brief?.hook??'',score:s.score,confidence:s.confidence})),picked:picked.map(c=>c.title),winner:winnerId,fallback,reportPresent,state};
+    else fallback=`insufficient_evidence:${evidence.notes.length?evidence.notes.join(' ').replace(/\s+/g,' ').slice(0,120):'no source evidence'}`;
+    // SLA-510: `evidenceComplete` is documented as false when the judge's evidence
+    // block had a gap OR a budget cut. The block covers the candidate storyboards
+    // as well as the source evidence, so a cut candidate counts.
+    const briefJudge={candidates:scoredAll.map(s=>({title:s.c.title,hook:s.c.brief?.hook??'',score:s.score,confidence:s.confidence})),picked:picked.map(c=>c.title),winner:winnerId,fallback,reportPresent,evidenceComplete:evidence.complete&&!candidateTruncated,candidateTruncated,state};
     // Jev score rides on each winning proposal for provenance.
     const proposals=[generated.baseline,...picked.map(c=>{const s=scoredAll.find(x=>x.c===c);return {...c,jev:{score:s?.score??0,confidence:s?.confidence}};})];
     // SLA-431: pin the requested exact copy before validation, so the supporting
@@ -898,7 +921,10 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
   const perSlide:SlideContract=compileSlideContract({
     slideIndex:t.index!,role:slide.role,medium:e.styleFormula?.medium||'unknown',scene:slide.scene,
     overlay,observedCopy:mapped?mapped.rows[mapped.sourceIndex]??null:null,
-    castingRequest,identityLocked:!slideContract.changeFaces,
+    // SLA-510: the character field is deck-level, so hand it over as the roster
+    // it is and let the contract resolve it against THIS slide's subject. The
+    // single-subject case resolves exactly as the old castingRequest path did.
+    deckCasting:castingRequest,castingRequest,identityLocked:!slideContract.changeFaces,
     sourceMap:{
       videoId:mappedInput?mappedInput.videoId:(reference?reference.videoId:null),
       analysisId:mappedInput?mappedInput.analysisId:null,
