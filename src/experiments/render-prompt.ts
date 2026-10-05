@@ -793,7 +793,12 @@ function subjectClausesElsewhere(scene: string, scope: SubjectScope): Array<{ st
     if (s.start >= scope.start && s.end <= scope.end) continue;
     for (const c of scene.slice(s.start, s.end).matchAll(/[^,;]+[,;]?/g)) {
       const text = c[0];
-      if (REFERRING_OPENER.test(text) || (scope.label ? namedIn(text, scope.label) : false)) {
+      // A definite repeated role can refer back to the selected subject. Do
+      // not widen the edit range: conservatively withhold a conflicting target
+      // even when another person with that role could be intended.
+      const repeatedRole = /^\s*(?:the|this|that)\s+(?:same\s+)?([a-z-]+)\b/i.exec(text);
+      const refersByRole = repeatedRole && scope.subjectHeads.includes(repeatedRole[1]!.toLowerCase());
+      if (REFERRING_OPENER.test(text) || refersByRole || (scope.label ? namedIn(text, scope.label) : false)) {
         out.push({ start: s.start + c.index, end: s.start + c.index + text.length });
       }
     }
@@ -923,6 +928,8 @@ export function compileCasting(scene: string, targets: readonly CastingTarget[],
   const lockedAttributes = APPEARANCE_ATTRIBUTES
     .filter(a => !unlocked.has(a))
     .map(attribute => ({ attribute, observed: appearanceSpans(scene, attribute, lockScope)[0]?.text ?? null }));
+  const withheld = [...rejected, ...conflicted].map(t => t.value);
+  const withheldReason: WithheldReason | null = rejected.length ? 'ambiguous_subject' : conflicted.length ? 'unattributed_target' : null;
   return {
     effectiveScene: effectiveScene.trim(),
     superseded,
@@ -931,6 +938,9 @@ export function compileCasting(scene: string, targets: readonly CastingTarget[],
     subject: {
       slotId: 's0', identityMode: 'replace', supersededPhrases: superseded, castingTarget,
       lockedAttributes, request: honoured.length ? honoured.map(t => t.value).join('; ') : null,
+      // Record withheld values here so partial and fully withheld requests flow
+      // through the same metadata and render-notice path.
+      ...(withheld.length ? { withheld, withheldReason } : {}),
     },
   };
 }
@@ -984,12 +994,10 @@ export function compileSlideContract(opts: {
   });
   // A withheld request still speaks for the subject, so the renderer is told the
   // reason it was not applied rather than being left to guess.
-  const withheldSubject = (scope: SubjectScope | undefined, request: string, resolution: CastingResolution | null, rejected: CastingTarget[], conflicted: CastingTarget[]): SubjectContract => {
-    const withheld = [...rejected, ...conflicted].map(t => t.value);
-    const reason: WithheldReason | null = rejected.length ? 'ambiguous_subject' : conflicted.length ? 'unattributed_target' : null;
+  const withheldSubject = (scope: SubjectScope | undefined, request: string, resolution: CastingResolution | null, compiledSubject: SubjectContract): SubjectContract => {
     return {
       ...preserveSubject(scope), identityMode: 'replace', request, resolution,
-      withheld: withheld.length ? withheld : null, withheldReason: reason,
+      withheld: compiledSubject.withheld ?? null, withheldReason: compiledSubject.withheldReason ?? null,
     };
   };
   let subject: SubjectContract;
@@ -1015,7 +1023,7 @@ export function compileSlideContract(opts: {
       // it — or names one this slide cannot attribute to a single subject: keep
       // the deck prose for this subject and lock every attribute to the
       // reference frame rather than guessing one from another subject's clause.
-      subject = withheldSubject(scope, resolution.request, resolution, compiled.rejected, compiled.conflicted);
+      subject = withheldSubject(scope, resolution.request, resolution, compiled.subject);
     } else {
       subject = { ...preserveSubject(scope), resolution };
     }
@@ -1030,7 +1038,7 @@ export function compileSlideContract(opts: {
       subject = { ...compiled.subject, slotId };
       compiledScene = compiled.effectiveScene;
     } else if (scope.ambiguous || compiled.conflicted.length) {
-      subject = withheldSubject(scope, castingRequest.trim(), null, compiled.rejected, compiled.conflicted);
+      subject = withheldSubject(scope, castingRequest.trim(), null, compiled.subject);
     } else {
       // No attribute grammar matched: keep the deck-level casting prose and lock
       // every appearance attribute to the reference frame.

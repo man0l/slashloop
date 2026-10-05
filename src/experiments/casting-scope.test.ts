@@ -374,6 +374,63 @@ describe('the review fixtures: one subject, one ownership answer (SLA-510 round 
   });
 });
 
+describe('residual ownership and partial withholding (SLA-512)', () => {
+  test('a repeated role outside the owned range withholds conflicting targets', () => {
+    const scene = 'A man labeled Sub 5. The man has dark hair and brown eyes. A woman with black hair and green eyes stands beside him.';
+    const built = contract(scene, twoLabels);
+    expect(built.compiledScene).toBe(scene);
+    expect(built.subject.castingTarget).toEqual({});
+    expect(built.subject.withheld).toEqual(['red hair', 'blue eyes']);
+    expect(built.subject.withheldReason).toBe('unattributed_target');
+    expect(built.subject.supersededPhrases).toEqual([]);
+    expect(contractPromptLines(built).join('\n')).toContain('CASTING WITHHELD');
+    expect(contractChecks(built).some(c => c.includes('matches the requested casting target'))).toBe(false);
+  });
+
+  test('partial application exposes the withheld value while preserving unrelated appearance', () => {
+    const scene = 'A man labeled Sub 5 with dark hair. A woman with black hair stands beside him; he has brown eyes.';
+    const built = contract(scene, twoLabels);
+    expect(built.compiledScene).toBe('A man labeled Sub 5 with red hair. A woman with black hair stands beside him; he has brown eyes.');
+    expect(built.subject.castingTarget).toEqual({ hair: 'red hair' });
+    expect(built.subject.withheld).toEqual(['blue eyes']);
+    expect(built.subject.withheldReason).toBe('unattributed_target');
+    expect(built.subject.resolution!.skipped).toContainEqual({ clause: 'blue eyes', reason: 'unattributed_target' });
+    expect(contractPromptLines(built).join('\n')).toContain('CASTING WITHHELD');
+    expect(contractPromptLines(built).join('\n')).toContain('"blue eyes"');
+    expect(contractChecks(built)).toContain("the subject's hair matches the requested casting target: red hair");
+    expect(contractChecks(built).some(c => c.includes('eyes matches the requested casting target'))).toBe(false);
+  });
+
+  test('a different repeated role does not withhold the selected subject’s targets', () => {
+    const built = contract('A man labeled Sub 5 with dark hair and brown eyes. The woman has black hair and green eyes.', twoLabels);
+    expect(built.subject.castingTarget).toEqual({ hair: 'red hair', eyes: 'blue eyes' });
+    expect(built.subject.withheld ?? []).toEqual([]);
+    expect(built.compiledScene).toContain('The woman has black hair and green eyes.');
+  });
+
+  test('a repeated role stating the requested value keeps the target live', () => {
+    const built = contract('A man labeled Sub 5. The man has red hair and blue eyes.', twoLabels);
+    expect(built.subject.castingTarget).toEqual({ hair: 'red hair', eyes: 'blue eyes' });
+    expect(built.subject.withheld ?? []).toEqual([]);
+  });
+
+  test('copy and identity locks remain unchanged for the residual fixture', () => {
+    const scene = 'A man labeled Sub 5. The man has dark hair and brown eyes. A woman with black hair and green eyes stands beside him.';
+    const overlay = { mode: 'preserve' as const, text: 'unchanged overlay', origin: 'source' as const };
+    for (const identityLocked of [false, true]) {
+      const built = compileSlideContract({ slideIndex: 0, role: 's', medium: 'collage', scene, sourceMap,
+        deckCasting: twoLabels, identityLocked, overlay, observedCopy: { state: 'observed_text', text: overlay.text } });
+      expect(built.overlay).toEqual(overlay);
+      expect(built.compiledScene).toBe(scene);
+      expect(built.subject.castingTarget).toEqual({});
+      if (identityLocked) {
+        expect(built.subject.identityMode).toBe('preserve');
+        expect(contractPromptLines(built).join('\n')).not.toContain('CASTING');
+      }
+    }
+  });
+});
+
 describe('hook-only and unchanged-copy paths keep their identity locks', () => {
   test('an identity-locked slide compiles no casting target and no scope line', () => {
     const built = compileSlideContract({
