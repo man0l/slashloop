@@ -213,6 +213,32 @@ test('served character edit payload keeps copy and matches the MCP instructions'
   expect(chat).not.toHaveProperty('instructions');
 });
 
+test('served gallery supports combined exploration and emits the matching MCP create input', () => {
+  const html = renderGallery([fakeCard({ isSlideshow: true, experimentEligible: true })], undefined, {});
+  expect(html).toContain('id="create-test-mode"');
+  expect(html).toContain('<option value="exploration">Explore combinations</option>');
+  expect(html).toContain('value="slides"');
+  const script = html.match(/<script>([\s\S]*)<\/script>/)![1]!;
+  const build = script.slice(script.indexOf('function buildPayload()'), script.indexOf('// sourceSlides is display-only'));
+  const conversion = script.slice(script.indexOf('var chatPayload;'), script.indexOf("document.getElementById('exp-host-payload').textContent"));
+  const fields: Record<string, string> = { 'create-goal': 'Combined hook and character test', 'create-direction': 'Short blond hair and a question hook', 'create-test-mode': 'exploration' };
+  const str = (id: string) => fields[id] ?? '';
+  const selectedVars = ['hook', 'character', 'visualStyle'];
+  const run = () => new Function('selCards', 'selected', 'mode', 'str', 'checkedVars', 'num', build + '; return buildPayload();')(
+    () => [{ getAttribute: () => '3' }], ['vid-1'], 'create', str, () => selectedVars, (_id: string, fallback: number) => fallback,
+  );
+  const payload = run();
+  expect(payload.instructions).toMatchObject({ variables: selectedVars, mode: 'exploration', direction: fields['create-direction'] });
+  const chat = new Function('mode', 'p', 'str', conversion + '; return chatPayload;')('create', payload, str);
+  expect(chat.instructions).toEqual(payload.instructions);
+  expect(chat).not.toHaveProperty('surveyMode');
+  expect(Create.safeParse({ workspaceId: 'w1', idempotencyKey: 'gallery:combined', ...chat }).success).toBe(true);
+  fields['create-test-mode'] = 'controlled';
+  expect(run().instructions.mode).toBe('controlled');
+  selectedVars.push('slides');
+  expect(run().instructions.mode).toBe('exploration');
+});
+
 describe('edit-mode payload emission (source guards)', () => {
   const source = readFileSync(new URL('../ui/gallery.ts', import.meta.url), 'utf8');
 

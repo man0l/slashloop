@@ -356,7 +356,7 @@ const instructionsInput = z.object({
     'What to vary: hook, character, visualStyle, caption, cta (controlled mode), plus concept/"angle" and slides (exploration mode only).',
   ),
   mode: z.enum(['controlled', 'exploration']).default('controlled').describe(
-    'controlled: each variant changes exactly one variable vs the baseline. exploration: variants may change several, and concept/slides are allowed.',
+    'controlled: each alternate changes one of the selected variables vs the baseline. exploration (SaaS Explore combinations): an alternate may change several selected variables together, including hook + character + visualStyle; concept/slides are allowed.',
   ),
   varySupportingOverlays: z.boolean().optional().describe('Hook tests only (controlled, variables=["hook"]): variants may also retell slide 2+ overlay text while scenes stay identical.'),
 });

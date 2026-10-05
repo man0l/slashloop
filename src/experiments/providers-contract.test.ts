@@ -105,6 +105,22 @@ test('character edit instructions reach rendering and QA while preserving source
   expect(prompt).toContain(qa[0]!.contractHash);
 });
 
+test('combined hook and character changes reach rendering and QA together', async () => {
+  const { e, videos } = sourceReferenced({
+    copy: [0, 1, 2].map(slideIndex => ({ slideIndex, state: 'observed_text' as const, text: 'Original headline' })),
+    variables: ['hook', 'character'], changed: [{ name: 'hook', value: 'Official ratings' }, { name: 'character', value: 'short blonde hair, light eyes' }],
+  });
+  const calls: unknown[] = []; const qa: SlideContract[] = [];
+  await (await prepare(e, task, deps(videos, calls, qa) as never)).execute();
+  expect(qa[0]!.overlay.text).toBe('Official ratings');
+  expect(qa[0]!.overlay.origin).toBe('brief');
+  expect(qa[0]!.subject.castingTarget).toMatchObject({ hair: 'short blonde hair', eyes: 'light eyes' });
+  const prompt = (calls[0] as { prompt: string }).prompt;
+  expect(prompt).toContain('Official ratings');
+  expect(prompt).toContain('CASTING TARGET');
+  expect(prompt).toContain(qa[0]!.contractHash);
+});
+
 test('a blank source slide renders no added overlay and QA checks the same empty value', async () => {
   const blank = [{ slideIndex: 0, state: 'observed_empty' as const, text: '' }, { slideIndex: 1, state: 'observed_empty' as const, text: '' }, { slideIndex: 2, state: 'observed_empty' as const, text: '' }];
   const { e, videos } = sourceReferenced({ copy: blank, variables: ['character'] });

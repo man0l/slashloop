@@ -497,6 +497,9 @@ ${cards.length ? toolbarHtml(filters) : ''}
        <div class="field-row"><span>Goal</span>
          <input type="text" id="create-goal" maxlength="500" placeholder="e.g. Find a hook that beats the original"/>
          <span class="hint">What should the variations try to beat, and how will you judge?</span></div>
+       <div class="field-row"><span>Test mode</span>
+         <select id="create-test-mode"><option value="controlled">One-variable comparison</option><option value="exploration">Explore combinations</option></select>
+         <span class="hint">Compare one change per variant, or explore several selected changes together.</span></div>
        <div class="field-row"><span>Variables to test (locked everything else)</span>
          <div class="check-grid" id="create-vars">
            <label><input type="checkbox" value="hook" checked/> hook</label>
@@ -505,8 +508,9 @@ ${cards.length ? toolbarHtml(filters) : ''}
            <label><input type="checkbox" value="caption"/> caption</label>
            <label><input type="checkbox" value="cta"/> cta</label>
            <label><input type="checkbox" value="concept"/> angle</label>
+           <label><input type="checkbox" value="slides"/> slide structure</label>
          </div>
-         <span class="hint">Angle allows a new story (exploration). The rest stay controlled.</span></div>
+         <span class="hint">Angle retells the copy; slide structure changes the story. Both use exploration. Other variables follow your selected test mode.</span></div>
        <div class="field-row"><span>Creative direction</span>
          <textarea id="create-direction" maxlength="2000" placeholder="e.g. Same person and room, only the copy changes"></textarea></div>
        <div class="two-col">
@@ -869,7 +873,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
         };
       }
       var vars = checkedVars();
-      var exploratory = vars.indexOf('concept') !== -1;
+      var exploratory = str('create-test-mode') === 'exploration' || vars.indexOf('concept') !== -1 || vars.indexOf('slides') !== -1;
       return {
         videoIds: selected.slice(0, 20),
         surveyMode: 'create',
@@ -898,6 +902,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
         ['Slides each', String(p.slideCount)],
       ];
       if (p.surveyMode === 'create') {
+        rows.push(['Test mode', p.instructions.mode === 'exploration' ? 'Explore combinations' : 'One-variable comparison']);
         rows.push(['Variants', String(p.variantCount)]);
         rows.push(['Goal', p.instructions.goal || '—']);
       } else {

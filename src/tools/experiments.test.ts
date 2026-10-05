@@ -7,7 +7,8 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { Command, Create, EditBrief, Generate, Plan, Retry, ExperimentError, Key, type Experiment } from '../experiments/schema.js';
+import { Command, Create, EditBrief, Generate, Plan, Retry, ExperimentError, Key, validateVariants, type Experiment } from '../experiments/schema.js';
+import { normalizeBriefCandidates } from '../experiments/providers.js';
 import { renderContract } from '../experiments/render-prompt.js';
 import {
   registerExperimentTools, defaultExperimentCap, derivedKey, editSlideDirection, editInstructions,
@@ -182,6 +183,39 @@ describe('create_experiment', () => {
     expect(isError).toBe(true);
     expect(body.message).toMatch(/instructions/);
     expect(callsOf('createExperiment')).toHaveLength(0);
+  });
+
+  test('SaaS exploration selections survive MCP, planning validation and render locks', async () => {
+    const requested = { goal: 'Test hook and casting together', variables: ['hook', 'character', 'visualStyle'], mode: 'exploration', direction: 'Hook: a question; character: short blond hair; style: warm photograph' };
+    const request = { mode: 'create', videoIds: ['vid1'], instructions: requested, variantCount: 2, slideCount: 3 };
+    expect((await call('create_experiment', request)).isError).toBe(false);
+    const body = callsOf('createExperiment')[0]![0] as any;
+    expect(Create.safeParse(body).success).toBe(true);
+    expect(body.instructions).toMatchObject(requested);
+    const baseline = { title: 'Source', hypothesis: 'Control', concept: 'Tea', hook: 'Try tea', character: 'Original adult', visualStyle: 'Cool photograph', caption: 'Tea guide', cta: '', lockedConstraints: [], slides: [
+      { role: 'hook', scene: 'Kitchen', overlayText: 'Try tea' },
+      { role: 'body', scene: 'Pour tea', overlayText: 'Steep briefly' },
+      { role: 'payoff', scene: 'Cup', overlayText: 'Enjoy' },
+    ] };
+    const changedVariables = [
+      { name: 'hook' as const, value: 'Ready for tea?' },
+      { name: 'character' as const, value: 'Adult with short blond hair' },
+      { name: 'visualStyle' as const, value: 'Warm photograph' },
+    ];
+    const e = exp('combo', { instructions: body.instructions, variantCount: 2 });
+    const normalized = normalizeBriefCandidates({ baseline, candidates: [{ title: 'Combined', hypothesis: 'Combined changes improve swipes', changedVariables }] }, 3, e);
+    const proposals = [normalized.baseline, ...normalized.candidates];
+    expect(() => validateVariants(e, proposals)).not.toThrow();
+    expect(normalized.candidates[0]!.changedVariables).toEqual(changedVariables);
+    expect(normalized.candidates[0]!.brief.slides).toEqual(baseline.slides);
+    expect(renderContract(e.instructions.variables, changedVariables)).toMatchObject({
+      changeFaces: true, changeOverlay: true, changeStyle: true, changeStory: false, changeSetting: false,
+    });
+    expect(() => validateVariants({ ...e, instructions: { ...e.instructions, mode: 'controlled' } }, proposals)).toThrow('not_one_variable');
+    expect(() => validateVariants({ ...e, instructions: { ...e.instructions, variables: ['hook', 'character'] } }, proposals)).toThrow('unapproved_variable');
+    await call('create_experiment', request);
+    expect((callsOf('createExperiment')[1]![0] as any).idempotencyKey).toBe(body.idempotencyKey);
+    expect(callsOf('mutate')).toHaveLength(0);
   });
 
   // ---- edit mode (the site's "Edit slideshow" wizard path) ----
