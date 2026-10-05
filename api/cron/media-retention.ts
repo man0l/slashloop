@@ -52,6 +52,36 @@ function json(status: number, body: unknown): Response {
   });
 }
 
+/**
+ * SQLite-only coarse upper-bound for an expiry timestamp column.
+ *
+ * The exact per-workspace cutoff (`julianday(col) < julianday('now') - days`)
+ * is a per-row expression, so on its own it cannot serve as an index range
+ * bound (SLA-471 measured listing selection as `SCAN v`). ANDing a coarse
+ * constant-shaped bound lets SQLite seek instead of scanning while the exact
+ * predicate still governs membership.
+ *
+ * The bound MUST use the global MINIMUM retention, not the maximum: a row is
+ * expired when its age exceeds its own workspace's days, so `age > MIN(days)`
+ * is a superset of the exact set (safe to AND), while `age > MAX(days)` would
+ * wrongly drop expired rows from short-retention workspaces (proven by the
+ * fixture in media-retention.test.ts: global-MAX misses boundary rows).
+ *
+ * The MIN is a scalar subquery inside the same statement, so it always sees
+ * the same snapshot as the outer selection (no race with workspaces added
+ * mid-run). Empty Workspace table -> MIN is NULL -> strftime is NULL ->
+ * `col < NULL` matches nothing, same as the JOIN yielding no rows.
+ *
+ * Format: strftime('%Y-%m-%dT%H:%M:%fZ') matches Prisma's canonical SQLite
+ * DateTime serialization (ISO8601 T-separator + millis + Z), which is what
+ * makes the raw string comparison time-ordered. Rows not in that shape would
+ * compare wrongly, so this stays ANDed with the julianday() exact predicate.
+ */
+function coarseUpperBound(dateCol: string, minRetentionExpr: string): string {
+  // Identifiers come from the literal maps below, never from user input.
+  return `AND v."${dateCol}" < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || (SELECT MIN(${minRetentionExpr}) FROM "Workspace" w2) || ' days')`;
+}
+
 type ExpiredRow = { id: string; key: string };
 
 /**
@@ -74,11 +104,18 @@ function expiredColumns(kind: 'thumb' | 'media') {
   const cutoff = dbDialect() === 'sqlite'
     ? `julianday(v."${storedAtCol}") < julianday('now') - w."${retentionCol}"`
     : `v."${storedAtCol}" < now() - (w."${retentionCol}" * INTERVAL '1 day')`;
+  // SQLite only: coarse global-MIN upper bound ANDed with the exact cutoff.
+  // Same-statement scalar subquery, so SELECT/UPDATE/cascade share it verbatim
+  // via this builder. Adds an index range bound; membership still governed by
+  // the exact predicate above (see coarseUpperBound for the MIN-not-MAX proof).
+  const coarse = dbDialect() === 'sqlite'
+    ? `\n    ${coarseUpperBound(storedAtCol, `w2."${retentionCol}"`)}`
+    : '';
   const where = `
     v."${statusCol}" = 'stored'
     AND v."${keyCol}" IS NOT NULL
     AND v."${storedAtCol}" IS NOT NULL
-    AND ${cutoff}`;
+    AND ${cutoff}${coarse}`;
   return { keyCol, statusCol, storedAtCol, where };
 }
 
@@ -149,19 +186,35 @@ type ExpiredListingRow = { id: string; thumbKey: string | null; mediaKey: string
  * hand via update_settings).
  */
 async function findExpiredListings(): Promise<ExpiredListingRow[]> {
-  // See findExpired for the SQLite cutoff (julianday; MAX() as GREATEST).
-  const cutoff = dbDialect() === 'sqlite'
-    ? `julianday(v."scrapedAt") < julianday('now') - MAX(w."thumbRetentionDays", w."mediaRetentionDays")`
-    : `v."scrapedAt" < now() - (GREATEST(w."thumbRetentionDays", w."mediaRetentionDays") * INTERVAL '1 day')`;
+  // listingCutoff() holds the exact + coarse predicates; the cascade below
+  // reuses the same builder so the two can never drift apart.
   return db.$queryRawUnsafe<ExpiredListingRow[]>(`
     SELECT v."id" AS id, v."thumbKey" AS "thumbKey", v."mediaKey" AS "mediaKey"
     FROM "Video" v
     JOIN "Source" s ON s."id" = v."sourceId"
     JOIN "Workspace" w ON w."id" = s."workspaceId"
-    WHERE ${cutoff}
+    WHERE ${listingCutoff()}
     ORDER BY v."scrapedAt" ASC
     LIMIT ${BATCH_LIMIT}
   `);
+}
+
+/**
+ * Shared WHERE for listing expiry (exact per-workspace cutoff + SQLite
+ * coarse global-MIN upper bound). See findExpired for the SQLite cutoff
+ * (julianday; MAX() as GREATEST) and coarseUpperBound for why the coarse
+ * side uses the MINIMUM retention. Used VERBATIM by findExpiredListings()
+ * and the SQLite cascade selection below.
+ */
+function listingCutoff(): string {
+  // See findExpired for the SQLite cutoff (julianday; MAX() as GREATEST).
+  const cutoff = dbDialect() === 'sqlite'
+    ? `julianday(v."scrapedAt") < julianday('now') - MAX(w."thumbRetentionDays", w."mediaRetentionDays")`
+    : `v."scrapedAt" < now() - (GREATEST(w."thumbRetentionDays", w."mediaRetentionDays") * INTERVAL '1 day')`;
+  const coarse = dbDialect() === 'sqlite'
+    ? `\n    ${coarseUpperBound('scrapedAt', 'MAX(w2."thumbRetentionDays", w2."mediaRetentionDays")')}`
+    : '';
+  return `${cutoff}${coarse}`;
 }
 
 /**
@@ -231,7 +284,7 @@ async function sweepExpiredListingsSqlite(ids: string[]): Promise<void> {
     SELECT v."id" FROM "Video" v
     JOIN "Source" s ON s."id" = v."sourceId"
     JOIN "Workspace" w ON w."id" = s."workspaceId"
-    WHERE julianday(v."scrapedAt") < julianday('now') - MAX(w."thumbRetentionDays", w."mediaRetentionDays")
+    WHERE ${listingCutoff()}
     ORDER BY v."scrapedAt" ASC
     LIMIT ${BATCH_LIMIT}`;
 
