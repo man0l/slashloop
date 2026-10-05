@@ -8,6 +8,18 @@ export const Key = z.string().min(8).max(128).regex(/^[a-zA-Z0-9_.:-]+$/);
 const text = z.string().trim().max(2000);
 export const VARIABLE_FIELDS = ['hook', 'character', 'visualStyle', 'caption', 'cta', 'concept', 'slides'] as const;
 const constraints = z.union([z.array(text.min(1)).max(20), text]).transform(v => typeof v === 'string' ? (v ? [v] : []) : v);
+/** Explicit per-slide copy override (SLA-430 D3, SLA-431 request carrier). Keys are
+ *  canonical 0-based slide indices — no leading zeros, because `'00'` and `'0'`
+ *  name the same slide and a lookup by string would silently drop one of them.
+ *  Property presence decides: `""` clears the overlay and an omitted index is NOT
+ *  a blank, it leaves that slide's copy unresolved so the value that would
+ *  otherwise apply (resolved source copy, or the brief's own copy on a
+ *  hook-varying experiment) stands. Optional so instructions and briefs stored
+ *  before it keep working. Capped at 8 keys: more slides than the deck can hold
+ *  is meaningless, and `instructions` is interpolated into the report prompt,
+ *  where an oversized value would blow the prompt budget and fail a paid task. */
+export const CopyOverrides = z.record(z.string().regex(/^(?:0|[1-9]\d*)$/), z.string().max(2000))
+  .refine(v => Object.keys(v).length <= 8, { message: 'At most 8 per-slide copy overrides: one per slide.' });
 export const Instructions = z.object({
   goal: text.min(1), brand: text, audience: text, language: z.string().trim().min(1).max(80),
   direction: text, lockedConstraints: constraints,
@@ -17,17 +29,30 @@ export const Instructions = z.object({
   // Optional so older experiments (stored without the key) keep working —
   // absent/falsy means slide-1-hook-only, as before.
   varySupportingOverlays: z.boolean().optional(),
+  // SLA-431: the exact per-slide copy the user asked for, carried as structured
+  // values instead of quoted prose in `direction`. This is what survives
+  // normalization into the brief and the render request; prose alone does not.
+  // It pins exact values, so it cannot be combined with a mode that deliberately
+  // lets the model retell that same copy (see the superRefine guard below).
+  copyOverrides: CopyOverrides.optional(),
 }).strict().superRefine((v, ctx) => {
   if (new Set(v.variables).size !== v.variables.length) ctx.addIssue({ code: 'custom', message: 'Duplicate variables' });
   if (v.mode === 'controlled' && v.variables.some(x => x === 'concept' || x === 'slides')) {
     ctx.addIssue({ code: 'custom', message: 'Controlled variables: hook, character, visualStyle, caption, cta. Concept/slides require exploration.' });
   }
+  if (v.copyOverrides && Object.keys(v.copyOverrides).length) {
+    // Exact overrides and a supporting-copy retell are contradictory contracts:
+    // one says "these words are the answer", the other "the model may rewrite
+    // them". Refuse instead of silently letting one defeat the other.
+    if (v.varySupportingOverlays) {
+      ctx.addIssue({ code: 'custom', message: 'copyOverrides pins exact per-slide copy and cannot be combined with varySupportingOverlays, which authorizes the model to retell supporting copy.' });
+    }
+    if (v.variables.some(x => x === 'concept' || x === 'slides')) {
+      ctx.addIssue({ code: 'custom', message: 'copyOverrides pins exact per-slide copy and cannot be combined with the concept or slides variable, whose own axis is retelling that copy.' });
+    }
+  }
 });
 export const BriefSlide = z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text.default('') });
-/** Explicit per-slide copy override (SLA-430 D3). Keys are 0-based slide indices;
- *  property presence decides — `""` clears the overlay, an omitted index preserves
- *  the resolved source copy. Optional so briefs stored before it keep working. */
-const CopyOverrides = z.record(z.string().regex(/^\d+$/), z.string().max(2000));
 export const Brief = z.object({
   concept: text.min(1), hook: text.min(1), character: text, visualStyle: text.min(1), caption: text,
   cta: text, lockedConstraints: z.array(text.min(1)).max(20),
@@ -141,6 +166,10 @@ export interface Experiment {
   commands: Record<string, string>; allowPartial: boolean; createFingerprint: string;
   /** Classified from the source analyses during planning; constrains briefs and renders. */
   styleFormula?: { medium: string; density: string } | null;
+  /** Plain-language adjustments planning had to make, shown on the experiment so a
+   *  caller who paid for two variants, or asked for copy on a slide that will not
+   *  render, is not left guessing. Never an error: the run still completes. */
+  notices?: string[] | null;
   /** Briefs-stage fan-out: every candidate with its Jev viral score, and which were picked. */
   briefJudge?: { candidates: Array<{ title: string; hook: string; score: number; confidence?: number }>; picked?: string[];
     /** Resolved explicit winner id (choice ?? value), null on missing/invalid answers. */

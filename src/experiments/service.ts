@@ -6,7 +6,7 @@ import * as S from './schema.js';
 import * as store from './store.js';
 import { compatibleInput } from './providers.js';
 import { experimentSourceKeys, hasExperimentSlides, isPhotoPost } from '../lib/media.js';
-import { effectiveOverlayText } from './render-prompt.js';
+import { persistedOverlayText } from './render-prompt.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { applyApprovedEstimate } from './budget.js';
 
@@ -155,7 +155,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     applyApprovedEstimate(e, est);
     for(const v of vs) {
       v.frozenBrief=structuredClone(v.brief);v.status='generating';
-      v.slides=v.brief.slides.map((_s,index)=>({index,status:'pending',url:null,path:null,error:null,overlayText:effectiveOverlayText(v.brief,index)}));
+      v.slides=v.brief.slides.map((_s,index)=>({index,status:'pending',url:null,path:null,error:null,overlayText:persistedOverlayText(v.brief,index)}));
       e.tasks.push(...v.slides.map(s=>task('slide',v.id,s.index)));
     }
     e.status='generating';

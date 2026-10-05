@@ -811,10 +811,28 @@ ${cards.length ? toolbarHtml(filters) : ''}
         var overlays = [];
         for (var i = 2; i <= n; i++) overlays.push(str('edit-ov-' + i));
         var hook = str('edit-hook');
+        // Slice ONCE, here, before either carrier is built. The direction field
+        // is a capped field (2000 chars) of the same validated object, so an
+        // unbounded prose makes a long deck uncreatable — the same refusal as an
+        // unbounded key set, one field over. Slicing first keeps the prose and
+        // copyOverrides describing the same slides, so the two carriers agree.
+        overlays = overlays.slice(0, Math.min(overlays.length, Math.max(0, slideCount - 1)));
         var lines = ['Slide 1 (hook): "' + hook + '" (empty clears it too)'];
         overlays.forEach(function (t, k) {
           lines.push('Slide ' + (k + 2) + ': "' + t + '"' + (t ? '' : ' (strip — no text)'));
         });
+        // The exact requested copy also travels as structured values. The prose
+        // above is only the planner's hint; without these the requested words
+        // reach the renderer as whatever the model felt like writing.
+        // The form still offers a box for every SOURCE slide — the user must be
+        // able to blank a CTA slide the experiment may drop — but the emission
+        // is bounded by the clamped slideCount this payload declares, so a long
+        // deck (TikTok runs to 35 photos) cannot emit more keys than the
+        // experiment can hold and be refused at create time. The server-side
+        // clamp still covers whatever the derived count drops below this one,
+        // and reports it as a notice.
+        var copyOverrides = { '0': hook };
+        overlays.forEach(function (t, k) { copyOverrides[String(k + 1)] = t; });
         return {
           videoIds: selected.slice(0, 1),
           surveyMode: 'edit',
@@ -824,6 +842,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
             direction: 'Render the exact overlay texts. ' + lines.join(' '),
             lockedConstraints: [],
             variables: ['hook'], mode: 'controlled',
+            copyOverrides: copyOverrides,
           },
           variantCount: 2, slideCount: slideCount, maxCredits: 100,
         };
@@ -847,7 +866,10 @@ ${cards.length ? toolbarHtml(filters) : ''}
       };
     }
 
-    function reviewHtml(p) {
+    // sourceSlides is display-only and is passed separately, never attached to
+    // the payload: create mode copies the whole object into the host/chat box,
+    // so a property here would be pasted as a parameter that does not exist.
+    function reviewHtml(p, sourceSlides) {
       var rows = [
         ['Mode', p.surveyMode === 'edit' ? 'Edit slideshow (same images, new text)' : 'Create variations'],
         ['Videos', p.videoIds.length + ' slideshow' + (p.videoIds.length === 1 ? '' : 's')],
@@ -859,6 +881,16 @@ ${cards.length ? toolbarHtml(filters) : ''}
         rows.push(['Goal', p.instructions.goal || '—']);
       } else {
         rows.push(['Direction', p.instructions.direction]);
+        // This row only knows the wizard's own clamp, which runs client-side. The
+        // server derives the effective count separately and can come back lower
+        // (a deck whose last slide reads like a call to action is planned one
+        // slide shorter). That later drop is reported by the planning notice, not
+        // here, so treat this row as the floor and not the whole story.
+        if (sourceSlides && sourceSlides > p.slideCount) {
+          rows.push(['Not rendered', (sourceSlides === p.slideCount + 1 ? 'Slide ' : 'Slides ')
+            + (p.slideCount + 1) + (sourceSlides > p.slideCount + 1 ? '–' + sourceSlides : '')
+            + ' of this deck will not be rendered, so copy typed there is ignored.']);
+        }
       }
       rows.push(['Max credits', String(p.maxCredits)]);
       rows.push(['Cost now', 'Nothing — this creates a draft. Planning and rendering spend credits later.']);
@@ -907,13 +939,39 @@ ${cards.length ? toolbarHtml(filters) : ''}
         var problem = validate();
         if (problem) { err(problem); return; }
         var p = buildPayload();
-        document.getElementById('exp-review').innerHTML = reviewHtml(p);
+        var srcSlides = parseInt(document.getElementById('edit-overlays').dataset.slides || '0', 10) || 0;
+        document.getElementById('exp-review').innerHTML = reviewHtml(p, srcSlides);
         document.getElementById('exp-host-payload-wrap').hidden = !inHost;
         if (inHost) {
-          var chatPayload = Object.assign({}, p);
-          delete chatPayload.surveyMode;
+          var chatPayload;
+          if (mode === 'edit') {
+            // An edit must be pasted as mode:"edit" with hook/overlayTexts.
+            // Dropping surveyMode alone left the call with no mode at all, so it
+            // fell through to create mode and became a prose-only experiment.
+            var ov = p.instructions.copyOverrides || { '0': '' };
+            // overlayTexts is POSITIONAL, so a gap in the keys cannot be
+            // represented. buildPayload only ever emits dense keys, so this is
+            // unreachable; truncating is the safer failure if it ever happens,
+            // because a slide with no entry keeps its resolved copy instead of
+            // silently receiving another slide's words.
+            var ovs = [];
+            for (var k = 1; ov[String(k)] !== undefined; k++) ovs.push(ov[String(k)]);
+            chatPayload = {
+              mode: 'edit', videoIds: p.videoIds,
+              hook: ov['0'], overlayTexts: ovs, language: p.instructions.language,
+              slideCount: p.slideCount, maxCredits: p.maxCredits,
+            };
+          } else {
+            chatPayload = Object.assign({}, p);
+            delete chatPayload.surveyMode;
+          }
           document.getElementById('exp-host-payload').textContent =
-            'Create this slideshow experiment with the create_experiment tool:\n' + JSON.stringify(chatPayload, null, 2);
+            // The separator is written as an escaped backslash-n, not a real
+            // newline: this string lives inside the page's inline script, and a
+            // literal newline inside a single-quoted JS string is a SyntaxError
+            // that stops EVERY handler on the gallery page from registering.
+            // Escaped here, the served JS reads it as the newline it should be.
+            'Create this slideshow experiment with the create_experiment tool:\\n' + JSON.stringify(chatPayload, null, 2);
         }
         setStep(3);
         return;
@@ -942,7 +1000,8 @@ ${cards.length ? toolbarHtml(filters) : ''}
       }).then(function (out) {
         btn.disabled = false;
         if (!out.ok) {
-          res.textContent = 'Could not create: ' + ((out.body && out.body.error) || 'request failed');
+          res.textContent = 'Could not create: ' + ((out.body && out.body.error) || 'request failed')
+            + ((out.body && out.body.message) ? ' — ' + out.body.message : '');
           return;
         }
         var e = out.body.experiment || {};

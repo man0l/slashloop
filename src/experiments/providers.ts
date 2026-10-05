@@ -292,6 +292,74 @@ export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pic
   if(!baseline||!candidates.length)throw new SafeFailure('brief_candidates_invalid');
   return {baseline,candidates};
 }
+/**
+ * SLA-431: pin the exact per-slide copy the user requested onto EVERY variant.
+ *
+ * The request carried it as structured `instructions.copyOverrides`; here it
+ * becomes `brief.copyOverrides`, which `prepare()` already resolves into the
+ * single overlay decision that reaches both the render request and the QA
+ * checker. Pinning after normalization is what makes it survive: the briefs
+ * fan-out can retell supporting copy, and validation would otherwise read those
+ * slides as a second unapproved variable (`not_one_variable`) and drop them.
+ *
+ * Every edited variant gets the identical requested support/blanks, so the only
+ * variant axis left is the hook — the authorized legacy two-variant behavior.
+ * The requested hook becomes the BASELINE's hook; the alternate variant keeps its
+ * own hook as the free variable, because that is what the existing A/B test is.
+ * So `brief.hook` and `copyOverrides['0']` are baseline-only: forcing the
+ * requested hook onto the alternate would collapse both decks into one hook and
+ * delete the experiment. `supportRetell` stays off: this pins exact values, it
+ * does not authorize a supporting-copy rewrite.
+ *
+ * An omitted index is never touched, so it keeps whatever copy would otherwise
+ * resolve for that slide — the resolved source copy when copy is locked, or the
+ * brief's own copy when the experiment varies `hook`. It is never a blank.
+ * Slide 1 mirrors the authoritative hook; `Brief.hook` itself cannot hold an
+ * empty string, so an explicitly blank slide 1 is carried by the override and
+ * its `slides[0].overlayText`, which is what the overlay decision reads.
+ *
+ * Returns the dropped out-of-range indices instead of throwing. This runs inside
+ * the briefs `execute()`, after grok's generation and Jev scoring, so a refusal
+ * here is a deterministic error on the paid retry loop: the run requeues four
+ * times and then fails. A caller legitimately cannot know the effective count —
+ * the wizard sizes its form from the raw card length while the experiment's count
+ * drops a CTA last slide and prefers the recreation deck — so a superset is
+ * normal input, not a caller mistake. Copy for a slide that will not render has
+ * nowhere to go, so it is reported and skipped; every in-range index is still
+ * honoured verbatim, which is the hazard that actually mattered.
+ */
+export function pinCopyOverrides(proposals: Proposal[], e: Pick<Experiment, 'instructions' | 'slideCount'>): { proposals: Proposal[]; dropped: string[] } {
+  const overrides = e.instructions.copyOverrides;
+  if (!overrides) return { proposals, dropped: [] };
+  const indexes = Object.keys(overrides);
+  const bad = indexes.find(k => !/^\d+$/.test(k));
+  if (bad !== undefined) throw new ExperimentError(422, 'invalid_slide_mapping', `Copy override index "${bad}" is not a slide index.`);
+  const inRange = indexes.filter(k => Number(k) < e.slideCount);
+  const dropped = indexes.filter(k => !inRange.includes(k)).sort((a, b) => Number(a) - Number(b));
+  const requestedHook = inRange.includes('0') ? overrides['0'] : undefined;
+  const support = new Map(inRange.filter(k => Number(k) > 0).map(k => [Number(k), String(overrides[k])]));
+  const supportOverrides = Object.fromEntries(support);
+  const pinned = proposals.map((p, n) => {
+    const baseline = n === 0;
+    const pinHook = requestedHook !== undefined;
+    const slides = p.brief.slides.map((s, i) => {
+      // Slide 1's stored overlayText is inert for rendering (effectiveOverlayText
+      // returns brief.hook there), but it MUST be identical across variants or
+      // validation reads the slides as a second changed variable and rejects the
+      // run. So align it to the requested hook everywhere.
+      if (i === 0) return pinHook ? { ...s, overlayText: String(requestedHook) } : s;
+      return support.has(i) ? { ...s, overlayText: support.get(i)! } : s;
+    });
+    // Only the BASELINE's hook becomes the requested one; the alternate keeps its
+    // own hook as the free variable of the approved legacy A/B test. Only mirror
+    // a non-empty value: Brief.hook is min(1), and a blank slide 1 is carried by
+    // copyOverrides['0'] and slides[0] instead.
+    const hook = baseline && pinHook && String(requestedHook).trim() ? String(requestedHook) : p.brief.hook;
+    const copyOverrides = baseline && pinHook ? { ...supportOverrides, '0': String(requestedHook) } : { ...supportOverrides };
+    return { ...p, brief: { ...p.brief, slides, hook, copyOverrides } };
+  });
+  return { proposals: pinned, dropped };
+}
 /** Hand-written JSON Schema for grok structured outputs (additionalProperties:false, no $ref). */
 const BRIEF_DELTA_SLIDES={type:'array',minItems:3,maxItems:8,items:{type:'object',additionalProperties:false,required:['role','scene','overlayText'],properties:{role:{type:'string'},scene:{type:'string'},overlayText:{type:'string'}}}};
 // Deltas-only fan-out: full `slides` are sent ONLY for the `slides`
@@ -664,7 +732,26 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     const briefJudge={candidates:scoredAll.map(s=>({title:s.c.title,hook:s.c.brief?.hook??'',score:s.score,confidence:s.confidence})),picked:picked.map(c=>c.title),winner:winnerId,fallback,reportPresent,state};
     // Jev score rides on each winning proposal for provenance.
     const proposals=[generated.baseline,...picked.map(c=>{const s=scoredAll.find(x=>x.c===c);return {...c,jev:{score:s?.score??0,confidence:s?.confidence}};})];
-    validateVariants(e,proposals);return {proposals,briefJudge,styleFormula:e.styleFormula??null,slideCount:e.slideCount};
+    // SLA-431: pin the requested exact copy before validation, so the supporting
+    // slides are identical across variants instead of reading as a retell.
+    const { proposals: pinned, dropped } = pinCopyOverrides(proposals,e);
+    // Pinning can collapse a candidate onto the baseline — a model that honours
+    // the request for its "new hook" hook self-collapses the A/B. The dedupe
+    // above cannot catch it because the baseline's hook changes after
+    // normalization. Rejecting the run would waste the analysis and planning
+    // credits already spent, so drop the duplicate instead: validateVariants
+    // treats fewer variants than requested as a degraded success.
+    const baseFp=pinned.length?fingerprint(pinned[0]!):'';
+    const kept=baseFp?pinned.filter((p,i)=>i===0||fingerprint(p)!==baseFp):pinned;
+    const collapsed=pinned.length-kept.length;
+    // Both adjustments are visible on the experiment, not only in worker logs: a
+    // caller who paid for a two-variant A/B should see it became one, and a
+    // requested slide that will not render should not vanish silently.
+    const notices:string[]=[];
+    if(collapsed)notices.push(`Requested copy made the alternate variant identical to the baseline, so this run has ${kept.length} variant(s) instead of ${pinned.length}.`);
+    if(dropped.length)notices.push(`Requested copy for slide(s) ${dropped.map(d=>Number(d)+1).join(', ')} was not applied: this experiment renders ${e.slideCount} slides.`);
+    if(notices.length)console.log(`[experiments] briefs ${e.id} ${notices.join(' ')}`);
+    validateVariants(e,kept);return {proposals:kept,briefJudge,styleFormula:e.styleFormula??null,slideCount:e.slideCount,notices};
   }};
   const v=e.variants.find(v=>v.id===t.target);if(!v?.frozenBrief)throw new SafeFailure('missing_frozen_brief');
   if(!process.env.OPENROUTER_API_KEY)throw new SafeFailure('openrouter_not_configured');

@@ -33,7 +33,7 @@ import { load, list, serialize } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
 import {
-  ExperimentError, Id, MAX_MANUAL_ATTEMPTS, SLIDE_FANOUT, VARIABLE_FIELDS, type Experiment, type InstructionsData,
+  CopyOverrides, ExperimentError, Id, MAX_MANUAL_ATTEMPTS, SLIDE_FANOUT, VARIABLE_FIELDS, type Experiment, type InstructionsData,
 } from '../experiments/schema.js';
 
 // ---- dependencies ----------------------------------------------------------
@@ -67,14 +67,22 @@ export const defaultExperimentToolDeps: ExperimentToolDeps = {
  * there are exactly two variants and the cap is 100 credits — a hook A/B on a
  * deck whose images do not move.
  *
- * The overlay copy goes into `direction` as the planner's only brief, so the
- * per-slide lines are quoted in the wizard's own wording and order: slide 1 is
- * the tested hook, slides 2..N are supporting copy, and "(strip — no text)"
- * means render nothing at all, which is NOT the same as "leave the original".
+ * `copyOverrides` carries the exact requested copy as structured values; the
+ * `direction` prose below is only the planner's hint, quoted in the wizard's own
+ * wording and order (slide 1 is the tested hook, slides 2..N are supporting
+ * copy, and "(strip — no text)" means render nothing at all). SLA-431: prose
+ * alone lost the requested copy, so the two carriers must agree — an omitted
+ * slide is described as unchanged, never as cleared.
  */
 export const EDIT_GOAL = 'Edit the slideshow overlay text, keeping the same images.';
 /** Two variants: the original hook and the replacement. */
 export const EDIT_VARIANT_COUNT = 2;
+/** Per-value copy ceiling for an edit request, matching the site's own input
+ *  maxlength. It bounds the quoted direction: hook + 7 overlays at this size,
+ *  plus the per-slide framing, stays under Instructions.direction's 2000-char
+ *  cap. The wizard and this tool are two producers of that prose and must
+ *  agree, so the bound lives on both. */
+export const EDIT_COPY_MAX = 200;
 /** Hard ceiling for an edit run, as on the site. */
 export const EDIT_MAX_CREDITS = 100;
 
@@ -85,8 +93,13 @@ export const EDIT_MAX_CREDITS = 100;
  * inside the sentence, so leading or trailing whitespace would be rendered as
  * part of the overlay text instead of being a typo in the request.
  */
-export function editSlideDirection(hook: string, overlayTexts: string[]): string {
-  const lines = [`Slide 1 (hook): "${hook.trim()}" (empty clears it too)`];
+export function editSlideDirection(hook: string | undefined, overlayTexts: string[]): string {
+  // An omitted hook must not be described as a cleared slide: the structured
+  // carrier treats an omitted index as "unchanged", and prose that says the
+  // opposite would instruct the planner to blank a slide the user never touched.
+  const lines = [hook === undefined
+    ? 'Slide 1 (hook): unchanged — no new hook was requested'
+    : `Slide 1 (hook): "${hook.trim()}" (empty clears it too)`];
   overlayTexts.forEach((text, index) => {
     const trimmed = text.trim();
     lines.push(`Slide ${index + 2}: "${trimmed}"${trimmed ? '' : ' (strip — no text)'}`);
@@ -95,11 +108,20 @@ export function editSlideDirection(hook: string, overlayTexts: string[]): string
 }
 
 /** Edit mode is a single deck, so the "one experiment per source" loop is length 1 by definition. */
-export function editInstructions(hook: string, overlayTexts: string[], language: string): InstructionsData {
+export function editInstructions(hook: string | undefined, overlayTexts: string[], language: string): InstructionsData {
+  // SLA-431: the requested copy travels as structured values, not only as quoted
+  // prose in `direction`. Property presence is the whole signal — an explicit ""
+  // is a blank that must reach the renderer, and an omitted index is NOT a blank,
+  // it is "keep the resolved source copy". A truthiness test here collapses those
+  // two cases and silently re-injects stripped source words.
+  const copyOverrides: Record<string, string> = {};
+  if (hook !== undefined) copyOverrides['0'] = hook.trim();
+  overlayTexts.forEach((value, index) => { copyOverrides[String(index + 1)] = value.trim(); });
   return {
     goal: EDIT_GOAL, brand: '', audience: '', language: language.trim() || 'English',
     direction: editSlideDirection(hook, overlayTexts),
     lockedConstraints: [], variables: ['hook'], mode: 'controlled',
+    copyOverrides,
   };
 }
 
@@ -327,6 +349,9 @@ const briefInput = z.object({
   visualStyle: z.string().min(1).max(2000), caption: z.string().max(2000), cta: z.string().max(2000),
   lockedConstraints: z.array(z.string().min(1).max(2000)).max(20),
   slides: z.array(briefSlideInput).min(3).max(8),
+  // SLA-431: must be accepted here or zod strips it silently and an explicitly
+  // blank slide 1 loses both of its carriers on the documented review step.
+  copyOverrides: CopyOverrides.optional(),
 });
 
 // ---- tools -----------------------------------------------------------------
@@ -391,10 +416,14 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       ),
       videoIds: z.array(Id).min(1).max(20).describe('1–20 distinct Gallery video ids; one experiment per video. Edit mode takes exactly one.'),
       instructions: instructionsInput.optional().describe('CREATE mode. Required in create mode; not used in edit mode.'),
-      hook: z.string().max(2000).optional().describe(
-        'EDIT mode: the exact words for slide 1. May be empty if the change is a supporting slide\'s text instead.',
+      // The 200-character caps match the site's own input maxlength, and they
+      // are what keeps the quoted direction under Instructions.direction's
+      // 2000-char limit: 8 values x 200 + the per-slide framing is ~1968. At the
+      // old max(2000) an edit of 4 x 600-char slides was refused outright.
+      hook: z.string().max(EDIT_COPY_MAX).optional().describe(
+        'EDIT mode: the exact words for slide 1. OMIT this field to leave slide 1 unchanged; send an empty string only to strip slide 1\'s text.',
       ),
-      overlayTexts: z.array(z.string().max(2000)).max(7).optional().describe(
+      overlayTexts: z.array(z.string().max(EDIT_COPY_MAX)).max(7).optional().describe(
         'EDIT mode: overlay text for slides 2, 3, … in order. Empty string = render no text on that slide.',
       ),
       language: z.string().trim().min(1).max(80).optional().describe('EDIT mode: output language for the copy (default English).'),
@@ -423,7 +452,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       }
       const edit = mode === 'edit'
         ? {
-          instructions: editInstructions(hook ?? '', overlayTexts ?? [], language ?? 'English'),
+          instructions: editInstructions(hook, overlayTexts ?? [], language ?? 'English'),
           variantCount: EDIT_VARIANT_COUNT,
           maxCredits: EDIT_MAX_CREDITS,
         }

@@ -9,8 +9,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Command, Create, EditBrief, Generate, Plan, Retry, ExperimentError, Key, type Experiment } from '../experiments/schema.js';
 import {
-  registerExperimentTools, defaultExperimentCap, derivedKey, editSlideDirection,
-  EDIT_GOAL, EDIT_MAX_CREDITS, EDIT_VARIANT_COUNT, type ExperimentToolDeps,
+  registerExperimentTools, defaultExperimentCap, derivedKey, editSlideDirection, editInstructions,
+  EDIT_COPY_MAX, EDIT_GOAL, EDIT_MAX_CREDITS, EDIT_VARIANT_COUNT, type ExperimentToolDeps,
 } from './experiments.js';
 
 const TOOLS = [
@@ -203,6 +203,8 @@ describe('create_experiment', () => {
       lockedConstraints: [],
       variables: ['hook'],
       mode: 'controlled',
+      // SLA-431: the same exact copy as structured values, blank included.
+      copyOverrides: { '0': 'Stop doing this', '1': 'Three things I wish I knew', '2': '' },
     });
     expect(body0.variantCount).toBe(EDIT_VARIANT_COUNT);
     expect(body0.maxCredits).toBe(EDIT_MAX_CREDITS);
@@ -220,6 +222,59 @@ describe('create_experiment', () => {
       .toBe('Render the exact overlay texts. Slide 1 (hook): "A hook" (empty clears it too) '
         + 'Slide 2: "second" Slide 3: "" (strip — no text) Slide 4: "fourth"');
     expect(editSlideDirection('Only a hook', [])).toBe('Render the exact overlay texts. Slide 1 (hook): "Only a hook" (empty clears it too)');
+  });
+
+  test('edit mode carries the requested copy as structured values, not prose alone', () => {
+    // The exact user values, trimmed the same way the quoted prose is. Slide 1 is
+    // the hook and slides 2..N are the requested supporting copy.
+    expect(editInstructions(' New hook ', [' New support ', ''], 'English').copyOverrides)
+      .toEqual({ '0': 'New hook', '1': 'New support', '2': '' });
+    // An explicit "" stays present: it is a blank that must reach the renderer.
+    const blank = editInstructions('H', ['  '], 'English').copyOverrides!;
+    expect(Object.keys(blank)).toEqual(['0', '1']);
+    expect(blank['1']).toBe('');
+    // An omitted hook is NOT a blank. It means "keep the resolved source copy",
+    // so there must be no slide-1 key at all.
+    const omitted = editInstructions(undefined, ['New support'], 'English').copyOverrides!;
+    expect(Object.keys(omitted)).toEqual(['1']);
+    expect(omitted).not.toHaveProperty('0');
+    // Prose is still emitted for the model's benefit; the structured values are
+    // what the effective brief and render request are built from.
+    const both = editInstructions('H', ['S'], 'Danish');
+    expect(both.direction).toContain('Slide 2: "S"');
+    expect(both.variables).toEqual(['hook']);
+    expect(both.varySupportingOverlays).toBeUndefined();
+  });
+
+  test('an omitted hook reads as unchanged in prose too, not as a cleared slide', () => {
+    // M2: `editSlideDirection(hook ?? '', ...)` collapsed undefined -> '' before
+    // the omitted-hook branch could be tested, so the two carriers disagreed —
+    // the structured one said "unchanged" while the prose said "empty clears it".
+    // direction reaches the briefs prompt and every render request, so on a paid
+    // render that contradiction blanks slide 1.
+    const omitted = editInstructions(undefined, ['Better support'], 'English');
+    expect(omitted.copyOverrides).not.toHaveProperty('0');
+    expect(omitted.direction).toContain('Slide 1 (hook): unchanged');
+    expect(omitted.direction).not.toContain('(empty clears it too)');
+    // An EXPLICIT empty hook is still a blank, and says so.
+    const explicit = editInstructions('', ['Better support'], 'English');
+    expect(explicit.copyOverrides!['0']).toBe('');
+    expect(explicit.direction).toContain('Slide 1 (hook): "" (empty clears it too)');
+    // The prose helper is also reachable directly.
+    expect(editSlideDirection(undefined, [])).toBe('Render the exact overlay texts. Slide 1 (hook): unchanged — no new hook was requested');
+    expect(editSlideDirection(' A hook ', [])).toBe('Render the exact overlay texts. Slide 1 (hook): "A hook" (empty clears it too)');
+  });
+
+  test('the edit request keeps an omitted hook omitted instead of blanking slide 1', async () => {
+    await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], overlayTexts: ['New support', ''] });
+    const body = callsOf('createExperiment')[0]![0] as any;
+    expect(body.instructions.copyOverrides).toEqual({ '1': 'New support', '2': '' });
+    expect(body.instructions.copyOverrides).not.toHaveProperty('0');
+    expect(Create.safeParse(body).success).toBe(true);
+    // An explicit blank hook is a real request and is carried as one.
+    await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], hook: '', overlayTexts: ['New support'] });
+    const blank = callsOf('createExperiment')[1]![0] as any;
+    expect(blank.instructions.copyOverrides).toEqual({ '0': '', '1': 'New support' });
   });
 
   test('edit mode refuses several decks and empty copy before creating anything', async () => {
@@ -243,6 +298,129 @@ describe('create_experiment', () => {
     expect(body0.variantCount).toBe(EDIT_VARIANT_COUNT);
     expect(body0.maxCredits).toBe(EDIT_MAX_CREDITS);
     expect(Create.safeParse(body0).success).toBe(true);
+  });
+
+  test('the tool refuses copy that would overflow the direction it has to quote', async () => {
+    // The wizard and this tool are the two producers of the same quoted prose.
+    // The wizard bounds each box at 200; the tool used to accept 2000, so an edit
+    // of 4 x 600-char slides produced a 16k direction and was refused at create.
+    // A schema rejection comes back as a non-JSON MCP error body, so assert on
+    // the refusal and on the service never being reached.
+    const refused = async (args: Record<string, unknown>) => {
+      const client = await connect();
+      const res = await client.callTool({ name: 'create_experiment', arguments: args }) as { isError?: boolean };
+      expect(Boolean(res.isError)).toBe(true);
+      expect(callsOf('createExperiment')).toHaveLength(0);
+    };
+    // HOOK-ONLY cases. Both caps are 200 and a case that carries an over-length
+    // overlay still passes if only the overlay cap is reverted, so the two
+    // producers' caps have to be exercised separately or the suite cannot tell
+    // them apart. `hook` is the largest single value in the direction.
+    await refused({ mode: 'edit', videoIds: ['vid1'], hook: 'C'.repeat(600) });
+    await refused({ mode: 'edit', videoIds: ['vid1'], hook: 'C'.repeat(201) });
+    // OVERLAY-ONLY cases, same reason.
+    await refused({ mode: 'edit', videoIds: ['vid1'], hook: 'H', overlayTexts: ['D'.repeat(600)] });
+    await refused({ mode: 'edit', videoIds: ['vid1'], hook: 'H', overlayTexts: ['D'.repeat(201)] });
+    // The maximum the tool now accepts still fits the 2000-char direction field,
+    // so an accepted edit can never be refused by the schema that stores it.
+    const worst = editInstructions('C'.repeat(EDIT_COPY_MAX), Array(7).fill('D'.repeat(EDIT_COPY_MAX)), 'English');
+    expect(worst.direction.length).toBeLessThanOrEqual(2000);
+    expect(Create.safeParse({
+      workspaceId: 'w1', idempotencyKey: 'gallery:abc123', videoIds: ['vid1'], instructions: worst,
+      variantCount: EDIT_VARIANT_COUNT, slideCount: 8, maxCredits: EDIT_MAX_CREDITS,
+    }).success).toBe(true);
+    // 200 chars per value is the site's own input maxlength — one bound, two paths.
+    expect(EDIT_COPY_MAX).toBe(200);
+  });
+
+  test('the hook parameter documents presence, not emptiness', async () => {
+    // The tool description is the contract an agent actually reads, and it was
+    // the half that was stale: it said an empty hook meant "the change is a
+    // supporting slide's text", while presence is the signal and "" is an
+    // explicit clear of slide 1. Re-wording it back would be invisible otherwise.
+    const client = await connect();
+    const listed = await client.listTools();
+    const schema = listed.tools.find(t => t.name === 'create_experiment')!.inputSchema as {
+      properties?: Record<string, { description?: string }>;
+    };
+    const hook = schema.properties!.hook!.description!;
+    expect(hook).toContain('OMIT this field to leave slide 1 unchanged');
+    expect(hook).toContain('empty string only to strip');
+    expect(hook).not.toContain('May be empty if the change');
+  });
+
+  test('the gallery wizard payload and the host edit payload reach the same exact copy', async () => {
+    // SLA-431 F1: the site wizard POSTed a prose-only instructions object, so the
+    // reported defect was live on the product's own path, and the host/chat copy
+    // of that payload lost `mode` entirely and fell through to create mode.
+    // The wizard's inline script runs in its own iframe and cannot call a module
+    // helper, so this pins the CONTRACT both paths must satisfy rather than the
+    // UI line itself; a browser check is tracked separately.
+    const hook = 'Stop doing this';
+    const overlays = ['Three things I wish I knew', ''];
+    // 1. What the browser POSTs: instructions now carry copyOverrides.
+    const gallerySurvey = {
+      videoIds: ['vid1'], surveyMode: 'edit',
+      instructions: {
+        goal: EDIT_GOAL, brand: '', audience: '', language: 'English',
+        direction: 'Render the exact overlay texts.',
+        lockedConstraints: [], variables: ['hook'], mode: 'controlled',
+        copyOverrides: editInstructions(hook, overlays, 'English').copyOverrides,
+      },
+      variantCount: EDIT_VARIANT_COUNT, slideCount: 3, maxCredits: EDIT_MAX_CREDITS,
+    };
+    // api/gallery.ts strips only surveyMode and forwards the rest verbatim.
+    const { surveyMode: _mode, ...fields } = gallerySurvey;
+    expect(Create.safeParse({ workspaceId: 'w1', idempotencyKey: 'gallery:abc123', ...fields }).success).toBe(true);
+    expect((fields.instructions as any).copyOverrides).toEqual({ '0': hook, '1': overlays[0], '2': '' });
+    // 2. What the host is told to paste: mode edit + hook/overlayTexts.
+    await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], hook, overlayTexts: overlays });
+    const viaTool = (callsOf('createExperiment')[0]![0] as any).instructions.copyOverrides;
+    // Both paths must agree exactly, blanks included, or the defect survives on one.
+    expect(viaTool).toEqual((fields.instructions as any).copyOverrides);
+  });
+
+  test('a long deck never emits more per-slide overrides than the experiment can hold', () => {
+    // The wizard shows an overlay box for every SOURCE slide (TikTok decks reach
+    // 35 photos) while the payload's slideCount is clamped to 3..8. Emitting a key
+    // per box would exceed the per-slide cap and be refused at create time, so a
+    // 9+ slide deck could not be edited through the product's own wizard at all.
+    // The emission bound itself is pinned by a source guard in gallery.test.ts.
+    // Deck length only matters BELOW the clamp, where Math.max(3, …) engages;
+    // at 9+ every deck collapses to the same 8-slide payload, so those rows were
+    // the same input three times. Rows 3/5/7 exercise the lower clamp, 8 the
+    // upper, and the last two vary copy length at the top of the range.
+    for (const [sourceSlides, perBox] of [[3, 200], [5, 200], [7, 200], [8, 200], [9, 200], [35, 52], [35, 20]] as const) {
+      const slideCount = Math.min(8, Math.max(3, sourceSlides));
+      // 200 chars per box is the input's own maxlength, not a stress value.
+      const box = 'C'.repeat(perBox);
+      const overlays = Array.from({ length: sourceSlides - 1 }, () => box);
+      // Reconstruct buildPayload faithfully: slice once, then build BOTH
+      // carriers from the slice. The previous version of this test built only the
+      // keys and used a one-word direction, so it passed while the real payload
+      // was refused on the 2000-char prose field — the exact defect it claimed
+      // to cover.
+      const kept = overlays.slice(0, Math.min(overlays.length, Math.max(0, slideCount - 1)));
+      const hook = 'New hook';
+      const emitted = Object.fromEntries([['0', hook], ...kept.map((t, k) => [String(k + 1), t])]);
+      const lines = [`Slide 1 (hook): "${hook}" (empty clears it too)`];
+      kept.forEach((t, k) => { lines.push(`Slide ${k + 2}: "${t}"${t ? '' : ' (strip — no text)'}`); });
+      const direction = 'Render the exact overlay texts. ' + lines.join(' ');
+      expect(Object.keys(emitted).length).toBe(slideCount);
+      // Both carriers describe the same slides, so the request is internally consistent.
+      expect(lines.length).toBe(slideCount);
+      expect(direction.length).toBeLessThanOrEqual(2000);
+      const body = {
+        workspaceId: 'w1', idempotencyKey: 'gallery:abc123', videoIds: ['vid1'],
+        instructions: {
+          goal: EDIT_GOAL, brand: '', audience: '', language: 'English', direction,
+          lockedConstraints: [], variables: ['hook'], mode: 'controlled', copyOverrides: emitted,
+        },
+        variantCount: EDIT_VARIANT_COUNT, slideCount, maxCredits: EDIT_MAX_CREDITS,
+      };
+      const parsed = Create.safeParse(body);
+      expect(parsed.success ? '' : parsed.error.issues[0]!.message).toBe('');
+    }
   });
 
   test('an identical edit retry derives the same key (no duplicate drafts)', async () => {
@@ -345,6 +523,25 @@ describe('edits, cancel and delete', () => {
     expect(m[3]).toEqual({ workspaceId: 'w1', revision: 1, brief });
     expect(EditBrief.safeParse(m[3]).success).toBe(true);
     expect(m[4]).toBe('v1');
+  });
+
+  test('update_experiment_variant keeps the pinned copy overrides on the brief', async () => {
+    // M3: briefInput used to be a plain z.object, so it silently STRIPPED
+    // copyOverrides. An explicitly blank slide 1 has exactly two carriers
+    // (copyOverrides['0'] and slides[0].overlayText) and Brief.hook cannot be
+    // blank, so the strip resurrected the generated board hook on the very
+    // review step that exists to show the user what will render.
+    const blank = { ...brief, hook: 'Generated board hook', copyOverrides: { '0': '', '1': 'New support' } };
+    store.set('e1', exp('e1', { status: 'review' }));
+    const res = await call('update_experiment_variant', { experimentId: 'e1', variantId: 'v1', revision: 1, brief: blank });
+    expect(res.isError).toBe(false);
+    const forwarded = callsOf('mutate')[0]![3] as any;
+    expect(forwarded.brief.copyOverrides).toEqual({ '0': '', '1': 'New support' });
+    expect(EditBrief.safeParse(forwarded).success).toBe(true);
+    // A brief without overrides is still accepted and stays without them.
+    store.set('e1', exp('e1', { status: 'review' }));
+    await call('update_experiment_variant', { experimentId: 'e1', variantId: 'v1', revision: 1, brief });
+    expect((callsOf('mutate')[1]![3] as any).brief).not.toHaveProperty('copyOverrides');
   });
 
   test('service refusals come back as isError with the code and a hint', async () => {
