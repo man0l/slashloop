@@ -29,15 +29,26 @@ export function analysisHasCtaSlide(raw: unknown, originalCount: number): boolea
   return false;
 }
 
-export function storySlideCount(originalCount: number, hasCta: boolean): number {
-  const n = hasCta ? originalCount - 1 : originalCount;
+export function storySlideCount(
+  originalCount: number,
+  hasCta: boolean,
+  preserveCtaSlide = false,
+): number {
+  const n = hasCta && !preserveCtaSlide ? originalCount - 1 : originalCount;
   return Math.min(8, Math.max(3, n));
 }
 
-export function deriveStorySlideCount(sources: Array<{ originalCount: number | null; analysis?: unknown }>): number | null {
+export function deriveStorySlideCount(
+  sources: Array<{ originalCount: number | null; analysis?: unknown }>,
+  options: { preserveCtaSlide?: boolean } = {},
+): number | null {
   const stories = sources.map(s => {
     if (s.originalCount == null || s.originalCount < 1) return null;
-    return storySlideCount(s.originalCount, analysisHasCtaSlide(s.analysis, s.originalCount));
+    return storySlideCount(
+      s.originalCount,
+      analysisHasCtaSlide(s.analysis, s.originalCount),
+      options.preserveCtaSlide === true,
+    );
   }).filter((n): n is number => n != null);
   if (!stories.length) return null;
   return Math.min(...stories);

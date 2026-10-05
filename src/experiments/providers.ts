@@ -263,7 +263,9 @@ export async function resolveStorySlideCount(e:Experiment):Promise<number> {
     const originalCount=experimentSourceKeys(v.rawJson).length || null;
     return {originalCount:originalCount||null,analysis:latest.get(v.id)};
   });
-  return deriveStorySlideCount(sources)??e.slideCount;
+  return deriveStorySlideCount(sources, {
+    preserveCtaSlide: e.instructions.preserveCtaSlide === true,
+  })??e.slideCount;
 }
 export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pick<Experiment,'instructions'>):{baseline:Proposal;candidates:Proposal[]}{
   const locked=e?.instructions.lockedConstraints??[];

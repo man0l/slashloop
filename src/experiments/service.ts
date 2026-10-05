@@ -53,7 +53,9 @@ export async function createExperiment(raw: unknown) {
     inputs.push(await compatibleInput(v));
   }
   const { idempotencyKey, videoIds, workspaceId, slideCount: requestedSlideCount, ...fields } = b;
-  const slideCount = deriveStorySlideCount(slideSources) ?? requestedSlideCount;
+  const slideCount = deriveStorySlideCount(slideSources, {
+    preserveCtaSlide: fields.instructions.preserveCtaSlide === true,
+  }) ?? requestedSlideCount;
   // Each experiment is isolated per slideshow but the goal doubles as the list
   // title — identical goals are indistinguishable. Suffix a quick source
   // summary unless the caller already named the source (e.g. re-duplicates).

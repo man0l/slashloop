@@ -342,6 +342,10 @@ const instructionsInput = z.object({
     'controlled: each variant changes exactly one variable vs the baseline. exploration: variants may change several, and concept/slides are allowed.',
   ),
   varySupportingOverlays: z.boolean().optional().describe('Hook tests only (controlled, variables=["hook"]): variants may also retell slide 2+ overlay text while scenes stay identical.'),
+  preserveCtaSlide: z.boolean().optional().describe(
+    'Set true only when the creative contract requires the final source CTA/app-card slide to remain in the deck. '
+      + 'Default false preserves the existing behavior of dropping a trailing CTA from the story count.',
+  ),
 });
 const briefSlideInput = z.object({ role: z.string().min(1).max(80), scene: z.string().min(1).max(2000), overlayText: z.string().max(2000).default('') });
 const briefInput = z.object({

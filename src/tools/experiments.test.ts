@@ -154,6 +154,16 @@ describe('create_experiment', () => {
     expect(store.size).toBe(2);
   });
 
+  test('create mode carries an explicit preserve-CTA contract to the service', async () => {
+    await call('create_experiment', {
+      videoIds: ['vid1'],
+      instructions: { ...instructions, preserveCtaSlide: true },
+    });
+    const body = callsOf('createExperiment')[0]![0] as any;
+    expect(body.instructions.preserveCtaSlide).toBe(true);
+    expect(Create.safeParse(body).success).toBe(true);
+  });
+
   test('a client key is used as-is for one source and suffixed per source for several', async () => {
     await call('create_experiment', { videoIds: ['vid1'], instructions, idempotencyKey: 'client-key-1' });
     await call('create_experiment', { videoIds: ['vid1', 'vid2'], instructions, idempotencyKey: 'client-key-2' });

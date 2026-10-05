@@ -29,6 +29,10 @@ export const Instructions = z.object({
   // Optional so older experiments (stored without the key) keep working —
   // absent/falsy means slide-1-hook-only, as before.
   varySupportingOverlays: z.boolean().optional(),
+  // SLA-466: preserve a final source CTA/app-card slide when the creative
+  // contract explicitly requires it. Default false keeps the established
+  // behavior of converting a trailing CTA into a shorter story deck.
+  preserveCtaSlide: z.boolean().optional(),
   // SLA-431: the exact per-slide copy the user asked for, carried as structured
   // values instead of quoted prose in `direction`. This is what survives
   // normalization into the brief and the render request; prose alone does not.

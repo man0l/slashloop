@@ -20,6 +20,7 @@ test('story count is originals minus CTA, clamped 3–8', () => {
   expect(storySlideCount(5, false)).toBe(5);
   expect(storySlideCount(3, true)).toBe(3);
   expect(storySlideCount(12, false)).toBe(8);
+  expect(storySlideCount(4, true, true)).toBe(4);
 });
 
 test('derive uses the smallest source story count', () => {
@@ -28,4 +29,7 @@ test('derive uses the smallest source story count', () => {
     { originalCount: 5, analysis: null },
   ])).toBe(5);
   expect(deriveStorySlideCount([{ originalCount: null }])).toBe(null);
+  expect(deriveStorySlideCount([
+    { originalCount: 4, analysis: { keyMoments: [{ role: 'cta', timestampSec: 3 }] } },
+  ], { preserveCtaSlide: true })).toBe(4);
 });
