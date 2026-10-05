@@ -131,6 +131,20 @@ export interface OpenRouterResult {
   outputTokens: number;
   /** What OpenRouter billed for this call in USD (0 when unreported). */
   costUsd: number;
+  /** Provider-side id for this exact generation, when the gateway reports one
+   *  (`x-request-id` header, else the body's generation id). Sanitized to an
+   *  opaque token so a caller can quote it in support/diagnostics without
+   *  carrying request payload, model input or credentials. */
+  requestId?: string;
+}
+
+/** Keep only an opaque provider id: letters, digits, dash and underscore.
+ *  Over-long input is DROPPED, never truncated — half an id is a different id,
+ *  and quoting one at support is worse than quoting none. */
+export function sanitizeRequestId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const id = value.trim();
+  return /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : undefined;
 }
 
 /**
@@ -292,6 +306,7 @@ export async function callOpenRouterText(
   }
 
   const data = (await res.json()) as {
+    id?: string;
     choices?: Array<{ message?: { content?: string } }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
     error?: { message?: string; code?: number };
@@ -317,6 +332,7 @@ export async function callOpenRouterText(
       inputTokens: data.usage?.prompt_tokens ?? 0,
       outputTokens: data.usage?.completion_tokens ?? 0,
       costUsd: Number(data.usage?.cost ?? 0),
+      requestId: sanitizeRequestId(res.headers.get('x-request-id') ?? data.id),
     };
   } catch {
     throw new Error('Failed to parse OpenRouter response as JSON');
