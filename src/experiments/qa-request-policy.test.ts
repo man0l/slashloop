@@ -21,7 +21,7 @@ import {
   resolveQaVerdict, TerminalFailure,
   QA_DEFAULT_MODEL, QA_MAX_TOKENS_CEILING, QA_TIMEOUT_MS,
 } from './providers.js';
-import { contractChecks } from './render-prompt.js';
+import { compileSlideContract, contractChecks, contractQaBlock } from './render-prompt.js';
 import { sanitizeRequestId } from '../lib/openrouter.js';
 import type { BriefData, Experiment, Task } from './schema.js';
 
@@ -292,6 +292,60 @@ describe('a pass requires the answer that was asked for', () => {
     // The pure helper is the same rule the resolver applies.
     expect(qaCoverageProblem([{ check: 'a', status: 'pass' }], ['a'])).toBeNull();
     expect(qaCoverageProblem('not an array', ['a'])).toContain('qa_response_malformed');
+  });
+
+  test('a label whose own text contains repeated spaces is answered, not rejected', async () => {
+    // CTO round 2: a contract label quotes the overlay verbatim through
+    // JSON.stringify, so a user string with a double space produced
+    // `the on-image overlay matches exactly: "Take  a break"`. Canonicalising
+    // only the returned side rejected an IDENTICAL echo of it as unexpected.
+    const spaced = compileSlideContract({
+      slideIndex: 0, role: 'hook', medium: 'photograph',
+      scene: 'A man with curly light-brown hair and blue eyes wearing a blue hockey jersey, looking right.',
+      overlay: { mode: 'replace', text: 'Take  a break', origin: 'brief' },
+      observedCopy: { state: 'observed_text', text: 'Take  a break' },
+      identityLocked: true,
+      sourceMap: { videoId: 'src', analysisId: 'an1', sourceIndex: 0, referenceKind: 'slide', path: 'p/0.jpg' },
+    });
+    const overlayLabel = contractChecks(spaced).find(c => c.includes('on-image overlay'))!;
+    // The contract really does carry the repeated space, unchanged.
+    expect(overlayLabel).toBe('the on-image overlay matches exactly: "Take  a break"');
+    process.env.OPENROUTER_API_KEY = 'test';
+
+    // 1. Identical echo: complete coverage.
+    const labels = contractChecks(spaced);
+    openRouterResponse({ status: 200, body: answersFor(labels) });
+    const echoed = await renderDeps.verifyStory!({ contract: spaced, candidate: Buffer.alloc(600, 9) });
+    expect(echoed.verdict).toBe('pass');
+    expect(echoed.diagnostics!.errorCategory).toBeUndefined();
+
+    // 2. Whitespace-only variation in what the checker sent: still the same
+    // check, so still complete coverage.
+    openRouterResponse({ status: 200, body: answersFor(labels.map(l => l.replace(/ /g, '   '))) });
+    const respaced = await renderDeps.verifyStory!({ contract: spaced, candidate: Buffer.alloc(600, 9) });
+    expect(respaced.verdict).toBe('pass');
+
+    // The rule is symmetric, not a special case for this label.
+    expect(qaCoverageProblem([{ check: 'the overlay is "a  b"', status: 'pass' }], ['the overlay is "a  b"'])).toBeNull();
+    expect(qaCoverageProblem([{ check: 'the overlay is "a b"', status: 'pass' }], ['the overlay is "a  b"'])).toBeNull();
+
+    // And strictness is unchanged where it must be. A checker that answers a
+    // DIFFERENT overlay string is not answering this check; a missing one is
+    // still missing. (Collapsing `Take  a break` to `Take a break` is NOT a
+    // different answer — that is the whitespace case above, by design.)
+    openRouterResponse({ status: 200, body: answersFor(labels.map(l => l === overlayLabel ? 'the on-image overlay matches exactly: "Take a breather"' : l)) });
+    const reworded = await renderDeps.verifyStory!({ contract: spaced, candidate: Buffer.alloc(600, 9) });
+    // Rejected as the unknown label it is (unexpected is detected before the
+    // missing-label pass), and categorised as an unusable answer.
+    expect(reworded.verdict).toBe('error');
+    expect(reworded.reasons[0]).toBe('qa_unexpected_check:the on-image overlay matches exactly: "Take a breather"');
+    expect(reworded.diagnostics!.errorCategory).toBe('invalid_response');
+    openRouterResponse({ status: 200, body: answersFor(labels.filter(l => l !== overlayLabel)) });
+    const omitted = await renderDeps.verifyStory!({ contract: spaced, candidate: Buffer.alloc(600, 9) });
+    expect(omitted.verdict).toBe('error');
+    expect(omitted.reasons[0]).toContain('qa_incomplete_coverage');
+    // The overlay text sent to the checker is untouched by the matching rule.
+    expect(JSON.stringify(contractQaBlock(spaced)).includes('Take  a break')).toBe(true);
   });
 
   test('an incomplete answer uploads nothing and buys no corrective wave', async () => {
