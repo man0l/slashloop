@@ -77,6 +77,10 @@ export function buildUserContent(
  * the codebase uses (gemini-errors.ts). OpenRouter's envelope is
  * { error: { code, message, metadata: { error_type } } }, surfaced here inside
  * the thrown "OpenRouter API error <status>: <body>" message.
+ *
+ * `category` says what the failure means (402 is a quota signal either way);
+ * `retryable` says whether calling again can change the answer, and for the
+ * balance cases it cannot — see the payment_required branch below.
  */
 export function classifyOpenRouterError(err: unknown): {
   category: 'quota' | 'rate_limit' | 'auth' | 'invalid_request' | 'server' | 'timeout' | 'unknown';
@@ -89,8 +93,21 @@ export function classifyOpenRouterError(err: unknown): {
   const bodyCode = Number(/"code"\s*:\s*(\d{3})/.exec(message)?.[1] ?? 0);
   const code = status || bodyCode;
 
-  if (errorType === 'payment_required' || code === 402 || /insufficient credit/i.test(message)) {
-    return { category: 'quota', retryable: true, message };
+  // Balance/credit failures are a property of the ACCOUNT, not of the request
+  // or the moment: OpenRouter answers 402 "This request requires at least
+  // $1.00 in balance for video" (metadata.limit_source=openrouter_credits)
+  // and will answer it identically for every later video until someone tops
+  // the account up. So the category stays 'quota' (that is what it is, and
+  // what the user-facing copy keys off) but retryable is false: a retry burns
+  // the request's latency budget and a workspace's failure budget to relearn
+  // a fact that cannot have changed. Callers park the backend instead (see
+  // the penalty box in src/analysis/index.ts).
+  // The message patterns are the ones classifyGeminiError already recognises on
+  // the shared vocabulary, so a 402 whose body lost its numeric code (or a
+  // balance message that arrived with a non-402 status) still lands here.
+  if (errorType === 'payment_required' || code === 402 || /insufficient credit/i.test(message)
+    || /requires at least \$/i.test(message) || /\bbalance for video\b/i.test(message)) {
+    return { category: 'quota', retryable: false, message };
   }
   if (errorType === 'rate_limit_exceeded' || code === 429) {
     return { category: 'rate_limit', retryable: true, message };

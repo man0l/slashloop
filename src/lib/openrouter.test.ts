@@ -77,15 +77,31 @@ describe('buildUserContent', () => {
 describe('classifyOpenRouterError', () => {
   const make = (status: number, body: string) => `OpenRouter API error ${status}: ${body}`;
 
-  test('402 payment_required -> quota, retryable', () => {
+  test('402 payment_required -> quota, NOT retryable', () => {
     const c = classifyOpenRouterError(new Error(make(402, '{"error":{"message":"insufficient credits","code":402,"metadata":{"error_type":"payment_required"}}}')));
     expect(c.category).toBe('quota');
-    expect(c.retryable).toBe(true);
+    expect(c.retryable).toBe(false);
   });
 
   test('200 status with error_type payment_required still -> quota', () => {
     const c = classifyOpenRouterError(new Error('OpenRouter API error 200: {"error":{"message":"out of credits","code":402,"metadata":{"error_type":"payment_required"}}}'));
     expect(c.category).toBe('quota');
+    expect(c.retryable).toBe(false);
+  });
+
+  // The exact production payload from the SLA-452 log sweep: no error_type, the
+  // numeric code only in the body, and a hard $1.00 floor for video requests.
+  // A retry gets this identical answer, so it must not be classed retryable.
+  test('the "$1.00 in balance for video" 402 is quota and not retryable', () => {
+    const c = classifyOpenRouterError(new Error(make(402, '{"error":{"message":"This request requires at least $1.00 in balance for video","code":402,"metadata":{"limit_source":"openrouter_credits"}}}')));
+    expect(c.category).toBe('quota');
+    expect(c.retryable).toBe(false);
+  });
+
+  test('balance message without a usable status code still -> quota, not retryable', () => {
+    const c = classifyOpenRouterError(new Error('OpenRouter API error 500: {"error":{"message":"This request requires at least $1.00 in balance for video"}}'));
+    expect(c.category).toBe('quota');
+    expect(c.retryable).toBe(false);
   });
 
   test('429 rate_limit_exceeded -> rate_limit', () => {
