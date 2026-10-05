@@ -1,20 +1,24 @@
-// SLA-511: the checker is its own request policy, and its failure stays a
-// non-answer rather than becoming a paid corrective render.
+// SLA-511: the checker is its own request policy, a pass requires the answer it
+// asked for, and a checker that cannot answer buys nothing.
 //
-// The defect these pin: the QA call inherited the planning model with no
-// deadline of its own and a fixed 900-token answer budget. A 15-check contract
-// does not fit in 900 tokens, and a checker that ran out of time or out of
-// tokens was recorded identically — `story_check_error:The operation timed
-// out.` — with no model, no elapsed time, no deadline and no upstream id.
+// Three defects these pin:
+//  1. the QA call inherited the planning model with no deadline of its own, and
+//     a timeout was recorded identically to a refusal — no model, no elapsed
+//     time, no deadline, no upstream id;
+//  2. a composite pass accepted ANY non-empty array of passing entries, so
+//     answering one of fifteen requested checks verified the whole slide;
+//  3. an `error` (unavailable or unusable QA) bought a second paid render wave
+//     whenever the candidate was also off-style.
 //
 // Everything here is offline: the provider is a stub, nothing is spent, and no
 // clock is real. The completion gate is asserted, not assumed: a checker that
-// cannot answer leaves the slide unverified, uploads nothing, and burns no
-// second render.
+// cannot answer — and an answer that does not cover the contract — leave the
+// slide unverified, upload nothing, and burn no second render.
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Video } from '@prisma/client';
 import {
-  prepare, qaErrorCategory, qaMaxTokens, qaRequestPolicy, renderDeps, TerminalFailure,
+  prepare, qaCoverageProblem, qaErrorCategory, qaMaxTokens, qaRequestPolicy, renderDeps,
+  resolveQaVerdict, TerminalFailure,
   QA_DEFAULT_MODEL, QA_MAX_TOKENS_CEILING, QA_TIMEOUT_MS,
 } from './providers.js';
 import { contractChecks } from './render-prompt.js';
@@ -89,10 +93,27 @@ function openRouterOk(body: unknown, requestId?: string) {
   }) as typeof fetch;
   return requests;
 }
-const answers = (checks: number) => ({ choices: [{ message: { content: JSON.stringify({
-  checks: Array.from({ length: checks }, (_, i) => ({ check: `check ${i}`, status: 'pass', reason: 'matches' })),
-  reasons: [],
-}) } }], usage: { prompt_tokens: 10, completion_tokens: 20, cost: 0.0001 } });
+/** A 200 answer whose `checks` are the ones the contract actually asked for —
+ *  the fixture a well-behaved checker produces. Labels come from the contract,
+ *  never from a made-up list. */
+function answersFor(labels: readonly string[], status: 'pass'|'fail'|'unknown' = 'pass') {
+  return { choices: [{ message: { content: JSON.stringify({
+    checks: labels.map(check => ({ check, status, reason: 'matches the contract item' })),
+    reasons: [],
+  }) } }], usage: { prompt_tokens: 10, completion_tokens: 20, cost: 0.0001 } };
+}
+/** An HTTP response the adapter can judge, with control over status, headers and body. */
+function openRouterResponse(opts: { status: number; body?: unknown; raw?: string; headers?: Record<string, string> }) {
+  const requests: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+    requests.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+    return new Response(opts.raw ?? JSON.stringify(opts.body), {
+      status: opts.status,
+      headers: { 'content-type': 'application/json', ...(opts.headers ?? {}) },
+    });
+  }) as unknown as typeof fetch;
+  return requests;
+}
 
 describe('the checker has its own request policy', () => {
   test('the QA model is independent of the planning model, and falls back to the existing chain', () => {
@@ -117,9 +138,10 @@ describe('the checker has its own request policy', () => {
     }
   });
 
-  test('the answer budget fits every contract check, and stays bounded', () => {
-    // A 15-check contract is what production slides produced; the old fixed 900
-    // could not hold it, so a truncated body looked like an unusable checker.
+  test('the answer budget scales with the contract, and stays bounded', () => {
+    // A heuristic, not a measurement: the request stops asking one fixed size
+    // for every contract, and one verbose answer can still exceed it — which is
+    // what the coverage check below turns into `unverified`, never into a pass.
     expect(qaMaxTokens(15)).toBeGreaterThan(900);
     expect(qaMaxTokens(1)).toBeLessThan(qaMaxTokens(15));
     expect(qaMaxTokens(15)).toBeLessThanOrEqual(QA_MAX_TOKENS_CEILING);
@@ -138,7 +160,7 @@ describe('the request carries that policy, and the record stays sanitized', () =
 
     process.env.EXPERIMENT_QA_MODEL = 'openai/gpt-5.1-mini';
     process.env.OPENROUTER_API_KEY = 'test';
-    const requests = openRouterOk(answers(checks.length), 'req-stub-42');
+    const requests = openRouterResponse({ status: 200, body: answersFor(checks), headers: { 'x-request-id': 'req-stub-42' } });
     const result = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
 
     // The request itself: configured model, low reasoning, bounded budget sized
@@ -177,13 +199,141 @@ describe('the request carries that policy, and the record stays sanitized', () =
   });
 });
 
-describe('an unusable checker is unverified, and buys nothing', () => {
-  test('a timeout is categorised, recorded, and never becomes a pass', async () => {
+describe('a pass requires the answer that was asked for', () => {
+  test('a complete answer passes, and an incomplete one is unverified', async () => {
+    const contract = await probeContract();
+    const labels = contractChecks(contract);
+    expect(labels.length).toBeGreaterThan(1);
+    process.env.OPENROUTER_API_KEY = 'test';
+
+    // Exactly one entry per requested check, using the contract's own labels.
+    openRouterResponse({ status: 200, body: answersFor(labels) });
+    const complete = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
+    expect(complete.verdict).toBe('pass');
+    expect(complete.checks).toHaveLength(labels.length);
+    expect(complete.reasons).toEqual([]);
+
+    // The CTO reproduction: 15 requested checks, ONE unrelated passing entry.
+    // Before the coverage check this resolved to `pass` and shipped the slide.
+    openRouterResponse({ status: 200, body: answersFor(['unrelated arbitrary check']) });
+    const reproduced = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
+    expect(reproduced.verdict).toBe('error');
+    expect(reproduced.verdict).not.toBe('pass');
+    expect(reproduced.reasons[0]).toContain('qa_');
+    expect(reproduced.diagnostics).toMatchObject({ outcome: 'ok', errorCategory: 'invalid_response', checksRequested: labels.length });
+  });
+
+  test('missing, duplicate, unexpected and malformed entries are all unverified', async () => {
+    const contract = await probeContract();
+    const labels = contractChecks(contract);
+    process.env.OPENROUTER_API_KEY = 'test';
+    const check = async (checks: unknown[]) => {
+      openRouterResponse({ status: 200, body: { choices: [{ message: { content: JSON.stringify({ checks, reasons: [] }) } }], usage: {} } });
+      return renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
+    };
+    const passing = (l: string) => ({ check: l, status: 'pass', reason: 'matches' });
+
+    // Missing one requested check.
+    const missing = await check(labels.slice(0, -1).map(passing));
+    expect(missing.verdict).toBe('error');
+    expect(missing.reasons[0]).toContain('qa_incomplete_coverage');
+
+    // One requested check answered twice, and every other one present.
+    const duplicate = await check([...labels.map(passing), passing(labels[0]!)]);
+    expect(duplicate.verdict).toBe('error');
+    expect(duplicate.reasons[0]).toContain('qa_duplicate_check');
+
+    // Complete coverage PLUS a check nobody asked for.
+    const unexpected = await check([...labels.map(passing), passing('the mood is nice')]);
+    expect(unexpected.verdict).toBe('error');
+    expect(unexpected.reasons[0]).toContain('qa_unexpected_check');
+
+    // A status outside the vocabulary is malformed, not a soft `unknown`:
+    // `unknown` is a real verdict the contract defines ("the image cannot
+    // settle this"), so it must not be the fallback for nonsense.
+    const badStatus = await check([...labels.map(passing)].map((c, i) => (i === 0 ? { ...c, status: 'probably' } : c)));
+    expect(badStatus.verdict).toBe('error');
+    expect(badStatus.reasons[0]).toContain('qa_response_malformed');
+
+    // Structural malformation: no label, and no array at all.
+    const noLabel = await check([...labels.map(passing)].map((c, i) => (i === 0 ? { status: 'pass' } : c)));
+    expect(noLabel.verdict).toBe('error');
+    expect(noLabel.reasons[0]).toContain('qa_response_malformed');
+    openRouterResponse({ status: 200, body: { choices: [{ message: { content: '{"reasons":[]}' } }], usage: {} } });
+    const noChecks = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
+    expect(noChecks.verdict).toBe('error');
+    expect(noChecks.reasons).toEqual(['qa_missing_checks']);
+    expect(noChecks.diagnostics!.errorCategory).toBe('invalid_response');
+
+    // A genuine `unknown` or `fail` on a complete answer is still the contract's
+    // own verdict, not a response-shape problem: unverified / failed, and never
+    // silently upgraded to a pass.
+    openRouterResponse({ status: 200, body: answersFor(labels, 'unknown') });
+    const unknown = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
+    expect(unknown.verdict).toBe('error');
+    expect(unknown.diagnostics!.errorCategory).toBeUndefined();
+    openRouterResponse({ status: 200, body: answersFor(labels, 'fail') });
+    expect((await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) })).verdict).toBe('fail');
+  });
+
+  test('coverage matches RAW labels, not their truncated display form', () => {
+    const long = `the subject's gaze is unchanged: "${'x'.repeat(260)}"`;
+    const other = `the subject's gaze is unchanged: "${'x'.repeat(261)}"`;
+    // resolveQaVerdict truncates a stored label to 200 chars, so two different
+    // checks can share a stored prefix. Matching happens before that.
+    const verdicts = resolveQaVerdict({ checks: [{ check: long, status: 'pass' }] }, 'h', false, 1, [long, other]);
+    expect(verdicts.verdict).toBe('error');
+    expect(verdicts.reasons[0]).toContain('qa_incomplete_coverage');
+
+    // Whitespace-only differences in what the model sent are tolerated: they
+    // are the same check. Casing and punctuation are not.
+    expect(qaCoverageProblem([{ check: '  the   medium is photograph ', status: 'pass' }], ['the medium is photograph'])).toBeNull();
+    expect(qaCoverageProblem([{ check: 'The medium is photograph', status: 'pass' }], ['the medium is photograph'])).toContain('qa_unexpected_check');
+    // The pure helper is the same rule the resolver applies.
+    expect(qaCoverageProblem([{ check: 'a', status: 'pass' }], ['a'])).toBeNull();
+    expect(qaCoverageProblem('not an array', ['a'])).toContain('qa_response_malformed');
+  });
+
+  test('an incomplete answer uploads nothing and buys no corrective wave', async () => {
+    const contract = await probeContract();
+    const labels = contractChecks(contract);
     const deps = renderDepsWith();
+    process.env.OPENROUTER_API_KEY = 'test';
+    openRouterResponse({ status: 200, body: answersFor(labels.slice(0, 3)) });
+
+    const err = await (await prepare(fixture(), task, { ...deps.deps, verifyStory: renderDeps.verifyStory } as never)).execute().catch(e => e);
+    expect(err).toBeInstanceOf(TerminalFailure);
+    expect((err as TerminalFailure).verdict).toBe('unverified');
+    expect((err as TerminalFailure).audit).toMatchObject({ verdict: 'error' });
+    expect(((err as TerminalFailure).audit as { reasons: string[] }).reasons[0]).toContain('qa_incomplete_coverage');
+    // 3 renders is the initial fan-out only: an incomplete answer is not a
+    // finding about the image, so it must not buy a second paid wave.
+    expect(deps.counts.renders).toBe(3);
+    expect(deps.counts.uploads).toBe(0);
+    expect(labels.length).toBeGreaterThan(3);
+  });
+
+  test('a full answer still ships, so the gate is not merely always-unverified', async () => {
+    const contract = await probeContract();
+    const deps = renderDepsWith();
+    process.env.OPENROUTER_API_KEY = 'test';
+    openRouterResponse({ status: 200, body: answersFor(contractChecks(contract)) });
+
+    const result = await (await prepare(fixture(), task, { ...deps.deps, verifyStory: renderDeps.verifyStory } as never)).execute() as { story: { verdict: string }; qa: { verdict: string } };
+    expect(result.story.verdict).toBe('pass');
+    expect(result.qa.verdict).toBe('pass');
+    expect(deps.counts.uploads).toBe(1);
+    expect(deps.counts.renders).toBe(3);
+  });
+});
+
+describe('an unavailable checker is unverified, and buys nothing', () => {
+  test('a timeout is categorised, recorded, and never becomes a pass', async () => {
     const contract = await probeContract();
     process.env.EXPERIMENT_QA_MODEL = 'openai/gpt-5.1-mini';
     process.env.OPENROUTER_API_KEY = 'test';
-    // What AbortSignal.timeout rejects with in the worker runtime.
+    // What AbortSignal.timeout rejects with in the worker runtime: no response,
+    // therefore no header and no id to quote.
     globalThis.fetch = (async () => { const e = new Error('The operation timed out.'); e.name = 'TimeoutError'; throw e; }) as unknown as typeof fetch;
 
     const result = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
@@ -191,6 +341,8 @@ describe('an unusable checker is unverified, and buys nothing', () => {
     expect(result.checks).toEqual([]);
     expect(result.reasons[0]).toContain('story_check_error');
     expect(result.diagnostics).toMatchObject({ outcome: 'error', errorCategory: 'timeout', model: 'openai/gpt-5.1-mini', timeoutMs: QA_TIMEOUT_MS });
+    // No id is invented for a call that never reached the gateway.
+    expect(result.diagnostics!.requestId).toBeUndefined();
 
     // A timeout is a provider-side category, distinguishable from the rest.
     expect(qaErrorCategory(Object.assign(new Error('The operation timed out.'), { name: 'TimeoutError' }))).toBe('timeout');
@@ -199,9 +351,46 @@ describe('an unusable checker is unverified, and buys nothing', () => {
     expect(qaErrorCategory(new Error('Failed to parse OpenRouter response as JSON'))).toBe('invalid_response');
   });
 
+  test('a refused or malformed call keeps the gateway id it was given', async () => {
+    const contract = await probeContract();
+    process.env.OPENROUTER_API_KEY = 'test';
+
+    // 429 with the header the gateway sent: categorised, and still traceable.
+    openRouterResponse({ status: 429, body: { error: { code: 429, message: 'rate limited' } }, headers: { 'x-request-id': 'req-throttled-1' } });
+    const throttled = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
+    expect(throttled.verdict).toBe('error');
+    expect(throttled.diagnostics).toMatchObject({ outcome: 'error', errorCategory: 'rate_limit', requestId: 'req-throttled-1' });
+
+    // Same refusal, id only in the body.
+    openRouterResponse({ status: 402, raw: JSON.stringify({ id: 'gen-body-9', error: { code: 402, message: 'insufficient credits' } }) });
+    const quota = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
+    expect(quota.diagnostics).toMatchObject({ outcome: 'error', errorCategory: 'quota', requestId: 'gen-body-9' });
+
+    // A body that arrived but did not parse: unusable answer, id retained, and
+    // the provider body itself is never carried into the diagnostics.
+    openRouterResponse({ status: 200, raw: 'not json at all', headers: { 'x-request-id': 'req-unparseable-2' } });
+    const unparseable = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
+    expect(unparseable.verdict).toBe('error');
+    expect(unparseable.diagnostics).toMatchObject({ outcome: 'error', errorCategory: 'invalid_response', requestId: 'req-unparseable-2' });
+    expect(JSON.stringify(unparseable.diagnostics)).not.toContain('not json at all');
+
+    // An id that is not an opaque token is dropped, not half-quoted.
+    openRouterResponse({ status: 429, body: { error: { code: 429, message: 'rate limited' } }, headers: { 'x-request-id': 'Bearer sk-not-a-token' } });
+    const dirty = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
+    expect(dirty.diagnostics!.errorCategory).toBe('rate_limit');
+    expect(dirty.diagnostics!.requestId).toBeUndefined();
+  });
+
+  test('a provider request id is sanitized to an opaque token', () => {
+    expect(sanitizeRequestId('gen-123_ABC')).toBe('gen-123_ABC');
+    expect(sanitizeRequestId('Bearer sk-secret-value')).toBeUndefined();
+    expect(sanitizeRequestId('a'.repeat(200))).toBeUndefined();
+    expect(sanitizeRequestId(undefined)).toBeUndefined();
+  });
+
   test('a timed-out checker uploads no deliverable and spends no second render', async () => {
     const deps = renderDepsWith();
-    const contract = await probeContract();
+    await probeContract();
     process.env.OPENROUTER_API_KEY = 'test';
     globalThis.fetch = (async () => { const e = new Error('The operation timed out.'); e.name = 'TimeoutError'; throw e; }) as unknown as typeof fetch;
 
@@ -219,28 +408,46 @@ describe('an unusable checker is unverified, and buys nothing', () => {
     expect(audit.diagnostics).toMatchObject({ errorCategory: 'timeout' });
   });
 
-  test('an answer with no checks is an unusable answer, not a pass', async () => {
-    const deps = renderDepsWith();
-    const contract = await probeContract();
+  test('an off-style candidate does not buy a wave when QA is unavailable', async () => {
+    // The style flag used to reach the corrective render through the same
+    // condition as a story failure, so an unusable checker plus an over-designed
+    // candidate bought a second paid image to learn nothing.
+    const deps = renderDepsWith({ describeCandidates: async () => [{ id: 'c0', description: 'invented app UI dashboard', medium: 'collage', textBlocks: 4, overdesigned: true }] });
+    await probeContract();
     process.env.OPENROUTER_API_KEY = 'test';
-    openRouterOk({ choices: [{ message: { content: '{"reasons":[]}' } }], usage: {} });
-    const result = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
-    expect(result.verdict).toBe('error');
-    expect(result.reasons).toEqual(['qa_missing_checks']);
-    // A truncated/empty body is distinguishable from a timeout.
-    expect(result.diagnostics!.errorCategory).toBe('invalid_response');
+    globalThis.fetch = (async () => { const e = new Error('The operation timed out.'); e.name = 'TimeoutError'; throw e; }) as unknown as typeof fetch;
+
+    const err = await (await prepare(fixture(), task, { ...deps.deps, verifyStory: renderDeps.verifyStory } as never)).execute().catch(e => e);
+    expect(err).toBeInstanceOf(TerminalFailure);
+    expect((err as TerminalFailure).verdict).toBe('unverified');
+    expect(deps.counts.renders).toBe(3);
+    expect(deps.counts.uploads).toBe(0);
+    // The style violation is still recorded — it is not hidden, it just does
+    // not spend money on a re-render that cannot be verified.
+    expect(((err as TerminalFailure).audit as { })).toMatchObject({ verdict: 'error' });
   });
 
-  test('a truncated answer loses checks, so it is unverified rather than partially trusted', async () => {
-    const deps = renderDepsWith();
+  test('a VERIFIED failure still corrects, so the gate did not lose its one retry', async () => {
     const contract = await probeContract();
+    const labels = contractChecks(contract);
+    const deps = renderDepsWith();
     process.env.OPENROUTER_API_KEY = 'test';
-    // The historical failure mode: the model answered, but the budget cut it
-    // short. Whatever came back is judged on its own merits.
-    openRouterOk({ choices: [{ message: { content: JSON.stringify({ checks: [{ check: 'a', status: 'pass' }] }) } }], usage: {} });
-    const result = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
-    expect(result.verdict).toBe('pass');
-    expect(result.checks).toHaveLength(1);
-    expect(result.diagnostics!.checksRequested).toBe(contractChecks(contract).length);
+    // Complete coverage, but a real contract finding: that is the one case a
+    // second render is for.
+    let call = 0;
+    openRouterResponse({ status: 200, body: answersFor(labels, 'fail') });
+    globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+      call++;
+      const first = call === 1;
+      const checks = first ? labels.map(c => ({ check: c, status: 'fail', reason: 'the subject is missing' })) : labels.map(c => ({ check: c, status: 'pass', reason: 'matches' }));
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ checks, reasons: ['overlay cropped'] }) } }], usage: {} }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+
+    const result = await (await prepare(fixture(), task, { ...deps.deps, verifyStory: renderDeps.verifyStory } as never)).execute() as { story: { verdict: string; corrected: boolean } };
+    expect(result.story).toMatchObject({ verdict: 'pass', corrected: true });
+    expect(contract).toBeDefined();
+    // Initial wave plus the single shared corrective wave.
+    expect(deps.counts.renders).toBe(6);
+    expect(deps.counts.uploads).toBe(1);
   });
 });
