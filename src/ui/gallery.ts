@@ -470,17 +470,26 @@ ${cards.length ? toolbarHtml(filters) : ''}
        <div class="mode-cards" role="radiogroup" aria-label="Experiment mode">
          <label class="mode-card"><input type="radio" name="exp-mode" value="edit" checked/>
            <strong>Edit slideshow</strong>
-           <p>Keep the same images. Remove the old overlay text and write new copy — or strip it entirely.</p></label>
+           <p>Edit overlay text or change the character. Keep everything else in the deck.</p></label>
          <label class="mode-card"><input type="radio" name="exp-mode" value="create"/>
            <strong>Create variations</strong>
            <p>Generate new versions: new hook, character, style or angle, picked by variable.</p></label>
        </div>
      </div>
      <div class="step" id="step-2-edit">
+       <div class="field-row"><span>Variable to edit (everything else stays locked)</span>
+         <select id="edit-variable"><option value="hook">Overlay text</option><option value="character">Character</option></select></div>
+       <div id="edit-character-fields" hidden>
+         <div class="field-row"><span>Character direction</span>
+           <textarea id="edit-character" maxlength="1000" placeholder="e.g. Short blond hair, keep wardrobe and expression"></textarea>
+           <span class="hint">Describe visible casting changes. Keep the original text, style, setting and story.</span></div>
+       </div>
+       <div id="edit-copy-fields">
        <div class="field-row"><span>Hook (slide 1 text)</span>
          <input type="text" id="edit-hook" maxlength="200" placeholder="e.g. Stop eating blind"/>
          <span class="hint">The exact words on slide 1. Empty clears slide 1 too.</span></div>
        <div id="edit-overlays"></div>
+       </div>
        <div class="field-row"><span>Language</span>
          <input type="text" id="edit-lang" value="English" maxlength="80"/></div>
      </div>
@@ -807,6 +816,18 @@ ${cards.length ? toolbarHtml(filters) : ''}
         : 5;
       slideCount = Math.min(8, Math.max(3, slideCount));
       if (mode === 'edit') {
+        if (str('edit-variable') === 'character') {
+          return {
+            videoIds: selected.slice(0, 1), surveyMode: 'edit',
+            instructions: {
+              goal: 'Edit the slideshow character, keeping the same overlay text, style, setting and story.',
+              brand: '', audience: '', language: str('edit-lang') || 'English',
+              direction: 'Character: ' + str('edit-character') + '. Keep the same overlay text, style, setting and story.',
+              lockedConstraints: [], variables: ['character'], mode: 'controlled',
+            },
+            variantCount: 2, slideCount: slideCount, maxCredits: 100,
+          };
+        }
         var n = parseInt(document.getElementById('edit-overlays').dataset.slides || '1', 10);
         var overlays = [];
         for (var i = 2; i <= n; i++) overlays.push(str('edit-ov-' + i));
@@ -871,7 +892,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
     // so a property here would be pasted as a parameter that does not exist.
     function reviewHtml(p, sourceSlides) {
       var rows = [
-        ['Mode', p.surveyMode === 'edit' ? 'Edit slideshow (same images, new text)' : 'Create variations'],
+        ['Mode', p.surveyMode === 'edit' ? (p.instructions.variables[0] === 'character' ? 'Edit slideshow (new character, original text)' : 'Edit slideshow (same images, new text)') : 'Create variations'],
         ['Videos', p.videoIds.length + ' slideshow' + (p.videoIds.length === 1 ? '' : 's')],
         ['Variables', p.instructions.variables.join(', ')],
         ['Slides each', String(p.slideCount)],
@@ -903,6 +924,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
       if (!selected.length) return 'Select at least one slideshow first.';
       if (mode === 'edit') {
         if (selected.length !== 1) return 'Edit mode works on exactly one slideshow — deselect down to one, or switch to Create.';
+        if (str('edit-variable') === 'character') return str('edit-character') ? '' : 'Describe the character casting change.';
         if (!str('edit-hook') && !(document.getElementById('edit-overlays').dataset.slides > 1))
           return 'Write at least a hook — otherwise there is nothing to change.';
       } else {
@@ -913,6 +935,11 @@ ${cards.length ? toolbarHtml(filters) : ''}
     }
 
     document.getElementById('exp-start').addEventListener('click', openModal);
+    document.getElementById('edit-variable').addEventListener('change', function () {
+      var characterEdit = str('edit-variable') === 'character';
+      document.getElementById('edit-copy-fields').hidden = characterEdit;
+      document.getElementById('edit-character-fields').hidden = !characterEdit;
+    });
     document.getElementById('exp-cancel').addEventListener('click', function () {
       modal.classList.remove('show');
     });
@@ -944,7 +971,12 @@ ${cards.length ? toolbarHtml(filters) : ''}
         document.getElementById('exp-host-payload-wrap').hidden = !inHost;
         if (inHost) {
           var chatPayload;
-          if (mode === 'edit') {
+          if (mode === 'edit' && p.instructions.variables[0] === 'character') {
+            chatPayload = {
+              mode: 'edit', videoIds: p.videoIds, variables: ['character'], character: str('edit-character'),
+              language: p.instructions.language, slideCount: p.slideCount, maxCredits: p.maxCredits,
+            };
+          } else if (mode === 'edit') {
             // An edit must be pasted as mode:"edit" with hook/overlayTexts.
             // Dropping surveyMode alone left the call with no mode at all, so it
             // fell through to create mode and became a prose-only experiment.

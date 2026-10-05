@@ -35,6 +35,15 @@ the source deck when known. Call `create_experiment`; the draft is free.
 Return each created experiment ID and its `planEstimate`, plus failures. Do not
 plan or generate without the next approval gate.
 
+For a bounded character-only edit of one deck, call `create_experiment` with
+`mode:"edit"`, `variables:["character"]`, and `character` containing visible
+casting direction (up to 1000 characters). Omit `hook`, `overlayTexts`, and
+`instructions`: source text, style, setting and story stay locked. Edit mode
+creates two variants with a 100-credit ceiling; the same approval gates apply.
+Copy edits default to `variables:["hook"]`. Use create mode with
+`instructions.variables:["character"]` and `instructions.direction` when you
+need custom goals or counts. Never put create instructions into edit mode.
+
 To run a confirmed draft: call `estimate_experiment(stage="plan")`; after the
 user approves that exact `totalCredits`, pass it as `approvedCredits` to
 `plan_experiment`, then poll `get_experiment` no faster than about a minute.

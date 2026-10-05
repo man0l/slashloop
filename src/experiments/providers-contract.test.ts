@@ -7,6 +7,7 @@ import { observedCopy, prepare, resolvedCopyBlock } from './providers.js';
 import { VideoAnalysisDataSchema } from '../analysis/schema.js';
 import type { Experiment, Input, Task } from './schema.js';
 import type { SlideContract } from './render-prompt.js';
+import { editInstructions } from '../tools/experiments.js';
 
 const analysis = (shots: Array<{ timestampSec: number; description: string }>, onScreenText: Array<{ timestampSec: number; text: string }> = []) => VideoAnalysisDataSchema.parse({
   shots: shots.map(s => ({ ...s, durationSec: 0, type: 'other', onScreenText: null })),
@@ -85,6 +86,24 @@ const deps = (videos: Video[], calls: unknown[], qa: SlideContract[] = []) => ({
   verifyStory: async (o: { contract: SlideContract }) => { qa.push(o.contract); return { verdict: 'pass' as const, reasons: [], checks: [{ check: 'c', status: 'pass' as const }], contractHash: o.contract.contractHash, corrected: false, attempts: 1 }; },
 });
 const task = { id: 't', kind: 'slide', target: 'v', index: 0 } as Task;
+
+test('character edit instructions reach rendering and QA while preserving source text', async () => {
+  const casting = 'short blonde hair, light eyes';
+  const { e, videos } = sourceReferenced({
+    copy: [0, 1, 2].map(slideIndex => ({ slideIndex, state: 'observed_text' as const, text: 'Original headline' })),
+    variables: ['character'], changed: [{ name: 'character', value: casting }],
+  });
+  e.instructions = editInstructions(undefined, [], 'English', { variables: ['character'], character: casting });
+  const calls: unknown[] = []; const qa: SlideContract[] = [];
+  await (await prepare(e, task, deps(videos, calls, qa) as never)).execute();
+  expect(qa[0]!.overlay).toEqual({ mode: 'preserve', text: 'Original headline', origin: 'source' });
+  expect(qa[0]!.subject.castingTarget).toMatchObject({ hair: 'short blonde hair', eyes: 'light eyes' });
+  const prompt = (calls[0] as { prompt: string }).prompt;
+  expect(prompt).toContain('CASTING TARGET');
+  expect(prompt).toContain('Original headline');
+  expect(prompt).not.toContain('Official ratings');
+  expect(prompt).toContain(qa[0]!.contractHash);
+});
 
 test('a blank source slide renders no added overlay and QA checks the same empty value', async () => {
   const blank = [{ slideIndex: 0, state: 'observed_empty' as const, text: '' }, { slideIndex: 1, state: 'observed_empty' as const, text: '' }, { slideIndex: 2, state: 'observed_empty' as const, text: '' }];

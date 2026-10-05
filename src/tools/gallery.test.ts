@@ -8,6 +8,8 @@ import {
   videoResourceUri,
 } from './gallery.js';
 import { renderGallery, type GalleryCard } from '../ui/gallery.js';
+import { editInstructions } from './experiments.js';
+import { Create } from '../experiments/schema.js';
 
 // ── env save/restore (media.test.ts pattern) ──────────────────────────────
 
@@ -183,6 +185,32 @@ describe('served page script parses', () => {
     // script must carry the ESCAPE, which JS reads as the newline.
     expect(script).toContain("tool:\\n'");
   });
+});
+
+test('served character edit payload keeps copy and matches the MCP instructions', () => {
+  const html = renderGallery([fakeCard({ isSlideshow: true, experimentEligible: true })], undefined, {});
+  expect(html).toContain('<option value="character">Character</option>');
+  const script = html.match(/<script>([\s\S]*)<\/script>/)![1]!;
+  const fields: Record<string, string> = {
+    'edit-variable': 'character', 'edit-character': ' Short blond hair ', 'edit-lang': 'English',
+    // Stale copy inputs must never ride on a character edit.
+    'edit-hook': 'Stale replacement text', 'edit-ov-2': '',
+  };
+  const build = script.slice(script.indexOf('function buildPayload()'), script.indexOf('// sourceSlides is display-only'));
+  const payload = new Function('selCards', 'selected', 'mode', 'str', build + '; return buildPayload();')(
+    () => [{ getAttribute: () => '3' }], ['vid-1'], 'edit', (id: string) => (fields[id] ?? '').trim(),
+  );
+  expect(payload.instructions).toEqual(editInstructions(undefined, [], 'English', { variables: ['character'], character: 'Short blond hair' }));
+  expect(payload.instructions).not.toHaveProperty('copyOverrides');
+  const { surveyMode, ...rest } = payload;
+  expect(Create.safeParse({ workspaceId: 'w1', idempotencyKey: 'gallery:character', ...rest }).success).toBe(true);
+  // Run the served host/chat conversion too, so it cannot silently fall back to hook edits.
+  const conversion = script.slice(script.indexOf('var chatPayload;'), script.indexOf("document.getElementById('exp-host-payload').textContent"));
+  const chat = new Function('mode', 'p', 'str', conversion + '; return chatPayload;')('edit', payload, (id: string) => (fields[id] ?? '').trim());
+  expect(chat).toMatchObject({ mode: 'edit', variables: ['character'], character: 'Short blond hair', videoIds: ['vid-1'] });
+  expect(chat).not.toHaveProperty('hook');
+  expect(chat).not.toHaveProperty('overlayTexts');
+  expect(chat).not.toHaveProperty('instructions');
 });
 
 describe('edit-mode payload emission (source guards)', () => {

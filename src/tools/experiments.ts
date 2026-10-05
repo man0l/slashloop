@@ -33,7 +33,7 @@ import { load, list, serialize } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
 import {
-  CopyOverrides, ExperimentError, Id, MAX_MANUAL_ATTEMPTS, SLIDE_FANOUT, VARIABLE_FIELDS, type Experiment, type InstructionsData,
+  CopyOverrides, ExperimentError, Id, Instructions, MAX_MANUAL_ATTEMPTS, SLIDE_FANOUT, VARIABLE_FIELDS, type Experiment, type InstructionsData,
 } from '../experiments/schema.js';
 
 // ---- dependencies ----------------------------------------------------------
@@ -61,11 +61,11 @@ export const defaultExperimentToolDeps: ExperimentToolDeps = {
  * Edit-slideshow mode — the site's second wizard path, reproduced exactly.
  *
  * The site (src/ui/gallery.ts `buildPayload`, mode "edit") does not let the
- * caller write an experiment brief: it takes one slideshow, the new hook and
- * the new per-slide overlay copy, and assembles the rest itself. The goal
- * string is fixed, the only varied variable is the hook, mode is controlled,
- * there are exactly two variants and the cap is 100 credits — a hook A/B on a
- * deck whose images do not move.
+ * caller write an experiment brief: it takes one slideshow plus replacement
+ * overlay copy or a character casting direction, and assembles the rest itself. The goal
+ * string is fixed, the varied variable is hook (copy) or character, mode is controlled,
+ * there are exactly two variants and the cap is 100 credits. Copy edits lock
+ * the images; character edits lock copy, style, setting and story.
  *
  * `copyOverrides` carries the exact requested copy as structured values; the
  * `direction` prose below is only the planner's hint, quoted in the wizard's own
@@ -75,7 +75,12 @@ export const defaultExperimentToolDeps: ExperimentToolDeps = {
  * slide is described as unchanged, never as cleared.
  */
 export const EDIT_GOAL = 'Edit the slideshow overlay text, keeping the same images.';
-/** Two variants: the original hook and the replacement. */
+export const EDIT_CHARACTER_GOAL = 'Edit the slideshow character, keeping the same overlay text, style, setting and story.';
+export const EDIT_CHARACTER_MAX = 1000;
+export function editCharacterDirection(character: string): string {
+  return 'Character: ' + character.trim() + '. Keep the same overlay text, style, setting and story.';
+}
+/** Two variants: the original and the replacement. */
 export const EDIT_VARIANT_COUNT = 2;
 /** Per-value copy ceiling for an edit request, matching the site's own input
  *  maxlength. It bounds the quoted direction: hook + 7 overlays at this size,
@@ -108,7 +113,19 @@ export function editSlideDirection(hook: string | undefined, overlayTexts: strin
 }
 
 /** Edit mode is a single deck, so the "one experiment per source" loop is length 1 by definition. */
-export function editInstructions(hook: string | undefined, overlayTexts: string[], language: string): InstructionsData {
+export function editInstructions(hook: string | undefined, overlayTexts: string[], language: string,
+  options: { variables?: Array<'hook' | 'character'>; character?: string } = {}): InstructionsData {
+  const variables = options.variables ?? [options.character !== undefined ? 'character' : 'hook'];
+  if (variables.length !== 1) throw new ExperimentError(400, 'invalid_request', 'Edit mode tests exactly one variable: hook or character. Use create mode for several variables.');
+  if (variables[0] === 'character') {
+    if (!options.character?.trim()) throw new ExperimentError(400, 'invalid_request', 'Character edits need a non-empty character casting direction.');
+    if (hook !== undefined || overlayTexts.length) throw new ExperimentError(400, 'invalid_request', 'Character-only edits keep source copy. Omit hook and overlayTexts, or use create mode.');
+    return Instructions.parse({
+      goal: EDIT_CHARACTER_GOAL, brand: '', audience: '', language: language.trim() || 'English',
+      direction: editCharacterDirection(options.character), lockedConstraints: [], variables, mode: 'controlled',
+    });
+  }
+  if (options.character !== undefined) throw new ExperimentError(400, 'invalid_request', 'A character casting direction requires variables=["character"].');
   // SLA-431: the requested copy travels as structured values, not only as quoted
   // prose in `direction`. Property presence is the whole signal — an explicit ""
   // is a blank that must reach the renderer, and an omitted index is NOT a blank,
@@ -401,9 +418,11 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     + 'experiment wizard:\n'
     + '• mode "create" (default) — one experiment PER source video, because briefs never mix sources, so N videoIds '
     + 'create N drafts. Give `instructions`: what to vary, the goal, optional creative direction.\n'
-    + '• mode "edit" — the site\'s "Edit slideshow" path: exactly ONE deck, the same images, new overlay copy. Pass `hook` '
+    + '• mode "edit" — exactly ONE deck. For a character-only edit pass variables:["character"] and `character` '
+    + '(visible casting direction); omit hook/overlayTexts to keep all source copy, style, setting and story locked. '
+    + 'For a copy edit (variables:["hook"], default), keep the same images and pass `hook` '
     + '(slide 1) and `overlayTexts` (slides 2, 3, … in order; an empty string strips that slide\'s text) instead of '
-    + '`instructions`; the tool assembles the same brief the site sends — fixed goal, hook as the only varied variable, '
+    + '`instructions`; the tool assembles the same brief the site sends — fixed goal, one selected variable, '
     + 'controlled mode, 2 variants, a 100-credit cap — with the copy quoted per slide in the site\'s wording. '
     + 'The source deck\'s own slide count wins when it is known; pass slideCount only if you do not have it.\n'
     + 'Sources must be slideshows or videos with a finished Recreate deck (show_gallery marks them). '
@@ -412,10 +431,16 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     {
       workspaceId: workspaceIdField,
       mode: z.enum(['edit', 'create']).default('create').describe(
-        '"create" (default) = new variations from instructions. "edit" = keep the deck, replace the overlay text (one video).',
+        '"create" (default) = new variations from instructions. "edit" = change overlay copy or character on one deck.',
       ),
       videoIds: z.array(Id).min(1).max(20).describe('1–20 distinct Gallery video ids; one experiment per video. Edit mode takes exactly one.'),
-      instructions: instructionsInput.optional().describe('CREATE mode. Required in create mode; not used in edit mode.'),
+      instructions: instructionsInput.optional().describe('CREATE mode only. Required in create mode; rejected in edit mode (use top-level variables and character or hook/overlayTexts).'),
+      variables: z.array(z.enum(['hook', 'character'])).length(1).optional().describe(
+        'EDIT mode: ["hook"] for copy, or ["character"] for casting only. Defaults to character when character is supplied, otherwise hook.',
+      ),
+      character: z.string().trim().min(1).max(EDIT_CHARACTER_MAX).optional().describe(
+        'EDIT mode, character variable: visible casting changes (e.g. short blond hair). Keeps source copy, style, setting and story. Omit hook/overlayTexts.',
+      ),
       // The 200-character caps match the site's own input maxlength, and they
       // are what keeps the quoted direction under Instructions.direction's
       // 2000-char limit: 8 values x 200 + the per-slide framing is ~1968. At the
@@ -435,24 +460,27 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       idempotencyKey: idempotencyKeyField,
     },
     { readOnlyHint: false },
-    ({ workspaceId, mode, videoIds, instructions, hook, overlayTexts, language, variantCount, slideCount, maxCredits, idempotencyKey }) => guarded(async () => {
+    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, variantCount, slideCount, maxCredits, idempotencyKey }) => guarded(async () => {
       const workspace = await d.resolveWorkspace({ workspaceId });
       if (new Set(videoIds).size !== videoIds.length) return text({ error: 'invalid_request', message: 'videoIds must be distinct.' }, true);
       if (mode === 'edit') {
+        if (instructions) return text({ error: 'invalid_request', message: 'Edit mode uses top-level variables and character or hook/overlayTexts. Use create mode to pass instructions.' }, true);
         // One deck: the site's edit path never fans out, so a second id here
         // is a caller mistake rather than two experiments to build.
         if (videoIds.length !== 1) {
           return text({ error: 'invalid_request', message: 'mode "edit" works on exactly one slideshow — pass a single videoId, or use mode "create".' }, true);
         }
-        if (!hook?.trim() && !(overlayTexts ?? []).some(t => t.trim())) {
+        if (!character && variables?.[0] !== 'character' && !hook?.trim() && !(overlayTexts ?? []).some(t => t.trim())) {
           return text({ error: 'invalid_request', message: 'mode "edit" needs new copy: a hook for slide 1, or overlay text for a later slide.' }, true);
         }
+      } else if (variables || character !== undefined) {
+        return text({ error: 'invalid_request', message: 'Create mode uses instructions.variables and instructions.direction; top-level variables/character are edit-only.' }, true);
       } else if (!instructions) {
         return text({ error: 'invalid_request', message: 'mode "create" needs instructions — a goal and at least one variable to test.' }, true);
       }
       const edit = mode === 'edit'
         ? {
-          instructions: editInstructions(hook, overlayTexts ?? [], language ?? 'English'),
+          instructions: editInstructions(hook, overlayTexts ?? [], language ?? 'English', { variables, character }),
           variantCount: EDIT_VARIANT_COUNT,
           maxCredits: EDIT_MAX_CREDITS,
         }
