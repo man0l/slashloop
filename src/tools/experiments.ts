@@ -359,6 +359,7 @@ const instructionsInput = z.object({
     'controlled: each alternate changes one of the selected variables vs the baseline. exploration (SaaS Explore combinations): an alternate may change several selected variables together, including hook + character + visualStyle; concept/slides are allowed.',
   ),
   varySupportingOverlays: z.boolean().optional().describe('Hook tests only (controlled, variables=["hook"]): variants may also retell slide 2+ overlay text while scenes stay identical.'),
+  preserveSourceCtaSlide: z.boolean().optional().describe('Keep the source deck\'s own closing call-to-action slide in the deck instead of subtracting it from the slide count (default false, which drops a detected final CTA slide).'),
 });
 const briefSlideInput = z.object({ role: z.string().min(1).max(80), scene: z.string().min(1).max(2000), overlayText: z.string().max(2000).default('') });
 const briefInput = z.object({
@@ -417,7 +418,8 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     'Create draft experiment(s) from Gallery slideshows. Free — a draft spends nothing. Two modes, matching the site\'s '
     + 'experiment wizard:\n'
     + '• mode "create" (default) — one experiment PER source video, because briefs never mix sources, so N videoIds '
-    + 'create N drafts. Give `instructions`: what to vary, the goal, optional creative direction.\n'
+    + 'create N drafts. Give `instructions`: what to vary, the goal, optional creative direction. Pass '
+    + '`instructions.preserveSourceCtaSlide: true` to keep a source deck\'s own closing call-to-action slide in the deck.\n'
     + '• mode "edit" — exactly ONE deck. For a character-only edit pass variables:["character"] and `character` '
     + '(visible casting direction); omit hook/overlayTexts to keep all source copy, style, setting and story locked. '
     + 'For a copy edit (variables:["hook"], default), keep the same images and pass `hook` '
@@ -453,7 +455,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       ),
       language: z.string().trim().min(1).max(80).optional().describe('EDIT mode: output language for the copy (default English).'),
       variantCount: z.number().int().min(1).max(12).default(3).describe('CREATE mode: variants per experiment, including the baseline (1–12). Edit mode is always 2.'),
-      slideCount: z.number().int().min(3).max(8).default(5).describe('Slides per variant (3–8); overridden by the source deck length when known.'),
+      slideCount: z.number().int().min(3).max(8).default(5).describe('Slides per variant (3–8); overridden by the source deck length when known, minus a detected source CTA slide unless instructions.preserveSourceCtaSlide is true.'),
       maxCredits: z.number().int().min(1).max(MAX_EXPERIMENT_CREDITS).optional().describe(
         'Per-experiment credit ceiling (runaway guard). Default: the site\'s automatic cap, 2× the estimate rounded up; 100 in edit mode. An approved estimate may raise it.',
       ),

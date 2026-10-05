@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
+import type { Video } from '@prisma/client';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { CREDIT_COSTS, creditBalance } from '../lib/credits.js';
@@ -25,7 +26,27 @@ export function sourceTag(v: { creatorHandle?: string | null; caption?: string |
   const views = typeof v.views === 'number' ? ` (${formatCompactViews(v.views)})` : '';
   return `${handle} · ${snippet}${views}`;
 }
-export async function createExperiment(raw: unknown) {
+/**
+ * Every store access `createExperiment` makes, behind one seam. The default is
+ * the live database; a caller that needs a different source (a test replaying a
+ * stored draft, in particular) passes its own. Same shape as `renderDeps` in
+ * providers.ts, and for the same reason: a process-global `mock.module` on
+ * `../db.js` is shared with other suites and this file must not depend on it
+ * (docs/test-suite-policy.md).
+ */
+export type CreateExperimentDeps = {
+  findSource: (workspaceId: string, videoId: string) => Promise<Video | null>;
+  findLatestAnalysis: (videoId: string) => Promise<{ analysisJson: string } | null>;
+  buildInput: (video: Video) => Promise<S.Input>;
+  persist: (experiment: S.Experiment, idempotencyKey: string) => Promise<S.Experiment>;
+};
+export const createDeps: CreateExperimentDeps = {
+  findSource: (workspaceId, videoId) => db.video.findFirst({ where: { id: videoId, source: { workspaceId } } }),
+  findLatestAnalysis: (videoId) => db.analysis.findFirst({ where: { videoId, schemaVersion: 'v3' }, orderBy: { createdAt: 'desc' }, select: { analysisJson: true } }),
+  buildInput: compatibleInput,
+  persist: store.create,
+};
+export async function createExperiment(raw: unknown, deps: CreateExperimentDeps = createDeps) {
   const b = S.Create.parse(raw);
   const now = new Date().toISOString();
   const inputs: S.Input[] = [];
@@ -33,7 +54,7 @@ export async function createExperiment(raw: unknown) {
   const slideSources: Array<{ originalCount: number | null; analysis?: unknown }> = [];
   const tags: string[] = [];
   for (const videoId of b.videoIds) {
-    const v = await db.video.findFirst({ where: { id: videoId, source: { workspaceId: b.workspaceId } } });
+    const v = await deps.findSource(b.workspaceId, videoId);
     if (!v) throw new S.ExperimentError(404,'video_not_found');
     tags.push(sourceTag(v as { creatorHandle?: string | null; caption?: string | null; views?: number | null }));
     // Slideshows only: plain video posts are disabled for selection — the
@@ -46,14 +67,17 @@ export async function createExperiment(raw: unknown) {
     const originalCount = experimentSourceKeys(v.rawJson).length || null;
     let analysis: unknown;
     if (originalCount) {
-      const row = await db.analysis.findFirst({ where: { videoId: v.id, schemaVersion: 'v3' }, orderBy: { createdAt: 'desc' }, select: { analysisJson: true } });
+      const row = await deps.findLatestAnalysis(v.id);
       if (row?.analysisJson) try { analysis = JSON.parse(row.analysisJson); } catch { /* ignore broken analysis JSON */ }
     }
     slideSources.push({ originalCount: originalCount || null, analysis });
-    inputs.push(await compatibleInput(v));
+    inputs.push(await deps.buildInput(v));
   }
   const { idempotencyKey, videoIds, workspaceId, slideCount: requestedSlideCount, ...fields } = b;
-  const slideCount = deriveStorySlideCount(slideSources) ?? requestedSlideCount;
+  // Persisted count: SLA-476 — the source deck keeps its own closing CTA slide
+  // only when the caller opted in. Both boundaries read the same flag off the
+  // stored instructions, so planning cannot undo what creation persisted.
+  const slideCount = deriveStorySlideCount(slideSources, fields.instructions.preserveSourceCtaSlide) ?? requestedSlideCount;
   // Each experiment is isolated per slideshow but the goal doubles as the list
   // title — identical goals are indistinguishable. Suffix a quick source
   // summary unless the caller already named the source (e.g. re-duplicates).
@@ -70,7 +94,7 @@ export async function createExperiment(raw: unknown) {
       fields.instructions = { ...fields.instructions, goal: `${goal}${suffix}` };
     }
   }
-  return store.create({ id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,
+  return deps.persist({ id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,
     creditsCharged:0,report:null,inputs,variants:[],error:null,
     // Slideshow sources are attached as visual references during rendering; video-only stays text-directed.
     generationBasis:referenced?'source-referenced':'text-directed',

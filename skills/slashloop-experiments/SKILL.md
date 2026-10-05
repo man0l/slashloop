@@ -27,11 +27,16 @@ Build `instructions`:
 - `variables`: 1–7 values from `hook`, `character`, `visualStyle`, `caption`,
   `cta`, `concept`/`angle`, or `slides`.
 - `mode`: `controlled` by default; `concept`/`slides` require `exploration`.
+- `preserveSourceCtaSlide`: optional boolean, default `false`. A source deck
+  whose last slide is a detected call-to-action loses that slide from the count
+  by default. Pass `true` to keep the source deck's own closing CTA slide. The
+  flag is structural only: it changes the slide count, nothing else.
 - `language`, `brand`, `audience`, `direction`, and `lockedConstraints` when
   supplied.
 
 Defaults: `variantCount=3` including baseline and `slideCount=5`, overridden by
-the source deck when known. Call `create_experiment`; the draft is free.
+the source deck when known (minus a detected source CTA slide unless
+`preserveSourceCtaSlide`). Call `create_experiment`; the draft is free.
 Return each created experiment ID and its `planEstimate`, plus failures. Do not
 plan or generate without the next approval gate.
 
