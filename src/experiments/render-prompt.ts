@@ -442,8 +442,11 @@ const SPAN_STARTERS = new Set(['his', 'her', 'their', 'its', 'this', 'that', 'th
 /** Literal scene phrases that state one appearance attribute, e.g. "dark hair
  *  pulled back" or "dangling silver earrings". Values are NEVER guessed: an
  *  attribute with no matching phrase is recorded with `observed: null` and the
- *  reference frame stays the authority. */
-export function appearanceSpans(scene: string, attribute: string): Span[] {
+ *  reference frame stays the authority.
+ *
+ *  `scope` restricts the search to the resolved subject's range. Without it the
+ *  whole scene is searched, which for a collage is every person in the frame. */
+export function appearanceSpans(scene: string, attribute: string, scope?: SubjectScope): Span[] {
   const noun = APPEARANCE_NOUNS[attribute];
   if (!noun) return [];
   const words: Array<{ start: number; end: number; word: string }> = [];
@@ -472,6 +475,9 @@ export function appearanceSpans(scene: string, attribute: string): Span[] {
     }
     const text = scene.slice(start, end).trim();
     if (!text) continue;
+    // A span must sit wholly inside the resolved subject's range: an unrelated
+    // subject's wording is never this subject's to rewrite or to lock.
+    if (scope && (start < scope.start || end > scope.end)) continue;
     if (out.some(s => start < s.end && end > s.start)) continue;
     out.push({ start, end, text });
   }
@@ -576,6 +582,10 @@ export interface SubjectContract {
    *  does not state it, in which case the reference frame is the authority. */
   lockedAttributes: Array<{ attribute: string; observed: string | null }>;
   request: string | null;
+  /** Requested values the deck asked for that this slide deliberately does NOT
+   *  apply, because the scene cannot attribute them to a single subject. Never
+   *  silently dropped: the render prompt says so out loud. */
+  withheld?: string[] | null;
   /** How a DECK-LEVEL character field resolved for THIS slide (SLA-510). Absent
    *  when the caller supplied a request already scoped to one subject. */
   resolution?: CastingResolution | null;
@@ -639,8 +649,80 @@ export function splitCastingClauses(field: string): Array<{ label: string | null
     .filter(c => c.body.length > 0);
 }
 
-const namedIn = (text: string, label: string): boolean =>
-  new RegExp(`(?:^|[^\\p{L}\\p{N}])${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'iu').test(text);
+const labelRegex = (label: string): RegExp =>
+  new RegExp(`(?:^|[^\\p{L}\\p{N}])${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'iu');
+
+const namedIn = (text: string, label: string): boolean => labelRegex(label).test(text);
+
+/** Index of `label` in `text`, or -1. */
+const labelAt = (text: string, label: string): number => {
+  const m = labelRegex(label).exec(text);
+  return m ? m.index + m[0].length - label.length : -1;
+};
+
+/* --- Which scene ranges belong to this slide's subject (SLA-510 review) --- */
+
+/** Sentence ranges of a scene, terminator included, so offsets stay absolute. */
+function sentences(scene: string): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = [];
+  let start = 0;
+  for (const m of scene.matchAll(/[.!?]+/g)) {
+    out.push({ start, end: m.index! + m[0].length });
+    start = m.index! + m[0].length;
+  }
+  if (start < scene.length) out.push({ start, end: scene.length });
+  return out.length ? out : [{ start: 0, end: scene.length }];
+}
+
+/** Person nouns are the only heads that introduce a NEW subject. A referring
+ *  expression is not a new subject — "the man's jaw", "her eyes", "Sub 5's hair"
+ *  all point back at somebody already named — so those are removed before
+ *  counting, otherwise a body part or a repeat mention reads as a second person
+ *  and the subject's own casting gets withheld for no reason. */
+function personHeads(text: string): string[] {
+  return [...text
+    .replace(/\b[A-Za-z]+\s*['’`]s\b/g, ' ')
+    .matchAll(APPEARANCE_NOUNS.role!)].map(m => m[0].toLowerCase());
+}
+
+export interface SubjectScope {
+  /** Range of the scene this slide's subject occupies. Absolute offsets. */
+  start: number;
+  end: number;
+  /** Person nouns stated inside the range. */
+  subjectHeads: string[];
+  /** True when the range names more than one person, so no attribute inside it
+   *  can be attributed to this slide's subject without guessing. */
+  ambiguous: boolean;
+}
+
+/**
+ * The scene range whose appearance belongs to the resolved subject.
+ *
+ * A deck-level roster resolves to a LABEL; the subject owns the sentence that
+ * names that label. "Bottom-left: a man labeled Sub 5 with dark hair and brown
+ * eyes. Bottom-right: an unrelated woman with black hair and green eyes" gives
+ * the man one sentence and the woman another, so rewriting `hair` inside the
+ * subject's sentence cannot reach the woman.
+ *
+ * When the range still names more than one person (`a man labeled Sub 5 with a
+ * patchy beard beside a woman with black hair`), ownership cannot be determined
+ * without guessing, so `ambiguous` is set and the caller preserves the scene
+ * instead of rewriting it. A single-subject field (`label` null) scopes to the
+ * whole scene, unchanged from before.
+ */
+export function subjectScope(scene: string, label: string | null): SubjectScope {
+  const whole = (): SubjectScope => {
+    const heads = personHeads(scene);
+    return { start: 0, end: scene.length, subjectHeads: heads, ambiguous: false };
+  };
+  if (!label || !label.trim()) return whole();
+  const at = labelAt(scene, label);
+  if (at < 0) return whole();
+  const range = sentences(scene).find(s => at >= s.start && at < s.end) ?? { start: 0, end: scene.length };
+  const heads = personHeads(scene.slice(range.start, range.end));
+  return { start: range.start, end: range.end, subjectHeads: heads, ambiguous: heads.length > 1 };
+}
 
 export interface CastingResolution {
   /** The clause text that applies to this slide's subject, or null when no
@@ -704,15 +786,25 @@ export function resolveSlideCasting(scene: string, field: string): CastingResolu
 
 /** Apply a compiled casting target to the source scene prose. The source's own
  *  wording for an unlocked attribute is REPLACED, so the compiled scene can
- *  never simultaneously require the old and the new value (D4). */
-export function compileCasting(scene: string, targets: readonly CastingTarget[]): { effectiveScene: string; superseded: string[]; subject: SubjectContract } {
+ *  never simultaneously require the old and the new value (D4).
+ *
+ *  Edits and locks are scoped to `scope`. Without it a request for one subject
+ *  rewrote EVERY matching phrase in the frame — on a collage slide that deleted
+ *  an unrelated person's `black hair` and `green eyes` (SLA-510 review).
+ *
+ *  An ambiguous scope rewrites nothing at all: the targets come back in
+ *  `rejected` for the caller to record, so the ambiguity is resolved in
+ *  preparation rather than paid for as a wrong guess. */
+export function compileCasting(scene: string, targets: readonly CastingTarget[], scope?: SubjectScope): { effectiveScene: string; superseded: string[]; subject: SubjectContract; rejected: CastingTarget[] } {
+  const effective = scope?.ambiguous ? [] : [...targets];
+  const rejected = scope?.ambiguous ? [...targets] : [];
   const castingTarget: Record<string, string> = {};
-  for (const t of targets) castingTarget[t.attribute] = t.value;
+  for (const t of effective) castingTarget[t.attribute] = t.value;
   const unlocked = new Set(Object.keys(castingTarget));
   const edits: Array<{ start: number; end: number; text: string }> = [];
   const superseded: string[] = [];
   for (const attribute of unlocked) {
-    const spans = appearanceSpans(scene, attribute);
+    const spans = appearanceSpans(scene, attribute, scope);
     const replacement = castingTarget[attribute]!;
     spans.forEach((span, i) => {
       superseded.push(span.text);
@@ -725,13 +817,14 @@ export function compileCasting(scene: string, targets: readonly CastingTarget[])
   }
   const lockedAttributes = APPEARANCE_ATTRIBUTES
     .filter(a => !unlocked.has(a))
-    .map(attribute => ({ attribute, observed: appearanceSpans(scene, attribute)[0]?.text ?? null }));
+    .map(attribute => ({ attribute, observed: appearanceSpans(scene, attribute, scope)[0]?.text ?? null }));
   return {
     effectiveScene: effectiveScene.trim(),
     superseded,
+    rejected,
     subject: {
       slotId: 's0', identityMode: 'replace', supersededPhrases: superseded, castingTarget,
-      lockedAttributes, request: targets.length ? targets.map(t => t.value).join('; ') : null,
+      lockedAttributes, request: effective.length ? effective.map(t => t.value).join('; ') : null,
     },
   };
 }
@@ -778,9 +871,9 @@ export function compileSlideContract(opts: {
 }): SlideContract {
   const { castingRequest, identityLocked } = opts;
   const slotId = `s${opts.slideIndex}`;
-  const preserveSubject = (): SubjectContract => ({
+  const preserveSubject = (scope?: SubjectScope): SubjectContract => ({
     slotId, identityMode: 'preserve', supersededPhrases: [], castingTarget: {},
-    lockedAttributes: APPEARANCE_ATTRIBUTES.map(a => ({ attribute: a, observed: appearanceSpans(opts.scene, a)[0]?.text ?? null })),
+    lockedAttributes: APPEARANCE_ATTRIBUTES.map(a => ({ attribute: a, observed: appearanceSpans(opts.scene, a, scope)[0]?.text ?? null })),
     request: null,
   });
   let subject: SubjectContract;
@@ -792,23 +885,28 @@ export function compileSlideContract(opts: {
     // for this subject.
     const resolution = resolveSlideCasting(opts.scene, opts.deckCasting);
     if (resolution.unresolved) contractError('unresolved_casting_target', `Casting target "${resolution.unresolved}" states no concrete visible attribute; supply them or an approved reference.`);
-    if (resolution.targets.length) {
-      const compiled = compileCasting(opts.scene, resolution.targets);
+    // The resolved label decides which part of the scene this subject owns, so a
+    // rewrite can never reach an unrelated person sharing the frame.
+    const scope = subjectScope(opts.scene, resolution.subject);
+    const compiled = compileCasting(opts.scene, resolution.targets, scope);
+    for (const target of compiled.rejected) resolution.skipped.push({ clause: target.value, reason: 'ambiguous_subject' });
+    if (Object.keys(compiled.subject.castingTarget).length) {
       subject = { ...compiled.subject, slotId, resolution };
       compiledScene = compiled.effectiveScene;
     } else if (resolution.request) {
       // The roster names this slide's subject but states no visible attribute for
-      // it: keep the deck prose for this subject and lock every attribute to the
+      // it — or names one this slide cannot attribute to a single subject: keep
+      // the deck prose for this subject and lock every attribute to the
       // reference frame rather than guessing one from another subject's clause.
-      subject = { ...preserveSubject(), identityMode: 'replace', request: resolution.request, resolution };
+      subject = { ...preserveSubject(scope), identityMode: 'replace', request: resolution.request, resolution, withheld: compiled.rejected.map(t => t.value) };
     } else {
-      subject = { ...preserveSubject(), resolution };
+      subject = { ...preserveSubject(scope), resolution };
     }
   } else if (identityLocked === false && castingRequest && castingRequest.trim()) {
     const parsed = parseCastingRequest(castingRequest);
     if (parsed.unresolved) contractError('unresolved_casting_target', `Casting target "${parsed.unresolved}" states no concrete visible attribute; supply them or an approved reference.`);
-    if (parsed.targets.length) {
-      const compiled = compileCasting(opts.scene, parsed.targets);
+    const compiled = compileCasting(opts.scene, parsed.targets);
+    if (Object.keys(compiled.subject.castingTarget).length) {
       subject = { ...compiled.subject, slotId };
       compiledScene = compiled.effectiveScene;
     } else {
@@ -890,6 +988,12 @@ export function contractPromptLines(c: SlideContract): string[] {
   const otherSubjects = (c.subject.resolution?.skipped ?? []).filter(s => s.reason === 'not_this_slide');
   if (otherSubjects.length) {
     lines.push(`CASTING SCOPE (this slide only): the deck's character field describes other subjects (${otherSubjects.map(s => s.clause).join(' | ')}). None of them is this slide's subject, so do NOT apply them here, do not add a face this slide's scene does not describe, and keep this slide's own subjects exactly as the scene and PRESERVE list state.`);
+  }
+  // SLA-510: when the deck asked for a change this slide cannot attribute to one
+  // subject, say so instead of guessing. Silently applying it moved an
+  // attribute off one person and onto (or away from) another.
+  if (c.subject.withheld?.length) {
+    lines.push(`CASTING WITHHELD (this slide only): the deck requested ${c.subject.withheld.map(v => JSON.stringify(v)).join('; ')}, but this slide's scene describes more than one person and does not say which one owns those attributes. Applying it would move attributes between subjects, so it is NOT applied. Keep every subject in this frame exactly as the scene and PRESERVE list state; never transfer an attribute from one person to another.`);
   }
   if (c.subject.lockedAttributes.length) {
     lines.push(`PRESERVE (this slide's subject, unchanged from the attached reference): ${c.subject.lockedAttributes.map(l => l.observed ? `${l.attribute} ("${l.observed}")` : l.attribute).join('; ')}.`);

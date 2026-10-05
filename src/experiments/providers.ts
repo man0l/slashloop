@@ -783,6 +783,12 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     // Bounded complete candidate snapshot for the selection state: overlay
     // copy, storyboard scenes, hypothesis, mechanism, changes and locks.
     // Slices preserve the request budget (the Jev call stays small).
+    // SLA-510: the candidate storyboards are part of the judge's evidence
+    // block, so a cut scene OR a cut overlay makes the block incomplete —
+    // `story.truncated` already covers both, and the per-slide cut is recorded
+    // so the judge can see which slide it was.
+    const storyboards=generated.candidates.map(c=>candidateSlides(c.brief));
+    const candidateTruncated=storyboards.some(s=>s.truncated);
     const state={
       goal:e.instructions.goal,
       audience:e.instructions.audience,
@@ -792,11 +798,12 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       original_shots:evidence.sources.flatMap(s=>s.slides.map(v=>`${s.source} ${v.location}: ${v.observation}`)),
       original_evidence:evidence,
       locks:e.instructions.lockedConstraints.slice(0,8).map(l=>String(l).slice(0,200)),
-      candidates:generated.candidates.map((c,i)=>{const story=candidateSlides(c.brief);return {id:`c${i}`,title:String(c.title??'').slice(0,200),hook:String(c.brief?.hook??'').slice(0,300),
+      candidates:generated.candidates.map((c,i)=>{const story=storyboards[i]!;return {id:`c${i}`,title:String(c.title??'').slice(0,200),hook:String(c.brief?.hook??'').slice(0,300),
         hypothesis:String(c.hypothesis??'').slice(0,300),mechanism:c.mechanism??null,
         overlays:story.slides.map(s=>s.overlayText),
         storyboard:story.slides.map(s=>s.scene),
         storyboardTruncated:story.truncated,
+        truncatedSlides:story.slides.filter(s=>s.truncated||s.overlayTruncated).map(s=>s.role),
         changes:Array.isArray(c.changedVariables)?c.changedVariables.map(v=>`${v.name}=${v.value}`).join('; ').slice(0,500):'none'};}),
     };
     const keep=Math.max(0,e.variantCount-1);
@@ -823,7 +830,10 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       picked=keep?order.slice(0,keep).map(idx=>scoredAll[idx]!.c):[];
     }catch(err){fallback=`judge_error:${String(err instanceof Error?err.message:err).replace(/\s+/g,' ').slice(0,80)}`;}
     else fallback=`insufficient_evidence:${evidence.notes.length?evidence.notes.join(' ').replace(/\s+/g,' ').slice(0,120):'no source evidence'}`;
-    const briefJudge={candidates:scoredAll.map(s=>({title:s.c.title,hook:s.c.brief?.hook??'',score:s.score,confidence:s.confidence})),picked:picked.map(c=>c.title),winner:winnerId,fallback,reportPresent,evidenceComplete:evidence.complete,state};
+    // SLA-510: `evidenceComplete` is documented as false when the judge's evidence
+    // block had a gap OR a budget cut. The block covers the candidate storyboards
+    // as well as the source evidence, so a cut candidate counts.
+    const briefJudge={candidates:scoredAll.map(s=>({title:s.c.title,hook:s.c.brief?.hook??'',score:s.score,confidence:s.confidence})),picked:picked.map(c=>c.title),winner:winnerId,fallback,reportPresent,evidenceComplete:evidence.complete&&!candidateTruncated,candidateTruncated,state};
     // Jev score rides on each winning proposal for provenance.
     const proposals=[generated.baseline,...picked.map(c=>{const s=scoredAll.find(x=>x.c===c);return {...c,jev:{score:s?.score??0,confidence:s?.confidence}};})];
     // SLA-431: pin the requested exact copy before validation, so the supporting
