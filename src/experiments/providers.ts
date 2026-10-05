@@ -5,7 +5,7 @@ import { VideoAnalysisDataSchema } from '../analysis/schema.js';
 import { GeminiNativeAnalyzer } from '../analysis/gemini-native.js';
 import { liveGeminiFile } from '../analysis/index.js';
 import { experimentSourceKeys, isPhotoPost, resolveExperimentSourceUrls, signedMediaUrl } from '../lib/media.js';
-import { callOpenRouterText, classifyOpenRouterError, extractFirstJson, generateOpenRouterImage, RECREATE_IMAGE_MODEL } from '../lib/openrouter.js';
+import { callOpenRouterText, classifyOpenRouterError, extractFirstJson, generateOpenRouterImage, RECREATE_IMAGE_MODEL, requestIdOf } from '../lib/openrouter.js';
 import { buildVariantSlidePrompt, compileSlideContract, contractChecks, contractQaBlock, effectiveOverlayText, experimentVisualLock, labelPolicy, lockCarouselIdentity, overlayDecision, renderContract, type ObservedCopy, type SlideContract } from './render-prompt.js';
 import { jevPick, jevAsk, type JevQuestion, type JevAnswer } from '../lib/typesafe.js';
 import { putObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
@@ -464,10 +464,57 @@ export function resolvedCopyBlock(e:Pick<Experiment,'inputs'>):string{
   if(!rows.length)return '';
   return rows.map((i,n)=>`- carousel ${n+1} (${i.videoId}):\n${[...i.copy!].sort((a,b)=>a.slideIndex-b.slideIndex).map(c=>`  - slide ${c.slideIndex}: overlay ${c.state==='observed_empty'?'is "" (observed blank — render NO added text)':c.state==='unknown'?'is UNKNOWN (no usable extraction — do not invent copy)':`is ${JSON.stringify(c.text)}`}`).join('\n')}`).join('\n');
 }
+/** Normalise a returned check label for matching against the requested list:
+ *  whitespace is collapsed and trimmed, casing and punctuation are NOT — a
+ *  check is only the check the contract asked for when its label says so. */
+function qaCheckKey(label:unknown):string|null{
+  return typeof label==='string'?label.replace(/\s+/g,' ').trim():null;
+}
+/**
+ * One-to-one coverage of the requested check list (SLA-511).
+ *
+ * A composite pass used to mean "the model returned some passing entries", so a
+ * response that answered ONE of the fifteen requested checks verified the whole
+ * slide. Coverage is now a precondition of a pass: every requested label is
+ * answered exactly once, and nothing else is answered at all. Matching happens
+ * on RAW labels, before the display truncation, so a long check cannot be
+ * matched by its prefix or lost to it.
+ *
+ * Returns null when coverage is complete, else a short bounded reason naming the
+ * first problem found — which is also what makes the answer `invalid_response`
+ * rather than a story finding.
+ */
+export function qaCoverageProblem(rawChecks:unknown,expected:readonly string[]):string|null{
+  if(!Array.isArray(rawChecks))return 'qa_response_malformed:checks_not_an_array';
+  const wanted=new Set(expected);
+  const seen=new Map<string,number>();
+  for(const entry of rawChecks){
+    if(!entry||typeof entry!=='object')return 'qa_response_malformed:check_entry_not_an_object';
+    const x=entry as {check?:unknown;status?:unknown};
+    const label=qaCheckKey(x.check);
+    if(!label)return 'qa_response_malformed:check_label_not_a_string';
+    // A status outside the vocabulary is a malformed answer, not an `unknown`
+    // check: `unknown` means "the image cannot settle this", which is a real
+    // verdict the contract defines.
+    if(x.status!=='pass'&&x.status!=='fail'&&x.status!=='unknown')return `qa_response_malformed:status_for_check:${label.slice(0,80)}`;
+    if(!wanted.has(label))return `qa_unexpected_check:${label.slice(0,120)}`;
+    seen.set(label,(seen.get(label)??0)+1);
+  }
+  const duplicate=[...seen].find(([,n])=>n>1);
+  if(duplicate)return `qa_duplicate_check:${duplicate[0].slice(0,120)}`;
+  const missing=expected.filter(label=>!seen.has(label));
+  if(missing.length)return `qa_incomplete_coverage:missing=${missing.length} first=${missing[0]!.slice(0,120)}`;
+  return null;
+}
 /** D8: only a schema-valid composite QA pass is verified success. A missing
  *  check, an invalid response or an exception is `error`, never a pass, and
- *  fewer reasons is not a pass either. */
-export function resolveQaVerdict(raw:unknown, contractHash:string, corrected=false, attempts=1):SlideVerification{
+ *  fewer reasons is not a pass either.
+ *
+ *  `expectedChecks` is the contract's own check list. When supplied, an answer
+ *  that does not cover it exactly once is unverified (see qaCoverageProblem),
+ *  not a pass over whatever happened to come back. Omitted only by callers that
+ *  have no contract to check against. */
+export function resolveQaVerdict(raw:unknown, contractHash:string, corrected=false, attempts=1, expectedChecks?:readonly string[]):SlideVerification{
   const obj=raw&&typeof raw==='object'?raw as {checks?:unknown;reasons?:unknown}:null;
   const checks:QaCheck[]=Array.isArray(obj?.checks)
     ?obj!.checks.filter(c=>c&&typeof c==='object'&&typeof (c as {check?:unknown}).check==='string')
@@ -477,6 +524,13 @@ export function resolveQaVerdict(raw:unknown, contractHash:string, corrected=fal
     :[];
   const reasons=Array.isArray(obj?.reasons)?obj!.reasons.map(r=>String(r).slice(0,180)).slice(0,6):[];
   if(!checks.length)return {verdict:'error',reasons:reasons.length?reasons:['qa_missing_checks'],checks,contractHash,corrected,attempts};
+  // Coverage is judged on the RAW response, never on the truncated display
+  // records: the contract's labels are compared as the model sent them. An
+  // answer with no checks at all keeps its own reason above.
+  if(expectedChecks?.length){
+    const problem=qaCoverageProblem(obj?.checks,expectedChecks);
+    if(problem)return {verdict:'error',reasons:[problem],checks,contractHash,corrected,attempts};
+  }
   const verdict:SlideVerification['verdict']=checks.some(c=>c.status==='fail')?'fail':checks.some(c=>c.status==='unknown')?'error':'pass';
   if(verdict==='pass')return {verdict,reasons:[],checks,contractHash,corrected,attempts};
   const why=reasons.length?reasons:checks.filter(c=>c.status!=='pass').map(c=>`${c.check}: ${c.reason??c.status}`);
@@ -493,19 +547,26 @@ export const QA_DEFAULT_MODEL='x-ai/grok-4.6';
 export const QA_TIMEOUT_MS=90_000;
 /** Output budget for ONE check entry: its copied text (contract checks carry
  *  the observed phrase, up to 200 chars after resolveQaVerdict's cap), the
- *  status and a short concrete reason. */
+ *  status and a short concrete reason. A per-entry ESTIMATE, not a measurement:
+ *  it is sized from the text we can see, and one verbose answer can still run
+ *  out — which the coverage check then records as unverified, never as a pass. */
 const QA_TOKENS_PER_CHECK=72;
 /** Envelope plus the top-level `reasons` array (resolveQaVerdict keeps 6). */
 const QA_TOKENS_FIXED=256;
-/** Hard ceiling: a checker that cannot answer in this many tokens is broken,
- *  not merely verbose, and the slide lease does not pay for more. */
+/** Hard ceiling: a checker that cannot answer in this many tokens is not going
+ *  to be rescued by a bigger allowance inside the slide's lease. */
 export const QA_MAX_TOKENS_CEILING=4000;
 /**
- * Response budget for a checker that must answer EVERY contract check. The
- * fixed 900 the QA request used to carry could not hold a 15-check contract
- * (check text + status + reason each), so a truncated answer lost checks and
- * the slide was recorded unverified for a token cap that was ours, not the
- * model's. Size it from the contract's own check count, bounded above.
+ * Response budget for a checker that must answer EVERY contract check.
+ *
+ * The QA request used to carry a fixed 900 for any contract. That was a RISK,
+ * not a demonstrated cause of anything: 900 tokens is plausibly tight for a
+ * long contract, and the SLA-508 timeout is still unexplained upstream. The
+ * budget is now scaled from the contract's own check count so the request stops
+ * asking one size for every slide — a heuristic, bounded above, and never a
+ * claim that every possible answer fits. What makes an under-budget answer safe
+ * is not this number but `qaCoverageProblem`: an incomplete answer is
+ * unverified, never a pass.
  */
 export function qaMaxTokens(checkCount:number):number{
   return Math.min(QA_MAX_TOKENS_CEILING, QA_TOKENS_FIXED+Math.max(1,Math.ceil(checkCount))*QA_TOKENS_PER_CHECK);
@@ -519,9 +580,13 @@ export interface QaRequestPolicy {
 }
 /**
  * The checker's request policy, resolved from configuration with the existing
- * analysis-model chain behind it. `EXPERIMENT_QA_MODEL` is independent on
- * purpose: checker reliability must not move when someone retunes the
- * planning/analysis model, which is why it reads first and falls back.
+ * analysis-model chain behind it.
+ *
+ * `EXPERIMENT_QA_MODEL` reads FIRST so an operator can pin the checker on its
+ * own. Be precise about what that buys: with it set, retuning
+ * `EXPERIMENT_ANALYSIS_MODEL` no longer moves QA; UNSET, the compatibility
+ * fallback deliberately keeps following the planner, which is the pre-existing
+ * behaviour this change preserves.
  */
 export function qaRequestPolicy(env:NodeJS.ProcessEnv=process.env,checkCount=1):QaRequestPolicy{
   const model=env.EXPERIMENT_QA_MODEL?.trim()||env.EXPERIMENT_ANALYSIS_MODEL?.trim()||QA_DEFAULT_MODEL;
@@ -596,16 +661,25 @@ async function requestQaVerification(contract:SlideContract,candidate:Buffer):Pr
       {images:[{mimeType:'image/jpeg',dataBase64:candidate.toString('base64')}],maxTokens:policy.maxTokens,timeoutMs:policy.timeoutMs,reasoningEffort:policy.reasoningEffort});
     if(result.requestId)diagnostics.requestId=result.requestId;
     diagnostics.elapsedMs=Date.now()-started;
-    const verdict=resolveQaVerdict(result.parsed,contract.contractHash);
-    // A response that parsed but carried no usable check is an unusable
-    // answer: category it, so a truncated or empty body is distinguishable
-    // from a timeout. The verdict is unchanged — `error`, never a pass.
-    if(verdict.reasons[0]==='qa_missing_checks')diagnostics.errorCategory='invalid_response';
+    // The expected list is the contract's own, so the verdict can only be a
+    // pass over an answer that actually covered what was asked.
+    const verdict=resolveQaVerdict(result.parsed,contract.contractHash,false,1,checks);
+    // An answer that came back but did not cover the requested checks is an
+    // unusable ANSWER, not a story finding: category the response-shape
+    // problems (missing checks, incomplete coverage, a duplicate, an unexpected
+    // or malformed entry) so they are distinguishable from a timeout, a
+    // refusal or a genuine `unknown` check. The verdict is unchanged —
+    // `error`, never a pass.
+    if(verdict.reasons[0]?.startsWith('qa_'))diagnostics.errorCategory='invalid_response';
     logQaDiagnostic(diagnostics,contract.contractHash);
     return {...verdict,diagnostics};
   }catch(err){
     diagnostics.outcome='error';
     diagnostics.errorCategory=qaErrorCategory(err);
+    // A refused, throttled or malformed response still carries the gateway's
+    // request id when it sent one; keep it so provider support can be asked
+    // about THIS call. A transport failure with no response invents nothing.
+    diagnostics.requestId=requestIdOf(err)??diagnostics.requestId;
     diagnostics.elapsedMs=Date.now()-started;
     logQaDiagnostic(diagnostics,contract.contractHash);
     return {...resolveQaVerdict(null,contract.contractHash),reasons:[`story_check_error:${String(err instanceof Error?err.message:err).replace(/\s+/g,' ').slice(0,80)}`],diagnostics};
@@ -1154,8 +1228,15 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     // At most ONE corrective render per slide, shared by the style retry and the
     // story retry. No retry after a verified pass, and no retry after a checker
     // error — a blind re-render cannot un-verify anything (D8).
-    const correctionUsed=story.verdict==='skipped'&&styleViolation;
-    const mustCorrect=!correctionUsed&&story.verdict!=='pass'&&(styleViolation||story.verdict==='fail');
+    //
+    // SLA-511: the shared wave is bought by a VERIFIED FAIL, or by an
+    // off-style candidate when no checker exists at all (`skipped`). An `error`
+    // — unavailable, refused or unusable/incomplete QA — never buys one, even
+    // when the candidate is also off-style: a checker that could not answer is
+    // not a finding about the image, and paying for another image would spend a
+    // second time to learn nothing. That case previously reached the corrective
+    // render through the style flag.
+    const mustCorrect=story.verdict==='fail'||(story.verdict==='skipped'&&styleViolation);
     if(mustCorrect){
       const corrective=finalPrompt
         +(styleViolation?hardLock:'')
