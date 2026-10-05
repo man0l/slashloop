@@ -28,6 +28,8 @@ const faceMorphScenes = [
 
 const oilyCharacter = 'Sub 5: rectangular face, dark brown receding hair, stubble, brown eyes. Sub 3: moon-round face, sandy short hair, no beard but oily line work, green eyes. Chad: diamond face, black neat hair, light stubble, grey eyes. Unchanged: roles, labels Sub 5/Sub 3/chad, drawing mediums, composition, story order, density, gaze, expression, no added items.';
 
+const twoLabels = 'Sub 5: red hair, blue eyes. Chad: blonde hair, grey eyes.';
+
 describe('the roster is split into labelled subjects and preservation clauses', () => {
   test('labels, bodies and the Unchanged clause are separated', () => {
     const clauses = splitCastingClauses(faceMorphCharacter);
@@ -184,7 +186,6 @@ describe('scene edits and QA stay inside the selected subject', () => {
   // compileCasting then rewrote EVERY matching phrase in the scene, so an
   // unrelated person sharing the frame lost their attributes entirely.
   const collage = 'Bottom-left: a man labeled Sub 5 with dark hair and brown eyes. Bottom-right: an unrelated woman with black hair and green eyes holding a bowl.';
-  const twoLabels = 'Sub 5: red hair, blue eyes. Chad: blonde hair, grey eyes.';
 
   test('an unrelated subject in the same slide keeps every attribute', () => {
     const built = contract(collage, twoLabels);
@@ -238,12 +239,34 @@ describe('scene edits and QA stay inside the selected subject', () => {
 
   test('subjectScope names the range and the people inside it', () => {
     expect(subjectScope(collage, 'Sub 5')).toMatchObject({ subjectHeads: ['man'], ambiguous: false });
-    expect(subjectScope(collage, null)).toMatchObject({ start: 0, end: collage.length, ambiguous: false });
+    // A single-subject field is NOT evidence that the scene holds one subject:
+    // the unlabelled scope used to claim the whole collage unambiguously and
+    // rewrote both people. Two named heads make it ambiguous instead.
+    expect(subjectScope(collage, null)).toMatchObject({ start: 0, end: collage.length, subjectHeads: ['man', 'woman'], ambiguous: true });
     const ambiguous = subjectScope('A man labeled Sub 5 with dark hair beside a woman with black hair.', 'Sub 5');
     expect(ambiguous.subjectHeads).toEqual(['man', 'woman']);
     expect(ambiguous.ambiguous).toBe(true);
     // A label the scene never names cannot scope anything.
     expect(subjectScope(collage, 'Sub 9')).toMatchObject({ start: 0, end: collage.length });
+  });
+
+  test('a relationship noun is a second subject, not a body part', () => {
+    // "his girlfriend with black hair" opens another person. Not recognising that
+    // let one recognized role noun read as unique ownership of every span, which
+    // deleted the girlfriend's appearance.
+    const heads = subjectScope('A man labeled Sub 5 with dark hair beside his girlfriend with black hair.', 'Sub 5');
+    expect(heads.subjectHeads).toEqual(['man', 'girlfriend']);
+    expect(heads.ambiguous).toBe(true);
+    expect(subjectScope('A man with dark hair beside his brother in blue.', null).ambiguous).toBe(true);
+  });
+
+  test('the subject’s range runs past a sentence that names nobody', () => {
+    // One subject described across two sentences: excluding the second left the
+    // source's own `dark hair`/`brown eyes` standing beside the live targets.
+    const crossSentence = 'A man labeled Sub 5. He has dark hair and brown eyes. A woman with black hair and green eyes stands beside him.';
+    const scope = subjectScope(crossSentence, 'Sub 5');
+    expect(scope).toMatchObject({ subjectHeads: ['man'], ambiguous: false });
+    expect(crossSentence.slice(scope.start, scope.end).trim()).toBe('A man labeled Sub 5. He has dark hair and brown eyes.');
   });
 
   test('the saved roster decks still resolve one subject each and edit only their own', () => {
@@ -267,6 +290,87 @@ describe('scene edits and QA stay inside the selected subject', () => {
     expect(chad.subject.castingTarget).not.toHaveProperty('hair');
     expect(chad.subject.lockedAttributes.find(l => l.attribute === 'hair')?.observed).toBeNull();
     expect(contractChecks(chad)).toContain("the subject's hair is unchanged from the reference frame");
+  });
+});
+
+describe('the review fixtures: one subject, one ownership answer (SLA-510 round 2)', () => {
+  // The three acceptance probes, verbatim. Each failed because ownership was
+  // never established: an unlabelled field claimed the whole frame, a labelled
+  // subject stopped at its own sentence, and one recognized role noun read as
+  // ownership of every appearance span in the frame.
+
+  test('an unlabelled request on two people is withheld, and both keep their appearance', () => {
+    const scene = 'Bottom-left: a man with dark hair and brown eyes. Bottom-right: a woman with black hair and green eyes.';
+    const built = contract(scene, 'red hair, blue eyes');
+    expect(built.subject.castingTarget).toEqual({});
+    expect(built.subject.withheld).toEqual(['red hair', 'blue eyes']);
+    expect(built.subject.withheldReason).toBe('ambiguous_subject');
+    expect(built.compiledScene).toBe(scene);
+    expect(built.subject.supersededPhrases).toEqual([]);
+    // Render and QA agree: neither value is an instruction and neither is a lock.
+    expect(contractPromptLines(built).join('\n')).toContain('CASTING WITHHELD');
+    expect(contractChecks(built).some(c => c.includes('matches the requested casting target'))).toBe(false);
+  });
+
+  test('a labelled subject described across sentences is rewritten, once', () => {
+    const scene = 'A man labeled Sub 5. He has dark hair and brown eyes. A woman with black hair and green eyes stands beside him.';
+    const built = contract(scene, twoLabels);
+    expect(built.subject.castingTarget).toEqual({ hair: 'red hair', eyes: 'blue eyes' });
+    expect(built.subject.withheld ?? []).toEqual([]);
+    expect(built.compiledScene).toBe('A man labeled Sub 5. He has red hair and blue eyes. A woman with black hair and green eyes stands beside him.');
+    expect(built.subject.supersededPhrases).toEqual(['dark hair', 'brown eyes']);
+    // The woman's appearance is not this subject's to move.
+    expect(built.compiledScene).toContain('black hair and green eyes');
+  });
+
+  test('a relationship noun keeps the second person out of the subject’s range', () => {
+    const scene = 'A man labeled Sub 5 with dark hair and brown eyes beside his girlfriend with black hair and green eyes.';
+    const built = contract(scene, twoLabels);
+    expect(built.subject.castingTarget).toEqual({});
+    expect(built.subject.withheld).toEqual(['red hair', 'blue eyes']);
+    expect(built.subject.withheldReason).toBe('ambiguous_subject');
+    expect(built.compiledScene).toBe(scene);
+    expect(built.subject.resolution!.skipped.filter(s => s.reason === 'ambiguous_subject')).toHaveLength(2);
+  });
+
+  test('no live target may survive beside the source value it replaces', () => {
+    // The subject's appearance sits in a clause that also names the other person,
+    // so the range cannot rewrite it. A half-applied target would state both
+    // `red hair` and `dark hair` for one subject: the exact contradiction this
+    // contract exists to prevent. It is withheld instead.
+    const scene = 'A man labeled Sub 5 stands left. A woman with black hair stands beside him; he has dark hair and brown eyes.';
+    const built = contract(scene, twoLabels);
+    expect(built.subject.castingTarget).toEqual({});
+    expect(built.subject.withheld).toEqual(['red hair', 'blue eyes']);
+    expect(built.subject.withheldReason).toBe('unattributed_target');
+    expect(built.compiledScene).toBe(scene);
+    expect(built.subject.resolution!.skipped.some(s => s.reason === 'unattributed_target')).toBe(true);
+    const lines = contractPromptLines(built).join('\n');
+    expect(lines).toContain('CASTING WITHHELD');
+    expect(lines).toContain("would leave the source's value and the requested value on the same subject at once");
+    expect(contractChecks(built).some(c => c.includes('matches the requested casting target'))).toBe(false);
+  });
+
+  test('a value the scene already states is not treated as a stale conflict', () => {
+    // Slide 2 of the saved deck asks for `red hair` and the scene says `red hair`.
+    // Rewriting it is a no-op, not a contradiction, so the target stays live.
+    const built = contract(faceMorphScenes[1]!, faceMorphCharacter);
+    expect(built.subject.castingTarget).toMatchObject({ hair: 'red hair' });
+    expect(built.subject.withheld ?? []).toEqual([]);
+  });
+
+  test('a single-person unlabelled request still applies exactly as before', () => {
+    const built = contract('A man with dark hair and brown eyes holding a bowl.', 'red hair, blue eyes');
+    expect(built.subject.castingTarget).toEqual({ hair: 'red hair', eyes: 'blue eyes' });
+    expect(built.compiledScene).toBe('A man with red hair and blue eyes holding a bowl.');
+    expect(built.subject.withheld ?? []).toEqual([]);
+  });
+
+  test('a scene naming nobody is scoped to the whole frame', () => {
+    const scene = 'a studio portrait of a person against a plain backdrop.';
+    const built = contract(scene, 'platinum-blonde buzzed sides, ice-blue eyes');
+    expect(built.subject.castingTarget).toEqual({ hair: 'platinum-blonde buzzed sides', eyes: 'ice-blue eyes' });
+    expect(built.compiledScene).toBe(scene);
   });
 });
 
