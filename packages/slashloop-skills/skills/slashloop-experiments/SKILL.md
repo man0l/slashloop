@@ -26,7 +26,13 @@ Build `instructions`:
 - `goal` required.
 - `variables`: 1–7 values from `hook`, `character`, `visualStyle`, `caption`,
   `cta`, `concept`/`angle`, or `slides`.
-- `mode`: `controlled` by default; `concept`/`slides` require `exploration`.
+- `mode`: `controlled` by default; each alternate changes one selected variable.
+  `exploration` permits combined changes in a variant; `concept`/`slides` require it.
+  For the SaaS "Explore combinations" test mode, use `mode:"create"` with
+  `instructions.mode:"exploration"` and all selected `instructions.variables`,
+  e.g. `["hook","character","visualStyle"]`. Put desired values in
+  `instructions.direction`. This uses the same service and locks as the SaaS;
+  top-level edit `variables` is the bounded single-variable shortcut.
 - `language`, `brand`, `audience`, `direction`, and `lockedConstraints` when
   supplied.
 
@@ -34,6 +40,15 @@ Defaults: `variantCount=3` including baseline and `slideCount=5`, overridden by
 the source deck when known. Call `create_experiment`; the draft is free.
 Return each created experiment ID and its `planEstimate`, plus failures. Do not
 plan or generate without the next approval gate.
+
+For a bounded character-only edit of one deck, call `create_experiment` with
+`mode:"edit"`, `variables:["character"]`, and `character` containing visible
+casting direction (up to 1000 characters). Omit `hook`, `overlayTexts`, and
+`instructions`: source text, style, setting and story stay locked. Edit mode
+creates two variants with a 100-credit ceiling; the same approval gates apply.
+Copy edits default to `variables:["hook"]`. Use create mode with
+`instructions.variables:["character"]` and `instructions.direction` when you
+need custom goals or counts. Never put create instructions into edit mode.
 
 To run a confirmed draft: call `estimate_experiment(stage="plan")`; after the
 user approves that exact `totalCredits`, pass it as `approvedCredits` to

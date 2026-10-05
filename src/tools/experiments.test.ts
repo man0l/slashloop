@@ -7,7 +7,9 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { Command, Create, EditBrief, Generate, Plan, Retry, ExperimentError, Key, type Experiment } from '../experiments/schema.js';
+import { Command, Create, EditBrief, Generate, Plan, Retry, ExperimentError, Key, validateVariants, type Experiment } from '../experiments/schema.js';
+import { normalizeBriefCandidates } from '../experiments/providers.js';
+import { renderContract } from '../experiments/render-prompt.js';
 import {
   registerExperimentTools, defaultExperimentCap, derivedKey, editSlideDirection, editInstructions,
   EDIT_COPY_MAX, EDIT_GOAL, EDIT_MAX_CREDITS, EDIT_VARIANT_COUNT, type ExperimentToolDeps,
@@ -183,7 +185,83 @@ describe('create_experiment', () => {
     expect(callsOf('createExperiment')).toHaveLength(0);
   });
 
+  test('SaaS exploration selections survive MCP, planning validation and render locks', async () => {
+    const requested = { goal: 'Test hook and casting together', variables: ['hook', 'character', 'visualStyle'], mode: 'exploration', direction: 'Hook: a question; character: short blond hair; style: warm photograph' };
+    const request = { mode: 'create', videoIds: ['vid1'], instructions: requested, variantCount: 2, slideCount: 3 };
+    expect((await call('create_experiment', request)).isError).toBe(false);
+    const body = callsOf('createExperiment')[0]![0] as any;
+    expect(Create.safeParse(body).success).toBe(true);
+    expect(body.instructions).toMatchObject(requested);
+    const baseline = { title: 'Source', hypothesis: 'Control', concept: 'Tea', hook: 'Try tea', character: 'Original adult', visualStyle: 'Cool photograph', caption: 'Tea guide', cta: '', lockedConstraints: [], slides: [
+      { role: 'hook', scene: 'Kitchen', overlayText: 'Try tea' },
+      { role: 'body', scene: 'Pour tea', overlayText: 'Steep briefly' },
+      { role: 'payoff', scene: 'Cup', overlayText: 'Enjoy' },
+    ] };
+    const changedVariables = [
+      { name: 'hook' as const, value: 'Ready for tea?' },
+      { name: 'character' as const, value: 'Adult with short blond hair' },
+      { name: 'visualStyle' as const, value: 'Warm photograph' },
+    ];
+    const e = exp('combo', { instructions: body.instructions, variantCount: 2 });
+    const normalized = normalizeBriefCandidates({ baseline, candidates: [{ title: 'Combined', hypothesis: 'Combined changes improve swipes', changedVariables }] }, 3, e);
+    const proposals = [normalized.baseline, ...normalized.candidates];
+    expect(() => validateVariants(e, proposals)).not.toThrow();
+    expect(normalized.candidates[0]!.changedVariables).toEqual(changedVariables);
+    expect(normalized.candidates[0]!.brief.slides).toEqual(baseline.slides);
+    expect(renderContract(e.instructions.variables, changedVariables)).toMatchObject({
+      changeFaces: true, changeOverlay: true, changeStyle: true, changeStory: false, changeSetting: false,
+    });
+    expect(() => validateVariants({ ...e, instructions: { ...e.instructions, mode: 'controlled' } }, proposals)).toThrow('not_one_variable');
+    expect(() => validateVariants({ ...e, instructions: { ...e.instructions, variables: ['hook', 'character'] } }, proposals)).toThrow('unapproved_variable');
+    await call('create_experiment', request);
+    expect((callsOf('createExperiment')[1]![0] as any).idempotencyKey).toBe(body.idempotencyKey);
+    expect(callsOf('mutate')).toHaveLength(0);
+  });
+
   // ---- edit mode (the site's "Edit slideshow" wizard path) ----
+
+  test('character-only edit preserves source copy and unlocks only faces', async () => {
+    const request = { mode: 'edit', videoIds: ['vid1'], variables: ['character'], character: ' Short blond hair ' };
+    const { isError } = await call('create_experiment', request);
+    expect(isError).toBe(false);
+    const body = callsOf('createExperiment')[0]![0] as any;
+    expect(Create.safeParse(body).success).toBe(true);
+    expect(body.instructions.variables).toEqual(['character']);
+    expect(body.instructions.direction).toContain('Character: Short blond hair');
+    expect(body.instructions).not.toHaveProperty('copyOverrides');
+    expect(body.variantCount).toBe(2);
+    expect(body.maxCredits).toBe(100);
+    expect(renderContract(body.instructions.variables, [{ name: 'character' }])).toMatchObject({
+      kind: 'character', changeFaces: true, changeOverlay: false, changeStyle: false, changeSetting: false, changeStory: false,
+    });
+    await call('create_experiment', request);
+    expect((callsOf('createExperiment')[1]![0] as any).idempotencyKey).toBe(body.idempotencyKey);
+    await call('create_experiment', { ...request, character: 'Long red hair' });
+    expect((callsOf('createExperiment')[2]![0] as any).idempotencyKey).not.toBe(body.idempotencyKey);
+  });
+
+  test('character infers its variable when omitted', async () => {
+    expect((await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], character: 'Short hair' })).isError).toBe(false);
+    expect((callsOf('createExperiment')[0]![0] as any).instructions.variables).toEqual(['character']);
+  });
+
+  test('edit refuses missing or conflicting casting inputs instead of silently discarding them', async () => {
+    const client = await connect();
+    for (const fields of [
+      { variables: ['character'] },
+      { variables: ['hook'], character: 'Short hair', hook: 'H' },
+      { variables: ['character'], character: 'Short hair', hook: '' },
+      { variables: ['character'], character: 'Short hair', overlayTexts: [''] },
+      { instructions: { ...instructions, variables: ['character'], direction: 'Short hair' }, hook: 'H' },
+      { variables: ['hook', 'character'], character: 'Short hair', hook: 'H' },
+      { character: 'x'.repeat(1001) },
+      { character: '  ' },
+    ]) {
+      const result = await client.callTool({ name: 'create_experiment', arguments: { mode: 'edit', videoIds: ['vid1'], ...fields } });
+      expect(result.isError).toBe(true);
+    }
+    expect(callsOf('createExperiment')).toHaveLength(0);
+  });
 
   test('edit mode sends the site\'s payload: one deck, hook variable, 2 variants, 100 credits', async () => {
     const { isError, body } = await call('create_experiment', {
