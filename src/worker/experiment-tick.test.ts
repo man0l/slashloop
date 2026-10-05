@@ -6,7 +6,12 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describeExperimentTickGate, experimentsTickEnabled, experimentTickFailureDetail } from './experiment-tick.js';
+import {
+  describeExperimentTickGate, experimentsTickEnabled, experimentTickFailureDetail,
+  nextExperimentCadence, experimentTickIntervalMs,
+  EXPERIMENT_ACTIVE_WINDOW_MS, EXPERIMENT_TICK_MIN_INTERVAL_MS, EXPERIMENT_TICK_SLOW_INTERVAL_MS,
+  IDLE_TICK_STREAK_MAX,
+} from './experiment-tick.js';
 
 describe('experimentsTickEnabled', () => {
   test('explicit env wins over kinds', () => {
@@ -119,5 +124,182 @@ describe('experimentTickFailureDetail', () => {
     const catchWindow = src.slice(Math.max(0, line - 500), line);
     expect(catchWindow).toContain('experimentTickFailureDetail(');
     expect(catchWindow).not.toContain('err.stack ?? err.message');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SLA-455: an active experiment whose tick runs zero steps is a lease/backoff
+// wait, not progress. The loop used to read `active && (steps === 0 ||
+// usage.writes > 0)` as progress, which reset the streak and re-armed the 5s
+// cadence on every no-op tick — IDLE_TICK_STREAK_MAX was unreachable, so idle
+// experiments polled D1 every 5s instead of parking at 120s.
+//
+// The loop body is not importable (top-level drain loop in index.ts), so the
+// cadence policy lives in nextExperimentCadence() and is exercised here with
+// an explicit fake clock — no timers, no network, no provider calls.
+// ---------------------------------------------------------------------------
+
+/**
+ * One fake worker-loop iteration: the interval in force when the loop wakes,
+ * the sleep it actually takes, and the cadence state after folding the tick
+ * outcome. The loop starts parked (activeUntil 0) and lastTickAt 0, so the
+ * first tick fires immediately no matter the interval — as index.ts does.
+ */
+function fakeLoop(ticks: Array<{ steps: number; active: boolean }>) {
+  let now = 1_700_000_000_000;
+  let lastTickAt = 0;
+  let state = { activeUntil: 0, idleTickStreak: 0 };
+  const intervalMs: number[] = [];
+  const sleptMs: number[] = [];
+  const parkedStreak: (number | null)[] = [];
+  const rearmed: boolean[] = [];
+  for (const tick of ticks) {
+    const interval = experimentTickIntervalMs(state.activeUntil, now);
+    const sleep = Math.max(0, interval - (now - lastTickAt));
+    now += sleep;
+    lastTickAt = now;
+    const decision = nextExperimentCadence(state, tick, now);
+    state = { activeUntil: decision.activeUntil, idleTickStreak: decision.idleTickStreak };
+    intervalMs.push(interval);
+    sleptMs.push(sleep);
+    parkedStreak.push(decision.parkedStreak);
+    rearmed.push(decision.rearmed);
+  }
+  return { intervalMs, sleptMs, parkedStreak, rearmed, state };
+}
+
+const PROGRESS = { steps: 1, active: true };
+/** The leased/backed-off case: an experiment row exists, this tick ran nothing. */
+const NO_PROGRESS = { steps: 0, active: true };
+const NO_EXPERIMENTS = { steps: 0, active: false };
+const FAST = EXPERIMENT_TICK_MIN_INTERVAL_MS;
+const SLOW = EXPERIMENT_TICK_SLOW_INTERVAL_MS;
+
+describe('nextExperimentCadence', () => {
+  test('cadence constants are the shipped values', () => {
+    expect(FAST).toBe(5_000);
+    expect(SLOW).toBe(120_000);
+    expect(IDLE_TICK_STREAK_MAX).toBe(3);
+    expect(EXPERIMENT_ACTIVE_WINDOW_MS).toBe(600_000);
+  });
+
+  test('active zero-step ticks count toward the streak and park at the slow cadence', () => {
+    // 1 progress tick (arms the window), then IDLE_TICK_STREAK_MAX no-progress
+    // ticks. The loop starts parked, so tick 1 wakes on the slow cadence.
+    const run = fakeLoop([PROGRESS, NO_PROGRESS, NO_PROGRESS, NO_PROGRESS, NO_PROGRESS, NO_PROGRESS]);
+    expect(run.intervalMs).toEqual([SLOW, FAST, FAST, FAST, SLOW, SLOW]);
+    expect(run.parkedStreak).toEqual([null, null, null, IDLE_TICK_STREAK_MAX, null, null]);
+    expect(run.state.activeUntil).toBe(0);
+    // The streak restarts after parking — a still-active experiment must not
+    // re-warn (or re-park) on every subsequent slow tick.
+    expect(run.state.idleTickStreak).toBe(2);
+  });
+
+  test('three no-progress ticks are required: two still hold the fast window', () => {
+    const run = fakeLoop([PROGRESS, NO_PROGRESS, NO_PROGRESS]);
+    expect(run.parkedStreak).toEqual([null, null, null]);
+    expect(run.intervalMs).toEqual([SLOW, FAST, FAST]);
+    expect(run.state.idleTickStreak).toBe(2);
+    expect(run.state.activeUntil).toBeGreaterThan(0);
+    expect(experimentTickIntervalMs(run.state.activeUntil, 1_700_000_000_000)).toBe(FAST);
+  });
+
+  test('a tick with real progress re-arms the 5s cadence after a park', () => {
+    const parked = fakeLoop([PROGRESS, NO_PROGRESS, NO_PROGRESS, NO_PROGRESS]);
+    expect(parked.state.activeUntil).toBe(0);
+    // Tick 5 lands on the slow cadence, runs 2 steps, and the iteration after
+    // it is back to 5s.
+    const resumed = fakeLoop([
+      PROGRESS, NO_PROGRESS, NO_PROGRESS, NO_PROGRESS,
+      { steps: 2, active: true }, PROGRESS,
+    ]);
+    expect(resumed.intervalMs).toEqual([SLOW, FAST, FAST, FAST, SLOW, FAST]);
+    expect(resumed.rearmed).toEqual([true, false, false, false, true, true]);
+    expect(resumed.parkedStreak).toEqual([null, null, null, IDLE_TICK_STREAK_MAX, null, null]);
+    expect(resumed.state.idleTickStreak).toBe(0);
+  });
+
+  test('an inactive tick clears the streak and the fast window', () => {
+    const run = fakeLoop([PROGRESS, NO_PROGRESS, NO_PROGRESS, NO_EXPERIMENTS, NO_PROGRESS]);
+    // Tick 4 (inactive) drops the window and zeroes the streak, so tick 5 is
+    // streak 1 and does NOT park — the reset is observable.
+    expect(run.parkedStreak).toEqual([null, null, null, null, null]);
+    expect(run.state.activeUntil).toBe(0);
+    expect(run.state.idleTickStreak).toBe(1);
+    expect(run.intervalMs).toEqual([SLOW, FAST, FAST, FAST, SLOW]);
+  });
+
+  test('an inactive tick wins over an impossible progress count', () => {
+    // The engine always pairs steps>0 with active=true; if it ever did not,
+    // clearing the window is the cheap direction.
+    const decision = nextExperimentCadence({ activeUntil: 5, idleTickStreak: 2 }, { steps: 3, active: false }, 0);
+    expect(decision).toEqual({ activeUntil: 0, idleTickStreak: 0, rearmed: false, parkedStreak: null });
+  });
+
+  test('D1 writes never decide cadence (process-wide counter attribution)', () => {
+    // deltaD1Usage() is process-wide: MediaJob work draining concurrently
+    // inflates writes mid-tick, and non-D1 runtimes keep the totals at 0. The
+    // decision takes no usage input at all, so neither case can re-arm.
+    const cold = { activeUntil: 0, idleTickStreak: 0 };
+    expect(Object.keys(nextExperimentCadence(cold, NO_PROGRESS, 0)).sort()).toEqual([
+      'activeUntil', 'idleTickStreak', 'parkedStreak', 'rearmed',
+    ]);
+    const a = nextExperimentCadence(cold, NO_PROGRESS, 0);
+    const b = nextExperimentCadence(cold, NO_PROGRESS, 0);
+    expect(a).toEqual(b);
+  });
+});
+
+describe('experimentTickIntervalMs', () => {
+  test('armed window → 5s, otherwise 120s', () => {
+    expect(experimentTickIntervalMs(1_000, 999)).toBe(EXPERIMENT_TICK_MIN_INTERVAL_MS);
+    expect(experimentTickIntervalMs(1_000, 1_000)).toBe(EXPERIMENT_TICK_SLOW_INTERVAL_MS);
+    expect(experimentTickIntervalMs(0, 0)).toBe(EXPERIMENT_TICK_SLOW_INTERVAL_MS);
+    // The armed window is exactly EXPERIMENT_ACTIVE_WINDOW_MS wide.
+    expect(experimentTickIntervalMs(0 + EXPERIMENT_ACTIVE_WINDOW_MS, EXPERIMENT_ACTIVE_WINDOW_MS))
+      .toBe(EXPERIMENT_TICK_SLOW_INTERVAL_MS);
+  });
+});
+
+describe('worker loop cadence wiring', () => {
+  // Static guards: index.ts cannot be imported (top-level drain loop), so the
+  // invariants the loop must keep are pinned on its source instead.
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'index.ts'), 'utf8');
+
+  test('cadence routes through the tested pure function', () => {
+    expect(src).toContain('nextExperimentCadence(');
+    expect(src).toContain('experimentTickIntervalMs(experimentsActiveUntil, Date.now())');
+    expect(src).toContain('experiment tick advanced');
+    // The buggy re-arm disjunct must not come back.
+    expect(src).not.toContain('steps === 0 ||');
+    // And the cadence constants live in the tested module, not here.
+    expect(src).not.toContain('const IDLE_TICK_STREAK_MAX');
+    expect(src).not.toContain('const EXPERIMENT_TICK_MIN_INTERVAL_MS');
+    expect(src).not.toContain('const EXPERIMENT_TICK_SLOW_INTERVAL_MS');
+  });
+
+  test('error backoff, single-flight, and gate ownership are unchanged', () => {
+    // Error backoff: a failed tick parks itself behind the timestamp; a
+    // successful tick clears it.
+    expect(src).toContain('experimentTickErrorRounds++;');
+    expect(src).toContain('experimentTickBackoffUntil = Date.now() + delay;');
+    expect(src).toContain('experimentTickErrorRounds = 0;');
+    expect(src).toContain('experimentTickBackoffUntil = 0;');
+    // Single-flight: never start a tick while one is in the air.
+    expect(src).toContain('!experimentTickInFlight');
+    expect(src).toContain('experimentTickInFlight = experimentTick(120_000)');
+    expect(src).toContain('.finally(() => { experimentTickInFlight = null; })');
+    // Ownership + kill switch gate the tick, and still precede it.
+    expect(src).toContain('const experimentsAllowed = doesExperiments && controlOn;');
+    const gate = src.indexOf('const experimentsAllowed = doesExperiments && controlOn;');
+    const tick = src.indexOf('experimentTickInFlight = experimentTick(120_000)');
+    expect(gate).toBeGreaterThan(-1);
+    expect(tick).toBeGreaterThan(gate);
+    // The cadence is a pure function of tick outcome + state — no side-effect
+    // ordering to break: idleTickStreak/experimentsActiveUntil are only
+    // assigned from the returned decision.
+    expect(src).not.toContain('experimentsActiveUntil = Date.now() + 10 * 60_000');
+    expect(src).toContain('experimentsActiveUntil = cadence.activeUntil;');
+    expect(src).toContain('idleTickStreak = cadence.idleTickStreak;');
   });
 });

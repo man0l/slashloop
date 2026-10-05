@@ -48,6 +48,92 @@ export function experimentTickFailureDetail(err: unknown): string {
   return `no detail extractable from thrown value (typeof ${typeof err}${ctor}): ${shape || '?'}`;
 }
 
+// ---------------------------------------------------------------------------
+// Cadence: how often the loop is allowed to re-tick experiments.
+//
+// The engine reports active=true whenever an experiment row exists — including
+// when this tick attempted nothing at all (every task is inside its lease or
+// backing off). The loop used to read `active && (steps === 0 ||
+// usage.writes > 0)` as progress, so those zero-step waits reset the streak
+// and re-armed the 5s fast cadence forever: an active-but-idle experiment
+// polled D1 every 5s and IDLE_TICK_STREAK_MAX was unreachable.
+//
+// The decision below is tick-LOCAL. `steps` comes from this tick's engine
+// call; deltaD1Usage() is process-wide, so MediaJob draining concurrently
+// inflates `writes` during an experiment tick and runtimes without
+// D1-over-HTTP keep the totals at 0. Writes stay a logging signal only.
+// ---------------------------------------------------------------------------
+
+/** Re-tick interval while the fast window is armed. */
+export const EXPERIMENT_TICK_MIN_INTERVAL_MS = 5_000;
+/** Re-tick interval once the fast window is not armed. */
+export const EXPERIMENT_TICK_SLOW_INTERVAL_MS = 120_000;
+/** How long one progress tick keeps the fast window armed. */
+export const EXPERIMENT_ACTIVE_WINDOW_MS = 10 * 60_000;
+/** Consecutive no-progress ticks before an active experiment parks to slow cadence. */
+export const IDLE_TICK_STREAK_MAX = 3;
+
+export interface ExperimentCadence {
+  /** Absolute ms until which the fast window is armed (0 = parked). */
+  activeUntil: number;
+  /** Consecutive active ticks that attempted nothing. */
+  idleTickStreak: number;
+}
+
+export interface ExperimentTickOutcome {
+  /** Steps this tick actually ran (the engine's `steps`). */
+  steps: number;
+  /** Engine `active`: an experiment row exists, progress or not. */
+  active: boolean;
+}
+
+export interface ExperimentCadenceDecision extends ExperimentCadence {
+  /** True when this tick made progress and re-armed the fast window. */
+  rearmed: boolean;
+  /** Streak length that parked the loop to the slow cadence; null otherwise. */
+  parkedStreak: number | null;
+}
+
+/** Minimum gap the loop must leave between experiment ticks, right now. */
+export function experimentTickIntervalMs(activeUntil: number, now: number): number {
+  return now < activeUntil ? EXPERIMENT_TICK_MIN_INTERVAL_MS : EXPERIMENT_TICK_SLOW_INTERVAL_MS;
+}
+
+/**
+ * Next cadence state after one tick.
+ *
+ *   • no experiment rows  → clear the fast window and the streak
+ *   • steps > 0           → real progress: re-arm the fast window, streak = 0
+ *   • active, steps === 0 → lease/backoff wait: count it, park at
+ *                           IDLE_TICK_STREAK_MAX no-progress ticks
+ *
+ * An inactive tick wins over a step count because a tick that made progress
+ * always has candidates; if the engine ever returns the impossible pair
+ * (steps > 0, active false), clearing the window is the cheap direction.
+ */
+export function nextExperimentCadence(
+  prev: ExperimentCadence,
+  tick: ExperimentTickOutcome,
+  now: number,
+): ExperimentCadenceDecision {
+  if (!tick.active) {
+    return { activeUntil: 0, idleTickStreak: 0, rearmed: false, parkedStreak: null };
+  }
+  if (tick.steps > 0) {
+    return {
+      activeUntil: now + EXPERIMENT_ACTIVE_WINDOW_MS,
+      idleTickStreak: 0,
+      rearmed: true,
+      parkedStreak: null,
+    };
+  }
+  const streak = prev.idleTickStreak + 1;
+  if (streak >= IDLE_TICK_STREAK_MAX) {
+    return { activeUntil: 0, idleTickStreak: 0, rearmed: false, parkedStreak: streak };
+  }
+  return { activeUntil: prev.activeUntil, idleTickStreak: streak, rearmed: false, parkedStreak: null };
+}
+
 /** True when this container owns the experiment tick. */
 export function experimentsTickEnabled(
   kinds: string[],

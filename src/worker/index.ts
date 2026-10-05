@@ -55,7 +55,11 @@ import { refundCredits } from '../lib/credits.js';
 import { initLogShipping } from './ship-logs.js';
 import { tick as experimentTick } from '../experiments/engine.js';
 import { createKindBreaker } from './kind-breaker.js';
-import { describeExperimentTickGate, experimentTickFailureDetail } from './experiment-tick.js';
+import {
+  describeExperimentTickGate, experimentTickFailureDetail, nextExperimentCadence,
+  experimentTickIntervalMs, EXPERIMENT_TICK_MIN_INTERVAL_MS, EXPERIMENT_TICK_SLOW_INTERVAL_MS,
+  IDLE_TICK_STREAK_MAX,
+} from './experiment-tick.js';
 import { controlEnabled, filterKindsByControl } from '../lib/worker-control.js';
 import { snapshotD1Usage, deltaD1Usage, formatD1Usage, totalD1Usage } from '../lib/d1-usage.js';
 import { errorDetail } from '../lib/error-detail.js';
@@ -118,10 +122,13 @@ const KINDS = workerKinds();
 // fetch context broke experiment media preparation — the VPS runs the same
 // code fine). No extra cron trigger is consumed (Free plan cap). The tick is
 // single-flight so MediaJob draining is never blocked, its failures are
-// logged, never thrown, and while an experiment is active the loop re-ticks
-// within EXPERIMENT_TICK_MIN_INTERVAL_MS — one tick already chains up to 3
-// steps back-to-back, so provider-bound work progresses near-live instead of
-// waiting on minute-scale cadence or the idle backoff.
+// logged, never thrown, and while an experiment is making PROGRESS the loop
+// re-ticks within EXPERIMENT_TICK_MIN_INTERVAL_MS — one tick already chains
+// up to 3 steps back-to-back, so provider-bound work progresses near-live
+// instead of waiting on minute-scale cadence or the idle backoff. An active
+// tick that ran no step is a lease/backoff wait, not progress: it counts
+// toward IDLE_TICK_STREAK_MAX and then parks to EXPERIMENT_TICK_SLOW_INTERVAL_MS
+// (SLA-455).
 //
 // Single leader: every VPS container runs this loop, but only ONE of them may
 // tick experiments — each tick's steps are Experiment UPDATEs + Workspace
@@ -130,16 +137,18 @@ const KINDS = workerKinds();
 // worker; EXPERIMENT_TICK_ENABLED=1 forces on, =0 forces off.
 const experimentGate = describeExperimentTickGate(KINDS);
 const doesExperiments = experimentGate.enabled;
-const EXPERIMENT_TICK_MIN_INTERVAL_MS = 5_000;
+// EXPERIMENT_TICK_MIN_INTERVAL_MS / EXPERIMENT_TICK_SLOW_INTERVAL_MS /
+// IDLE_TICK_STREAK_MAX now live in experiment-tick.ts next to
+// nextExperimentCadence() — the cadence is unit-tested there, because this
+// module has a top-level loop and cannot be imported by a test.
 let lastExperimentTickAt = 0;
 let experimentsActiveUntil = 0;
 let experimentTickInFlight: Promise<unknown> | null = null;
-// Consecutive ticks that wrote nothing (tasks backing off or inside their
-// lease — reads only). After IDLE_TICK_STREAK_MAX of them the loop drops back
-// to the 120s cadence even while an experiment reports active; the next slow
-// tick re-arms fast cadence the moment real work (writes) resumes.
+// Consecutive active ticks that attempted nothing (steps === 0 — every task
+// inside its lease or backing off). After IDLE_TICK_STREAK_MAX of them the
+// loop drops back to the 120s cadence even while an experiment reports
+// active; a later tick that runs a step re-arms fast cadence automatically.
 let idleTickStreak = 0;
-const IDLE_TICK_STREAK_MAX = 3;
 // Last logged step count — the per-tick line is logged only when the count
 // changes or the tick wrote rows, so a steady 5s cadence doesn't crowd real
 // errors out of the 400-entry log shipper.
@@ -451,10 +460,14 @@ while (!shuttingDown) {
     }
 
     // Experiment engine: drive planning/generation steps on the VPS (no 60s
-    // ceiling). While any experiment is planning/generating the loop re-ticks
-    // within 5s (one tick chains up to 3 steps); idle experiments back off to
-    // the 120s cadence. MediaJob draining is never blocked: the tick runs
-    // single-flight, detached from the claim round below.
+    // ceiling). A tick that runs a step re-arms the 5s cadence for 10 minutes
+    // (one tick chains up to 3 steps); an experiment that stays active but
+    // attempts nothing — every task inside its lease or backing off — counts
+    // toward the no-progress streak and parks to the 120s cadence after
+    // IDLE_TICK_STREAK_MAX, so idle experiments stop polling D1 every 5s.
+    // MediaJob draining is never blocked: the tick runs single-flight,
+    // detached from the claim round below. Cadence policy (which lives in
+    // experiment-tick.ts, unit-tested) is nextExperimentCadence().
     //
     // Two gates: doesExperiments (single leader by WORKER_KINDS, Phase 1) and
     // the experiments.enabled control row (Phase 4 kill switch, cached 60s).
@@ -471,10 +484,11 @@ while (!shuttingDown) {
       lastGateLogAt = Date.now();
       console.log(`[worker] experiment tick gate: ${gateState}`);
     }
+    const tickIntervalMs = experimentTickIntervalMs(experimentsActiveUntil, Date.now());
     if (!experimentTickInFlight
       && experimentsAllowed
       && Date.now() >= experimentTickBackoffUntil
-      && Date.now() - lastExperimentTickAt >= (Date.now() < experimentsActiveUntil ? EXPERIMENT_TICK_MIN_INTERVAL_MS : 120_000)) {
+      && Date.now() - lastExperimentTickAt >= tickIntervalMs) {
       lastExperimentTickAt = Date.now();
       const tickSnap = snapshotD1Usage();
       experimentTickInFlight = experimentTick(120_000)
@@ -484,25 +498,21 @@ while (!shuttingDown) {
             console.log(`[worker] experiment tick advanced ${steps} step(s)${formatD1Usage(usage)}`);
           }
           lastTickSteps = steps;
-          if (active && (steps === 0 || usage.writes > 0)) {
-            // Real work settled (or nothing attempted) — stay fast / re-arm.
-            experimentsActiveUntil = Date.now() + 10 * 60_000;
-            idleTickStreak = 0;
-          } else if (active) {
-            // Active but pure reads several ticks running: backoff/lease
-            // waits, not progress. Park behind the slow cadence; a later
-            // tick with writes re-arms automatically.
-            idleTickStreak++;
-            if (idleTickStreak >= IDLE_TICK_STREAK_MAX) {
-              console.warn(
-                `[worker] experiment STALLED? still active after ${idleTickStreak} consecutive read-only ticks (no writes) — parked to slow cadence. Check EXPERIMENT_TICK_ENABLED / experiments.enabled and stuck experiment rows.`,
-              );
-              experimentsActiveUntil = 0;
-              idleTickStreak = 0;
-            }
-          } else {
-            experimentsActiveUntil = 0;
-            idleTickStreak = 0;
+          // Cadence keys off THIS tick's `steps` only. `usage` above is
+          // process-wide: MediaJob work draining concurrently inflates writes
+          // mid-tick, and runtimes without D1-over-HTTP keep it at 0 — so it
+          // stays a logging signal and never decides cadence (SLA-455).
+          const cadence = nextExperimentCadence(
+            { activeUntil: experimentsActiveUntil, idleTickStreak },
+            { steps, active },
+            Date.now(),
+          );
+          experimentsActiveUntil = cadence.activeUntil;
+          idleTickStreak = cadence.idleTickStreak;
+          if (cadence.parkedStreak !== null) {
+            console.warn(
+              `[worker] experiment STALLED? still active after ${cadence.parkedStreak}/${IDLE_TICK_STREAK_MAX} consecutive no-progress ticks (0 steps) — parked to ${Math.round(EXPERIMENT_TICK_SLOW_INTERVAL_MS / 1000)}s cadence. Check EXPERIMENT_TICK_ENABLED / experiments.enabled and stuck experiment rows.`,
+            );
           }
           experimentTickErrorRounds = 0;
           experimentTickBackoffUntil = 0;
