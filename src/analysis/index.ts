@@ -28,6 +28,7 @@ import { loadAnalysisConfig, updateAnalysisConfig } from './config.js';
 import { basisToConfidence, getCostCents, type AnalysisConfig, type AnalysisContext, type AnalysisResult, type VideoAnalyzer, DEFAULT_CONFIG } from './types.js';
 import { resolveThumbUrl, signedMediaUrl, resolveSlideshowUrls, isPhotoPost, slideshowIsHydrated } from '../lib/media.js';
 import { classifyGeminiError } from '../lib/gemini-errors.js';
+import { classifyOpenRouterError } from '../lib/openrouter.js';
 import { openRouterVideoEnabled } from '../lib/llm.js';
 
 /**
@@ -74,7 +75,10 @@ function createBackend(id: string, config: AnalysisConfig, model?: string): Vide
 //
 // Pure and unit-tested (src/analysis/index.test.ts) so pricing/ordering holds
 // independent of the DB/network. The runtime loop additionally skips (2) when
-// the primary failure was deterministic (see the gate in analyzeVideo below).
+// the primary failure was deterministic (see the gate in analyzeVideo below),
+// and drops any backend in the penalty box via `skipBackends` — the persisted
+// answer to "this backend has no balance left", which leaves the chain as
+// [primary (or its fallback), fallbackModel, fallback] with the parked slot gone.
 // ---------------------------------------------------------------------------
 
 export interface BackendAttempt {
@@ -90,7 +94,7 @@ export interface BackendAttempt {
 
 export function planBackendAttempts(
   config: AnalysisConfig,
-  opts?: { forceBackend?: string; flipToFallback?: boolean; orVideoEnabled?: boolean },
+  opts?: { forceBackend?: string; flipToFallback?: boolean; orVideoEnabled?: boolean; skipBackends?: string[] },
 ): BackendAttempt[] {
   // After MAX_FAILURES consecutive failures the primary is swapped for the
   // configured fallback for an hour (see analyzeVideo) — go straight there.
@@ -135,6 +139,17 @@ export function planBackendAttempts(
       attempts.push({ backendId: fallbackBackend, label: ' (fallback)', fallback: true });
     }
   }
+  // Penalty box: a backend parked after an out-of-balance 402 ("requires at
+  // least $1.00 in balance for video") will answer the very same way on the
+  // next video, so drop it from the chain instead of spending latency and
+  // failure budget to relearn it. Never drop the last thing we can run: a chain
+  // that empties would fail with no backend at all, which is strictly worse
+  // than one wasted paid call.
+  const skip = new Set(opts?.skipBackends ?? []);
+  if (skip.size > 0) {
+    const kept = attempts.filter(a => !skip.has(a.backendId));
+    if (kept.length > 0) return kept;
+  }
   return attempts;
 }
 
@@ -143,13 +158,26 @@ export function planBackendAttempts(
 //
 // MCP servers spawned by Claude Code / OpenCode are short-lived processes.
 // An in-memory Map would reset on every tool call. We persist counts in
-// Workspace.failureCountsJson as { "<backendId>": <count> }.
+// Workspace.failureCountsJson as { "<backendId>": { count, lastAt, hard? } }.
+// `hard` marks an account-level failure that cannot fix itself inside the
+// window (an exhausted OpenRouter balance answers 402 forever); today only the
+// OpenRouter balance 402 sets it. It is what parks the backend in the penalty
+// box instead of just counting toward the fallback threshold.
+// Rows written before this flag existed have no `hard` and keep behaving
+// exactly as before.
 // ---------------------------------------------------------------------------
 
 const MAX_FAILURES_BEFORE_FALLBACK = 2;
 const FAILURE_TTL_MS = 1000 * 60 * 60; // a "consecutive" failure window — older counts decay
 
-type FailureMap = Record<string, { count: number; lastAt: number }>;
+interface FailureEntry {
+  count: number;
+  lastAt: number;
+  /** Account-level failure: park the backend now, don't re-call it to confirm. */
+  hard?: true;
+}
+
+type FailureMap = Record<string, FailureEntry>;
 
 async function loadFailureMap(workspaceId: string): Promise<FailureMap> {
   const ws = await db.workspace.findUnique({ where: { id: workspaceId }, select: { failureCountsJson: true } });
@@ -161,7 +189,7 @@ async function loadFailureMap(workspaceId: string): Promise<FailureMap> {
     const cutoff = Date.now() - FAILURE_TTL_MS;
     const out: FailureMap = {};
     for (const [k, v] of Object.entries(parsed)) {
-      const entry = v as { count: number; lastAt: number };
+      const entry = v as FailureEntry;
       if (entry.lastAt >= cutoff) out[k] = entry;
     }
     return out;
@@ -177,11 +205,20 @@ async function saveFailureMap(workspaceId: string, map: FailureMap): Promise<voi
   }).catch(err => console.error('[analysis] Failed to persist failure map:', err));
 }
 
-async function recordFailure(workspaceId: string, backendId: string): Promise<number> {
+/**
+ * `hard` failures jump straight to the penalty-box threshold instead of
+ * counting one by one: the same answer will come back, so there is nothing to
+ * be gained from spending a second paid call to reach the same count. A later
+ * transient failure on the same backend drops the flag, since it means the
+ * backend is answering again.
+ */
+async function recordFailure(workspaceId: string, backendId: string, hard = false): Promise<number> {
   const map = await loadFailureMap(workspaceId);
   const cur = map[backendId]?.count ?? 0;
-  const newCount = cur + 1;
-  map[backendId] = { count: newCount, lastAt: Date.now() };
+  const newCount = hard ? Math.max(cur, MAX_FAILURES_BEFORE_FALLBACK) : cur + 1;
+  map[backendId] = hard
+    ? { count: newCount, lastAt: Date.now(), hard: true }
+    : { count: newCount, lastAt: Date.now() };
   await saveFailureMap(workspaceId, map);
   return newCount;
 }
@@ -192,11 +229,6 @@ async function recordSuccess(workspaceId: string): Promise<void> {
   // (openrouter-video, gemini-native) in penalty box based on stale
   // failures from a transient outage or a bug that has since been fixed.
   await saveFailureMap(workspaceId, {});
-}
-
-async function getFailureCount(workspaceId: string, backendId: string): Promise<number> {
-  const map = await loadFailureMap(workspaceId);
-  return map[backendId]?.count ?? 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +297,8 @@ export async function analyzeVideo(
   };
 
   // 4. Determine backend chain (DB-backed failure check)
-  const primaryFailureCount = await getFailureCount(workspaceId, config.backend);
+  const failureMap = await loadFailureMap(workspaceId);
+  const primaryFailureCount = failureMap[config.backend]?.count ?? 0;
   const primaryBackend = options?.forceBackend ?? config.backend;
   const fallbackBackend = config.fallback;
   const flipToFallback = primaryFailureCount >= MAX_FAILURES_BEFORE_FALLBACK && primaryBackend !== fallbackBackend;
@@ -274,13 +307,25 @@ export async function analyzeVideo(
     console.warn(`[analysis] ${primaryBackend} has ${primaryFailureCount} consecutive failures (persisted), using fallback: ${fallbackBackend}`);
   }
 
+  // Penalty box: backends whose last failure inside the window was an
+  // out-of-balance 402 — in practice openrouter-video. Every later video would
+  // get the same answer, so they leave the chain for the rest of the window and
+  // the run goes straight to a backend that can still work. Survives restarts
+  // like the counts do.
+  const parkedBackends = Object.entries(failureMap)
+    .filter(([, entry]) => entry.hard)
+    .map(([backendId]) => backendId);
+  if (parkedBackends.length > 0) {
+    console.warn(`[analysis] penalty box: skipping ${parkedBackends.join(', ')} (out of balance inside the failure window)`);
+  }
+
   // Photo carousels have no MP4. Native video / OpenRouter would fail and
   // then gemini-text would only see the cover — skip straight to text with
   // every stored slide attached.
   const photo = isPhotoPost(video);
   const attempts = photo
     ? [{ backendId: 'gemini-text' }]
-    : planBackendAttempts(config, { forceBackend: options?.forceBackend, flipToFallback });
+    : planBackendAttempts(config, { forceBackend: options?.forceBackend, flipToFallback, skipBackends: parkedBackends });
 
   let lastError: Error | null = null;
   // The model fallback is worth trying only after a retryable failure (5xx /
@@ -289,9 +334,19 @@ export async function analyzeVideo(
   // rejection) would recur identically on the second model, so skip it rather
   // than burn paid tokens; the text fallback still gets its chance.
   let lastErrorRetryable = true;
+  // Grown during the run: a backend that just answered 402 has no balance and
+  // is not called again in this same chain. Persisted parks are already gone
+  // from the planned attempts, so this set starts empty on purpose — a config
+  // whose only backend is parked must still get one attempt rather than none.
+  const skipForRun = new Set<string>();
 
   for (const attempt of attempts) {
     const { backendId, model } = attempt;
+
+    if (skipForRun.has(backendId)) {
+      console.log(`[analysis] skipping ${backendId} — ran out of balance earlier in this run`);
+      continue;
+    }
 
     if (model && lastError && !lastErrorRetryable) {
       console.log(`[analysis] skipping model fallback (${model}) — previous ${attempt.backendId} error is deterministic, not worth a second paid call`);
@@ -397,9 +452,26 @@ export async function analyzeVideo(
 
     } catch (err) {
       lastError = err as Error;
-      lastErrorRetryable = classifyGeminiError(err).retryable;
+      const isOpenRouter = backendId.startsWith('openrouter');
+      // OpenRouter failures are read with the OpenRouter envelope's own rules:
+      // its 402 balance floor lands in the 'quota' bucket that classifyGeminiError
+      // reports as *retryable*, and treating that as "worth another call" is what
+      // made every video pay a failed video call, a failed model fallback and a
+      // failure count before dropping to text.
+      const classified = isOpenRouter ? classifyOpenRouterError(err) : classifyGeminiError(err);
+      lastErrorRetryable = classified.retryable;
+      // Park only the balance failure: it is a property of the account, so it
+      // answers identically for every video until someone tops up, and staying
+      // out of the chain for the rest of the window is the whole point. Other
+      // OpenRouter failures (unknown model id, unparsable output) still cost one
+      // attempt each, exactly as before.
+      const hard = isOpenRouter && classified.category === 'quota';
+      if (hard) {
+        console.warn(`[analysis] ${backend.name} is out of balance (${(err as Error).message}) — parking it for the failure window instead of retrying`);
+        skipForRun.add(backendId);
+      }
       if (workspaceId !== 'unknown') {
-        const newCount = await recordFailure(workspaceId, backendId);
+        const newCount = await recordFailure(workspaceId, backendId, hard);
         console.error(`[analysis] ${backend.name} failed for video ${videoId}: ${(err as Error).message} (failure count for ${backendId}: ${newCount})`);
       } else {
         console.error(`[analysis] ${backend.name} failed for video ${videoId}:`, (err as Error).message);
