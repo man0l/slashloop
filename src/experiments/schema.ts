@@ -35,6 +35,12 @@ export const Instructions = z.object({
   // It pins exact values, so it cannot be combined with a mode that deliberately
   // lets the model retell that same copy (see the superRefine guard below).
   copyOverrides: CopyOverrides.optional(),
+  // SLA-476: explicit opt-in to keeping the source deck's own trailing CTA
+  // slide. Absent/false is the historical contract — a detected closing
+  // call-to-action slide is subtracted from the slide count at both the creation
+  // and the planning boundary. True keeps every source slide (still clamped to
+  // 3-8). Optional so experiments stored before it resolve exactly as before.
+  preserveSourceCtaSlide: z.boolean().optional(),
 }).strict().superRefine((v, ctx) => {
   if (new Set(v.variables).size !== v.variables.length) ctx.addIssue({ code: 'custom', message: 'Duplicate variables' });
   if (v.mode === 'controlled' && v.variables.some(x => x === 'concept' || x === 'slides')) {

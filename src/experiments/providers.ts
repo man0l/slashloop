@@ -241,7 +241,11 @@ export function expandDelta(baseline:Proposal,delta:z.infer<typeof BriefDelta>,s
 function sameSlides(a:readonly unknown[],b:readonly unknown[]):boolean {
   return a.length===b.length&&a.every((s,i)=>{const x=s as {scene?:string;overlayText?:string},y=b[i] as {scene?:string;overlayText?:string};return x.scene===y.scene&&x.overlayText===y.overlayText;});
 }
-export async function resolveStorySlideCount(e:Experiment):Promise<number> {
+/** The one store access planning makes here, injected for the same reason as
+ *  `renderDeps`: a test must not reach the database through a process-global
+ *  module mock. */
+export type StorySlideCountDeps = { batch: typeof batch };
+export async function resolveStorySlideCount(e:Experiment,deps:StorySlideCountDeps={batch}):Promise<number> {
   const ids=e.inputs.map(i=>i.videoId);
   if(!ids.length)return e.slideCount;
   const videos:Array<{id:string;rawJson:string;durationSec:number|null;mediaStatus:string|null;thumbnailUrl:string|null}>=[];
@@ -250,8 +254,8 @@ export async function resolveStorySlideCount(e:Experiment):Promise<number> {
     const chunk=ids.slice(i,i+D1_PARAM_CHUNK);
     const ph=chunk.map(()=>'?').join(',');
     const [vrows,arows]=await Promise.all([
-      batch([{sql:`SELECT "id","rawJson","durationSec","mediaStatus","thumbnailUrl" FROM "Video" WHERE "id" IN (${ph})`,params:chunk}]),
-      batch([{sql:`SELECT "videoId","analysisJson" FROM "Analysis" WHERE "videoId" IN (${ph}) AND "schemaVersion"=? ORDER BY "createdAt" DESC`,params:[...chunk,'v3']}]),
+      deps.batch([{sql:`SELECT "id","rawJson","durationSec","mediaStatus","thumbnailUrl" FROM "Video" WHERE "id" IN (${ph})`,params:chunk}]),
+      deps.batch([{sql:`SELECT "videoId","analysisJson" FROM "Analysis" WHERE "videoId" IN (${ph}) AND "schemaVersion"=? ORDER BY "createdAt" DESC`,params:[...chunk,'v3']}]),
     ]);
     videos.push(...((vrows[0]??[]) as typeof videos));
     for(const row of (arows[0]??[]) as Array<{videoId:string;analysisJson:string}>){
@@ -263,7 +267,10 @@ export async function resolveStorySlideCount(e:Experiment):Promise<number> {
     const originalCount=experimentSourceKeys(v.rawJson).length || null;
     return {originalCount:originalCount||null,analysis:latest.get(v.id)};
   });
-  return deriveStorySlideCount(sources)??e.slideCount;
+  // SLA-476: same persisted opt-in the creation boundary used, so planning
+  // resolves the count the caller asked for instead of re-subtracting a CTA
+  // slide the draft was already counted with.
+  return deriveStorySlideCount(sources,e.instructions.preserveSourceCtaSlide)??e.slideCount;
 }
 export function normalizeBriefCandidates(parsed:unknown,slideCount:number,e?:Pick<Experiment,'instructions'>):{baseline:Proposal;candidates:Proposal[]}{
   const locked=e?.instructions.lockedConstraints??[];
