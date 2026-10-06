@@ -23,6 +23,7 @@ import {
 } from './providers.js';
 import { compileSlideContract, contractChecks, contractQaBlock } from './render-prompt.js';
 import { sanitizeRequestId } from '../lib/openrouter.js';
+import { slideFanout } from './schema.js';
 import type { BriefData, Experiment, Task } from './schema.js';
 
 const originalFetch = globalThis.fetch;
@@ -213,7 +214,7 @@ describe('the request carries that policy, and the record stays sanitized', () =
       expect(err).toBeInstanceOf(Error);
       expect(err).not.toBeInstanceOf(TerminalFailure);
       expect((err as Error & { qaDiagnostics: QaDiagnostics }).qaDiagnostics.outcome).toBe('error');
-      expect(deps.counts.renders).toBe(3);
+      expect(deps.counts.renders).toBe(slideFanout());
       expect(deps.counts.uploads).toBe(0);
     }
   });
@@ -393,7 +394,7 @@ describe('a pass requires the answer that was asked for', () => {
     expect(((err as TerminalFailure).audit as { reasons: string[] }).reasons[0]).toContain('qa_incomplete_coverage');
     // 3 renders is the initial fan-out only: an incomplete answer is not a
     // finding about the image, so it must not buy a second paid wave.
-    expect(deps.counts.renders).toBe(3);
+    expect(deps.counts.renders).toBe(slideFanout());
     expect(deps.counts.uploads).toBe(0);
     expect(labels.length).toBeGreaterThan(3);
   });
@@ -408,7 +409,7 @@ describe('a pass requires the answer that was asked for', () => {
     expect(result.story.verdict).toBe('pass');
     expect(result.qa.verdict).toBe('pass');
     expect(deps.counts.uploads).toBe(1);
-    expect(deps.counts.renders).toBe(3);
+    expect(deps.counts.renders).toBe(slideFanout());
   });
 });
 
@@ -477,7 +478,7 @@ describe('an unavailable checker is unverified, and buys nothing', () => {
       expect(err).toBeInstanceOf(Error);
       expect(err).not.toBeInstanceOf(TerminalFailure);
       expect((err as Error & { qaDiagnostics: QaDiagnostics }).qaDiagnostics.outcome).toBe('error');
-      expect(deps.counts.renders).toBe(3);
+      expect(deps.counts.renders).toBe(slideFanout());
       expect(deps.counts.uploads).toBe(0);
     }
   });
@@ -501,7 +502,7 @@ describe('an unavailable checker is unverified, and buys nothing', () => {
     expect((err as Error).message).toContain('timed out');
     // No blind corrective render: an unavailable checker cannot un-verify
     // anything, so the slide must not buy another paid image.
-    expect(deps.counts.renders).toBe(3);
+    expect(deps.counts.renders).toBe(slideFanout());
     expect(deps.counts.uploads).toBe(0);
     // The audit carries the sanitized request diagnostics, so this timeout is
     // diagnosable from the record alone.
@@ -520,7 +521,7 @@ describe('an unavailable checker is unverified, and buys nothing', () => {
     const err = await (await prepare(fixture(), task, { ...deps.deps, verifyStory: renderDeps.verifyStory } as never)).execute().catch(e => e);
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(TerminalFailure);
-    expect(deps.counts.renders).toBe(3);
+    expect(deps.counts.renders).toBe(slideFanout());
     expect(deps.counts.uploads).toBe(0);
     expect((err as Error & { qaDiagnostics: QaDiagnostics }).qaDiagnostics).toMatchObject({ errorCategory: 'timeout' });
   });
@@ -545,7 +546,7 @@ describe('an unavailable checker is unverified, and buys nothing', () => {
     expect(result.story).toMatchObject({ verdict: 'pass', corrected: true });
     expect(contract).toBeDefined();
     // Initial wave plus the single shared corrective wave.
-    expect(deps.counts.renders).toBe(6);
+    expect(deps.counts.renders).toBe(2 * slideFanout());
     expect(deps.counts.uploads).toBe(1);
   });
 });

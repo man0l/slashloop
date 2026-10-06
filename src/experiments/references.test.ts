@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, beforeEach, expect, test } from 'bun:test';
 import type { Video } from '@prisma/client';
 import { prepare, selectSlideReference } from './providers.js';
 import type { Experiment, Task } from './schema.js';
@@ -6,7 +6,10 @@ import type { JevAnswer } from '../lib/typesafe.js';
 
 const env = { base: process.env.R2_THUMB_PUBLIC_BASE, key: process.env.OPENROUTER_API_KEY };
 const restores: Array<() => void> = [];
+// These pin the three-candidate Jev pick; the fan-out default is 2 (SLA-546) and env-tunable.
+beforeEach(() => { process.env.EXPERIMENT_SLIDE_FANOUT = '3'; });
 afterEach(() => {
+  delete process.env.EXPERIMENT_SLIDE_FANOUT;
   for (const restore of restores.splice(0)) restore();
   for (const [key, value] of [['R2_THUMB_PUBLIC_BASE', env.base], ['OPENROUTER_API_KEY', env.key]]) {
     if (value === undefined) delete process.env[key!]; else process.env[key!] = value;

@@ -33,7 +33,7 @@ import { load, list, serialize } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
 import {
-  CopyOverrides, ExperimentError, Id, Instructions, MAX_MANUAL_ATTEMPTS, SLIDE_FANOUT, VARIABLE_FIELDS, type Experiment, type InstructionsData,
+  CopyOverrides, ExperimentError, Id, Instructions, MAX_MANUAL_ATTEMPTS, slideFanout, VARIABLE_FIELDS, type Experiment, type InstructionsData,
 } from '../experiments/schema.js';
 
 // ---- dependencies ----------------------------------------------------------
@@ -192,12 +192,12 @@ export function derivedKey(scope: string, parts: unknown): string {
 /**
  * Default per-experiment credit ceiling — the site's automatic cap
  * (ExperimentCreate.jsx): twice the one-source estimate, rounded up to 10,
- * at least 30. Priced from the server's CREDIT_COSTS / SLIDE_FANOUT. It is a
+ * at least 30. Priced from the server's CREDIT_COSTS / slideFanout(). It is a
  * runaway guard only: an approved estimate may raise it (applyApprovedEstimate).
  */
 export function defaultExperimentCap(variantCount: number, slideCount: number): number {
   const total = CREDIT_COSTS.analyzeVideo + 2 * CREDIT_COSTS.experimentPlanningCall
-    + variantCount * slideCount * CREDIT_COSTS.experimentSlide * SLIDE_FANOUT;
+    + variantCount * slideCount * CREDIT_COSTS.experimentSlide * slideFanout();
   return Math.min(MAX_EXPERIMENT_CREDITS, Math.max(30, Math.ceil((total * 2) / 10) * 10));
 }
 
@@ -444,7 +444,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     + 'The source deck\'s own slide count wins when it is known; pass slideCount only if you do not have it.\n'
     + 'Sources must be slideshows or videos with a finished Recreate deck (show_gallery marks them). '
     + `Credits: analysis ${CREDIT_COSTS.analyzeVideo}/source + ${CREDIT_COSTS.experimentPlanningCall} per planning call at plan time; `
-    + `${CREDIT_COSTS.experimentSlide} per slide × ${SLIDE_FANOUT} candidates at generation. ${LIFECYCLE}`,
+    + `${CREDIT_COSTS.experimentSlide} per slide × ${slideFanout()} candidates at generation. ${LIFECYCLE}`,
     {
       workspaceId: workspaceIdField,
       mode: z.enum(['edit', 'create']).default('create').describe(
@@ -609,7 +609,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
   // ---- generate_experiment ----
   server.tool('generate_experiment',
     'Render slide images for reviewed variants (status "review", or "completed" with draft variants left). SPENDS CREDITS — '
-    + `${CREDIT_COSTS.experimentSlide} per slide × ${SLIDE_FANOUT} candidates. Call estimate_experiment(stage="generate", variantIds) `
+    + `${CREDIT_COSTS.experimentSlide} per slide × ${slideFanout()} candidates. Call estimate_experiment(stage="generate", variantIds) `
     + 'first and pass the approved totalCredits. Pass each variant with its CURRENT revision (get_experiment); the brief '
     + 'is frozen at that revision. Rendering runs in the background; check with get_experiment.',
     {

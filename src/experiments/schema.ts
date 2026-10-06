@@ -352,10 +352,26 @@ export const MAX_MANUAL_ATTEMPTS = 6;
 export const QA_HISTORY_LIMIT = 3;
 /** Up to this many slide renders may run concurrently within one experiment. */
 export const PARALLEL_SLIDES = 48;
-/** Candidates rendered per slide; Jev (TypeSafe) picks the most viral one. */
-export const SLIDE_FANOUT = 3;
-/** Parameter deltas generated at the briefs stage; Jev ranks them, top variantCount-1 win. */
-export const BRIEF_CANDIDATES = 8;
+/** Default candidates rendered per slide (SLA-546: 3 → 2). Tune with EXPERIMENT_SLIDE_FANOUT. */
+export const SLIDE_FANOUT = 2;
+const MAX_SLIDE_FANOUT = 4;
+/** Candidates rendered per slide; Jev (TypeSafe) picks the most viral one.
+ *  Read lazily so a Worker env change takes effect without a module reload. */
+export function slideFanout(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.EXPERIMENT_SLIDE_FANOUT?.trim());
+  return Number.isInteger(raw) && raw >= 1 ? Math.min(raw, MAX_SLIDE_FANOUT) : SLIDE_FANOUT;
+}
+/** Floor for the briefs-stage candidate pool (SLA-546: was a flat 8). */
+export const BRIEF_CANDIDATES = 3;
+const MAX_BRIEF_CANDIDATES = 12;
+/** Parameter deltas generated at the briefs stage; Jev ranks them, top variantCount-1 win.
+ *  Never fewer than variantCount-1, or variant_count validation could not be met. */
+export function briefCandidateCount(variantCount: number, env: NodeJS.ProcessEnv = process.env): number {
+  const needed = Math.max(variantCount - 1, 1);
+  const raw = Number(env.EXPERIMENT_BRIEF_CANDIDATES?.trim());
+  const pool = Number.isInteger(raw) && raw >= 1 ? Math.min(raw, MAX_BRIEF_CANDIDATES) : BRIEF_CANDIDATES;
+  return Math.max(needed, pool);
+}
 export const RETRY_BACKOFF_MS = 60_000;
 export function retryBackoffMs(_attempts = 1): number {
   return RETRY_BACKOFF_MS;
