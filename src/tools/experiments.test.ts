@@ -635,6 +635,20 @@ describe('edits, cancel and delete', () => {
     expect(body.hint).toContain('latest revision');
   });
 
+  test('update_experiment_variant gives an actionable hint for each edit refusal', async () => {
+    for (const [code, fragment] of [
+      ['experiment_active', 'planning or generating'], ['experiment_cancelled', 'cancelled'], ['not_editable', 'plan_experiment'],
+      ['variant_frozen', 'frozen'], ['variant_in_flight', 'running or unresolved'],
+    ] as const) {
+      store.set('e1', exp('e1', { status: 'review' }));
+      mutateError = new ExperimentError(409, code);
+      const { isError, body } = await call('update_experiment_variant', { experimentId: 'e1', variantId: 'v1', revision: 1, brief });
+      expect(isError).toBe(true);
+      expect(body.error).toBe(code);
+      expect(body.hint).toContain(fragment);
+    }
+  });
+
   test('cancel_experiment uses the cancel action', async () => {
     store.set('e1', exp('e1', { status: 'planning' }));
     await call('cancel_experiment', { experimentId: 'e1' });

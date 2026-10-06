@@ -77,6 +77,14 @@ At `review`, optionally edit a variant, call
 `estimate_experiment(stage="generate", variantIds)`, get approval, and pass the
 approved total to `generate_experiment` with each variant's current revision.
 
+`update_experiment_variant` edits only a draft variant (never generated, no
+frozen brief) with its current revision, at `review`, at `completed` (for a
+variant not yet generated), or at `failed`/`paused` while no provider job is
+running or unknown. It is refused while `planning`/`generating`
+(`experiment_active`), when `cancelled` (`experiment_cancelled`), in a
+pre-plan `draft` (`not_editable`), for a frozen or rendered variant
+(`variant_frozen`), and for a stale revision (`revision_conflict`).
+
 ## List
 
 Call `list_experiments` with `limit<=50`; follow `nextOffset` only if asked.

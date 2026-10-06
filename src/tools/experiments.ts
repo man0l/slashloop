@@ -154,7 +154,12 @@ const text = (payload: unknown, isError = false): ToolResult => ({
 /** What an agent should do about the common refusal codes. */
 const ERROR_HINTS: Record<string, string> = {
   not_draft: 'Planning already started (or finished). Call get_experiment to see the current state.',
-  not_idle: 'Briefs can only be edited while the experiment is in review.',
+  experiment_active: 'The experiment is planning or generating; briefs cannot be edited until it stops. Call get_experiment.',
+  experiment_cancelled: 'A cancelled experiment cannot be edited. Create a new experiment.',
+  not_editable: 'A draft experiment has no variant briefs yet. Run plan_experiment first, then edit at review.',
+  variant_frozen: 'That variant was already sent to generation (or rendered), so its brief is frozen. Only draft variants can be edited.',
+  variant_in_flight: 'A provider job for this experiment is still running or unresolved. Retry or wait, then edit the draft variant.',
+  variant_required: 'Pass the variantId to edit.',
   not_reviewable: 'Generation needs the experiment in review (or completed with draft variants left). Call get_experiment.',
   revision_conflict: 'The variant changed or is no longer a draft. Call get_experiment and use the latest revision.',
   idempotency_conflict: 'This idempotencyKey was already used for a different request. Use a new key for a different request.',
@@ -599,10 +604,14 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
 
   // ---- update_experiment_variant ----
   server.tool('update_experiment_variant',
-    'Edit one variant\'s brief while the experiment is in "review" and the variant is still a draft. Free. Pass the '
-    + 'variant\'s current revision (get_experiment) — a stale revision is refused, never overwritten. The brief must '
-    + 'keep the experiment\'s slide count and lockedConstraints, and must still differ from the baseline only in the '
-    + 'experiment\'s chosen variables. Returns the variant\'s new revision; use it when calling generate_experiment.',
+    'Edit one variant\'s brief. Free. Allowed only when the variant is a draft (never sent to generation, no frozen brief) '
+    + 'and the experiment is: "review"; "completed" (for a draft variant that was not generated); or "failed"/"paused" while no '
+    + 'provider job is running or unknown. Refused while "planning" or "generating" (experiment_active), when "cancelled" '
+    + '(experiment_cancelled), and in "draft" before planning has produced briefs (not_editable). A frozen or rendered variant is '
+    + 'refused (variant_frozen). Pass the variant\'s current revision (get_experiment) — a stale revision is refused '
+    + '(revision_conflict), never overwritten. The brief must keep the experiment\'s slide count and lockedConstraints, and '
+    + 'must still differ from the baseline only in the experiment\'s chosen variables. Returns the variant\'s new revision; '
+    + 'use it when calling generate_experiment.',
     {
       workspaceId: workspaceIdField,
       experimentId: experimentIdField,
