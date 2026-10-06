@@ -72,6 +72,29 @@ describe('buildUserContent', () => {
     expect(parts[3]).toEqual({ type: 'text', text: 'Slide 2 of 2:' });
     expect(parts[4]).toEqual({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,BBBB' } });
   });
+
+  // SLA-522: a QA comparison must name which frame is the source and which is
+  // the candidate. Positional "Slide 1 of 2" cannot say that, and a single
+  // unlabelled image cannot be named at all.
+  test('a named frame is captioned by its name, in order, including the only frame', () => {
+    const parts = buildUserContent('verify this', [
+      { mimeType: 'image/jpeg', dataBase64: 'AAAA', label: 'Mapped source frame' },
+      { mimeType: 'image/jpeg', dataBase64: 'BBBB', label: 'Candidate render to verify' },
+    ]) as Array<Record<string, unknown>>;
+    expect(parts[1]).toEqual({ type: 'text', text: 'Mapped source frame' });
+    expect(parts[2]).toEqual({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,AAAA' } });
+    expect(parts[3]).toEqual({ type: 'text', text: 'Candidate render to verify' });
+    expect(parts[4]).toEqual({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,BBBB' } });
+
+    const single = buildUserContent('verify this', [{ mimeType: 'image/jpeg', dataBase64: 'AAAA', label: 'Candidate render to verify' }]) as Array<Record<string, unknown>>;
+    expect(single[1]).toEqual({ type: 'text', text: 'Candidate render to verify' });
+    expect(single[2]).toEqual({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,AAAA' } });
+
+    // An unlabelled frame keeps the pre-existing output exactly.
+    const unlabelled = buildUserContent('analyze this', [{ mimeType: 'image/jpeg', dataBase64: 'AAAA' }]) as Array<Record<string, unknown>>;
+    expect(unlabelled).toHaveLength(2);
+    expect(unlabelled[1]).toEqual({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,AAAA' } });
+  });
 });
 
 describe('classifyOpenRouterError', () => {

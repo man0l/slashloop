@@ -24,8 +24,10 @@ export interface OpenRouterTextCallOptions {
   temperature?: number;
   /** Override the 90s default — large multi-brief generations need minutes. */
   timeoutMs?: number;
-  /** Cover images as real image parts (sent as base64 data URLs). */
-  images?: Array<{ mimeType: string; dataBase64: string }>;
+  /** Cover images as real image parts (sent as base64 data URLs). An optional
+   *  `label` names the frame; without one a multi-image call keeps the
+   *  positional `Slide N of M` caption, so existing callers are unchanged. */
+  images?: Array<{ mimeType: string; dataBase64: string; label?: string }>;
   /** Grok-4.6 defaults to high reasoning; briefs fan-out wants low latency. */
   reasoningEffort?: 'low' | 'medium' | 'high';
   /** OpenRouter/xAI structured outputs. json_object only guarantees JSON syntax. */
@@ -56,11 +58,15 @@ export function modelToOpenRouter(model: string): string {
  */
 export function buildUserContent(
   userMessage: string,
-  images?: Array<{ mimeType: string; dataBase64: string }>,
+  images?: Array<{ mimeType: string; dataBase64: string; label?: string }>,
 ): string | Array<Record<string, unknown>> {
   if (!images?.length) return userMessage;
   const slideParts = images.flatMap((img, i) => [
-    ...(images.length > 1 ? [{ type: 'text', text: `Slide ${i + 1} of ${images.length}:` }] : []),
+    // A named frame is always captioned, so a single labelled image says which
+    // frame it is. An unlabelled multi-image call keeps the positional caption.
+    ...(img.label || images.length > 1
+      ? [{ type: 'text', text: img.label ?? `Slide ${i + 1} of ${images.length}:` }]
+      : []),
     {
       type: 'image_url',
       image_url: { url: `data:${img.mimeType};base64,${img.dataBase64}` },
