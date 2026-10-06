@@ -95,6 +95,18 @@ describe('verified success requires a schema-valid composite pass',()=>{
     expect(uploaded).toBe(0);
   });
 
+  test('a transient checker transport failure is retryable, never terminal (SLA-515)',async()=>{
+    for(const message of ['The operation timed out.','OpenRouter returned no content']){
+      let uploaded=0;
+      const render=deps({upload:async()=>{uploaded++;return {path:'p'};},verifyStory:async()=>{throw new Error(message);}});
+      const err=await run(render).catch(e=>e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(TerminalFailure);
+      expect((err as Error).message).toContain(message);
+      expect(uploaded).toBe(0);
+    }
+  });
+
   test('a checker that returns no per-check verdict is unverified, never a pass',async()=>{
     let uploaded=0;
     // The historical {ok:true} shape must not complete a slide.

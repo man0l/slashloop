@@ -118,8 +118,13 @@ export function classifyOpenRouterError(err: unknown): {
   if (errorType === 'not_found' || code === 404) {
     return { category: 'invalid_request', retryable: false, message };
   }
+  // An empty upstream choice (no content / no image) is a provider flake, not
+  // a verdict on the request — the same call usually succeeds on retry.
+  if (/returned no (content|image)|empty response|no choices/i.test(message)) {
+    return { category: 'server', retryable: true, message };
+  }
   if (code >= 500 || errorType === 'provider_overloaded' || errorType === 'provider_unavailable'
-    || errorType === 'server' || /timeout/i.test(message)) {
+    || errorType === 'server' || /timeout|timed?\s*out|abort/i.test(message)) {
     return { category: 'server', retryable: true, message };
   }
   return { category: 'unknown', retryable: false, message };

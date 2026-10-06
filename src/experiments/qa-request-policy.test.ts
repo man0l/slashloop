@@ -19,7 +19,7 @@ import type { Video } from '@prisma/client';
 import {
   prepare, qaCoverageProblem, qaErrorCategory, qaMaxTokens, qaRequestPolicy, renderDeps,
   resolveQaVerdict, TerminalFailure,
-  QA_DEFAULT_MODEL, QA_MAX_TOKENS_CEILING, QA_TIMEOUT_MS,
+  QA_DEFAULT_MODEL, QA_MAX_TOKENS_CEILING, QA_TIMEOUT_MS, type QaDiagnostics,
 } from './providers.js';
 import { compileSlideContract, contractChecks, contractQaBlock } from './render-prompt.js';
 import { sanitizeRequestId } from '../lib/openrouter.js';
@@ -189,6 +189,23 @@ describe('the request carries that policy, and the record stays sanitized', () =
     expect(recorded).not.toContain('sk-');
     expect(Object.keys(result.diagnostics!).sort()).toEqual(
       ['checksRequested', 'elapsedMs', 'maxTokens', 'model', 'outcome', 'reasoningEffort', 'requestId', 'timeoutMs']);
+  });
+
+  test('empty choices and server failures reach the engine without upload or correction', async () => {
+    for (const response of [
+      { status: 200, body: { choices: [] } },
+      { status: 503, body: { error: { code: 503, message: 'provider unavailable' } } },
+    ]) {
+      const deps = renderDepsWith();
+      process.env.OPENROUTER_API_KEY = 'test';
+      openRouterResponse(response);
+      const err = await (await prepare(fixture(), task, { ...deps.deps, verifyStory: renderDeps.verifyStory } as never)).execute().catch(e => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(TerminalFailure);
+      expect((err as Error & { qaDiagnostics: QaDiagnostics }).qaDiagnostics.outcome).toBe('error');
+      expect(deps.counts.renders).toBe(3);
+      expect(deps.counts.uploads).toBe(0);
+    }
   });
 
   test('a provider request id is sanitized to an opaque token', () => {
@@ -382,7 +399,7 @@ describe('a pass requires the answer that was asked for', () => {
 });
 
 describe('an unavailable checker is unverified, and buys nothing', () => {
-  test('a timeout is categorised, recorded, and never becomes a pass', async () => {
+  test('a timeout is categorised and propagates for bounded provider retry', async () => {
     const contract = await probeContract();
     process.env.EXPERIMENT_QA_MODEL = 'openai/gpt-5.1-mini';
     process.env.OPENROUTER_API_KEY = 'test';
@@ -390,13 +407,12 @@ describe('an unavailable checker is unverified, and buys nothing', () => {
     // therefore no header and no id to quote.
     globalThis.fetch = (async () => { const e = new Error('The operation timed out.'); e.name = 'TimeoutError'; throw e; }) as unknown as typeof fetch;
 
-    const result = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
-    expect(result.verdict).toBe('error');
-    expect(result.checks).toEqual([]);
-    expect(result.reasons[0]).toContain('story_check_error');
-    expect(result.diagnostics).toMatchObject({ outcome: 'error', errorCategory: 'timeout', model: 'openai/gpt-5.1-mini', timeoutMs: QA_TIMEOUT_MS });
+    const result = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) }).catch(e => e);
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toContain('timed out');
+    expect(result.qaDiagnostics).toMatchObject({ outcome: 'error', errorCategory: 'timeout', model: 'openai/gpt-5.1-mini', timeoutMs: QA_TIMEOUT_MS });
     // No id is invented for a call that never reached the gateway.
-    expect(result.diagnostics!.requestId).toBeUndefined();
+    expect(result.qaDiagnostics.requestId).toBeUndefined();
 
     // A timeout is a provider-side category, distinguishable from the rest.
     expect(qaErrorCategory(Object.assign(new Error('The operation timed out.'), { name: 'TimeoutError' }))).toBe('timeout');
@@ -411,9 +427,9 @@ describe('an unavailable checker is unverified, and buys nothing', () => {
 
     // 429 with the header the gateway sent: categorised, and still traceable.
     openRouterResponse({ status: 429, body: { error: { code: 429, message: 'rate limited' } }, headers: { 'x-request-id': 'req-throttled-1' } });
-    const throttled = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
-    expect(throttled.verdict).toBe('error');
-    expect(throttled.diagnostics).toMatchObject({ outcome: 'error', errorCategory: 'rate_limit', requestId: 'req-throttled-1' });
+    const throttled = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) }).catch(e => e);
+    expect(throttled).toBeInstanceOf(Error);
+    expect(throttled.qaDiagnostics).toMatchObject({ outcome: 'error', errorCategory: 'rate_limit', requestId: 'req-throttled-1' });
 
     // Same refusal, id only in the body.
     openRouterResponse({ status: 402, raw: JSON.stringify({ id: 'gen-body-9', error: { code: 402, message: 'insufficient credits' } }) });
@@ -430,9 +446,26 @@ describe('an unavailable checker is unverified, and buys nothing', () => {
 
     // An id that is not an opaque token is dropped, not half-quoted.
     openRouterResponse({ status: 429, body: { error: { code: 429, message: 'rate limited' } }, headers: { 'x-request-id': 'Bearer sk-not-a-token' } });
-    const dirty = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) });
-    expect(dirty.diagnostics!.errorCategory).toBe('rate_limit');
-    expect(dirty.diagnostics!.requestId).toBeUndefined();
+    const dirty = await renderDeps.verifyStory!({ contract, candidate: Buffer.alloc(600, 9) }).catch(e => e);
+    expect(dirty.qaDiagnostics.errorCategory).toBe('rate_limit');
+    expect(dirty.qaDiagnostics.requestId).toBeUndefined();
+  });
+
+  test('empty choices and server failures reach the engine without upload or correction', async () => {
+    for (const response of [
+      { status: 200, body: { choices: [] } },
+      { status: 503, body: { error: { code: 503, message: 'provider unavailable' } } },
+    ]) {
+      const deps = renderDepsWith();
+      process.env.OPENROUTER_API_KEY = 'test';
+      openRouterResponse(response);
+      const err = await (await prepare(fixture(), task, { ...deps.deps, verifyStory: renderDeps.verifyStory } as never)).execute().catch(e => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(TerminalFailure);
+      expect((err as Error & { qaDiagnostics: QaDiagnostics }).qaDiagnostics.outcome).toBe('error');
+      expect(deps.counts.renders).toBe(3);
+      expect(deps.counts.uploads).toBe(0);
+    }
   });
 
   test('a provider request id is sanitized to an opaque token', () => {
@@ -442,24 +475,23 @@ describe('an unavailable checker is unverified, and buys nothing', () => {
     expect(sanitizeRequestId(undefined)).toBeUndefined();
   });
 
-  test('a timed-out checker uploads no deliverable and spends no second render', async () => {
+  test('a timed-out checker reaches provider retry without uploading or correcting', async () => {
     const deps = renderDepsWith();
     await probeContract();
     process.env.OPENROUTER_API_KEY = 'test';
     globalThis.fetch = (async () => { const e = new Error('The operation timed out.'); e.name = 'TimeoutError'; throw e; }) as unknown as typeof fetch;
 
     const err = await (await prepare(fixture(), task, { ...deps.deps, verifyStory: renderDeps.verifyStory } as never)).execute().catch(e => e);
-    expect(err).toBeInstanceOf(TerminalFailure);
-    expect((err as TerminalFailure).verdict).toBe('unverified');
-    expect((err as TerminalFailure).message).toContain('story_unverified');
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(TerminalFailure);
+    expect((err as Error).message).toContain('timed out');
     // No blind corrective render: an unavailable checker cannot un-verify
     // anything, so the slide must not buy another paid image.
     expect(deps.counts.renders).toBe(3);
     expect(deps.counts.uploads).toBe(0);
     // The audit carries the sanitized request diagnostics, so this timeout is
     // diagnosable from the record alone.
-    const audit = (err as TerminalFailure).audit as { diagnostics?: { errorCategory?: string; model?: string } };
-    expect(audit.diagnostics).toMatchObject({ errorCategory: 'timeout' });
+    expect((err as Error & { qaDiagnostics: QaDiagnostics }).qaDiagnostics).toMatchObject({ errorCategory: 'timeout' });
   });
 
   test('an off-style candidate does not buy a wave when QA is unavailable', async () => {
@@ -472,13 +504,11 @@ describe('an unavailable checker is unverified, and buys nothing', () => {
     globalThis.fetch = (async () => { const e = new Error('The operation timed out.'); e.name = 'TimeoutError'; throw e; }) as unknown as typeof fetch;
 
     const err = await (await prepare(fixture(), task, { ...deps.deps, verifyStory: renderDeps.verifyStory } as never)).execute().catch(e => e);
-    expect(err).toBeInstanceOf(TerminalFailure);
-    expect((err as TerminalFailure).verdict).toBe('unverified');
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(TerminalFailure);
     expect(deps.counts.renders).toBe(3);
     expect(deps.counts.uploads).toBe(0);
-    // The style violation is still recorded — it is not hidden, it just does
-    // not spend money on a re-render that cannot be verified.
-    expect(((err as TerminalFailure).audit as { })).toMatchObject({ verdict: 'error' });
+    expect((err as Error & { qaDiagnostics: QaDiagnostics }).qaDiagnostics).toMatchObject({ errorCategory: 'timeout' });
   });
 
   test('a VERIFIED failure still corrects, so the gate did not lose its one retry', async () => {
