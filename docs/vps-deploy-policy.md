@@ -39,12 +39,15 @@ rejected — the model below is the ONLY way.
    **every push to master**. Two steps: `docker compose -f
    docker-compose.prod.yml config --quiet` (the file is still valid compose),
    then `python3 .github/scripts/assert-compose.py --self-test` — which also
-   re-runs the assertions against 21 deliberately broken copies of the file,
+   re-runs the assertions against 25 deliberately broken copies of the file,
    so a guard that stops biting fails the build too, and against 3 legitimate
    ones that must stay accepted, so the gate cannot pass by being noisy.
    They fail on: any service on a `ghcr.io/man0l/*` image with a mutable tag
    that is not watchtower-managed (see below); a published host port (or
-   changed `expose`) on `queue-db`/`queue-api`; a
+   changed `expose`) on `queue-db`/`queue-api`; the
+   `slashloop-worker-maintenance` `/metrics` listener (SLA-560,
+   `WORKER_METRICS_PORT=9464`) published to the host, routed through
+   Traefik, dropped, or enabled on another worker; a
    `queue-api` image off `ghcr.io/man0l/slashloop-queue-api:master`, or a
    `build:` block on any queue service; a Traefik router rule that is not
    byte-identical to the expected allowlist, or that appears twice; a moved or
