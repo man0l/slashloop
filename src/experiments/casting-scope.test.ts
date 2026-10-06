@@ -86,7 +86,8 @@ describe('each slide resolves its own subject (defect B)', () => {
     const built = contract(faceMorphScenes[0]!, faceMorphCharacter);
     expect(built.subject.castingTarget.hair).toBe('dark hair buzz');
     expect(built.subject.castingTarget).not.toHaveProperty('gaze');
-    expect(built.subject.lockedAttributes.some(l => l.attribute === 'gaze')).toBe(true);
+    // The scene never states a gaze, so there is nothing to lock (SLA-545).
+    expect(built.subject.lockedAttributes.some(l => l.attribute === 'gaze')).toBe(false);
   });
 
   test('an "Unchanged: … gaze …" clause never unlocks gaze', () => {
@@ -134,7 +135,7 @@ describe('each slide resolves its own subject (defect B)', () => {
     const checks = contractChecks(built);
     expect(contractPromptLines(built).join('\n')).toContain('CASTING TARGET');
     expect(checks).toContain("the subject's hair matches the requested casting target: red hair");
-    expect(checks.some(c => c.includes('gaze is unchanged'))).toBe(true);
+    expect(checks.some(c => c.includes('unchanged from the reference frame'))).toBe(false);
     expect(checks.some(c => c.includes('role is unchanged'))).toBe(true);
   });
 });
@@ -206,7 +207,7 @@ describe('scene edits and QA stay inside the selected subject', () => {
     // are locked, and the observed value must be the SUBJECT's, not whichever
     // person the span search happened to reach first.
     const twoSubjects = 'Bottom-left: a woman labeled Sub 5 with brown eyes and an olive complexion. Bottom-right: an unrelated woman with green eyes and fair skin.';
-    const built = contract(twoSubjects, 'Sub 5: blue eyes.');
+    const built = contract(twoSubjects, 'Sub 5: blue eyes.', 'photograph');
     expect(built.subject.castingTarget).toEqual({ eyes: 'blue eyes' });
     expect(built.compiledScene).toContain('green eyes and fair skin');
     expect(built.subject.lockedAttributes.find(l => l.attribute === 'complexion')?.observed).toBe('an olive complexion');
@@ -288,8 +289,8 @@ describe('scene edits and QA stay inside the selected subject', () => {
     // does not state it), so the reference frame stays the authority.
     const chad = contract(faceMorphScenes[2]!, faceMorphCharacter);
     expect(chad.subject.castingTarget).not.toHaveProperty('hair');
-    expect(chad.subject.lockedAttributes.find(l => l.attribute === 'hair')?.observed).toBeNull();
-    expect(contractChecks(chad)).toContain("the subject's hair is unchanged from the reference frame");
+    expect(chad.subject.lockedAttributes.find(l => l.attribute === 'hair')).toBeUndefined();
+    expect(contractChecks(chad).some(c => c.includes("hair is unchanged"))).toBe(false);
   });
 });
 

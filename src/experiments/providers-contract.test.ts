@@ -6,7 +6,7 @@ import type { Video } from '@prisma/client';
 import { observedCopy, prepare, resolvedCopyBlock } from './providers.js';
 import { VideoAnalysisDataSchema } from '../analysis/schema.js';
 import type { Experiment, Input, Task } from './schema.js';
-import type { SlideContract } from './render-prompt.js';
+import { compileSlideContract, contractCheckSpecs, contractChecks, labelPolicy, type SlideContract } from './render-prompt.js';
 import { editInstructions } from '../tools/experiments.js';
 
 const analysis = (shots: Array<{ timestampSec: number; description: string }>, onScreenText: Array<{ timestampSec: number; text: string }> = []) => VideoAnalysisDataSchema.parse({
@@ -184,3 +184,54 @@ function contractChecksFrom(prompt: string): string[] {
   const line = prompt.split('\n').find(l => l.startsWith('{"language"'))!;
   return JSON.parse(line).contract.checks as string[];
 }
+
+// SLA-545: only lock what was observed; person-appearance locks only for a person.
+const contractFor = (medium: string, scene: string) => compileSlideContract({
+  slideIndex: 0, role: 'hook', medium, scene, overlay: { mode: 'clear', text: '', origin: 'source' }, observedCopy: null,
+  sourceMap: { videoId: null, analysisId: null, sourceIndex: null, referenceKind: 'none', path: null }, labels: labelPolicy(),
+});
+const attributesOf = (c: SlideContract) => c.subject.lockedAttributes.map(l => l.attribute);
+
+test('a statue-collage contract emits no hair, jewelry or wardrobe checks', () => {
+  const c = contractFor('collage', '2x2 photo-food collage; right: a grayscale marble statue of a man looking left, plain grey backdrop.');
+  expect(attributesOf(c).sort()).toEqual(['gaze', 'role', 'setting']);
+  const checks = contractChecks(c).join('\n');
+  for (const noun of ['hair', 'eyes', 'complexion', 'wardrobe', 'jewelry', 'facial-hair']) expect(checks).not.toContain(`subject's ${noun}`);
+  expect(checks).not.toContain('unchanged from the reference frame');
+});
+
+test('a pixel-art / objects contract emits no subject-appearance checks', () => {
+  const c = contractFor('animated', 'Left: a photographed burger and fries. Right: the same foods as Minecraft pixel-art sprites, no character anywhere.');
+  expect(c.subject.lockedAttributes.filter(l => !['role', 'gaze', 'setting'].includes(l.attribute))).toEqual([]);
+  expect(contractChecks(c).some(x => x.includes("the subject's"))).toBe(false);
+  const objects = contractFor('unknown-objects', 'A pile of golden pixel coins on a dark background.');
+  expect(contractChecks(objects).some(x => /hair|eyes|jewelry|wardrobe/.test(x))).toBe(false);
+});
+
+test('a photographed person locks only the attributes the scene actually states', () => {
+  const c = contractFor('photograph', 'A man with dark hair and a black t-shirt, looking left.');
+  expect(attributesOf(c)).toEqual(expect.arrayContaining(['hair', 'wardrobe', 'gaze']));
+  expect(attributesOf(c)).not.toContain('eyes');
+  expect(c.subject.lockedAttributes.every(l => l.observed)).toBe(true);
+});
+
+test('overlay and medium are hard checks; subject, setting and story beat are soft', () => {
+  const specs = contractCheckSpecs(contractFor('photograph', 'A man with dark hair, looking left, grey backdrop.'));
+  const sev = (needle: string) => specs.find(x => x.check.includes(needle))!.severity;
+  expect(sev('overlay')).toBe('hard');
+  expect(sev('medium')).toBe('hard');
+  expect(sev('hair is unchanged')).toBe('soft');
+  expect(sev('story beat')).toBe('soft');
+});
+
+test('a hook-text slide is rendered and checked against its own source description, not the board scene', async () => {
+  const { e, videos } = sourceReferenced({
+    copy: [0, 1, 2].map(slideIndex => ({ slideIndex, state: 'observed_text' as const, text: 'Original headline' })),
+    variables: ['hook'], changed: [], scene: 'Foods spiraling around him in a new layout.',
+  });
+  e.inputs[0]!.evidence = [0, 1, 2].map(i => ({ location: `slide:${i}`, observation: `2x2 grid of foods, slide ${i}` }));
+  const calls: unknown[] = []; const qa: SlideContract[] = [];
+  await (await prepare(e, task, deps(videos, calls, qa) as never)).execute();
+  expect(qa[0]!.compiledScene).toBe('2x2 grid of foods, slide 0');
+  expect((calls[0] as { prompt: string }).prompt).not.toContain('spiraling');
+});

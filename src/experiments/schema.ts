@@ -379,7 +379,7 @@ export type CopyState = 'observed_text' | 'observed_empty' | 'unknown';
 export interface ObservedCopy { state: CopyState; text: string | null }
 /** Per-check QA outcome. A composite pass requires every check to pass; `unknown`
  *  is unverified, never a pass (SLA-430 D8). */
-export interface QaCheck { check: string; status: 'pass' | 'fail' | 'unknown'; reason?: string }
+export interface QaCheck { check: string; status: 'pass' | 'fail' | 'unknown'; reason?: string; severity?: 'hard' | 'soft' }
 /** Sanitized record of HOW the checker was called and how it ended (SLA-511).
  *  Model, deadline, elapsed time, bounded output budget, an error category and
  *  the upstream request id. Never the image, the prompt, the payload or a key:
@@ -406,6 +406,12 @@ export interface SlideVerification {
   attempts: number;
   /** Request-level diagnostics for the checker's last call (SLA-511). */
   diagnostics?: QaDiagnostics;
+  /** Soft-check findings that did not block the slide (SLA-545). */
+  warnings?: string[];
+  /** Every non-pass check is soft: a corrective render may fix it, and `warn` mode may ship it. */
+  softOnly?: boolean;
+  /** The verdict rests on real per-check answers, so a fresh render can change it. */
+  rerenderable?: boolean;
 }
 /** Auditable QA record persisted even when the slide does not complete. */
 export interface SlideQaRecord {
@@ -417,6 +423,7 @@ export interface SlideQaRecord {
   checks: QaCheck[];
   prompt?: string;
   diagnostics?: QaDiagnostics;
+  warnings?: string[];
 }
 export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide'; target?: string; index?: number;
   status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number; }

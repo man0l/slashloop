@@ -29,6 +29,19 @@ export function identitySubject(formula: StyleFormula | null): IdentitySubject {
   return 'objects';
 }
 
+/** Appearance attributes that only describe a PERSON. A statue cutout, a pixel
+ *  sprite or a food collage has no hair, eyes or jewelry to keep unchanged. */
+const PERSON_ONLY_ATTRIBUTES = new Set(['hair', 'eyes', 'facial-hair', 'complexion', 'wardrobe', 'jewelry']);
+
+/** A lock exists only for what the source actually stated (`observed` non-null),
+ *  and person-appearance locks only for a photographed person. An unknown or
+ *  mixed medium cannot rule a person out, so it keeps observed-only locks. */
+function lockPolicy(medium: string, locks: SubjectContract['lockedAttributes']): SubjectContract['lockedAttributes'] {
+  const m = medium.trim().toLowerCase();
+  const personRuledOut = !!m && m !== 'unknown' && m !== 'mixed' && identitySubject({ medium: m } as StyleFormula) !== 'person';
+  return locks.filter(l => l.observed && !(personRuledOut && PERSON_ONLY_ATTRIBUTES.has(l.attribute)));
+}
+
 export function renderContract(unlocked: readonly string[] = VARIABLE_FIELDS, changed: Array<{ name: string }> = []): RenderContract {
   const allowed = new Set(unlocked);
   const names = changed.map(c => c.name).filter(n => allowed.has(n));
@@ -1047,6 +1060,7 @@ export function compileSlideContract(opts: {
   } else {
     subject = preserveSubject();
   }
+  subject = { ...subject, lockedAttributes: lockPolicy(opts.medium, subject.lockedAttributes) };
   const base = {
     contractVersion: CONTRACT_VERSION,
     slideIndex: opts.slideIndex,
@@ -1064,25 +1078,38 @@ export function compileSlideContract(opts: {
   return { ...base, contractHash: contractHash(base) };
 }
 
+export type QaSeverity = 'hard' | 'soft';
+export interface ContractCheck { check: string; severity: QaSeverity }
+
 /** D7: QA checks are derived from the contract, so a checker is never asked to
- *  re-assert a source attribute the contract replaced, and never omits a lock. */
-export function contractChecks(c: SlideContract): string[] {
-  const checks: string[] = [];
+ *  re-assert a source attribute the contract replaced, and never omits a lock.
+ *  HARD checks (exact overlay, forbidden marks, labels, medium) gate shipping;
+ *  SOFT checks (subject attributes, setting, story beat) are judgement calls a
+ *  checker may be unable to settle, so an `unknown` there is only a warning. */
+export function contractCheckSpecs(c: SlideContract): ContractCheck[] {
+  const checks: ContractCheck[] = [];
   for (const [attribute, value] of Object.entries(c.subject.castingTarget)) {
-    checks.push(`the subject's ${attribute} matches the requested casting target: ${value}`);
+    checks.push({ check: `the subject's ${attribute} matches the requested casting target: ${value}`, severity: 'soft' });
   }
   for (const lock of c.subject.lockedAttributes) {
-    checks.push(lock.observed
-      ? `the subject's ${lock.attribute} is unchanged: "${lock.observed}"`
-      : `the subject's ${lock.attribute} is unchanged from the reference frame`);
+    if (!lock.observed) continue;
+    checks.push({ check: `the subject's ${lock.attribute} is unchanged: "${lock.observed}"`, severity: 'soft' });
   }
-  checks.push(c.overlay.text
-    ? `the on-image overlay matches exactly: ${JSON.stringify(c.overlay.text)}`
-    : 'the slide carries no added overlay text');
-  for (const label of c.sourceLabels.preserve) checks.push(`the source label "${label}" is still present, in its original position`);
-  for (const label of c.sourceLabels.remove) checks.push(`the mark "${label}" is not present anywhere on the slide`);
-  checks.push(`the medium is ${c.medium} and the story beat for role "${c.role}" is visible`);
+  checks.push({
+    check: c.overlay.text
+      ? `the on-image overlay matches exactly: ${JSON.stringify(c.overlay.text)}`
+      : 'the slide carries no added overlay text',
+    severity: 'hard',
+  });
+  for (const label of c.sourceLabels.preserve) checks.push({ check: `the source label "${label}" is still present, in its original position`, severity: 'hard' });
+  for (const label of c.sourceLabels.remove) checks.push({ check: `the mark "${label}" is not present anywhere on the slide`, severity: 'hard' });
+  checks.push({ check: `the medium is ${c.medium}`, severity: 'hard' });
+  checks.push({ check: `the story beat for role "${c.role}" is visible`, severity: 'soft' });
   return checks;
+}
+
+export function contractChecks(c: SlideContract): string[] {
+  return contractCheckSpecs(c).map(x => x.check);
 }
 
 /** QA prompt body. Evaluates ONLY the resolved contract plus the reference. */
