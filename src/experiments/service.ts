@@ -11,6 +11,8 @@ import { persistedOverlayText } from './render-prompt.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { applyApprovedEstimate } from './budget.js';
 import { compileExactEdit } from './exact-edit.js';
+import { postKey } from '../lib/post-key.js';
+import { expandPreset, inferSharedFormat } from './source-format.js';
 
 export const fingerprint = (v: unknown): string => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 /** Compact view count for experiment title differentiators: 8200000 -> 8.2M, 75600 -> 75.6k. */
@@ -93,19 +95,38 @@ export const createDeps: CreateExperimentDeps = {
   buildInput: compatibleInput,
   persist: store.create,
 };
-export async function createExperiment(raw: unknown, deps: CreateExperimentDeps = createDeps) {
+export interface CreateExperimentOptions {
+  /** False for source-preserving copy/character edits: they carry their own complete
+   *  instructions and must not pick up a source-format preset's locks. */
+  expandFormat?: boolean;
+}
+export async function createExperiment(raw: unknown, deps: CreateExperimentDeps = createDeps, options: CreateExperimentOptions = {}) {
   // Legacy create: the two-variant planner path, unchanged. An exact_edit body
   // has its own entry point and must not be coerced through this schema.
   if (isExactEditRequest(raw)) throw new S.ExperimentError(409,'exact_edit_requires_exact_edit_action','Create an exact_edit deck with create_exact_edit; it does not use the legacy planner.');
-  const b = S.Create.parse(raw);
+  // SLA-555: instructions may omit variables/mode/direction/locks when a source
+  // format fills them, and the format can be inferred from the sources' analysis,
+  // so the strict instructions parse runs after the sources load. The idempotency
+  // fingerprint is taken from the request as sent: an analysis that lands between
+  // two identical calls must not turn the retry into an idempotency conflict.
+  const expandFormat = options.expandFormat !== false;
+  const requested = expandFormat ? S.CreateRequest.parse(raw) : null;
+  const strict = requested ? null : S.Create.parse(raw);
+  const head = requested ?? strict!;
+  const requestFingerprint = fingerprint(head);
   const now = new Date().toISOString();
   const inputs: S.Input[] = [];
   let referenced = false;
-  const slideSources: Array<{ originalCount: number | null; analysis?: unknown }> = [];
+  const slideSources: Array<{ originalCount: number | null; analysis?: unknown; caption?: string | null }> = [];
   const tags: string[] = [];
-  for (const videoId of b.videoIds) {
-    const v = await deps.findSource(b.workspaceId, videoId);
+  const posts = new Set<string>();
+  for (const videoId of head.videoIds) {
+    const v = await deps.findSource(head.workspaceId, videoId);
     if (!v) throw new S.ExperimentError(404,'video_not_found');
+    // The same TikTok post is stored once per source, so two video ids can be one post.
+    const post = postKey(v);
+    if (posts.has(post)) throw new S.ExperimentError(400,'duplicate_source_post','Two of the videoIds are the same post; pass it once.');
+    posts.add(post);
     tags.push(sourceTag(v as { creatorHandle?: string | null; caption?: string | null; views?: number | null }));
     // Slideshows only: plain video posts are disabled for selection — the
     // analysis and render pipeline is carousel-based (slideshow+caption
@@ -120,8 +141,20 @@ export async function createExperiment(raw: unknown, deps: CreateExperimentDeps 
       const row = await deps.findLatestAnalysis(v.id);
       if (row?.analysisJson) try { analysis = JSON.parse(row.analysisJson); } catch { /* ignore broken analysis JSON */ }
     }
-    slideSources.push({ originalCount: originalCount || null, analysis });
+    slideSources.push({ originalCount: originalCount || null, analysis, caption: (v as { caption?: string | null }).caption });
     inputs.push(await deps.buildInput(v));
+  }
+  let b = strict!;
+  if (requested) {
+    const ri = requested.instructions;
+    const signal = inferSharedFormat(slideSources);
+    const format = ri.sourceFormat ?? signal?.format ?? null;
+    const expanded = expandPreset(format, {
+      variables: ri.variables, mode: ri.mode, direction: ri.direction, lockedConstraints: ri.lockedConstraints,
+    }, signal?.observedHuman ?? false);
+    b = S.Create.parse({ ...requested, instructions: {
+      ...ri, ...expanded, ...(format ? { sourceFormat: format } : {}),
+    } });
   }
   const { idempotencyKey, videoIds, workspaceId, slideCount: requestedSlideCount, ...fields } = b;
   // Persisted count: SLA-476 — the source deck keeps its own closing CTA slide
@@ -149,7 +182,42 @@ export async function createExperiment(raw: unknown, deps: CreateExperimentDeps 
     // Slideshow sources are attached as visual references during rendering; video-only stays text-directed.
     generationBasis:referenced?'source-referenced':'text-directed',
     assetPolicy:'Generated outputs retained until explicit deletion; never swept with source media. No Stream copies. Gemini uploads named experiment-temp expire at provider in approximately 48h; reusable handles expire locally at 40h.',
-    version:0,tasks:[],commands:{},allowPartial:false,createFingerprint:fingerprint(b) },idempotencyKey);
+    version:0,tasks:[],commands:{},allowPartial:false,createFingerprint:requestFingerprint },idempotencyKey);
+}
+export interface DedupedVideoIds { videoIds: string[]; duplicates: Array<{ videoId: string; duplicateOf: string }> }
+/**
+ * SLA-555: collapse video ids that are the same post (platform + externalId). The
+ * same post lands under a second id when two tracked sources both surface it, and
+ * each id would otherwise get its own experiment (and its own paid analysis).
+ * Within a group the already-analyzed id wins, then the first one listed. Ids that
+ * are not in the workspace are left in place so the create call reports them.
+ */
+export async function dedupeSourcePosts(
+  workspaceId: string, videoIds: string[],
+  find: (workspaceId: string, ids: string[]) => Promise<Array<{ id: string; platform: string; externalId: string; analyzed: boolean }>> = findPostKeys,
+): Promise<DedupedVideoIds> {
+  const rows = new Map((await find(workspaceId, videoIds)).map(r => [r.id, r]));
+  const winner = new Map<string, string>();
+  for (const id of videoIds) {
+    const r = rows.get(id);
+    if (!r) continue;
+    const key = postKey(r);
+    const current = winner.get(key);
+    if (!current || (r.analyzed && !rows.get(current)!.analyzed)) winner.set(key, id);
+  }
+  const kept: string[] = [];
+  const duplicates: DedupedVideoIds['duplicates'] = [];
+  for (const id of videoIds) {
+    const r = rows.get(id);
+    const owner = r ? winner.get(postKey(r))! : id;
+    if (owner === id) kept.push(id); else duplicates.push({ videoId: id, duplicateOf: owner });
+  }
+  return { videoIds: kept, duplicates };
+}
+async function findPostKeys(workspaceId: string, ids: string[]) {
+  const videos = await db.video.findMany({ where: { id: { in: ids }, source: { workspaceId } }, select: { id: true, platform: true, externalId: true } });
+  const analyzed = new Set((await db.analysis.findMany({ where: { videoId: { in: ids } }, select: { videoId: true }, distinct: ['videoId'] })).map(a => a.videoId));
+  return videos.map(v => ({ ...v, analyzed: analyzed.has(v.id) }));
 }
 function selected(e: S.Experiment, ids?: string[]) {
   if (ids && new Set(ids).size !== ids.length) throw new S.ExperimentError(400,'duplicate_variant');
@@ -164,11 +232,11 @@ export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: 
     // Per-job retry estimate: price exactly the named jobs that still need provider work.
     const wanted = new Set(taskIds);
     const jobs = e.tasks.filter(t=>wanted.has(t.id)&&t.status!=='done');
-    const priceOf = (t:S.Task)=>t.kind==='slide' ? CREDIT_COSTS.experimentSlide*S.SLIDE_FANOUT : taskCost(t);
+    const priceOf = (t:S.Task)=>t.kind==='slide' ? CREDIT_COSTS.experimentSlide*S.slideFanout() : taskCost(t);
     const analysisCredits = jobs.filter(t=>t.kind==='analysis').reduce((n,t)=>n+priceOf(t),0);
     const planningCredits = jobs.filter(t=>t.kind==='report'||t.kind==='briefs').reduce((n,t)=>n+priceOf(t),0);
     const generationCredits = jobs.filter(t=>t.kind==='slide').reduce((n,t)=>n+priceOf(t),0);
-    const correctionCredits = jobs.filter(t=>t.kind==='slide').length*CREDIT_COSTS.experimentSlide*S.SLIDE_FANOUT*(S.qaMaxAttempts()-1);
+    const correctionCredits = jobs.filter(t=>t.kind==='slide').length*CREDIT_COSTS.experimentSlide*S.slideFanout()*(S.qaMaxAttempts()-1);
     return { analysisCredits,planningCredits,generationCredits,totalCredits:analysisCredits+planningCredits+generationCredits,
       correctionCredits,maxTotalCredits:analysisCredits+planningCredits+generationCredits+correctionCredits,
       remainingCredits:e.maxCredits-e.creditsCharged, workspaceCredits:(await creditBalance(e.workspaceId)).total,
@@ -178,7 +246,7 @@ export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: 
   }
   const analysisCredits = stage === 'plan' ? e.inputs.filter(x=>x.status!=='ready').length*CREDIT_COSTS.analyzeVideo : 0;
   const planningCredits = stage === 'plan' ? (e.report ? 0 : CREDIT_COSTS.experimentPlanningCall) + (e.variants.length ? 0 : CREDIT_COSTS.experimentPlanningCall) : 0;
-  const generationCredits = stage === 'generate' ? variants.reduce((n,v)=>n+(v.slides.length ? v.slides.filter(s=>s.status!=='done').length : e.slideCount)*CREDIT_COSTS.experimentSlide,0)*S.SLIDE_FANOUT : 0;
+  const generationCredits = stage === 'generate' ? variants.reduce((n,v)=>n+(v.slides.length ? v.slides.filter(s=>s.status!=='done').length : e.slideCount)*CREDIT_COSTS.experimentSlide,0)*S.slideFanout() : 0;
   // Every slide can buy up to qaMaxAttempts-1 more full fan-out waves; each is admitted against the
   // remaining experiment credit and the wallet before its provider calls, so this is a ceiling on
   // requests, never an amount charged up front.
@@ -187,7 +255,7 @@ export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: 
     correctionCredits,maxTotalCredits:analysisCredits+planningCredits+generationCredits+correctionCredits,
     remainingCredits:e.maxCredits-e.creditsCharged, workspaceCredits:(await creditBalance(e.workspaceId)).total,
     maxCredits:e.maxCredits,generationBasis:e.generationBasis,exactProviderUsdCap:false,
-    maxProviderRequests: (stage==='plan' ? analysisCredits/CREDIT_COSTS.analyzeVideo+planningCredits/CREDIT_COSTS.experimentPlanningCall : generationCredits/CREDIT_COSTS.experimentSlide/S.SLIDE_FANOUT*S.slideTaskRequestCap()),
+    maxProviderRequests: (stage==='plan' ? analysisCredits/CREDIT_COSTS.analyzeVideo+planningCredits/CREDIT_COSTS.experimentPlanningCall : generationCredits/CREDIT_COSTS.experimentSlide/S.slideFanout()*S.slideTaskRequestCap()),
     pricing:{analysis:CREDIT_COSTS.analyzeVideo,planningCall:CREDIT_COSTS.experimentPlanningCall,slide:CREDIT_COSTS.experimentSlide} };
 }
 const task = (kind:S.Task['kind'], target?:string,index?:number):S.Task => ({id:randomUUID(),kind,target,index,status:'pending',attempts:0,charged:0});

@@ -1,4 +1,5 @@
 ﻿import { z } from 'zod/v4';
+import { SOURCE_FORMATS } from './source-format.js';
 
 export class ExperimentError extends Error {
   constructor(public statusCode: number, public code: string, message = code) { super(message); }
@@ -20,10 +21,14 @@ const constraints = z.union([z.array(text.min(1)).max(20), text]).transform(v =>
  *  where an oversized value would blow the prompt budget and fail a paid task. */
 export const CopyOverrides = z.record(z.string().regex(/^(?:0|[1-9]\d*)$/), z.string().max(2000))
   .refine(v => Object.keys(v).length <= 8, { message: 'At most 8 per-slide copy overrides: one per slide.' });
-export const Instructions = z.object({
+const instructionsShape = {
   goal: text.min(1), brand: text, audience: text, language: z.string().trim().min(1).max(80),
   direction: text, lockedConstraints: constraints,
   variables: z.array(z.union([z.enum(VARIABLE_FIELDS), z.literal('angle')]).transform(v => v === 'angle' ? 'concept' as const : v)).min(1).max(7), mode: z.enum(['controlled', 'exploration']),
+  // SLA-555: which kind of source this is. Expands to default variables, mode,
+  // direction and locks (source-format.ts); stored resolved so a later reader
+  // sees which preset shaped the locks. Optional: older experiments have none.
+  sourceFormat: z.enum(SOURCE_FORMATS).optional(),
   // Hook-test scope: when true, hook candidates may also retell the supporting
   // overlay copy (slides 2..N) while scenes stay locked to the baseline.
   // Optional so older experiments (stored without the key) keep working —
@@ -41,7 +46,8 @@ export const Instructions = z.object({
   // and the planning boundary. True keeps every source slide (still clamped to
   // 3-8). Optional so experiments stored before it resolve exactly as before.
   preserveSourceCtaSlide: z.boolean().optional(),
-}).strict().superRefine((v, ctx) => {
+};
+export const Instructions = z.object(instructionsShape).strict().superRefine((v, ctx) => {
   if (new Set(v.variables).size !== v.variables.length) ctx.addIssue({ code: 'custom', message: 'Duplicate variables' });
   if (v.mode === 'controlled' && v.variables.some(x => x === 'concept' || x === 'slides')) {
     ctx.addIssue({ code: 'custom', message: 'Controlled variables: hook, character, visualStyle, caption, cta. Concept/slides require exploration.' });
@@ -58,6 +64,15 @@ export const Instructions = z.object({
     }
   }
 });
+/** Create-time shape: with a source format, variables/mode/direction/lockedConstraints may be omitted
+ *  and are filled from the preset before the strict `Instructions` parse. */
+export const InstructionsInput = z.object({
+  ...instructionsShape,
+  direction: instructionsShape.direction.optional(),
+  lockedConstraints: instructionsShape.lockedConstraints.optional(),
+  variables: instructionsShape.variables.optional(),
+  mode: instructionsShape.mode.optional(),
+}).strict();
 export const BriefSlide = z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text.default('') });
 export const Brief = z.object({
   concept: text.min(1), hook: text.min(1), character: text, visualStyle: text.min(1), caption: text,
@@ -86,10 +101,14 @@ export const BriefDelta = z.object({
   slides: z.array(BriefSlide).min(3).max(8).optional(),
   overlayTexts: z.array(text.default('')).min(3).max(8).optional(),
 });
-export const Create = z.object({ workspaceId: Id, videoIds: z.array(Id).min(1).max(20), instructions: Instructions,
+const createShape = <I extends z.ZodType>(instructions: I) => ({ workspaceId: Id, videoIds: z.array(Id).min(1).max(20), instructions,
   variantCount: z.number().int().min(1).max(12), slideCount: z.number().int().min(3).max(8),
   maxCredits: z.number().int().min(1).max(10000), idempotencyKey: Key,
-}).strict().superRefine((v, c) => { if (new Set(v.videoIds).size !== v.videoIds.length) c.addIssue({ code: 'custom', message: 'Duplicate videoIds' }); });
+});
+const noDuplicateVideoIds = (v: { videoIds: string[] }, c: z.RefinementCtx) => { if (new Set(v.videoIds).size !== v.videoIds.length) c.addIssue({ code: 'custom', message: 'Duplicate videoIds' }); };
+export const Create = z.object(createShape(Instructions)).strict().superRefine(noDuplicateVideoIds);
+/** Same request with preset-fillable instructions; `Create` re-validates after expansion. */
+export const CreateRequest = z.object(createShape(InstructionsInput)).strict().superRefine(noDuplicateVideoIds);
 export const WorkspaceBody = z.object({ workspaceId: Id }).strict();
 export const Command = WorkspaceBody.extend({ idempotencyKey: Key });
 export const Plan = Command.extend({ allowPartial: z.boolean().optional() });
@@ -352,22 +371,38 @@ export const MAX_MANUAL_ATTEMPTS = 6;
 export const QA_HISTORY_LIMIT = 3;
 /** Up to this many slide renders may run concurrently within one experiment. */
 export const PARALLEL_SLIDES = 48;
-/** Candidates rendered per slide; Jev (TypeSafe) picks the most viral one. */
-export const SLIDE_FANOUT = 3;
+/** Default candidates rendered per slide (SLA-546: 3 → 2). Tune with EXPERIMENT_SLIDE_FANOUT. */
+export const SLIDE_FANOUT = 2;
+const MAX_SLIDE_FANOUT = 4;
+/** Candidates rendered per slide; Jev (TypeSafe) picks the most viral one.
+ *  Read lazily so a Worker env change takes effect without a module reload. */
+export function slideFanout(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.EXPERIMENT_SLIDE_FANOUT?.trim());
+  return Number.isInteger(raw) && raw >= 1 ? Math.min(raw, MAX_SLIDE_FANOUT) : SLIDE_FANOUT;
+}
 /** Total render waves per slide (the first plus QA corrections); the env knob is capped at 5. */
 export function qaMaxAttempts(env:NodeJS.ProcessEnv=process.env):number{
   const n=Number.parseInt(env.EXPERIMENT_QA_MAX_ATTEMPTS??'',10);
   return Number.isFinite(n)&&n>=1?Math.min(n,5):3;
 }
 /** Worst-case provider requests one slide task attempt can start: every render wave at full fan-out. */
-export const slideRequestAllowance=(fanout:number=SLIDE_FANOUT,env:NodeJS.ProcessEnv=process.env)=>fanout*qaMaxAttempts(env);
+export const slideRequestAllowance=(fanout:number=slideFanout(),env:NodeJS.ProcessEnv=process.env)=>fanout*qaMaxAttempts(env);
 /** Authorized image requests for one slide task across ALL its engine attempts (the advertised 2x-per-job
  *  headroom over one full render-and-correct pass). Persisted on the task at first claim; admission,
  *  estimate and providerBudget all read this one figure. */
 export const SLIDE_REQUEST_HEADROOM = 2;
-export const slideTaskRequestCap=(fanout:number=SLIDE_FANOUT,env:NodeJS.ProcessEnv=process.env)=>SLIDE_REQUEST_HEADROOM*slideRequestAllowance(fanout,env);
-/** Parameter deltas generated at the briefs stage; Jev ranks them, top variantCount-1 win. */
-export const BRIEF_CANDIDATES = 8;
+export const slideTaskRequestCap=(fanout:number=slideFanout(),env:NodeJS.ProcessEnv=process.env)=>SLIDE_REQUEST_HEADROOM*slideRequestAllowance(fanout,env);
+/** Floor for the briefs-stage candidate pool (SLA-546: was a flat 8). */
+export const BRIEF_CANDIDATES = 3;
+const MAX_BRIEF_CANDIDATES = 12;
+/** Parameter deltas generated at the briefs stage; Jev ranks them, top variantCount-1 win.
+ *  Never fewer than variantCount-1, or variant_count validation could not be met. */
+export function briefCandidateCount(variantCount: number, env: NodeJS.ProcessEnv = process.env): number {
+  const needed = Math.max(variantCount - 1, 1);
+  const raw = Number(env.EXPERIMENT_BRIEF_CANDIDATES?.trim());
+  const pool = Number.isInteger(raw) && raw >= 1 ? Math.min(raw, MAX_BRIEF_CANDIDATES) : BRIEF_CANDIDATES;
+  return Math.max(needed, pool);
+}
 export const RETRY_BACKOFF_MS = 60_000;
 export function retryBackoffMs(_attempts = 1): number {
   return RETRY_BACKOFF_MS;

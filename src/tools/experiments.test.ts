@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { Command, Create, EditBrief, Generate, Plan, Retry, ExperimentError, Key, validateVariants, type Experiment } from '../experiments/schema.js';
+import { Command, Create, CreateRequest, EditBrief, Generate, Plan, Retry, ExperimentError, Key, validateVariants, type Experiment } from '../experiments/schema.js';
 import { normalizeBriefCandidates } from '../experiments/providers.js';
 import { renderContract } from '../experiments/render-prompt.js';
 import {
@@ -136,10 +136,13 @@ describe('create_experiment', () => {
     for (const c of creates) {
       expect(c.workspaceId).toBe('w1');
       expect(c.maxCredits).toBe(defaultExperimentCap(3, 5));
-      expect(c.instructions).toMatchObject({ language: 'English', mode: 'controlled', lockedConstraints: [], brand: '' });
+      expect(c.instructions).toMatchObject({ language: 'English', brand: '', variables: ['hook'] });
+      // Unset means unset: the service fills mode/direction/locks (from a source format when there is one).
+      expect(c.instructions.mode).toBeUndefined();
+      expect(c.instructions.lockedConstraints).toBeUndefined();
       expect(Key.safeParse(c.idempotencyKey).success).toBe(true);
-      // What reaches the service must satisfy its canonical (strict) schema.
-      expect(Create.safeParse(c).success).toBe(true);
+      // What reaches the service must satisfy the create request schema.
+      expect(CreateRequest.safeParse(c).success).toBe(true);
     }
     expect(creates[0].idempotencyKey).not.toBe(creates[1].idempotencyKey);
     expect(body.experiments).toHaveLength(2);
@@ -190,7 +193,8 @@ describe('create_experiment', () => {
     const request = { mode: 'create', videoIds: ['vid1'], instructions: requested, variantCount: 2, slideCount: 3 };
     expect((await call('create_experiment', request)).isError).toBe(false);
     const body = callsOf('createExperiment')[0]![0] as any;
-    expect(Create.safeParse(body).success).toBe(true);
+    expect(CreateRequest.safeParse(body).success).toBe(true);
+    expect(Create.safeParse({ ...body, instructions: { ...body.instructions, lockedConstraints: [] } }).success).toBe(true);
     expect(body.instructions).toMatchObject(requested);
     const baseline = { title: 'Source', hypothesis: 'Control', concept: 'Tea', hook: 'Try tea', character: 'Original adult', visualStyle: 'Cool photograph', caption: 'Tea guide', cta: '', lockedConstraints: [], slides: [
       { role: 'hook', scene: 'Kitchen', overlayText: 'Try tea' },
@@ -202,7 +206,7 @@ describe('create_experiment', () => {
       { name: 'character' as const, value: 'Adult with short blond hair' },
       { name: 'visualStyle' as const, value: 'Warm photograph' },
     ];
-    const e = exp('combo', { instructions: body.instructions, variantCount: 2 });
+    const e = exp('combo', { instructions: { ...body.instructions, lockedConstraints: [] }, variantCount: 2 });
     const normalized = normalizeBriefCandidates({ baseline, candidates: [{ title: 'Combined', hypothesis: 'Combined changes improve swipes', changedVariables }] }, 3, e);
     const proposals = [normalized.baseline, ...normalized.candidates];
     expect(() => validateVariants(e, proposals)).not.toThrow();
@@ -690,10 +694,10 @@ describe('reads', () => {
 });
 
 describe('helpers', () => {
-  test('default cap matches the site auto-cap (2x estimate, rounded up to 10, min 30)', () => {
-    // site: estimateExperimentCredits(1, 3, 5).total = 9 + 450 = 459 → 920
-    expect(defaultExperimentCap(3, 5)).toBe(920);
-    expect(defaultExperimentCap(1, 3)).toBe(200);
+  test('default cap is 2x the estimate, rounded up to 10, min 30 (priced at the current fan-out)', () => {
+    // 9 + 3 variants x 5 slides x 10 credits x fan-out 2 = 309 → 620
+    expect(defaultExperimentCap(3, 5)).toBe(620);
+    expect(defaultExperimentCap(1, 3)).toBe(140);
   });
   test('derived keys are deterministic and valid Keys', () => {
     const k = derivedKey('plan', { experimentId: 'e1' });

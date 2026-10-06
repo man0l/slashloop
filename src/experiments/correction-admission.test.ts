@@ -3,7 +3,7 @@
 import { describe, test, expect } from 'bun:test';
 import { step, type EngineDeps } from './engine.js';
 import { TerminalFailure, SafeFailure, type ExecuteContext } from './providers.js';
-import { ExperimentError, qaMaxAttempts, slideRequestAllowance, slideTaskRequestCap, SLIDE_FANOUT, type BriefData, type Experiment } from './schema.js';
+import { ExperimentError, qaMaxAttempts, slideRequestAllowance, slideTaskRequestCap, slideFanout, type BriefData, type Experiment } from './schema.js';
 import { serialize } from './store.js';
 import { taskCost, applyRetry } from './service.js';
 import { InsufficientCreditsError } from '../lib/credits.js';
@@ -11,7 +11,7 @@ import { InsufficientCreditsError } from '../lib/credits.js';
 const instructions = { goal: 'Sell tea', brand: 'Tea', audience: 'Adults', language: 'English', direction: 'Calm', lockedConstraints: [], variables: ['hook' as const], mode: 'controlled' as const };
 const brief: BriefData = { concept: 'Tea routine', hook: 'Take a break', character: 'Adult', visualStyle: 'Warm', caption: 'Tea time', cta: '', lockedConstraints: [], slides: Array.from({ length: 3 }, (_, i) => ({ role: i ? 'body' : 'hook', scene: 'Tea cup', overlayText: '' })) };
 const UNIT = taskCost({ kind: 'slide' });
-const FANOUT = 3;
+const FANOUT = slideFanout();
 
 function fixture(maxCredits: number): Experiment {
   const v = { id: 'v1', revision: 1, status: 'generating', baselineId: null, generationBasis: 'text-directed' as const, history: [], title: 'B', hypothesis: 'h', changedVariables: [], brief, frozenBrief: brief, slides: [{ index: 0, status: 'pending', url: null, path: null, error: null, overlayText: '' }], error: null };
@@ -135,7 +135,7 @@ describe('counters and ceilings include internal attempts', () => {
     await step('w', 'e', h.deps);
     const budget = (serialize(h.row) as { providerBudget: { maxRequests: number; requestsStarted: number } }).providerBudget;
     expect(budget.requestsStarted).toBe(2 * FANOUT + 1); // the done briefs call counts its one attempt
-    expect(budget.maxRequests).toBeGreaterThanOrEqual(2 * h.row.variantCount * h.row.slideCount * SLIDE_FANOUT * qaMaxAttempts());
+    expect(budget.maxRequests).toBeGreaterThanOrEqual(2 * h.row.variantCount * h.row.slideCount * slideFanout() * qaMaxAttempts());
   });
 });
 

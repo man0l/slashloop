@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { BriefData } from './schema.js';
-import { ExperimentError, SLIDE_FANOUT, VARIABLE_FIELDS } from './schema.js';
+import { ExperimentError, slideFanout, VARIABLE_FIELDS } from './schema.js';
 
 export type StyleFormula = { medium: string; density: string } | null;
 export type IdentitySubject = 'person' | 'drawn-character' | 'collage' | 'objects';
@@ -59,7 +59,7 @@ export function renderContract(unlocked: readonly string[] = VARIABLE_FIELDS, ch
   }
   return {
     kind,
-    fanout: kind === 'hook-text' ? 1 : SLIDE_FANOUT,
+    fanout: kind === 'hook-text' ? 1 : slideFanout(),
     changeFaces,
     changeOverlay,
     changeSetting: changeStory,

@@ -3,6 +3,7 @@
 // failed or unverified check can never complete the slide (SLA-430 D7/D8).
 import { describe, expect, test } from 'bun:test';
 import { prepare, resolveQaVerdict, TerminalFailure } from './providers.js';
+import { slideFanout } from './schema.js';
 import type { Experiment, SlideVerification, Task } from './schema.js';
 import type { SlideContract } from './render-prompt.js';
 import { admission } from './test-admission.js';
@@ -41,7 +42,7 @@ describe('verified success requires a schema-valid composite pass',()=>{
   test('passing QA ships directly without a second render',async()=>{
     const render=deps({verifyStory:async()=>pass(3)});
     const result=await run(render);
-    expect(render.counts.renders).toBe(3); // single fanout wave, no corrective render
+    expect(render.counts.renders).toBe(slideFanout()); // single fanout wave, no corrective render
     expect(result.story).toMatchObject({verdict:'pass',reasons:[],corrected:false,attempts:1});
   });
 
@@ -51,7 +52,7 @@ describe('verified success requires a schema-valid composite pass',()=>{
       return opts.candidate[0]===1?fail('the steaming cup is missing'):pass(3);
     }});
     const result=await run(render);
-    expect(render.counts.renders).toBe(6); // fanout 3 initial wave + fanout 3 corrective wave
+    expect(render.counts.renders).toBe(2 * slideFanout()); // one fan-out wave + one corrective wave
     expect(result.story).toMatchObject({verdict:'pass',corrected:true,attempts:2});
     expect(result.prompt).toContain('CORRECTIVE QA FEEDBACK');
     expect(result.prompt).toContain('the steaming cup is missing');
@@ -124,7 +125,7 @@ describe('verified success requires a schema-valid composite pass',()=>{
     const err=await run(render).catch(e=>e);
     expect(err).toBeInstanceOf(TerminalFailure);
     expect((err as TerminalFailure).audit).toMatchObject({attempts:3,corrected:true});
-    expect(render.counts.renders).toBe(9); // 3 attempts x fanout 3
+    expect(render.counts.renders).toBe(3*slideFanout()); // 3 attempts x fanout
     expect(((err as TerminalFailure).audit as { prompt: string }).prompt).toContain('attempt 3 of at most 3');
   });
 
@@ -134,11 +135,11 @@ describe('verified success requires a schema-valid composite pass',()=>{
       const render=deps({verifyStory:async()=>fail('overlay text cropped')});
       const err=await run(render).catch(e=>e);
       expect((err as TerminalFailure).audit).toMatchObject({attempts:2});
-      expect(render.counts.renders).toBe(6);
+      expect(render.counts.renders).toBe(2*slideFanout());
       process.env.EXPERIMENT_QA_MAX_ATTEMPTS='1';
       const once=deps({verifyStory:async()=>fail('overlay text cropped')});
       await run(once).catch(e=>e);
-      expect(once.counts.renders).toBe(3);
+      expect(once.counts.renders).toBe(slideFanout());
     }finally{delete process.env.EXPERIMENT_QA_MAX_ATTEMPTS;}
   });
 
@@ -147,7 +148,7 @@ describe('verified success requires a schema-valid composite pass',()=>{
     const render=deps({verifyStory:async()=>(++n<3?fail('overlay text cropped'):pass(2))});
     const result=await run(render);
     expect(result.story).toMatchObject({verdict:'pass',corrected:true,attempts:3});
-    expect(render.counts.renders).toBe(9);
+    expect(render.counts.renders).toBe(3*slideFanout());
   });
 
   test('a checker error gets no blind corrective render',async()=>{
@@ -155,14 +156,14 @@ describe('verified success requires a schema-valid composite pass',()=>{
     const err=await run(render).catch(e=>e);
     expect(err).toBeInstanceOf(TerminalFailure);
     expect((err as TerminalFailure).verdict).toBe('unverified');
-    expect(render.counts.renders).toBe(3); // no correction after an unverifiable check
+    expect(render.counts.renders).toBe(slideFanout()); // no correction after an unverifiable check
   });
 
   test('a verified pass is never corrected even when the wave is off-style',async()=>{
     const render=deps({describeCandidates:async()=>[{id:'c0',description:'app UI dashboard',overdesigned:true}],verifyStory:async()=>pass(2)});
     const result=await run(render);
     expect(result.story).toMatchObject({verdict:'pass',attempts:1});
-    expect(render.counts.renders).toBe(3);
+    expect(render.counts.renders).toBe(slideFanout());
   });
 });
 
@@ -217,12 +218,12 @@ describe('prepare() with soft checks and QA mode',()=>{
     expect(err).toBeInstanceOf(TerminalFailure);
     expect((err as TerminalFailure).verdict).toBe('unverified');
     expect((err as Error).message).toStartWith('story_unverified:the medium is photograph: unknown reason');
-    expect(render.counts.renders).toBe(9);
+    expect(render.counts.renders).toBe(3*slideFanout());
   });
   test('warn mode ships a soft-only failure after one correction, with warnings',async()=>{
     const render=deps({verifyStory:async()=>softFail()});
     const result=await run(render);
-    expect(render.counts.renders).toBe(6);
+    expect(render.counts.renders).toBe(2*slideFanout());
     expect(result.story).toMatchObject({verdict:'pass',attempts:2});
     expect(result.story.warnings[0]).toContain('soft_check_failed:');
   });
@@ -249,7 +250,7 @@ describe('prepare() with soft checks and QA mode',()=>{
     const result=await run(render);
     expect(result.story.verdict).toBe('pass');
     expect(result.story.warnings).toEqual(['unverified:the story beat: unknown']);
-    expect(render.counts.renders).toBe(3);
+    expect(render.counts.renders).toBe(slideFanout());
   });
 });
 
@@ -260,7 +261,7 @@ describe('corrections need durable admission before any provider call (SLA-550)'
     const prepared=await prepare(fixture(),{id:'t0',kind:'slide',target:'v1',index:0,attempts:0,charged:10} as unknown as Task,render);
     const err=await prepared.execute().catch(e=>e);
     expect(err).toBeInstanceOf(TerminalFailure);
-    expect(render.counts.renders).toBe(3);
+    expect(render.counts.renders).toBe(slideFanout());
     expect(JSON.stringify((err as TerminalFailure).audit)).toContain('correction_not_admitted');
   });
 
@@ -271,8 +272,8 @@ describe('corrections need durable admission before any provider call (SLA-550)'
     const prepared=await prepare(fixture(),{id:'t0',kind:'slide',target:'v1',index:0,attempts:0,charged:10} as unknown as Task,render);
     const err=await prepared.execute(ctx).catch(e=>e);
     expect(err).toBeInstanceOf(TerminalFailure);
-    expect(ctx.asked).toEqual([3]);
-    expect(render.counts.renders).toBe(3);
+    expect(ctx.asked).toEqual([slideFanout()]);
+    expect(render.counts.renders).toBe(slideFanout());
   });
 
   test('every started wave was admitted first: renders never exceed admitted waves x fan-out',async()=>{
@@ -282,8 +283,8 @@ describe('corrections need durable admission before any provider call (SLA-550)'
       process.env.OPENROUTER_API_KEY='test';
       const prepared=await prepare(fixture(),{id:'t0',kind:'slide',target:'v1',index:0,attempts:0,charged:10} as unknown as Task,render);
       await prepared.execute(ctx).catch(()=>{});
-      expect(render.counts.renders).toBeLessThanOrEqual((1+ctx.granted)*3);
-      expect(render.counts.renders).toBe((1+Math.min(waves,2))*3);
+      expect(render.counts.renders).toBeLessThanOrEqual((1+ctx.granted)*slideFanout());
+      expect(render.counts.renders).toBe((1+Math.min(waves,2))*slideFanout());
     }
   });
 
@@ -291,7 +292,7 @@ describe('corrections need durable admission before any provider call (SLA-550)'
     const ctx=admission();
     let calls=0;
     const render=deps({
-      generateImage:async()=>{calls++;if(calls>3){const err=new Error('The operation timed out.');err.name='TimeoutError';throw err;}return {buffer:Buffer.alloc(600,1),contentType:'image/jpeg',costUsd:0.01};},
+      generateImage:async()=>{calls++;if(calls>slideFanout()){const err=new Error('The operation timed out.');err.name='TimeoutError';throw err;}return {buffer:Buffer.alloc(600,1),contentType:'image/jpeg',costUsd:0.01};},
       verifyStory:async()=>fail('the steaming cup is missing'),
     });
     process.env.OPENROUTER_API_KEY='test';
@@ -305,7 +306,7 @@ describe('corrections need durable admission before any provider call (SLA-550)'
   test('a corrective render that returns no image is retryable, not a verdict',async()=>{
     let calls=0;
     const render=deps({
-      generateImage:async()=>{calls++;if(calls>3)throw new Error('OpenRouter returned no image');return {buffer:Buffer.alloc(600,1),contentType:'image/jpeg',costUsd:0.01};},
+      generateImage:async()=>{calls++;if(calls>slideFanout())throw new Error('OpenRouter returned no image');return {buffer:Buffer.alloc(600,1),contentType:'image/jpeg',costUsd:0.01};},
       verifyStory:async()=>fail('the steaming cup is missing'),
     });
     const err=await run(render).catch(e=>e);

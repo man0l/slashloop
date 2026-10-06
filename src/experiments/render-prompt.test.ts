@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { buildVariantSlidePrompt, compileSlideContract, effectiveOverlayText, labelPolicy, visualLockForChanges, renderContract, identitySubject, lockCarouselIdentity, styleContract } from './render-prompt.js';
+import { slideFanout } from './schema.js';
 import type { BriefData } from './schema.js';
 
 const baseline: BriefData = {
@@ -51,7 +52,7 @@ describe('variant slide rendering', () => {
     expect(visualLockForChanges([{ name: 'hook' }])).toBe('hook-text');
     expect(visualLockForChanges([{ name: 'character' }])).toBe('character');
     expect(renderContract(['hook'], [{ name: 'hook' }])).toMatchObject({ changeFaces: false, changeOverlay: true, fanout: 1 });
-    expect(renderContract(['character'], [{ name: 'character' }])).toMatchObject({ changeFaces: true, changeOverlay: false, fanout: 3 });
+    expect(renderContract(['character'], [{ name: 'character' }])).toMatchObject({ changeFaces: true, changeOverlay: false, fanout: slideFanout() });
     const variant = { ...baseline, hook: 'What if your morning felt like this?' };
     const prompt = buildVariantSlidePrompt(variant, 0, { language: 'English', brand: 'Studio', audience: 'Artists', direction: 'Keep the same teenager', unlocked: ['hook'], styleFormula: { medium: 'photograph', density: 'minimal' } }, 'hook-text');
     expect(prompt.toLowerCase()).toContain('same face');
