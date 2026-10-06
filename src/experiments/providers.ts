@@ -9,9 +9,10 @@ import { callOpenRouterText, classifyOpenRouterError, extractFirstJson, generate
 import { buildVariantSlidePrompt, compileSlideContract, contractChecks, contractQaBlock, effectiveOverlayText, experimentVisualLock, labelPolicy, lockCarouselIdentity, overlayDecision, renderContract, type ObservedCopy, type SlideContract } from './render-prompt.js';
 import { jevPick, jevAsk, type JevQuestion, type JevAnswer } from '../lib/typesafe.js';
 import { putObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
-import { ExperimentError, Report, VariantProposal, BriefStoryboard, BriefDelta, BRIEF_CANDIDATES, VARIABLE_FIELDS, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type QaCheck, type SlideVerification, type Task } from './schema.js';
+import { ExperimentError, Report, VariantProposal, BriefStoryboard, BriefDelta, BRIEF_CANDIDATES, EXACT_EDIT_OPERATION, VARIABLE_FIELDS, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type QaCheck, type SlideVerification, type Task } from './schema.js';
 import { candidateSlides, jevEvidence } from './jev-evidence.js';
 import { deriveStorySlideCount } from './slide-count.js';
+import { assertExactEditContractIntact, assertSingleVariant, exactEditChecks } from './exact-edit.js';
 import { batch } from './store.js';
 import { D1_PARAM_CHUNK } from '../store.js';
 
@@ -860,7 +861,67 @@ export function rankBriefOrder(count: number, scores: readonly number[], explici
   order.sort((a, b) => scores[b]! - scores[a]! || a - b);
   return order;
 }
+/**
+ * SLA-451: the exact_edit slide plan. Deterministic, offline and source-preserving.
+ *
+ * There is NO image generation and NO preference-selector call here, by
+ * construction: `generateImage`, `classify` and `jevScores` are never reached
+ * from this path. An unchanged included slide reuses its original asset
+ * reference verbatim; the one approved opener edit composites a supplied layer
+ * through the approved mask. No full-frame fallback: an unsupported asset stops
+ * preparation rather than regenerating the frame.
+ */
+export function prepareExactEditSlide(
+  e: Pick<Experiment,'exactEdit'>,
+  index: number,
+): {
+  contractId: string; contractHash: string;
+  action: 'reuse_original' | 'composite_opener';
+  originalAssetRef: string; originalSha256: string | null;
+  overlayText: string; overlayMode: string;
+  geometry: { x: number; y: number; width: number; height: number } | null;
+  maskSha256: string | null;
+  checks: string[]; serviceCalls: 0;
+} {
+  const contract = e.exactEdit;
+  if (!contract) throw new ExperimentError(422,'missing_exact_edit_contract','No compiled exact_edit contract is attached to this experiment.');
+  assertExactEditContractIntact(contract);
+  assertSingleVariant(contract);
+  const slide = contract.slides.find(s => s.outputIndex === index);
+  if (!slide) throw new ExperimentError(422,'invalid_slide_mapping',`Output slide ${index} is not in the exact_edit contract.`);
+  if (slide.reuseOriginal) {
+    // Byte-for-byte reuse of the pinned original. No generation, no selector.
+    return {
+      contractId: contract.contractId, contractHash: contract.contractHash, action: 'reuse_original',
+      originalAssetRef: slide.original!.assetRef, originalSha256: slide.original!.encodedSha256,
+      overlayText: slide.effectiveOverlayText, overlayMode: slide.overlayMode,
+      geometry: null, maskSha256: null, checks: exactEditChecks(contract, index), serviceCalls: 0,
+    };
+  }
+  const opener = contract.openerEdit;
+  if (!opener) throw new ExperimentError(422,'unsupported_compositing','The changed slide has no approved bounded overlay geometry or mask.');
+  if (!opener.mask.clean || !opener.mask.cleanBaseRef) {
+    throw new ExperimentError(422,'unsupported_compositing','No approved clean base/layer: bounded compositing cannot proceed and the frame must not be regenerated.');
+  }
+  return {
+    contractId: contract.contractId, contractHash: contract.contractHash, action: 'composite_opener',
+    originalAssetRef: slide.original!.assetRef, originalSha256: slide.original!.encodedSha256,
+    overlayText: slide.effectiveOverlayText, overlayMode: slide.overlayMode,
+    geometry: opener.geometry, maskSha256: opener.mask.sha256,
+    checks: exactEditChecks(contract, index), serviceCalls: 0,
+  };
+}
+
 export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Prepared> {
+  // Fail closed: an exact_edit experiment never enters the legacy planner or
+  // render path. Legacy actions are already refused in mutate(); this catches a
+  // task that somehow exists on a row whose contract was not prepared.
+  if (e.operation?.kind === EXACT_EDIT_OPERATION) {
+    if (t.kind === 'briefs' || t.kind === 'report') throw new SafeFailure('exact_edit_no_planning');
+    if (t.kind !== 'slide') throw new SafeFailure('exact_edit_unexpected_task');
+    const plan = prepareExactEditSlide(e, t.index ?? 0);
+    return { free: true, units: 0, execute: async () => plan };
+  }
   if(t.kind==='analysis'){
     const video=await db.video.findFirst({where:{id:t.target,source:{workspaceId:e.workspaceId}}});
     if(!video)throw new SafeFailure('source_not_found');

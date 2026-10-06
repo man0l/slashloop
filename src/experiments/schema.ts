@@ -97,6 +97,252 @@ export const Retry = Command.extend({ variantIds: z.array(Id).min(1).max(12).opt
 export const Generate = Command.extend({ variants: z.array(z.object({ id: Id, revision: z.number().int().positive() }).strict()).min(1).max(12) });
 export const Estimate = WorkspaceBody.extend({ stage: z.enum(['plan', 'generate']), variantIds: z.array(Id).min(1).max(12).optional(), taskIds: z.array(z.string().min(1)).min(1).max(150).optional() });
 export const EditBrief = WorkspaceBody.extend({ revision: z.number().int().positive(), brief: Brief });
+
+/* ------------------------------------------------------------------------- *
+ * SLA-451: `exact_edit` — an explicitly selected, versioned, one-deck edit.
+ *
+ * This is a SEPARATE operation, not a flag on the legacy `edit` mode: a legacy
+ * body carries no `operation` field, so it can never opt in implicitly, and the
+ * legacy two-variant contract above is untouched. Nothing here is reachable from
+ * a legacy create/edit request.
+ *
+ * Every field is explicit. Absence is never read as a default: there is no
+ * omitted ending choice, no implied unlock, and no implied source revision.
+ * ---------------------------------------------------------------------- */
+export const EXACT_EDIT_OPERATION = 'exact_edit';
+export const EXACT_EDIT_VERSION = 1;
+/** One requested deck, one variant, one brief. Legacy edit keeps its two. */
+export const EXACT_EDIT_VARIANT_COUNT = 1;
+
+/** Exact strings: never trimmed, never defaulted to empty. An intentional blank
+ *  is a value and an omission is not — the two must stay distinguishable all the
+ *  way to the renderer, so these deliberately bypass the legacy `text` helpers. */
+const exactText = z.string().max(2000);
+const slideKey = z.string().regex(/^(?:0|[1-9]\d*)$/);
+
+/** Discriminated source copy for one mapped slide. `unresolved` is an evidence
+ *  gap and NOT a verified blank: it fails preparation rather than resolving to
+ *  empty, a caption, a default payoff or another experiment's text. */
+export const ExactEditSourceCopy = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('resolved'), text: exactText }).strict(),
+  z.object({ state: z.literal('unresolved'), reason: z.string().min(1).max(200).optional() }).strict(),
+]);
+
+/** Ordered output -> source map. Order and exclusions are explicit: no rotation,
+ *  no clamping, no inferred dropped slide and no deck padding. */
+export const ExactEditInclusion = z.object({
+  outputIndex: z.number().int().min(0).max(63),
+  sourceIndex: z.number().int().min(0).max(63),
+  included: z.boolean(),
+  reason: z.string().min(1).max(200),
+}).strict();
+
+/** Original asset evidence for one source slide. `original: false` (a generated
+ *  baseline or a recreated frame) can never satisfy preservation. */
+export const ExactEditOriginal = z.object({
+  sourceIndex: z.number().int().min(0).max(63),
+  assetRef: z.string().min(1).max(400),
+  original: z.boolean(),
+  /** Null when the true encoded hash is unknown; a hash is never invented. */
+  encodedSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable().default(null),
+  dimensions: z.object({ width: z.number().int().positive().max(16384), height: z.number().int().positive().max(16384) }).strict().nullable().default(null),
+}).strict();
+
+/** Composition/subject locks. `unlocked` names ONLY properties the request
+ *  explicitly released; everything else stays locked. */
+export const EXACT_EDIT_LOCKS = [
+  'order', 'roles', 'subjects', 'narrativeBeats', 'narrativeContrasts',
+  'aspectRatio', 'crop', 'panels', 'camera', 'medium', 'background',
+  'wardrobe', 'jewelry', 'expression', 'gaze',
+] as const;
+export const ExactEditLocks = z.object({
+  locked: z.array(z.enum(EXACT_EDIT_LOCKS)).min(1).max(EXACT_EDIT_LOCKS.length),
+  unlocked: z.array(z.enum(EXACT_EDIT_LOCKS)).max(EXACT_EDIT_LOCKS.length).default([]),
+}).strict();
+
+/** Source prop/product labels kept as-is, and explicit removal marks. A label in
+ *  both lists contradicts itself and stops preparation. */
+export const ExactEditLabels = z.object({
+  allowed: z.array(z.string().min(1).max(80)).max(20).default([]),
+  removals: z.array(z.string().min(1).max(80)).max(20).default([]),
+}).strict();
+
+/** One subject's explicit visible change or approved reference. An undefined
+ *  attractiveness score, or a national/ethnic label with no visible target, is
+ *  unresolved casting — never an inferred appearance. */
+export const ExactEditCharacter = z.object({
+  outputIndex: z.number().int().min(0).max(63),
+  subjectId: z.string().min(1).max(80),
+  visibleTarget: z.string().min(1).max(200).nullable().default(null),
+  approvedReferenceRef: z.string().min(1).max(400).nullable().default(null),
+  /** Non-negotiable per-slide properties that must survive the change. */
+  retained: z.array(z.enum(['role', 'layout', 'gaze', 'wardrobe', 'jewelry', 'expression', 'medium'])).min(1).max(7),
+  /** The source contrast this slide carries, e.g. a skin-quality step. A change
+   *  must not homogenize the sequence. */
+  narrativeContrast: z.string().min(1).max(200).nullable().default(null),
+}).strict();
+
+/** The mandatory ending choice, recorded before a deck is prepared. There is no
+ *  automatic CTA inclusion/removal default for this operation. */
+export const ExactEditEnding = z.discriminatedUnion('choice', [
+  z.object({ choice: z.literal('retain'), sourceIndices: z.array(z.number().int().min(0).max(63)).min(1).max(8),
+    /** Preserving supplied source app-card content verbatim, not inventing UI. */
+    appCardException: z.boolean().default(false) }).strict(),
+  z.object({ choice: z.literal('replace'), sourceIndices: z.array(z.number().int().min(0).max(63)).min(1).max(8),
+    replacement: z.object({ outputIndex: z.number().int().min(0).max(63), text: exactText }).strict() }).strict(),
+  z.object({ choice: z.literal('exclude'), sourceIndices: z.array(z.number().int().min(0).max(63)).min(1).max(8),
+    instruction: z.string().min(1).max(200) }).strict(),
+]);
+
+/** Approved bounded overlay mask for the changed opener. Deterministic
+ *  compositing only: no inpainting, no regeneration, no full-frame fallback. */
+export const ExactEditOpenerEdit = z.object({
+  outputIndex: z.literal(0),
+  geometry: z.object({
+    x: z.number().int().min(0).max(16384), y: z.number().int().min(0).max(16384),
+    width: z.number().int().min(1).max(16384), height: z.number().int().min(1).max(16384),
+  }).strict(),
+  mask: z.object({
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    width: z.number().int().positive().max(16384), height: z.number().int().positive().max(16384),
+    /** Clean source base/layer the overlay composites onto. Without a genuinely
+     *  clean one, bounded compositing is not attempted. */
+    cleanBaseRef: z.string().min(1).max(400),
+    clean: z.boolean(),
+  }).strict(),
+}).strict();
+
+/** The immutable exact_edit request. Every field is explicit; absence is never
+ *  read as a default (no omitted ending, no implied unlock, no implied source). */
+export const ExactEditRequestShape = z.object({
+  operation: z.literal(EXACT_EDIT_OPERATION),
+  contractVersion: z.literal(EXACT_EDIT_VERSION),
+  workspaceId: Id,
+  /** One deck: exactly one source, and it must be the declared source video. */
+  videoIds: z.array(Id).min(1).max(1),
+  source: z.object({
+    videoId: Id,
+    /** A truthful unknown is allowed (null); inventing a revision is not. */
+    revision: z.string().min(1).max(128).nullable().default(null),
+    revisionState: z.enum(['known', 'unknown']).default('unknown'),
+    provenance: z.string().min(1).max(200),
+  }).strict(),
+  inclusions: z.array(ExactEditInclusion).min(1).max(64),
+  originals: z.array(ExactEditOriginal).min(1).max(64),
+  /** Discriminated source copy, keyed by OUTPUT slide index. */
+  sourceCopy: z.record(slideKey, ExactEditSourceCopy),
+  /** Exact per-slide overrides: an explicit value wins including `""` to clear;
+   *  an omitted key retains the resolved source copy. Never trimmed. */
+  overlayOverrides: z.record(slideKey, exactText).optional(),
+  /** Slide-zero `brief.hook` mirror. It must agree with the resolved slide-zero
+   *  overlay, blank included, or the request contradicts itself. */
+  hookMirror: exactText.optional(),
+  locks: ExactEditLocks,
+  labels: ExactEditLabels.optional(),
+  characters: z.array(ExactEditCharacter).max(16).default([]),
+  ending: ExactEditEnding.optional(),
+  openerEdit: ExactEditOpenerEdit.optional(),
+  /** Offline preparation only: this operation authorizes no spend. */
+  maxCredits: z.number().int().min(0).max(0).default(0),
+  idempotencyKey: Key,
+}).strict();
+
+export const ExactEditRequest = ExactEditRequestShape.superRefine((v, c) => {
+  if (v.videoIds.length !== 1 || v.videoIds[0] !== v.source.videoId)
+    c.addIssue({ code: 'custom', message: 'exact_edit is one deck: videoIds must be the single declared source videoId.' });
+  if (new Set(v.inclusions.map(i => i.outputIndex)).size !== v.inclusions.length)
+    c.addIssue({ code: 'custom', message: 'Duplicate outputIndex in inclusions.' });
+  const included = v.inclusions.filter(i => i.included).map(i => i.outputIndex);
+  if (new Set(included).size !== included.length)
+    c.addIssue({ code: 'custom', message: 'Duplicate included outputIndex in inclusions.' });
+  // One source slide may not feed two output slides: that is reference rotation.
+  const src = v.inclusions.filter(i => i.included).map(i => i.sourceIndex);
+  if (new Set(src).size !== src.length)
+    c.addIssue({ code: 'custom', message: 'One source slide cannot feed two output slides.' });
+  // A gap is a dropped slide nobody chose; refuse rather than pad the deck.
+  const ordered = [...included].sort((a, b) => a - b);
+  if (ordered.some((o, i) => o !== i))
+    c.addIssue({ code: 'custom', message: 'Included output indices must be contiguous from 0; a gap is a dropped slide, not padding.' });
+  const both = v.locks.locked.filter(l => (v.locks.unlocked as readonly string[]).includes(l));
+  if (both.length)
+    c.addIssue({ code: 'custom', message: `A property cannot be locked and unlocked at once: ${both.join(', ')}.` });
+  if (v.source.revisionState === 'unknown' && v.source.revision !== null)
+    c.addIssue({ code: 'custom', message: 'Source revision marked unknown must be null; a revision value would be invented.' });
+  if (v.source.revisionState === 'known' && v.source.revision === null)
+    c.addIssue({ code: 'custom', message: 'Source revision marked known requires the revision value.' });
+  if (v.labels) {
+    const clash = v.labels.allowed.filter(l => v.labels!.removals.includes(l));
+    if (clash.length) c.addIssue({ code: 'custom', message: `Label rules conflict for: ${clash.join(', ')}.` });
+  }
+  // "Original frames must be available for every included slide": fail closed.
+  for (const inc of v.inclusions.filter(i => i.included)) {
+    const frames = v.originals.filter(o => o.sourceIndex === inc.sourceIndex);
+    if (!frames.length) c.addIssue({ code: 'custom', message: `No original asset for included source slide ${inc.sourceIndex}.` });
+    else if (!frames.some(o => o.original)) c.addIssue({ code: 'custom', message: `Source slide ${inc.sourceIndex} has no ORIGINAL frame; a generated or recreated frame cannot stand in.` });
+  }
+  const seen = new Set<number>();
+  for (const ch of v.characters) {
+    if (seen.has(ch.outputIndex)) c.addIssue({ code: 'custom', message: `Two character targets name output slide ${ch.outputIndex}.` });
+    seen.add(ch.outputIndex);
+    if (!v.inclusions.some(i => i.outputIndex === ch.outputIndex && i.included))
+      c.addIssue({ code: 'custom', message: `Character target names an excluded or unmapped output slide ${ch.outputIndex}.` });
+  }
+});
+
+export type ExactEditRequestData = z.infer<typeof ExactEditRequest>;
+
+/** One authoritative composite check for one output slide. Only `pass` may
+ *  complete: `fail`, `error` and `unavailable` are all terminal negatives. */
+export const ExactEditCheck = z.object({
+  outputIndex: z.number().int().min(0).max(63),
+  check: z.string().min(1).max(300),
+  status: z.enum(['pass', 'fail', 'error', 'unavailable']),
+  detail: z.string().max(400).optional(),
+}).strict();
+export const ExactEditChecks = z.array(ExactEditCheck).min(1).max(512);
+
+/** One compiled output slide: its authoritative overlay, provenance and locks. */
+export interface ExactEditSlideContract {
+  outputIndex: number;
+  sourceIndex: number;
+  included: boolean;
+  reason: string;
+  effectiveOverlayText: string;
+  /** `source` when the resolved source copy stands, `override` when an exact-edit
+   *  override won it (including an explicit blank). `brief` never: this operation
+   *  has no planner-authored fallback copy. */
+  overlayOrigin: 'source' | 'override';
+  /** `clear` for an explicit blank, otherwise preserve/replace by origin. */
+  overlayMode: 'preserve' | 'replace' | 'clear';
+  original: { assetRef: string; encodedSha256: string | null; dimensions: { width: number; height: number } | null; original: true } | null;
+  /** True when the frame must be reused directly, with no image generation. */
+  reuseOriginal: boolean;
+  character: { subjectId: string; visibleTarget: string | null; approvedReferenceRef: string | null; retained: string[]; narrativeContrast: string | null } | null;
+}
+
+/** The immutable, deterministically hashed deck contract. One `contractHash` is
+ *  shared by the effective brief, the compositor and QA. */
+export interface ExactEditContract {
+  operation: typeof EXACT_EDIT_OPERATION;
+  contractVersion: typeof EXACT_EDIT_VERSION;
+  contractId: string;
+  contractHash: string;
+  /** sha256 of the canonical serialization; recomputed on every use. */
+  canonicalSha256: string;
+  variantCount: 1;
+  source: { videoId: string; revision: string | null; revisionState: 'known' | 'unknown'; provenance: string };
+  slides: ExactEditSlideContract[];
+  /** Slide-zero mirror of `slides[0].effectiveOverlayText`, blank included. */
+  briefHook: string;
+  locks: { locked: string[]; unlocked: string[] };
+  labels: { allowed: string[]; removals: string[] };
+  ending: z.infer<typeof ExactEditEnding>;
+  /** Present only when the request approved a bounded opener edit. */
+  openerEdit: z.infer<typeof ExactEditOpenerEdit> | null;
+  /** Exact strings this operation consumed, never trimmed, never defaulted. */
+  overlayOverrides: Record<string, string>;
+}
+
 /** Every job self-heals through 3 automatic retries, 1 minute apart (4 attempts total). */
 export const MAX_TASK_ATTEMPTS = 4;
 export const MAX_MANUAL_ATTEMPTS = 6;
@@ -195,6 +441,12 @@ export interface Variant extends Proposal { id: string; revision: number; status
     qaHistory?: SlideQaRecord[] | null }>; error: string | null; }
 export interface Experiment {
   id: string; workspaceId: string; status: string; createdAt: string; updatedAt: string; instructions: InstructionsData;
+  /** Absent on every legacy row. Set only when the caller explicitly selected the
+   *  versioned exact_edit operation; this is what separates the two contracts at
+   *  dispatch and keeps a legacy request off that path. */
+  operation?: { kind: typeof EXACT_EDIT_OPERATION; contractVersion: typeof EXACT_EDIT_VERSION } | null;
+  /** The single immutable exact_edit deck contract. Absent on legacy rows. */
+  exactEdit?: ExactEditContract | null;
   variantCount: number; slideCount: number; maxCredits: number; creditsCharged: number;
   report: (ReportData & { coverage?: unknown }) | null; inputs: Input[]; variants: Variant[]; error: string | null;
   generationBasis: GenerationBasis; assetPolicy: string; version: number; tasks: Task[];
