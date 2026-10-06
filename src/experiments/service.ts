@@ -134,6 +134,41 @@ export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: 
     pricing:{analysis:CREDIT_COSTS.analyzeVideo,planningCall:CREDIT_COSTS.experimentPlanningCall,slide:CREDIT_COSTS.experimentSlide} };
 }
 const task = (kind:S.Task['kind'], target?:string,index?:number):S.Task => ({id:randomUUID(),kind,target,index,status:'pending',attempts:0,charged:0});
+/**
+ * Requeue the named jobs and the slides they own (SLA-511).
+ *
+ * Pure with respect to `e`: no store access, so the transition a retry makes
+ * visible is testable on its own, exactly like engine's `settle`.
+ *
+ * Clearing the SLIDE-level error is the point. The previous attempt's error is
+ * what made this slide retryable, and the new attempt has not run yet, so
+ * leaving it on the slide showed a queued slide still carrying a timeout that
+ * never happened again — a live failure for work in flight. The evidence is
+ * kept, but labelled as history: `qaHistory` holds prior attempts and `qa`
+ * stays empty until THIS attempt returns a verdict. The historical record
+ * drops the render prompt — the largest, least diagnostic field — so a
+ * repeatedly retried slide cannot grow the stored document without bound
+ * (document-budget.ts). Completed slides are not touched, and `attempts` keeps
+ * counting so the manual-retry ceiling still holds.
+ */
+export function applyRetry(e:S.Experiment,retryTasks:readonly S.Task[]):void{
+  for(const t of retryTasks){t.status='pending';t.error=undefined;t.nextAttemptAt=undefined;}
+  for(const v of e.variants){
+    const vt=retryTasks.filter(t=>t.target===v.id);
+    if(!vt.length) continue;
+    v.status='generating';v.error=null;
+    for(const t of vt) if(t.index!==undefined){
+      const slide=v.slides[t.index];if(!slide) continue;
+      slide.status='pending';
+      slide.error=null;
+      if(slide.qa){
+        const {prompt:_prompt,...record}=slide.qa;
+        slide.qaHistory=[...(slide.qaHistory??[]),record].slice(-S.QA_HISTORY_LIMIT);
+        slide.qa=null;
+      }
+    }
+  }
+}
 export async function mutate(workspaceId:string,id:string,action:string,raw:unknown,variantId?:string) {
   const schema = action==='plan' ? S.Plan : action==='generate' ? S.Generate : action==='retry' ? S.Retry : action==='edit' ? S.EditBrief : S.Command;
   const b = schema.parse(raw);
@@ -201,13 +236,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
       if(ids) selected(e,ids);
     }
     if(retryTasks.some(t=>t.attempts>=S.MAX_MANUAL_ATTEMPTS)) throw new S.ExperimentError(409,'retry_limit');
-    for(const t of retryTasks) {t.status='pending';t.error=undefined;t.nextAttemptAt=undefined;}
-    for(const v of e.variants){
-      const vt=retryTasks.filter(t=>t.target===v.id);
-      if(!vt.length) continue;
-      v.status='generating';v.error=null;
-      for(const t of vt) if(t.index!==undefined){v.slides[t.index]!.status='pending';}
-    }
+    applyRetry(e,retryTasks);
     e.error=null;e.status=e.report&&e.variants.length?'generating':'planning';
   } else throw new S.ExperimentError(404,'action_not_found');
   if(key)e.commands[key]=hash;

@@ -100,6 +100,10 @@ export const EditBrief = WorkspaceBody.extend({ revision: z.number().int().posit
 /** Every job self-heals through 3 automatic retries, 1 minute apart (4 attempts total). */
 export const MAX_TASK_ATTEMPTS = 4;
 export const MAX_MANUAL_ATTEMPTS = 6;
+/** Prior-attempt QA records kept per slide when a retry requeues it (SLA-511).
+ *  Enough to diagnose a slide that keeps failing; bounded so a repeatedly
+ *  retried slide cannot grow the stored experiment without limit. */
+export const QA_HISTORY_LIMIT = 3;
 /** Up to this many slide renders may run concurrently within one experiment. */
 export const PARALLEL_SLIDES = 48;
 /** Candidates rendered per slide; Jev (TypeSafe) picks the most viral one. */
@@ -130,6 +134,23 @@ export interface ObservedCopy { state: CopyState; text: string | null }
 /** Per-check QA outcome. A composite pass requires every check to pass; `unknown`
  *  is unverified, never a pass (SLA-430 D8). */
 export interface QaCheck { check: string; status: 'pass' | 'fail' | 'unknown'; reason?: string }
+/** Sanitized record of HOW the checker was called and how it ended (SLA-511).
+ *  Model, deadline, elapsed time, bounded output budget, an error category and
+ *  the upstream request id. Never the image, the prompt, the payload or a key:
+ *  a timeout has to be distinguishable from a rejection or a throttle, and
+ *  that must not require logging what was sent. Optional, so records written
+ *  before this field keep validating. */
+export interface QaDiagnostics {
+  model: string;
+  timeoutMs: number;
+  reasoningEffort: 'low';
+  maxTokens: number;
+  checksRequested: number;
+  elapsedMs: number;
+  outcome: 'ok' | 'error';
+  errorCategory?: 'timeout' | 'rate_limit' | 'quota' | 'auth' | 'invalid_request' | 'server' | 'invalid_response' | 'unknown';
+  requestId?: string;
+}
 export interface SlideVerification {
   verdict: 'pass' | 'fail' | 'error' | 'skipped';
   reasons: string[];
@@ -137,6 +158,8 @@ export interface SlideVerification {
   contractHash: string;
   corrected: boolean;
   attempts: number;
+  /** Request-level diagnostics for the checker's last call (SLA-511). */
+  diagnostics?: QaDiagnostics;
 }
 /** Auditable QA record persisted even when the slide does not complete. */
 export interface SlideQaRecord {
@@ -147,6 +170,7 @@ export interface SlideQaRecord {
   reasons: string[];
   checks: QaCheck[];
   prompt?: string;
+  diagnostics?: QaDiagnostics;
 }
 export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide'; target?: string; index?: number;
   status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number; }
@@ -162,8 +186,13 @@ export interface Variant extends Proposal { id: string; revision: number; status
   jev?: { score: number; confidence?: number };
   frozenBrief: BriefData | null; slides: Array<{ index: number; status: string; url: string | null; path: string | null; error: string | null; overlayText: string;
     prompt?: string; fanout?: { requested: number; rendered: number; chosen: number; judge: unknown; styleViolation?: boolean }; reference?: { kind: string; videoId: string; index?: number | null; path: string } | null;
-    /** QA audit for this slide. Present on success AND on failure/unverified. */
-    qa?: SlideQaRecord | null }>; error: string | null; }
+    /** QA audit for THIS attempt. Present on success AND on failure/unverified,
+     *  cleared when a retry requeues the slide (see qaHistory). */
+    qa?: SlideQaRecord | null;
+    /** QA audits of earlier attempts, oldest first (SLA-511). Explicit history,
+     *  so requeuing a slide keeps its prior evidence without leaving the live
+     *  fields carrying a stale failure for work that has not run yet. */
+    qaHistory?: SlideQaRecord[] | null }>; error: string | null; }
 export interface Experiment {
   id: string; workspaceId: string; status: string; createdAt: string; updatedAt: string; instructions: InstructionsData;
   variantCount: number; slideCount: number; maxCredits: number; creditsCharged: number;
