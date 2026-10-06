@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
+import type { Video } from '@prisma/client';
 import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { CREDIT_COSTS, creditBalance } from '../lib/credits.js';
@@ -72,7 +73,27 @@ export async function createExactEdit(raw: unknown) {
   }, b.idempotencyKey);
 }
 
-export async function createExperiment(raw: unknown) {
+/**
+ * Every store access `createExperiment` makes, behind one seam. The default is
+ * the live database; a caller that needs a different source (a test replaying a
+ * stored draft, in particular) passes its own. Same shape as `renderDeps` in
+ * providers.ts, and for the same reason: a process-global `mock.module` on
+ * `../db.js` is shared with other suites and this file must not depend on it
+ * (docs/test-suite-policy.md).
+ */
+export type CreateExperimentDeps = {
+  findSource: (workspaceId: string, videoId: string) => Promise<Video | null>;
+  findLatestAnalysis: (videoId: string) => Promise<{ analysisJson: string } | null>;
+  buildInput: (video: Video) => Promise<S.Input>;
+  persist: (experiment: S.Experiment, idempotencyKey: string) => Promise<S.Experiment>;
+};
+export const createDeps: CreateExperimentDeps = {
+  findSource: (workspaceId, videoId) => db.video.findFirst({ where: { id: videoId, source: { workspaceId } } }),
+  findLatestAnalysis: (videoId) => db.analysis.findFirst({ where: { videoId, schemaVersion: 'v3' }, orderBy: { createdAt: 'desc' }, select: { analysisJson: true } }),
+  buildInput: compatibleInput,
+  persist: store.create,
+};
+export async function createExperiment(raw: unknown, deps: CreateExperimentDeps = createDeps) {
   // Legacy create: the two-variant planner path, unchanged. An exact_edit body
   // has its own entry point and must not be coerced through this schema.
   if (isExactEditRequest(raw)) throw new S.ExperimentError(409,'exact_edit_requires_exact_edit_action','Create an exact_edit deck with create_exact_edit; it does not use the legacy planner.');
@@ -83,7 +104,7 @@ export async function createExperiment(raw: unknown) {
   const slideSources: Array<{ originalCount: number | null; analysis?: unknown }> = [];
   const tags: string[] = [];
   for (const videoId of b.videoIds) {
-    const v = await db.video.findFirst({ where: { id: videoId, source: { workspaceId: b.workspaceId } } });
+    const v = await deps.findSource(b.workspaceId, videoId);
     if (!v) throw new S.ExperimentError(404,'video_not_found');
     tags.push(sourceTag(v as { creatorHandle?: string | null; caption?: string | null; views?: number | null }));
     // Slideshows only: plain video posts are disabled for selection — the
@@ -96,14 +117,17 @@ export async function createExperiment(raw: unknown) {
     const originalCount = experimentSourceKeys(v.rawJson).length || null;
     let analysis: unknown;
     if (originalCount) {
-      const row = await db.analysis.findFirst({ where: { videoId: v.id, schemaVersion: 'v3' }, orderBy: { createdAt: 'desc' }, select: { analysisJson: true } });
+      const row = await deps.findLatestAnalysis(v.id);
       if (row?.analysisJson) try { analysis = JSON.parse(row.analysisJson); } catch { /* ignore broken analysis JSON */ }
     }
     slideSources.push({ originalCount: originalCount || null, analysis });
-    inputs.push(await compatibleInput(v));
+    inputs.push(await deps.buildInput(v));
   }
   const { idempotencyKey, videoIds, workspaceId, slideCount: requestedSlideCount, ...fields } = b;
-  const slideCount = deriveStorySlideCount(slideSources) ?? requestedSlideCount;
+  // Persisted count: SLA-476 — the source deck keeps its own closing CTA slide
+  // only when the caller opted in. Both boundaries read the same flag off the
+  // stored instructions, so planning cannot undo what creation persisted.
+  const slideCount = deriveStorySlideCount(slideSources, fields.instructions.preserveSourceCtaSlide) ?? requestedSlideCount;
   // Each experiment is isolated per slideshow but the goal doubles as the list
   // title — identical goals are indistinguishable. Suffix a quick source
   // summary unless the caller already named the source (e.g. re-duplicates).
@@ -120,7 +144,7 @@ export async function createExperiment(raw: unknown) {
       fields.instructions = { ...fields.instructions, goal: `${goal}${suffix}` };
     }
   }
-  return store.create({ id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,
+  return deps.persist({ id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,
     creditsCharged:0,report:null,inputs,variants:[],error:null,
     // Slideshow sources are attached as visual references during rendering; video-only stays text-directed.
     generationBasis:referenced?'source-referenced':'text-directed',
@@ -160,6 +184,41 @@ export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: 
     pricing:{analysis:CREDIT_COSTS.analyzeVideo,planningCall:CREDIT_COSTS.experimentPlanningCall,slide:CREDIT_COSTS.experimentSlide} };
 }
 const task = (kind:S.Task['kind'], target?:string,index?:number):S.Task => ({id:randomUUID(),kind,target,index,status:'pending',attempts:0,charged:0});
+/**
+ * Requeue the named jobs and the slides they own (SLA-511).
+ *
+ * Pure with respect to `e`: no store access, so the transition a retry makes
+ * visible is testable on its own, exactly like engine's `settle`.
+ *
+ * Clearing the SLIDE-level error is the point. The previous attempt's error is
+ * what made this slide retryable, and the new attempt has not run yet, so
+ * leaving it on the slide showed a queued slide still carrying a timeout that
+ * never happened again — a live failure for work in flight. The evidence is
+ * kept, but labelled as history: `qaHistory` holds prior attempts and `qa`
+ * stays empty until THIS attempt returns a verdict. The historical record
+ * drops the render prompt — the largest, least diagnostic field — so a
+ * repeatedly retried slide cannot grow the stored document without bound
+ * (document-budget.ts). Completed slides are not touched, and `attempts` keeps
+ * counting so the manual-retry ceiling still holds.
+ */
+export function applyRetry(e:S.Experiment,retryTasks:readonly S.Task[]):void{
+  for(const t of retryTasks){t.status='pending';t.error=undefined;t.nextAttemptAt=undefined;}
+  for(const v of e.variants){
+    const vt=retryTasks.filter(t=>t.target===v.id);
+    if(!vt.length) continue;
+    v.status='generating';v.error=null;
+    for(const t of vt) if(t.index!==undefined){
+      const slide=v.slides[t.index];if(!slide) continue;
+      slide.status='pending';
+      slide.error=null;
+      if(slide.qa){
+        const {prompt:_prompt,...record}=slide.qa;
+        slide.qaHistory=[...(slide.qaHistory??[]),record].slice(-S.QA_HISTORY_LIMIT);
+        slide.qa=null;
+      }
+    }
+  }
+}
 export async function mutate(workspaceId:string,id:string,action:string,raw:unknown,variantId?:string) {
   // SLA-451: exact_edit is a separately selected operation. Its actions are
   // refused on a legacy experiment and legacy actions are refused on it, so a
@@ -254,13 +313,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
       if(ids) selected(e,ids);
     }
     if(retryTasks.some(t=>t.attempts>=S.MAX_MANUAL_ATTEMPTS)) throw new S.ExperimentError(409,'retry_limit');
-    for(const t of retryTasks) {t.status='pending';t.error=undefined;t.nextAttemptAt=undefined;}
-    for(const v of e.variants){
-      const vt=retryTasks.filter(t=>t.target===v.id);
-      if(!vt.length) continue;
-      v.status='generating';v.error=null;
-      for(const t of vt) if(t.index!==undefined){v.slides[t.index]!.status='pending';}
-    }
+    applyRetry(e,retryTasks);
     e.error=null;e.status=e.report&&e.variants.length?'generating':'planning';
   } else throw new S.ExperimentError(404,'action_not_found');
   if(key)e.commands[key]=hash;

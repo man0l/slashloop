@@ -77,6 +77,10 @@ export function buildUserContent(
  * the codebase uses (gemini-errors.ts). OpenRouter's envelope is
  * { error: { code, message, metadata: { error_type } } }, surfaced here inside
  * the thrown "OpenRouter API error <status>: <body>" message.
+ *
+ * `category` says what the failure means (402 is a quota signal either way);
+ * `retryable` says whether calling again can change the answer, and for the
+ * balance cases it cannot — see the payment_required branch below.
  */
 export function classifyOpenRouterError(err: unknown): {
   category: 'quota' | 'rate_limit' | 'auth' | 'invalid_request' | 'server' | 'timeout' | 'unknown';
@@ -89,8 +93,21 @@ export function classifyOpenRouterError(err: unknown): {
   const bodyCode = Number(/"code"\s*:\s*(\d{3})/.exec(message)?.[1] ?? 0);
   const code = status || bodyCode;
 
-  if (errorType === 'payment_required' || code === 402 || /insufficient credit/i.test(message)) {
-    return { category: 'quota', retryable: true, message };
+  // Balance/credit failures are a property of the ACCOUNT, not of the request
+  // or the moment: OpenRouter answers 402 "This request requires at least
+  // $1.00 in balance for video" (metadata.limit_source=openrouter_credits)
+  // and will answer it identically for every later video until someone tops
+  // the account up. So the category stays 'quota' (that is what it is, and
+  // what the user-facing copy keys off) but retryable is false: a retry burns
+  // the request's latency budget and a workspace's failure budget to relearn
+  // a fact that cannot have changed. Callers park the backend instead (see
+  // the penalty box in src/analysis/index.ts).
+  // The message patterns are the ones classifyGeminiError already recognises on
+  // the shared vocabulary, so a 402 whose body lost its numeric code (or a
+  // balance message that arrived with a non-402 status) still lands here.
+  if (errorType === 'payment_required' || code === 402 || /insufficient credit/i.test(message)
+    || /requires at least \$/i.test(message) || /\bbalance for video\b/i.test(message)) {
+    return { category: 'quota', retryable: false, message };
   }
   if (errorType === 'rate_limit_exceeded' || code === 429) {
     return { category: 'rate_limit', retryable: true, message };
@@ -114,6 +131,52 @@ export interface OpenRouterResult {
   outputTokens: number;
   /** What OpenRouter billed for this call in USD (0 when unreported). */
   costUsd: number;
+  /** Provider-side id for this exact generation, when the gateway reports one
+   *  (`x-request-id` header, else the body's generation id). Sanitized to an
+   *  opaque token so a caller can quote it in support/diagnostics without
+   *  carrying request payload, model input or credentials. */
+  requestId?: string;
+}
+
+/** Keep only an opaque provider id: letters, digits, dash and underscore.
+ *  Over-long input is DROPPED, never truncated — half an id is a different id,
+ *  and quoting one at support is worse than quoting none. */
+export function sanitizeRequestId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const id = value.trim();
+  return /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : undefined;
+}
+
+/** A failed call can still be traced: the gateway's own request id travels on
+ *  the thrown error so the caller can quote it. Only the sanitized id is kept —
+ *  never the provider body. */
+interface OpenRouterRequestError extends Error { requestId?: string }
+function withRequestId(err: Error, requestId: string | undefined): Error {
+  if (requestId) (err as OpenRouterRequestError).requestId = requestId;
+  return err;
+}
+/** The sanitized upstream id carried by a thrown failure, if the gateway sent
+ *  one. Absent for a transport failure with no response at all (a timeout or a
+ *  dropped socket), and no id is ever invented. */
+export function requestIdOf(err: unknown): string | undefined {
+  const id = err && typeof err === 'object' ? (err as { requestId?: unknown }).requestId : undefined;
+  return typeof id === 'string' ? id : undefined;
+}
+interface OpenRouterChatBody {
+  id?: string;
+  choices?: Array<{ message?: { content?: string } }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
+  error?: { message?: string; code?: number };
+}
+/** Parse a chat body defensively: a 200 that is not JSON is a failure the
+ *  caller must be able to categorize, not an uncaught `res.json()` throw. */
+function readChatBody(text: string): OpenRouterChatBody | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed && typeof parsed === 'object' ? (parsed as OpenRouterChatBody) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -269,23 +332,29 @@ export async function callOpenRouterText(
     }),
   });
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`OpenRouter API error ${res.status}: ${text}`);
-  }
+  // The gateway's id is read before the outcome is judged, so a REFUSED or
+  // malformed call is as traceable as a successful one (SLA-511).
+  const headerId = sanitizeRequestId(res.headers.get('x-request-id'));
 
-  const data = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
-    error?: { message?: string; code?: number };
-  };
+  // The body is read ONCE and judged defensively, so a response that is not
+  // JSON at all fails here — with the gateway's id still attached — instead of
+  // throwing out of `res.json()` with nothing traceable on the error (SLA-511).
+  const bodyText = await res.text();
+  const data = readChatBody(bodyText);
+
+  // A refusal keeps its status in the message (classifyOpenRouterError reads it)
+  // and gains the gateway's id, whether it came from the header or the body.
+  if (!res.ok) {
+    throw withRequestId(new Error(`OpenRouter API error ${res.status}: ${bodyText}`), headerId ?? sanitizeRequestId(data?.id));
+  }
+  if (!data) throw withRequestId(new Error('Failed to parse OpenRouter response as JSON'), headerId);
 
   if (data.error) {
-    throw new Error(`OpenRouter API error ${data.error.code ?? ''}: ${data.error.message ?? ''}`);
+    throw withRequestId(new Error(`OpenRouter API error ${data.error.code ?? ''}: ${data.error.message ?? ''}`), headerId ?? sanitizeRequestId(data.id));
   }
 
   const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error('OpenRouter returned no content');
+  if (!content) throw withRequestId(new Error('OpenRouter returned no content'), headerId ?? sanitizeRequestId(data.id));
 
   let raw = content.trim();
   // Strip markdown fences if present.
@@ -300,9 +369,12 @@ export async function callOpenRouterText(
       inputTokens: data.usage?.prompt_tokens ?? 0,
       outputTokens: data.usage?.completion_tokens ?? 0,
       costUsd: Number(data.usage?.cost ?? 0),
+      requestId: headerId ?? sanitizeRequestId(data.id),
     };
   } catch {
-    throw new Error('Failed to parse OpenRouter response as JSON');
+    // A body that arrived but did not parse is still a real generation the
+    // gateway logged: keep its id on the failure.
+    throw withRequestId(new Error('Failed to parse OpenRouter response as JSON'), headerId ?? sanitizeRequestId(data.id));
   }
 }
 

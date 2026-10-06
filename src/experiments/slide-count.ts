@@ -34,10 +34,15 @@ export function storySlideCount(originalCount: number, hasCta: boolean): number 
   return Math.min(8, Math.max(3, n));
 }
 
-export function deriveStorySlideCount(sources: Array<{ originalCount: number | null; analysis?: unknown }>): number | null {
+/** `preserveSourceCtaSlide` is the explicit opt-in (SLA-476): the source deck
+ *  keeps its own closing call-to-action slide instead of losing one to the
+ *  default subtraction. It changes only that subtraction — detection still runs,
+ *  and the 3-8 clamp still applies to the kept count. */
+export function deriveStorySlideCount(sources: Array<{ originalCount: number | null; analysis?: unknown }>, preserveSourceCtaSlide = false): number | null {
   const stories = sources.map(s => {
     if (s.originalCount == null || s.originalCount < 1) return null;
-    return storySlideCount(s.originalCount, analysisHasCtaSlide(s.analysis, s.originalCount));
+    const hasCta = preserveSourceCtaSlide ? false : analysisHasCtaSlide(s.analysis, s.originalCount);
+    return storySlideCount(s.originalCount, hasCta);
   }).filter((n): n is number => n != null);
   if (!stories.length) return null;
   return Math.min(...stories);

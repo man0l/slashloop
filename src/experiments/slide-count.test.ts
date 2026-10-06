@@ -29,3 +29,16 @@ test('derive uses the smallest source story count', () => {
   ])).toBe(5);
   expect(deriveStorySlideCount([{ originalCount: null }])).toBe(null);
 });
+
+test('preservation keeps the source CTA slide; the default still subtracts it', () => {
+  const clearFood = [{ originalCount: 4, analysis: { shots: [{ timestampSec: 3, onScreenText: 'Clear Food Download Clear Food' }], keyMoments: [{ role: 'cta', timestampSec: 3 }] } }];
+  expect(deriveStorySlideCount(clearFood)).toBe(3);
+  expect(deriveStorySlideCount(clearFood, true)).toBe(4);
+  // A source without a CTA slide resolves identically either way.
+  const plain = [{ originalCount: 4, analysis: { shots: [{ timestampSec: 3, onScreenText: 'And that was dinner' }] } }];
+  expect(deriveStorySlideCount(plain)).toBe(4);
+  expect(deriveStorySlideCount(plain, true)).toBe(4);
+  // Preservation still clamps to the supported 3-8 bounds.
+  expect(deriveStorySlideCount([{ originalCount: 12, analysis: null }], true)).toBe(8);
+  expect(deriveStorySlideCount([{ originalCount: null }], true)).toBe(null);
+});
