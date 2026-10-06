@@ -577,7 +577,13 @@ export function initStoreD1Http(params: D1HttpParams): AppPrismaClient {
  */
 export function isUniqueViolation(err: unknown): boolean {
   const e = err as { code?: unknown; name?: unknown };
-  return e?.code === 'P2002' && typeof e.name === 'string' && e.name.includes('PrismaClient');
+  if (e?.code === 'P2002' && typeof e.name === 'string' && e.name.includes('PrismaClient')) return true;
+
+  // D1 reports raw SQL conflicts as plain Errors, not PrismaClientKnownRequestError.
+  // Match only the credit idempotency key so unrelated UNIQUE constraints still
+  // surface as genuine failures to their callers.
+  const message = e instanceof Error ? e.message : String(e);
+  return message.includes('UNIQUE constraint failed: CreditLedger.workspaceId, CreditLedger.refId');
 }
 
 /**

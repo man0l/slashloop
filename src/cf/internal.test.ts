@@ -93,6 +93,35 @@ afterEach(() => {
 });
 
 describe('POST /internal/raw-batch read ceiling', () => {
+  test('reports an idempotent CreditLedger retry as warn, not an error', async () => {
+    const errorLogs: unknown[][] = [];
+    const warnLogs: unknown[][] = [];
+    const originalError = console.error;
+    const originalWarn = console.warn;
+    console.error = (...args: unknown[]) => errorLogs.push(args);
+    console.warn = (...args: unknown[]) => warnLogs.push(args);
+    executor = async () => {
+      throw new Error(
+        'D1_ERROR: UNIQUE constraint failed: CreditLedger.workspaceId, CreditLedger.refId',
+      );
+    };
+
+    try {
+      const res = await POST(bridge(OK_BODY));
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        success: false,
+        error: 'D1_ERROR: UNIQUE constraint failed: CreditLedger.workspaceId, CreditLedger.refId',
+      });
+      expect(warnLogs).toHaveLength(1);
+      expect(String(warnLogs[0]?.[0])).toContain('[internal/raw-batch] idempotent credit retry');
+      expect(errorLogs).toEqual([]);
+    } finally {
+      console.error = originalError;
+      console.warn = originalWarn;
+    }
+  });
+
   test('serves a batch normally while the day is under budget', async () => {
     process.env.D1_DAILY_READ_LIMIT = '1000';
     recordBatchUsage(2200, 12); // binding-side meta for the batch below
