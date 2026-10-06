@@ -111,14 +111,10 @@ async function ingestOneThumb(
 
   try {
     // Report the host actually being fetched, not just which field was empty.
-    // The old wording claimed a CDN fallback whenever coverDownloadUrl was
-    // null — which was every run, while the fetch was in fact hitting Apify
-    // through thumbnailUrl. A warning that misreports the source is worse
-    // than none: it hid that pickApifyCoverUrl never matched.
-    if (!target.coverDownloadUrl) {
-      const host = isApifyHosted(source) ? 'apify' : 'source cdn';
-      console.warn(`[media] ${target.videoId}: no coverDownloadUrl, fetching cover from ${host}`);
-    }
+    // Logged at info, after the fetch succeeds: pickApifyCoverUrl returning
+    // null is the by-design fallback, so warn on every run was pure noise.
+    // The ingest-failure warn below still fires when the fallback fails.
+    const fallbackHost = !target.coverDownloadUrl ? (isApifyHosted(source) ? 'apify' : 'source cdn') : null;
 
     const res = await fetch(source, {
       // Apify KV is public; the spoofed headers are only for the CDN fallback.
@@ -138,6 +134,7 @@ async function ingestOneThumb(
       body: buf,
       contentType: imageContentType(res.headers.get('content-type'), source),
     });
+    if (fallbackHost) console.info(`[media] ${target.videoId}: no coverDownloadUrl, fetched cover from ${fallbackHost}`);
     return path;
   } catch (err) {
     console.warn(`[media] thumbnail ingest failed for ${target.videoId}: ${(err as Error).message}`);

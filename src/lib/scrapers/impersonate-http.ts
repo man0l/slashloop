@@ -72,9 +72,21 @@ export function jsonFromBody(raw: string): any | null {
  *  rest of the refresh queue. */
 export const IMPIT_FETCH_TIMEOUT_MS = 20_000;
 
-function isRetryableFetch(err: unknown): boolean {
+/** Retries after the first attempt. TikTok's CDN edge resets connections in bursts. */
+export const IMPIT_FETCH_RETRIES = 3;
+
+/** rustls surfaces a peer that drops the socket without close_notify as
+ *  UnexpectedEof; that is an edge reset, not a terminal answer. */
+export function isRetryableFetch(err: unknown): boolean {
   const msg = String((err as Error)?.message ?? err);
-  return isConnectFail(err) || /timed out/i.test(msg) || /aborted/i.test(msg);
+  return isConnectFail(err)
+    || /timed out/i.test(msg)
+    || /aborted/i.test(msg)
+    || /UnexpectedEof|close_notify|connection (reset|closed)|ECONNRESET/i.test(msg);
+}
+
+function retryDelayMs(retry: number): number {
+  return 400 * retry + Math.floor(Math.random() * 400);
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -88,13 +100,14 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 /** Same Impit client; retry only a flaky CONNECT/timeout, never a different provider. */
-async function fetchThrough(
+export async function fetchThrough(
   client: ImpitLike,
   url: string,
   headers: Record<string, string>,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise(r => setTimeout(r, ms)),
 ): Promise<Response> {
   let last: unknown;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt <= IMPIT_FETCH_RETRIES; attempt++) {
     try {
       const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
         ? AbortSignal.timeout(IMPIT_FETCH_TIMEOUT_MS)
@@ -106,9 +119,9 @@ async function fetchThrough(
       );
     } catch (err) {
       last = err;
-      if (!isRetryableFetch(err) || attempt === 2) throw err;
-      console.warn(`[proxy:impit] fetch failed, retry ${attempt + 1}/2: ${(err as Error).message}`);
-      await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
+      if (!isRetryableFetch(err) || attempt === IMPIT_FETCH_RETRIES) throw err;
+      console.warn(`[proxy:impit] fetch failed, retry ${attempt + 1}/${IMPIT_FETCH_RETRIES}: ${(err as Error).message}`);
+      await sleep(retryDelayMs(attempt + 1));
     }
   }
   throw last;

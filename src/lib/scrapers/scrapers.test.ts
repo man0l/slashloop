@@ -7,7 +7,7 @@ import {
 import { remainingBudgetBytes, vendorRemainingBytes } from './budget.js';
 import { parseProxiesResponse } from './proxy-cheap.js';
 import { proxyAdapter, runTikTokProxyScrape } from './proxy-adapter.js';
-import { IMPIT_FETCH_TIMEOUT_MS, jsonFromBody, resetImpersonatedClient } from './impersonate-http.js';
+import { IMPIT_FETCH_RETRIES, IMPIT_FETCH_TIMEOUT_MS, fetchThrough, isRetryableFetch, jsonFromBody, resetImpersonatedClient } from './impersonate-http.js';
 import { clearLookupCaches } from './tiktok-web.js';
 import type { TikTokHttp } from './tiktok-web.js';
 import {
@@ -320,6 +320,47 @@ describe('tiktok-web helpers', () => {
   test('impit fetches have a timeout so a hung CONNECT cannot stall the worker', () => {
     expect(IMPIT_FETCH_TIMEOUT_MS).toBe(20_000);
     expect(IMPIT_FETCH_TIMEOUT_MS).toBeLessThan(60_000);
+  });
+
+  test('a TLS EOF from the CDN edge is retryable, a plain HTTP failure is not', () => {
+    const eof = new Error('reqwest::Error { kind: Request, source: hyper::Error(Connect, Custom { kind: UnexpectedEof, error: "peer closed connection without sending TLS close_notify" }) }');
+    expect(isRetryableFetch(eof)).toBe(true);
+    expect(isRetryableFetch(new Error('read ECONNRESET'))).toBe(true);
+    expect(isRetryableFetch(new Error('[proxy:impit] fetch timed out after 20000ms'))).toBe(true);
+    expect(isRetryableFetch(new Error('The operation was aborted'))).toBe(true);
+    expect(isRetryableFetch(new Error('invalid url'))).toBe(false);
+  });
+
+  test('fetchThrough retries an UnexpectedEof up to IMPIT_FETCH_RETRIES times then succeeds', async () => {
+    let calls = 0;
+    const delays: number[] = [];
+    const client = {
+      fetch: async () => {
+        calls++;
+        if (calls <= IMPIT_FETCH_RETRIES) throw new Error('UnexpectedEof: peer closed connection without sending TLS close_notify');
+        return new Response('ok');
+      },
+    };
+    const res = await fetchThrough(client, 'https://www.tiktok.com/x', {}, async (ms) => { delays.push(ms); });
+    expect(await res.text()).toBe('ok');
+    expect(calls).toBe(IMPIT_FETCH_RETRIES + 1);
+    expect(delays).toHaveLength(IMPIT_FETCH_RETRIES);
+    for (const [i, d] of delays.entries()) {
+      expect(d).toBeGreaterThanOrEqual(400 * (i + 1));
+      expect(d).toBeLessThan(400 * (i + 1) + 400);
+    }
+  });
+
+  test('fetchThrough gives up after the retry budget and does not retry a non-transient error', async () => {
+    let calls = 0;
+    const eofClient = { fetch: async () => { calls++; throw new Error('UnexpectedEof'); } };
+    await expect(fetchThrough(eofClient, 'https://www.tiktok.com/x', {}, async () => {})).rejects.toThrow('UnexpectedEof');
+    expect(calls).toBe(IMPIT_FETCH_RETRIES + 1);
+
+    calls = 0;
+    const badClient = { fetch: async () => { calls++; throw new Error('invalid url'); } };
+    await expect(fetchThrough(badClient, 'x', {}, async () => {})).rejects.toThrow('invalid url');
+    expect(calls).toBe(1);
   });
 
   test('a 20-video item_list over 512KB still parses (do not truncate first)', () => {
