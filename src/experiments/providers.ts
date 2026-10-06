@@ -557,6 +557,22 @@ export function resolveQaVerdict(raw:unknown, contractHash:string, corrected=fal
   const why=reasons.length?reasons:checks.filter(c=>c.status!=='pass').map(c=>`${c.check}: ${c.reason??c.status}`);
   return {verdict,reasons:why.slice(0,6),checks,contractHash,corrected,attempts};
 }
+/** Operator-visible text of a terminal QA outcome (SLA-528). The checker's first
+ *  prose sentence alone made three unrelated-looking one-liners out of three
+ *  contract defects; the failing check labels and the unknown count say which
+ *  contract questions could not be answered. Short on purpose: the engine keeps
+ *  this string on the slide and the task. */
+export function qaTerminalMessage(story:Pick<SlideVerification,'verdict'|'reasons'|'checks'>):string{
+  const unverified=story.verdict==='error';
+  const reason=(story.reasons[0]??(unverified?'qa_error':'contract_mismatch')).replace(/\s+/g,' ').slice(0,100);
+  const label=(c:QaCheck)=>c.check.replace(/^the subject's /,'').replace(/\s+/g,' ').slice(0,64);
+  const failing=story.checks.filter(c=>c.status==='fail');
+  const unknown=story.checks.filter(c=>c.status==='unknown').length;
+  const parts=[`${unverified?'story_unverified':'story_check_failed'}:${reason}`];
+  if(failing.length)parts.push(`failed(${failing.length}/${story.checks.length}): ${failing.slice(0,3).map(label).join(' | ')}${failing.length>3?' | ...':''}`);
+  if(unknown)parts.push(`unknown=${unknown}/${story.checks.length}`);
+  return parts.join(' ; ');
+}
 /* ---- QA request policy + diagnostics (SLA-511) --------------------------- */
 /** Default QA model when nothing is configured: the same checker the source
  *  was already using, so an unset variable changes no behaviour. */
@@ -1465,10 +1481,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       // Persistent composite failure or unavailable verification: record the QA
       // result, upload NO deliverable, and hand the slide to the engine as a
       // terminal failed/unverified outcome (never a completion).
-      throw new TerminalFailure(
-        story.verdict==='error'?`story_unverified:${story.reasons[0]??'qa_error'}`:`story_check_failed:${story.reasons[0]??'contract_mismatch'}`,
-        story.verdict==='error'?'unverified':'failed',
-        audit);
+      throw new TerminalFailure(qaTerminalMessage(story),story.verdict==='error'?'unverified':'failed',audit);
     }
     if(chosen.buffer.length<512 || chosen.buffer.length>12*1024*1024)throw new SafeFailure('invalid_image_size');
     logAiCost(e.workspaceId,`slide:${e.id}:${v.id}#${t.index}`,chosen.costUsd);
