@@ -60,19 +60,22 @@ describe('each slide resolves its own subject (defect B)', () => {
       });
       // The subject's own requested value is present; the other subjects' values
       // are not, and nothing the request did not name became a target.
-      const expected: Record<string, string> = {
-        'Sub 5': 'dark hair buzz', 'Sub 3': 'red hair', chad: 'blonde part',
+      // Sub 3 is a black-and-white line drawing (SLA-528): its colour hair is
+      // withheld instead of becoming a check the drawing cannot satisfy.
+      const expected: Record<string, string | undefined> = {
+        'Sub 5': 'dark hair buzz', 'Sub 3': undefined, Chad: 'blonde part',
       };
-      expect(contract.subject.castingTarget.hair).toBe(expected[resolved.subject!]);
+      expect(contract.subject.castingTarget.hair as string | undefined).toEqual(expected[resolved.subject!]);
       expect(contract.subject.resolution!.skipped.filter(s => s.reason === 'not_this_slide')).toHaveLength(2);
     }
   });
 
   test('the compiled scene states the requested value and never the superseded one', () => {
     const built = contract(faceMorphScenes[1]!, faceMorphCharacter);
-    // Slide 2 (Sub 3): the request asks for red hair and the scene already says
-    // red hair, so nothing is superseded and nothing contradicts.
-    expect(built.subject.castingTarget).toMatchObject({ hair: 'red hair', 'facial-hair': 'patchy beard', eyes: 'hazel eyes' });
+    // Slide 2 (Sub 3) is a black-and-white line drawing: the colour hair and eyes
+    // are withheld (SLA-528), the beard still applies.
+    expect(built.subject.castingTarget).toEqual({ 'facial-hair': 'patchy beard' });
+    expect(built.subject.withheld).toEqual(['red hair', 'hazel eyes']);
     for (const phrase of built.subject.supersededPhrases) {
       if (!Object.values(built.subject.castingTarget).includes(phrase)) expect(built.compiledScene).not.toContain(phrase);
     }
@@ -133,7 +136,8 @@ describe('each slide resolves its own subject (defect B)', () => {
     const built = contract(faceMorphScenes[1]!, faceMorphCharacter);
     const checks = contractChecks(built);
     expect(contractPromptLines(built).join('\n')).toContain('CASTING TARGET');
-    expect(checks).toContain("the subject's hair matches the requested casting target: red hair");
+    expect(checks).toContain("the subject's facial-hair matches the requested casting target: patchy beard");
+    expect(checks.some(c => c.includes('requested casting target: red hair') || c.includes('requested casting target: hazel eyes'))).toBe(false);
     expect(checks.some(c => c.includes('gaze is unchanged'))).toBe(true);
     expect(checks.some(c => c.includes('role is unchanged'))).toBe(true);
   });
@@ -275,21 +279,19 @@ describe('scene edits and QA stay inside the selected subject', () => {
       expect(Object.keys(built.subject.castingTarget).length).toBeGreaterThan(0);
       // The food panel in every one of these scenes belongs to nobody in the
       // roster, so nothing outside the subject's sentence may be rewritten.
-      expect(built.subject.withheld ?? []).toEqual([]);
+      // Only the colourless line-drawing subject (Sub 3) withholds anything.
+      expect(built.subject.withheld ?? []).toEqual(scene === faceMorphScenes[1] ? ['red hair', 'hazel eyes'] : []);
     }
     expect(contract(faceMorphScenes[0]!, faceMorphCharacter).subject.resolution!.subject).toBe('Sub 5');
     expect(contract(faceMorphScenes[1]!, faceMorphCharacter).subject.resolution!.subject).toBe('Sub 3');
     expect(contract(faceMorphScenes[2]!, faceMorphCharacter).subject.resolution!.subject).toBe('Chad');
-    // "Chad: sharp jaw, blonde part, …" names no hair NOUN, so hair is never
-    // unlocked there and stays a lock. Stated explicitly because the roster
-    // fixture keys subjects in lower case while the field labels them title
-    // case, so a naive lookup of this clause's expected value would pass vacuously.
-    // Neither clause nor scene uses the noun "hair" for Chad ("blonde side part"
-    // does not state it), so the reference frame stays the authority.
+    // "Chad: sharp jaw, blonde part, …" is a hair clause even though it never
+    // says "hair" (SLA-528), so hair is unlocked and the scene's own "blonde side
+    // part" is replaced, not left standing beside the request.
     const chad = contract(faceMorphScenes[2]!, faceMorphCharacter);
-    expect(chad.subject.castingTarget).not.toHaveProperty('hair');
-    expect(chad.subject.lockedAttributes.find(l => l.attribute === 'hair')?.observed).toBeNull();
-    expect(contractChecks(chad)).toContain("the subject's hair is unchanged from the reference frame");
+    expect(chad.subject.castingTarget.hair).toBe('blonde part');
+    expect(chad.subject.supersededPhrases).toContain('blonde side part');
+    expect(contractChecks(chad)).toContain("the subject's hair matches the requested casting target: blonde part");
   });
 });
 
@@ -354,7 +356,8 @@ describe('the review fixtures: one subject, one ownership answer (SLA-510 round 
   test('a value the scene already states is not treated as a stale conflict', () => {
     // Slide 2 of the saved deck asks for `red hair` and the scene says `red hair`.
     // Rewriting it is a no-op, not a contradiction, so the target stays live.
-    const built = contract(faceMorphScenes[1]!, faceMorphCharacter);
+    // A full-colour drawing, so the colour request is expressible.
+    const built = contract(faceMorphScenes[1]!.replace('black-and-white line drawing', 'full-colour illustration'), faceMorphCharacter);
     expect(built.subject.castingTarget).toMatchObject({ hair: 'red hair' });
     expect(built.subject.withheld ?? []).toEqual([]);
   });
