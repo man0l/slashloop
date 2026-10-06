@@ -361,6 +361,11 @@ export function qaMaxAttempts(env:NodeJS.ProcessEnv=process.env):number{
 }
 /** Worst-case provider requests one slide task attempt can start: every render wave at full fan-out. */
 export const slideRequestAllowance=(fanout:number=SLIDE_FANOUT,env:NodeJS.ProcessEnv=process.env)=>fanout*qaMaxAttempts(env);
+/** Authorized image requests for one slide task across ALL its engine attempts (the advertised 2x-per-job
+ *  headroom over one full render-and-correct pass). Persisted on the task at first claim; admission,
+ *  estimate and providerBudget all read this one figure. */
+export const SLIDE_REQUEST_HEADROOM = 2;
+export const slideTaskRequestCap=(fanout:number=SLIDE_FANOUT,env:NodeJS.ProcessEnv=process.env)=>SLIDE_REQUEST_HEADROOM*slideRequestAllowance(fanout,env);
 /** Parameter deltas generated at the briefs stage; Jev ranks them, top variantCount-1 win. */
 export const BRIEF_CANDIDATES = 8;
 export const RETRY_BACKOFF_MS = 60_000;
@@ -443,6 +448,8 @@ export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'sl
   status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number;
   /** Provider requests started, internal QA correction waves included. Absent on tasks that predate it (then `attempts`). */
   requests?: number;
+  /** Authorized total image requests for this task across every attempt, frozen at first claim. Absent before then. */
+  requestCap?: number;
   /** Durable debits for paid QA corrections, one ledger ref each, so every one is refundable by its own receipt. */
   corrections?: Array<{ ref: string; attempt: number; charged: number }>; }
 export interface Input { videoId: string; status: string; analysisId: string | null; jobId: string | null; error: string | null;

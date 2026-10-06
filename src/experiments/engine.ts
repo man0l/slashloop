@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { prepare, SafeFailure, TerminalFailure, HydrationPending, locksToBaselineVisual, type ExecuteContext, type Prepared } from './providers.js';
 import { experimentVisualLock } from './render-prompt.js';
 import { taskCost } from './service.js';
-import { ExperimentError, MAX_TASK_ATTEMPTS, PARALLEL_SLIDES, qaMaxAttempts, retryBackoffMs, type Experiment, type SlideQaRecord, type StepStatus, type Task, type Input, type ReportData, type Proposal } from './schema.js';
+import { ExperimentError, MAX_TASK_ATTEMPTS, PARALLEL_SLIDES, qaMaxAttempts, retryBackoffMs, slideTaskRequestCap, type Experiment, type SlideQaRecord, type StepStatus, type Task, type Input, type ReportData, type Proposal } from './schema.js';
 export interface EngineDeps {
   load: typeof store.load; save: typeof store.save;
   prepare(e:Experiment,t:Task):Promise<Prepared>;
@@ -171,6 +171,19 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
     e=await deps.load(workspaceId,id);if(!isActive(e))return false;
     const claimed=e.tasks.find(x=>x.id===t.id);
     if(!claimed||claimed.status!=='pending')continue;
+    const baseUnits=prepared.units??1;
+    // Durable total allowance: the task's image requests across EVERY engine attempt are capped at the figure frozen
+    // on first claim, so a retry cannot restart the per-attempt ceiling. No capacity means no provider call.
+    if(claimed.kind==='slide'&&!prepared.free){
+      claimed.requestCap??=slideTaskRequestCap(baseUnits);
+      if((claimed.requests??0)+baseUnits>claimed.requestCap){
+        claimed.status='unknown';claimed.error='request_allowance_exhausted';
+        const v=e.variants.find(x=>x.id===claimed.target);
+        if(v){v.status='paused';v.error=claimed.error;const s=claimed.index!==undefined?v.slides[claimed.index]:undefined;if(s){s.status='unknown';s.error=claimed.error;}}
+        e.status='paused';e.error='request_allowance_exhausted';
+        await deps.save(e);return false;
+      }
+    }
     claimed.status='running';claimed.startedAt=deps.now();claimed.attempts++;
     // A fanned-out task pays for every candidate it renders (units × unit price).
     const charge=prepared.free ? 0 : taskCost(claimed)*(prepared.units??1);claimed.charged+=charge;
@@ -183,7 +196,6 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
       const latest=await deps.load(workspaceId,id);if(isActive(latest)){latest.status='paused';latest.error=err instanceof ExperimentError ? err.message : 'insufficient_budget';await deps.save(latest);}return false;
     }
     const attemptNo=claimed.attempts;
-    const baseUnits=prepared.units??1;
     let startedThisAttempt=baseUnits;
     // One paid correction wave = one more durable debit under its own ledger ref, taken BEFORE
     // the provider call. Absent capacity (experiment cap, wallet, per-attempt request ceiling,
@@ -197,6 +209,7 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
         if(!isActive(latest))return false;
         const receipt=latest.tasks.find(x=>x.id===t.id);
         if(!receipt||receipt.status!=='running'||receipt.attempts!==attemptNo)return false;
+        if((receipt.requests??0)+units>(receipt.requestCap??slideTaskRequestCap(baseUnits)))return false;
         const cost=taskCost(receipt)*units;
         if(latest.creditsCharged+cost>latest.maxCredits)return false;
         const ref=`${receipt.chargeRef}:qa${(receipt.corrections??[]).filter(c=>c.attempt===attemptNo).length+1}`;
@@ -207,16 +220,6 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
       }
       return false;
     }};
-    const refundCorrections=async()=>{
-      for(let tries=0;tries<6;tries++){
-        const latest=await deps.load(workspaceId,id);
-        const receipt=latest.tasks.find(x=>x.id===t.id);
-        const owed=receipt?.corrections?.find(c=>c.attempt===attemptNo);
-        if(!receipt||!owed)return;
-        receipt.corrections=receipt.corrections!.filter(c=>c!==owed);receipt.charged-=owed.charged;
-        try{await deps.save(latest,-owed.charged,owed.ref);}catch(err){if(err instanceof ExperimentError||err instanceof InsufficientCreditsError)return;throw err;}
-      }
-    };
     let result:unknown;let failure:unknown;
     try{result=await prepared.execute(ctx);}catch(err){failure=err;}
     if(failure){
@@ -233,7 +236,7 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
       if(remainingD1Queries()<6)return false;
       const latest=await deps.load(workspaceId,id);const receipt=latest.tasks.find(x=>x.id===t.id)!;
       if(receipt.status==='done'||receipt.status==='failed')return isActive(latest);
-      let refund = 0;let refundExtras=false;
+      let refund = 0;let extraRefunds:Array<{ref:string;amount:number}>=[];
       if(failure){
         const cause=rejectionCause(failure);
         const terminalQuota=/^(credits_exhausted|auth)/.test(cause??'');
@@ -244,7 +247,16 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
         const verdict=failure instanceof TerminalFailure?failure.verdict:null;
         receipt.error=jobError(known,cause);
         if(isActive(latest))latest.error=receipt.error;
-        if(known && receipt.chargeRef && charge) { refund = charge; receipt.charged -= refund; refundExtras=true; }
+        if(known && receipt.chargeRef && charge) {
+          // The first wave and every paid correction wave of this attempt are returned in the SAME
+          // CAS/billing batch as the terminal status, so no refund can be stranded behind it.
+          refund = charge; receipt.charged -= refund;
+          const owed=(receipt.corrections??[]).filter(c=>c.attempt===attemptNo);
+          extraRefunds=owed.map(c=>({ref:c.ref,amount:c.charged}));
+          receipt.corrections=(receipt.corrections??[]).filter(c=>c.attempt!==attemptNo);
+          receipt.charged -= owed.reduce((n,c)=>n+c.charged,0);
+          if(remainingD1Queries()<6+2*owed.length)return false;
+        }
         const input=latest.inputs.find(i=>i.videoId===t.target);
         const v=latest.variants.find(v=>v.id===t.target);
         // Auditable QA survives the failure: persist the verdict, checks and prompt.
@@ -269,12 +281,11 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
           if(isActive(latest)&&!(known&&t.kind==='analysis'&&latest.allowPartial)) {latest.status=outcome==='unknown'?'paused':'failed';latest.error=receipt.error;}
         }
       }else settle(latest,receipt,result);
-      if(await deps.save(latest,-refund,refund ? receipt.chargeRef : undefined)){
-        // Each paid correction carries its own receipt, so a known failure gives back every wave
-        // the attempt bought, not only the first.
-        if(refundExtras)await refundCorrections();
-        return isActive(latest);
-      }
+      // The batch is all-or-nothing, so a transient failure leaves nothing half-settled and is safe to retry.
+      let saved:boolean;
+      try{saved=await deps.save(latest,-refund,refund ? receipt.chargeRef : undefined,extraRefunds);}
+      catch(err){if(attempt===4)throw err;continue;}
+      if(saved)return isActive(latest);
     }
     // Receipt stays running; lease expiry pauses instead of rebilling a successful but uncommitted output.
     return false;

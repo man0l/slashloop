@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { db, dbDialect, rawBatch, type Dialect, type RawStatement } from '../store.js';
 import { resolveBillingWorkspace, InsufficientCreditsError } from '../lib/credits.js';
-import { ExperimentError, SLIDE_FANOUT, qaMaxAttempts, type Experiment } from './schema.js';
+import { ExperimentError, slideTaskRequestCap, type Experiment } from './schema.js';
 import { encodeExperiment } from './document-budget.js';
 
 export async function batch(statements: RawStatement[]): Promise<unknown[][]> {
@@ -80,15 +80,16 @@ export function creditStatements(
   ];
 }
 /** Every API mutation and step acquisition uses this CAS, including cancellation. */
-export async function save(e: Experiment, charge = 0, chargeRef?: string): Promise<boolean> {
+export async function save(e: Experiment, charge = 0, chargeRef?: string, refunds: ReadonlyArray<{ ref: string; amount: number }> = []): Promise<boolean> {
   const previous = e.version;
-  const next = { ...e, writeToken: randomUUID(), version: previous + 1, updatedAt: new Date().toISOString(), creditsCharged: e.creditsCharged + charge };
+  const refunded = refunds.reduce((n, r) => n + r.amount, 0);
+  const next = { ...e, writeToken: randomUUID(), version: previous + 1, updatedAt: new Date().toISOString(), creditsCharged: e.creditsCharged + charge - refunded };
   if (next.creditsCharged > e.maxCredits) throw new ExperimentError(402, 'experiment_budget_exceeded');
   if (charge < 0 && !chargeRef) throw new ExperimentError(500, 'refund_requires_charge_ref');
   const json = encodeExperiment(next);
   const statements: RawStatement[] = [];
   let billingId = '';
-  if (charge !== 0) {
+  if (charge !== 0 || refunds.length) {
     const workspace = await db.workspace.findUniqueOrThrow({ where: { id: e.workspaceId } });
     billingId = (await resolveBillingWorkspace(workspace)).id;
   }
@@ -100,6 +101,8 @@ export async function save(e: Experiment, charge = 0, chargeRef?: string): Promi
   if (charge !== 0) {
     statements.push(...creditStatements(e, next, billingId, charge, chargeRef ?? `experiment:${e.id}:${randomUUID()}`));
   }
+  // Every additional refund rides the same batch as the experiment CAS, so terminal status and all refunds settle together or not at all.
+  for (const r of refunds) statements.push(...creditStatements(e, next, billingId, -r.amount, r.ref));
   const result = await batch(statements);
   if (!result[0]?.length) {
     if (charge > 0 && (await load(e.workspaceId,e.id)).version === previous) throw new InsufficientCreditsError(e.workspaceId,charge,0);
@@ -111,10 +114,16 @@ export async function candidates(): Promise<Array<{ id: string; workspaceId: str
   const result = await batch([{ sql: 'SELECT "id","workspaceId" FROM "Experiment" WHERE "status" IN (\'planning\',\'generating\') ORDER BY "updatedAt" ASC LIMIT 3' }]);
   return result[0] as Array<{ id: string; workspaceId: string }>;
 }
+/** Authorized total: the planning jobs' 2x allowance plus each slide task's frozen cap (explicit retry grants included). */
+export function maxProviderRequests(e: Experiment): number {
+  const planned = e.variantCount * e.slideCount * slideTaskRequestCap();
+  const frozen = e.tasks.filter(t => t.kind === 'slide').reduce((n, t) => n + (t.requestCap ?? slideTaskRequestCap()), 0);
+  return 2 * (e.inputs.length + 2) + Math.max(planned, frozen);
+}
 export function serialize(e: Experiment) {
   const { tasks, commands, createFingerprint, version, allowPartial, ...publicData } = e;
   // Compact per-job projection so the UI can offer manual retry on a single failed job.
   const jobs = tasks.map(({ id, kind, target, index, status, error, attempts, nextAttemptAt, startedAt }) => ({ id, kind, target, index, status, error, attempts, nextAttemptAt, startedAt }));
   return { ...publicData, jobs, inputs: e.inputs.map(({ evidence, ...input }) => input), variants: e.variants.map(({ history, frozenBrief, ...v }) => v),
-    providerBudget: { maxRequests: 2 * (e.inputs.length + 2 + e.variantCount * e.slideCount * SLIDE_FANOUT * qaMaxAttempts()), requestsStarted: tasks.reduce((n,t) => n+(t.requests ?? t.attempts),0), exactUsdCap: false } };
+    providerBudget: { maxRequests: maxProviderRequests(e), requestsStarted: tasks.reduce((n,t) => n+(t.requests ?? t.attempts),0), exactUsdCap: false } };
 }

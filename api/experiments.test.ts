@@ -1,12 +1,13 @@
 // Endpoint-level tests for the experiments API: paginated listing and the
 // bulk DELETE cascade (per-id best-effort, running experiments refused).
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { ExperimentError } from '../src/experiments/schema.js';
 
 const experiments = new Map<string, any>();
 const deletedObjects: string[] = [];
 
-const realStore = await import('../src/experiments/store.js');
+// Snapshot by value: Bun patches a loaded module's exports in place when it is mocked.
+const realStore = { ...(await import('../src/experiments/store.js')) };
 mock.module('../src/experiments/store.js', () => ({
   ...realStore,
   load: async (_ws: string, id: string) => {
@@ -25,19 +26,26 @@ mock.module('../src/experiments/store.js', () => ({
   },
   serialize: (e: any) => ({ ...e, serialized: true }),
 }));
-const realStorage = await import('../src/lib/storage.js');
+const realStorage = { ...(await import('../src/lib/storage.js')) };
 mock.module('../src/lib/storage.js', () => ({
   ...realStorage,
   deleteObjects: async (_bucket: string, paths: string[]) => { deletedObjects.push(...paths); return paths.length; },
   thumbBucket: () => 'thumbs',
 }));
-const realAuthz = await import('../src/lib/authz.js');
+const realAuthz = { ...(await import('../src/lib/authz.js')) };
 mock.module('../src/lib/authz.js', () => ({
   ...realAuthz,
   requireWorkspaceAccess: async () => ({ ok: true }),
 }));
 
 const { DELETE, GET } = await import('./experiments.js');
+
+// mock.module is process-global: hand later files the real modules back by value, serializer included.
+afterAll(() => {
+  mock.module('../src/experiments/store.js', () => ({ ...realStore }));
+  mock.module('../src/lib/storage.js', () => ({ ...realStorage }));
+  mock.module('../src/lib/authz.js', () => ({ ...realAuthz }));
+});
 
 function exp(id: string, status = 'done', slidePaths: string[] = []) {
   return {

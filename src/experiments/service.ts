@@ -173,7 +173,7 @@ export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: 
       correctionCredits,maxTotalCredits:analysisCredits+planningCredits+generationCredits+correctionCredits,
       remainingCredits:e.maxCredits-e.creditsCharged, workspaceCredits:(await creditBalance(e.workspaceId)).total,
       maxCredits:e.maxCredits,generationBasis:e.generationBasis,exactProviderUsdCap:false,
-      maxProviderRequests:jobs.reduce((n,t)=>n+(t.kind==='slide'?S.slideRequestAllowance():1),0),
+      maxProviderRequests:jobs.reduce((n,t)=>n+(t.kind==='slide'?S.slideTaskRequestCap():1),0),
       pricing:{analysis:CREDIT_COSTS.analyzeVideo,planningCall:CREDIT_COSTS.experimentPlanningCall,slide:CREDIT_COSTS.experimentSlide} };
   }
   const analysisCredits = stage === 'plan' ? e.inputs.filter(x=>x.status!=='ready').length*CREDIT_COSTS.analyzeVideo : 0;
@@ -187,7 +187,7 @@ export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: 
     correctionCredits,maxTotalCredits:analysisCredits+planningCredits+generationCredits+correctionCredits,
     remainingCredits:e.maxCredits-e.creditsCharged, workspaceCredits:(await creditBalance(e.workspaceId)).total,
     maxCredits:e.maxCredits,generationBasis:e.generationBasis,exactProviderUsdCap:false,
-    maxProviderRequests: (stage==='plan' ? analysisCredits/CREDIT_COSTS.analyzeVideo+planningCredits/CREDIT_COSTS.experimentPlanningCall : (generationCredits+correctionCredits)/CREDIT_COSTS.experimentSlide),
+    maxProviderRequests: (stage==='plan' ? analysisCredits/CREDIT_COSTS.analyzeVideo+planningCredits/CREDIT_COSTS.experimentPlanningCall : generationCredits/CREDIT_COSTS.experimentSlide/S.SLIDE_FANOUT*S.slideTaskRequestCap()),
     pricing:{analysis:CREDIT_COSTS.analyzeVideo,planningCall:CREDIT_COSTS.experimentPlanningCall,slide:CREDIT_COSTS.experimentSlide} };
 }
 const task = (kind:S.Task['kind'], target?:string,index?:number):S.Task => ({id:randomUUID(),kind,target,index,status:'pending',attempts:0,charged:0});
@@ -209,7 +209,12 @@ const task = (kind:S.Task['kind'], target?:string,index?:number):S.Task => ({id:
  * counting so the manual-retry ceiling still holds.
  */
 export function applyRetry(e:S.Experiment,retryTasks:readonly S.Task[]):void{
-  for(const t of retryTasks){t.status='pending';t.error=undefined;t.nextAttemptAt=undefined;}
+  // An explicit retry of a failed/unknown slide is priced by the per-job estimate and authorizes one more allowance;
+  // a merely paused (pending) task keeps what it has left.
+  for(const t of retryTasks){
+    if(t.kind==='slide'&&t.status!=='pending')t.requestCap=(t.requests??0)+S.slideTaskRequestCap();
+    t.status='pending';t.error=undefined;t.nextAttemptAt=undefined;
+  }
   for(const v of e.variants){
     const vt=retryTasks.filter(t=>t.target===v.id);
     if(!vt.length) continue;
