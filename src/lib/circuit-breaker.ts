@@ -40,7 +40,7 @@ export interface CircuitBreakerOptions {
   now?: () => number;
 }
 
-const DEFAULT_IS_INFRA = (err: unknown): boolean => {
+export const isInfraFailure = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
   return /timed out|timeout|aborted|D1_ERROR|internal error|fetch failed|HTTP 5\d\d|network/i.test(msg);
 };
@@ -60,7 +60,7 @@ export class CircuitBreaker {
     this.name = opts.name;
     this.threshold = Math.max(1, opts.threshold ?? 3);
     this.cooldownMs = opts.cooldownMs ?? 60_000;
-    this.isInfraError = opts.isInfraError ?? DEFAULT_IS_INFRA;
+    this.isInfraError = opts.isInfraError ?? isInfraFailure;
     this.now = opts.now ?? Date.now;
   }
 
