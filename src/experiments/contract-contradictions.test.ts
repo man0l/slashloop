@@ -35,7 +35,7 @@ function compile(i: number, over: { overlay?: OverlayDecision; copy?: string; la
   const copy = over.copy ?? slide.copy;
   const observed: ObservedCopy = { state: 'observed_text', text: copy };
   return compileSlideContract({
-    slideIndex: slide.index, role: slide.role, medium: 'collage', scene: slide.scene,
+    slideIndex: slide.index, role: slide.role, medium: 'photograph', scene: slide.scene,
     overlay: over.overlay ?? overlayDecision({ source: observed, hasOverride: false, overrideText: null, briefText: copy, copyUnlocked: false }),
     observedCopy: observed, deckCasting: DECK_CASTING, castingRequest: DECK_CASTING, identityLocked: false,
     sourceMap: { videoId: 'v', analysisId: null, sourceIndex: slide.index, referenceKind: 'mapped', path: null },

@@ -29,6 +29,19 @@ export function identitySubject(formula: StyleFormula | null): IdentitySubject {
   return 'objects';
 }
 
+/** Appearance attributes that only describe a PERSON. A statue cutout, a pixel
+ *  sprite or a food collage has no hair, eyes or jewelry to keep unchanged. */
+const PERSON_ONLY_ATTRIBUTES = new Set(['hair', 'eyes', 'facial-hair', 'complexion', 'wardrobe', 'jewelry']);
+
+/** Person-appearance locks exist only when the medium is a photographed person
+ *  (identitySubject === 'person'). Unknown, mixed and non-person media carry only
+ *  what the source actually stated for role, gaze and setting — never a person
+ *  attribute, observed or not. */
+function lockPolicy(medium: string, locks: SubjectContract['lockedAttributes']): SubjectContract['lockedAttributes'] {
+  if (identitySubject({ medium: medium.trim().toLowerCase() } as StyleFormula) === 'person') return locks;
+  return locks.filter(l => l.observed && !PERSON_ONLY_ATTRIBUTES.has(l.attribute));
+}
+
 export function renderContract(unlocked: readonly string[] = VARIABLE_FIELDS, changed: Array<{ name: string }> = []): RenderContract {
   const allowed = new Set(unlocked);
   const names = changed.map(c => c.name).filter(n => allowed.has(n));
@@ -986,7 +999,7 @@ export interface SlideContract {
   slideIndex: number;
   role: string;
   medium: string;
-  sourceMap: { videoId: string | null; analysisId: string | null; sourceIndex: number | null; referenceKind: string; path: string | null };
+  sourceMap: { videoId: string | null; analysisId: string | null; sourceIndex: number | null; referenceKind: string; path: string | null; observation?: 'observed' | 'missing' };
   observedCopy: ObservedCopy | null;
   overlay: OverlayDecision;
   subject: SubjectContract;
@@ -1124,6 +1137,7 @@ export function compileSlideContract(opts: {
   } else {
     subject = preserveSubject();
   }
+  subject = { ...subject, lockedAttributes: lockPolicy(opts.medium, subject.lockedAttributes) };
   const sourceLabels = opts.labels ?? labelPolicy();
   const base = {
     contractVersion: CONTRACT_VERSION,
@@ -1146,7 +1160,8 @@ export function compileSlideContract(opts: {
  *  `comparison` needs BOTH the mapped source frame and the candidate; `candidate`
  *  is settled by the candidate frame alone. */
 export type ContractCheckScope = 'comparison' | 'candidate';
-export interface ContractCheck { check: string; scope: ContractCheckScope }
+export type QaSeverity = 'hard' | 'soft';
+export interface ContractCheck { check: string; scope: ContractCheckScope; severity: QaSeverity }
 /** A text-directed contract has no source frame, so a lock with no observed
  *  value is stated as an absolute requirement against the slide's own scene —
  *  never as a comparison against a frame that was never attached. */
@@ -1156,6 +1171,10 @@ function absoluteLockCheck(attribute: string, scene: string): string {
 }
 /** D7: QA checks are derived from the contract, so a checker is never asked to
  *  re-assert a source attribute the contract replaced, and never omits a lock.
+ *
+ *  Severity: HARD checks (exact overlay, source labels, forbidden marks, medium)
+ *  gate shipping; SOFT checks (subject attributes, story beat) are judgement
+ *  calls a checker may be unable to settle, so an `unknown` there is a warning.
  *
  *  Each check also carries the frames it may be answered from. A preserved
  *  attribute the contract never observed cannot be settled from the candidate
@@ -1167,19 +1186,20 @@ export function contractCheckPlan(c: SlideContract, opts?: { sourceBaseline?: bo
   const comparative = opts?.sourceBaseline !== false;
   const checks: ContractCheck[] = [];
   for (const [attribute, value] of Object.entries(c.subject.castingTarget)) {
-    checks.push({ check: `the subject's ${attribute} matches the requested casting target: ${value}`, scope: 'candidate' });
+    checks.push({ check: `the subject's ${attribute} matches the requested casting target: ${value}`, scope: 'candidate', severity: 'soft' });
   }
   for (const lock of c.subject.lockedAttributes) {
-    if (lock.observed) checks.push({ check: `the subject's ${lock.attribute} is unchanged: "${lock.observed}"`, scope: 'candidate' });
-    else if (comparative) checks.push({ check: `the subject's ${lock.attribute} is unchanged from the reference frame`, scope: 'comparison' });
-    else checks.push({ check: absoluteLockCheck(lock.attribute, c.compiledScene), scope: 'candidate' });
+    if (lock.observed) checks.push({ check: `the subject's ${lock.attribute} is unchanged: "${lock.observed}"`, scope: 'candidate', severity: 'soft' });
+    else if (comparative) checks.push({ check: `the subject's ${lock.attribute} is unchanged from the reference frame`, scope: 'comparison', severity: 'soft' });
+    else checks.push({ check: absoluteLockCheck(lock.attribute, c.compiledScene), scope: 'candidate', severity: 'soft' });
   }
   checks.push({ check: c.overlay.text
     ? `the on-image overlay matches exactly: ${JSON.stringify(c.overlay.text)}`
-    : 'the slide carries no added overlay text', scope: 'candidate' });
-  for (const label of c.sourceLabels.preserve) checks.push({ check: `the source label "${label}" is still present, in its original position`, scope: 'candidate' });
-  for (const label of c.sourceLabels.remove) checks.push({ check: `the mark "${label}" is not present anywhere on the slide`, scope: 'candidate' });
-  checks.push({ check: `the medium is ${c.medium} and the story beat for role "${c.role}" is visible`, scope: 'candidate' });
+    : 'the slide carries no added overlay text', scope: 'candidate', severity: 'hard' });
+  for (const label of c.sourceLabels.preserve) checks.push({ check: `the source label "${label}" is still present, in its original position`, scope: 'candidate', severity: 'hard' });
+  for (const label of c.sourceLabels.remove) checks.push({ check: `the mark "${label}" is not present anywhere on the slide`, scope: 'candidate', severity: 'hard' });
+  checks.push({ check: `the medium is ${c.medium}`, scope: 'candidate', severity: 'hard' });
+  checks.push({ check: `the story beat for role "${c.role}" is visible`, scope: 'candidate', severity: 'soft' });
   return checks;
 }
 export function contractChecks(c: SlideContract, opts?: { sourceBaseline?: boolean }): string[] {

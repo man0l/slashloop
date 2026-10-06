@@ -380,6 +380,18 @@ export function slideFanout(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number(env.EXPERIMENT_SLIDE_FANOUT?.trim());
   return Number.isInteger(raw) && raw >= 1 ? Math.min(raw, MAX_SLIDE_FANOUT) : SLIDE_FANOUT;
 }
+/** Total render waves per slide (the first plus QA corrections); the env knob is capped at 5. */
+export function qaMaxAttempts(env:NodeJS.ProcessEnv=process.env):number{
+  const n=Number.parseInt(env.EXPERIMENT_QA_MAX_ATTEMPTS??'',10);
+  return Number.isFinite(n)&&n>=1?Math.min(n,5):3;
+}
+/** Worst-case provider requests one slide task attempt can start: every render wave at full fan-out. */
+export const slideRequestAllowance=(fanout:number=slideFanout(),env:NodeJS.ProcessEnv=process.env)=>fanout*qaMaxAttempts(env);
+/** Authorized image requests for one slide task across ALL its engine attempts (the advertised 2x-per-job
+ *  headroom over one full render-and-correct pass). Persisted on the task at first claim; admission,
+ *  estimate and providerBudget all read this one figure. */
+export const SLIDE_REQUEST_HEADROOM = 2;
+export const slideTaskRequestCap=(fanout:number=slideFanout(),env:NodeJS.ProcessEnv=process.env)=>SLIDE_REQUEST_HEADROOM*slideRequestAllowance(fanout,env);
 /** Floor for the briefs-stage candidate pool (SLA-546: was a flat 8). */
 export const BRIEF_CANDIDATES = 3;
 const MAX_BRIEF_CANDIDATES = 12;
@@ -414,7 +426,7 @@ export type CopyState = 'observed_text' | 'observed_empty' | 'unknown';
 export interface ObservedCopy { state: CopyState; text: string | null }
 /** Per-check QA outcome. A composite pass requires every check to pass; `unknown`
  *  is unverified, never a pass (SLA-430 D8). */
-export interface QaCheck { check: string; status: 'pass' | 'fail' | 'unknown'; reason?: string }
+export interface QaCheck { check: string; status: 'pass' | 'fail' | 'unknown'; reason?: string; severity?: 'hard' | 'soft' }
 /** Sanitized record of HOW the checker was called and how it ended (SLA-511).
  *  Model, deadline, elapsed time, bounded output budget, an error category and
  *  the upstream request id. Never the image, the prompt, the payload or a key:
@@ -441,6 +453,12 @@ export interface SlideVerification {
   attempts: number;
   /** Request-level diagnostics for the checker's last call (SLA-511). */
   diagnostics?: QaDiagnostics;
+  /** Soft-check findings that did not block the slide (SLA-545). */
+  warnings?: string[];
+  /** Every non-pass check is soft: a corrective render may fix it, and `warn` mode may ship it. */
+  softOnly?: boolean;
+  /** The verdict rests on real per-check answers, so a fresh render can change it. */
+  rerenderable?: boolean;
 }
 /** Auditable QA record persisted even when the slide does not complete. */
 export interface SlideQaRecord {
@@ -452,16 +470,23 @@ export interface SlideQaRecord {
   checks: QaCheck[];
   prompt?: string;
   diagnostics?: QaDiagnostics;
+  warnings?: string[];
   /** SLA-522: the mapped source frame this slide's comparison was made against.
    *  `attached:false` means the frame could not be read and the slide stayed
    *  unverified — the record says so instead of passing an unmade comparison. */
   qaBaseline?: { referenceKind: string; path: string | null; attached: boolean };
   /** The contract's own source mapping, kept beside the hash so a failed slide
    *  says which frame it claims to preserve. */
-  sourceMap?: { videoId: string | null; analysisId: string | null; sourceIndex: number | null; referenceKind: string; path: string | null };
+  sourceMap?: { videoId: string | null; analysisId: string | null; sourceIndex: number | null; referenceKind: string; path: string | null; observation?: 'observed' | 'missing' };
 }
 export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide'; target?: string; index?: number;
-  status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number; }
+  status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number;
+  /** Provider requests started, internal QA correction waves included. Absent on tasks that predate it (then `attempts`). */
+  requests?: number;
+  /** Authorized total image requests for this task across every attempt, frozen at first claim. Absent before then. */
+  requestCap?: number;
+  /** Durable debits for paid QA corrections, one ledger ref each, so every one is refundable by its own receipt. */
+  corrections?: Array<{ ref: string; attempt: number; charged: number }>; }
 export interface Input { videoId: string; status: string; analysisId: string | null; jobId: string | null; error: string | null;
   coverage: { basis: string; observed: number; total: number | null; complete: boolean } | null; evidence: Array<{ location: string; observation: string }>;
   /** Recorded source copy state per slide, kept outside the truncated prose so a

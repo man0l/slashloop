@@ -9,7 +9,7 @@ import { callOpenRouterText, classifyOpenRouterError, extractFirstJson, generate
 import { buildVariantSlidePrompt, compileSlideContract, contractCheckPlan, contractChecks, contractQaBlock, effectiveOverlayText, experimentVisualLock, labelPolicy, lockCarouselIdentity, overlayDecision, renderContract, type ObservedCopy, type SlideContract } from './render-prompt.js';
 import { jevPick, jevAsk, type JevQuestion, type JevAnswer } from '../lib/typesafe.js';
 import { putObject, getObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
-import { ExperimentError, Report, VariantProposal, BriefStoryboard, BriefDelta, briefCandidateCount, EXACT_EDIT_OPERATION, VARIABLE_FIELDS, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type QaCheck, type SlideVerification, type Task } from './schema.js';
+import { ExperimentError, qaMaxAttempts, Report, VariantProposal, BriefStoryboard, BriefDelta, briefCandidateCount, EXACT_EDIT_OPERATION, VARIABLE_FIELDS, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type QaCheck, type SlideVerification, type Task } from './schema.js';
 import { candidateSlides, jevEvidence } from './jev-evidence.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { assertExactEditContractIntact, assertSingleVariant, exactEditChecks } from './exact-edit.js';
@@ -187,7 +187,11 @@ export function selectSlideReference(e:Experiment,index:number,videos:Video[]) {
   const path=thumbPath(e.workspaceId,anchorVideo.id);
   return {kind:'thumb' as const,videoId:anchorVideo.id,index:null,path,url:publicUrl(thumbBucket(),path)};
 }
-export interface Prepared { execute():Promise<unknown>; free?: boolean; units?: number; }
+/** Granted by the engine per task attempt. `admit(units)` durably debits one more paid wave of
+ *  `units` provider requests against the experiment's remaining credit and the wallet, and
+ *  resolves false (nothing charged, nothing started) when capacity is absent. */
+export interface ExecuteContext { admit(units:number):Promise<boolean>; }
+export interface Prepared { execute(ctx?:ExecuteContext):Promise<unknown>; free?: boolean; units?: number; }
 interface RenderDeps {
   findSources(workspaceId:string, ids:string[]):Promise<Video[]>;
   generateImage(opts:{prompt:string;referenceUrl?:string;model:string;quality:'low'|'medium'|'high';aspectRatio:string}):Promise<{buffer:Buffer;contentType:string;costUsd:number}>;
@@ -409,27 +413,27 @@ const BRIEF_DELTA_SLIDES={type:'array',minItems:3,maxItems:8,items:{type:'object
 const BRIEF_DELTA_OVERLAYS={type:'array',minItems:3,maxItems:8,items:{type:'string'}};
 const BRIEF_DELTA_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['candidates'],properties:{candidates:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['title','hypothesis','mechanism','changedVariables'],properties:{title:{type:'string'},hypothesis:{type:'string'},mechanism:{type:'string'},changedVariables:{type:'array',minItems:1,maxItems:3,items:{type:'object',additionalProperties:false,required:['name','value'],properties:{name:{type:'string',enum:['hook','character','visualStyle','caption','cta','concept','slides']},value:{type:'string'}}}},slides:BRIEF_DELTA_SLIDES,overlayTexts:BRIEF_DELTA_OVERLAYS}}}}};
 const BRIEF_BOARD_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['baseline'],properties:{baseline:{type:'object',additionalProperties:false,required:['title','hypothesis','concept','hook','character','visualStyle','caption','slides'],properties:{title:{type:'string'},hypothesis:{type:'string'},concept:{type:'string'},hook:{type:'string'},character:{type:'string'},visualStyle:{type:'string'},caption:{type:'string'},slides:{type:'array',minItems:3,maxItems:8,items:{type:'object',additionalProperties:false,required:['role','scene','overlayText'],properties:{role:{type:'string'},scene:{type:'string'},overlayText:{type:'string'}}}}}}}};
-/**
- * Per-storyboard-slide source description, mirroring selectSlideReference's
- * rotation (originals[index % n], sourceIndex = min(index, len-1)) so the
- * storyboard slide adapts exactly the frame the renderer will receive as
- * reference. Format-agnostic: structure flows from the observations.
- */
+/** The observation recorded for exactly the frame the renderer was handed: the input that owns
+ *  `ref.videoId`, evidence location `slide:${ref.index}`. No rotation, no compaction of sparse
+ *  evidence, no neighbouring frame — a frame without an observation has no description. */
+export function sourceSlideDescription(e: Pick<Experiment,'inputs'>, ref: { videoId: string; index: number | null } | null): string | null {
+  if (!ref || ref.index === null) return null;
+  const input = e.inputs.find(i => i.status === 'ready' && i.videoId === ref.videoId);
+  return (input?.evidence ?? []).find(v => v.location === `slide:${ref.index}`)?.observation ?? null;
+}
 export function sourceSlidesBlock(e: Experiment): string {
-  const carousels: string[][] = [];
-  for (const i of e.inputs) {
-    if (i.status !== 'ready') continue;
-    const obs = i.evidence
-      .filter(v => v.location.startsWith('slide:'))
-      .sort((a, b) => Number(a.location.slice(6)) - Number(b.location.slice(6)));
-    if (obs.length) carousels.push(obs.map(v => `slide ${v.location.slice(6)}: ${v.observation}`));
-  }
+  // A carousel is a ready input that owns slide frames — the same set selectSlideReference rotates
+  // over — and each is read by exact `slide:N`, so sparse evidence never shifts a neighbour in.
+  const carousels = e.inputs.filter(i => i.status === 'ready' && (i.coverage?.total != null || i.evidence.some(v => v.location.startsWith('slide:'))));
   if (!carousels.length) return '';
   const lines: string[] = [];
   for (let n = 0; n < e.slideCount; n++) {
-    const car = carousels[n % carousels.length]!;
-    const idx = Math.min(n, car.length - 1);
-    lines.push(`- storyboard slide ${n + 1} adapts carousel ${(n % carousels.length) + 1}: ${car[idx]}`);
+    const input = carousels[n % carousels.length]!;
+    const slides = input.evidence.filter(v => v.location.startsWith('slide:')).map(v => Number(v.location.slice(6)));
+    const last = (input.coverage?.total ?? Math.max(-1, ...slides) + 1) - 1;
+    const idx = Math.min(n, last);
+    const obs = input.evidence.find(v => v.location === `slide:${idx}`)?.observation;
+    lines.push(`- storyboard slide ${n + 1} adapts carousel ${(n % carousels.length) + 1}: slide ${idx}: ${obs ?? 'no recorded observation — keep this frame, invent no description'}`);
   }
   return lines.join('\n');
 }
@@ -559,7 +563,7 @@ export function qaCoverageProblem(rawChecks:unknown,expected:readonly string[]):
  *  that does not cover it exactly once is unverified (see qaCoverageProblem),
  *  not a pass over whatever happened to come back. Omitted only by callers that
  *  have no contract to check against. */
-export function resolveQaVerdict(raw:unknown, contractHash:string, corrected=false, attempts=1, expectedChecks?:readonly string[]):SlideVerification{
+export function resolveQaVerdict(raw:unknown, contractHash:string, corrected=false, attempts=1, expectedChecks?:readonly string[], softChecks?:ReadonlySet<string>):SlideVerification{
   const obj=raw&&typeof raw==='object'?raw as {checks?:unknown;reasons?:unknown}:null;
   const checks:QaCheck[]=Array.isArray(obj?.checks)
     ?obj!.checks.filter(c=>c&&typeof c==='object'&&typeof (c as {check?:unknown}).check==='string')
@@ -576,10 +580,23 @@ export function resolveQaVerdict(raw:unknown, contractHash:string, corrected=fal
     const problem=qaCoverageProblem(obj?.checks,expectedChecks);
     if(problem)return {verdict:'error',reasons:[problem],checks,contractHash,corrected,attempts};
   }
-  const verdict:SlideVerification['verdict']=checks.some(c=>c.status==='fail')?'fail':checks.some(c=>c.status==='unknown')?'error':'pass';
-  if(verdict==='pass')return {verdict,reasons:[],checks,contractHash,corrected,attempts};
-  const why=reasons.length?reasons:checks.filter(c=>c.status!=='pass').map(c=>`${c.check}: ${c.reason??c.status}`);
-  return {verdict,reasons:why.slice(0,6),checks,contractHash,corrected,attempts};
+  // SLA-545: HARD checks (overlay, forbidden marks, medium) gate shipping; SOFT
+  // checks (subject attributes, setting, story beat) are judgement calls. A soft
+  // `unknown` is a warning, never a stop. Without a contract's soft set every
+  // check is hard, which keeps callers that have no contract strict.
+  const severityOf=(c:QaCheck):'hard'|'soft'=>softChecks?.has(qaCheckKey(c.check)??'')?'soft':'hard';
+  const graded:QaCheck[]=softChecks?checks.map(c=>({...c,severity:severityOf(c)})):checks;
+  const hard=graded.filter(c=>severityOf(c)==='hard'), soft=graded.filter(c=>severityOf(c)==='soft');
+  const hardFail=hard.some(c=>c.status==='fail'), hardUnknown=hard.some(c=>c.status==='unknown');
+  const softFail=soft.some(c=>c.status==='fail');
+  const verdict:SlideVerification['verdict']=hardFail?'fail':hardUnknown?'error':softFail?'fail':'pass';
+  const describe=(c:QaCheck)=>`${c.check}: ${c.reason??c.status}`;
+  const warnings=soft.filter(c=>c.status==='unknown').map(c=>`unverified:${describe(c)}`).slice(0,6);
+  if(verdict==='pass')return {verdict,reasons:[],checks:graded,contractHash,corrected,attempts,rerenderable:true,...(warnings.length?{warnings}:{})};
+  // The reason is the failing CHECK (hard first), never the model's free-text
+  // list: that list can open with a passing observation.
+  const why=[...hard,...soft].filter(c=>c.status!=='pass').map(describe);
+  return {verdict,reasons:why.slice(0,6),checks:graded,contractHash,corrected,attempts,rerenderable:true,softOnly:verdict==='fail'&&!hardFail&&!hardUnknown,...(warnings.length?{warnings}:{})};
 }
 /** Operator-visible text of a terminal QA outcome (SLA-528). The checker's first
  *  prose sentence alone made three unrelated-looking one-liners out of three
@@ -741,6 +758,7 @@ async function requestQaVerification(contract:SlideContract,candidate:Buffer,bas
   const sourceBaseline=contract.sourceMap.referenceKind!=='none';
   const checks=contractCheckPlan(contract,{sourceBaseline});
   const comparative=checks.filter(entry=>entry.scope==='comparison');
+  const softChecks=new Set(checks.filter(entry=>entry.severity==='soft').map(entry=>qaCheckKey(entry.check)??''));
   const policy=qaRequestPolicy(process.env,checks.length);
   const started=Date.now();
   const diagnostics:QaDiagnostics={model:policy.model,timeoutMs:policy.timeoutMs,reasoningEffort:policy.reasoningEffort,maxTokens:policy.maxTokens,checksRequested:checks.length,elapsedMs:0,outcome:'ok'};
@@ -788,7 +806,7 @@ async function requestQaVerification(contract:SlideContract,candidate:Buffer,bas
     diagnostics.elapsedMs=Date.now()-started;
     // The expected list is the contract's own, so the verdict can only be a
     // pass over an answer that actually covered what was asked.
-    const verdict=resolveQaVerdict(result.parsed,contract.contractHash,false,1,checks.map(entry=>entry.check));
+    const verdict=resolveQaVerdict(result.parsed,contract.contractHash,false,1,checks.map(entry=>entry.check),softChecks);
     // A frame that IS attached but cannot settle a comparative check answers
     // `unknown` for it, and resolveQaVerdict already records that as
     // unverified with the checker's own concrete reason. It is NOT a response
@@ -820,6 +838,27 @@ async function requestQaVerification(contract:SlideContract,candidate:Buffer,bas
     }
     return {...resolveQaVerdict(null,contract.contractHash),reasons:[`story_check_error:${String(err instanceof Error?err.message:err).replace(/\s+/g,' ').slice(0,80)}`],diagnostics};
   }
+}
+/** SLA-545: how hard QA gates a slide. `enforce` stops on any verified failure,
+ *  `warn` (default) ships a slide whose only failures are soft checks, with the
+ *  findings recorded on the audit, and `off` skips the checker entirely. */
+export type QaMode='enforce'|'warn'|'off';
+export function qaMode(env:NodeJS.ProcessEnv=process.env):QaMode{
+  const v=env.EXPERIMENT_QA_MODE?.trim().toLowerCase();
+  return v==='enforce'||v==='off'?v:'warn';
+}
+export {qaMaxAttempts};
+/** Throttles, timeouts and empty upstream responses can change on a repeat; the engine owns that retry. */
+function retryableCorrectionError(err:unknown):boolean{
+  if(classifyOpenRouterError(err).retryable)return true;
+  return err instanceof SafeFailure&&!(err instanceof TerminalFailure)&&/^(rate_limited_429|in_flight_budget)/.test(err.message);
+}
+/** A slide task is leased for 180s (engine.ts). Further attempts only start while
+ *  the next one is expected to finish inside this share of it, so a retry loop
+ *  can never outlive the lease and park the slide as provider_outcome_unknown. */
+function qaLeaseBudgetMs(env:NodeJS.ProcessEnv=process.env):number{
+  const n=Number.parseInt(env.EXPERIMENT_QA_LEASE_BUDGET_MS??'',10);
+  return Number.isFinite(n)&&n>0?n:140_000;
 }
 export const renderDeps:RenderDeps={
   findSources:async(workspaceId:string,ids:string[]):Promise<Video[]>=>db.video.findMany({where:{id:{in:ids},source:{workspaceId}}}),
@@ -1295,13 +1334,14 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       : contract;
   const fanout=Math.max(1,slideContract.fanout);
   /* ---- one resolved per-slide contract for BOTH render and QA (D1/D3/D7) ---- */
-  // Mirror sourceSlidesBlock's rotation so the contract's source copy, the board's
-  // source description and the renderer's reference frame name the same slide.
-  const readyInputs=e.inputs.filter(i=>i.status==='ready'&&i.copy?.length);
-  const mappedInput=readyInputs.length?readyInputs[t.index!%readyInputs.length]!:undefined;
-  const mappedRows=mappedInput?[...mappedInput.copy!].sort((a,b)=>a.slideIndex-b.slideIndex).map(r=>({state:r.state,text:r.text})):null;
-  const mappedIndex=mappedRows?Math.min(t.index!,mappedRows.length-1):null;
-  const mapped=mappedRows&&mappedIndex!==null?{rows:mappedRows,sourceIndex:mappedIndex}:null;
+  // The source frame this slide adapts is the one selectSlideReference picks. Scene, copy and
+  // sourceMap are all read from that frame's own input and exact slide index; a baseline
+  // identity frame still maps back to the source frame the baseline adapted.
+  const sourceRef=identityFrame?(()=>{try{return selectSlideReference(e,t.index!,sources);}catch(err){if(err instanceof SafeFailure)return null;throw err;}})():reference;
+  const mappedInput=sourceRef?e.inputs.find(i=>i.status==='ready'&&i.videoId===sourceRef.videoId&&!!i.copy?.length):undefined;
+  const mappedRow=mappedInput&&sourceRef?.index!=null?mappedInput.copy!.find(r=>r.slideIndex===sourceRef.index):undefined;
+  const mapped=mappedInput?{row:mappedRow?{state:mappedRow.state,text:mappedRow.text}:{state:'unknown' as const,text:null}}:null;
+  const sourceObservation=sourceSlideDescription(e,sourceRef);
   const briefOverlay=effectiveOverlayText(brief,t.index!);
   const overrides=brief.copyOverrides;
   const hasOverride=!!overrides&&String(t.index!)in overrides;
@@ -1311,34 +1351,38 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     ||e.instructions.variables.some(x=>x==='hook'||x==='caption'||x==='concept'||x==='slides')
     ||(v.changedVariables??[]).some(c=>c.name==='hook'||c.name==='caption'||c.name==='concept'||c.name==='slides');
   const overlay=overlayDecision({
-    source:mapped?mapped.rows[mapped.sourceIndex]??null:null,
+    source:mapped?mapped.row:null,
     hasOverride,overrideText:hasOverride?String(overrides![String(t.index!)]):null,
     briefText:briefOverlay,copyUnlocked,
   });
   const characterChange=(v.changedVariables??[]).find(c=>c.name==='character');
   const castingRequest=slideContract.changeFaces?(characterChange?characterChange.value:brief.character):null;
   const perSlide:SlideContract=compileSlideContract({
-    slideIndex:t.index!,role:slide.role,medium:e.styleFormula?.medium||'unknown',scene:slide.scene,
-    overlay,observedCopy:mapped?mapped.rows[mapped.sourceIndex]??null:null,
+    slideIndex:t.index!,role:slide.role,medium:e.styleFormula?.medium||'unknown',
+    // One contract: a text-edit of the attached frame is judged against that
+    // frame's own description, never the exploration board's new layout.
+    scene:(copyLock?sourceObservation:null)??slide.scene,
+    overlay,observedCopy:mapped?mapped.row:null,
     // SLA-510: the character field is deck-level, so hand it over as the roster
     // it is and let the contract resolve it against THIS slide's subject. The
     // single-subject case resolves exactly as the old castingRequest path did.
     deckCasting:castingRequest,castingRequest,identityLocked:!slideContract.changeFaces,
     sourceMap:{
-      videoId:mappedInput?mappedInput.videoId:(reference?reference.videoId:null),
-      analysisId:mappedInput?mappedInput.analysisId:null,
-      sourceIndex:mappedIndex??(reference?.index??null),
+      videoId:sourceRef?sourceRef.videoId:(reference?reference.videoId:null),
+      analysisId:e.inputs.find(i=>i.status==='ready'&&i.videoId===sourceRef?.videoId)?.analysisId??null,
+      sourceIndex:sourceRef?sourceRef.index:(reference?.index??null),
       referenceKind:reference?reference.kind:'none',path:reference?reference.path:null,
+      observation:sourceRef?.index==null?undefined:sourceObservation===null?'missing':'observed',
     },
     sceneLocks:e.instructions.lockedConstraints,
     labels:labelPolicy(e.instructions.lockedConstraints),
   });
-  return { units: fanout, execute:async()=>{
+  return { units: fanout, execute:async(ctx?:ExecuteContext)=>{
     const meter=new SlideMeter();
     const write=render.recordAiCost??logAiCost;
     const slideRef=`${e.id}:${v.id}#${t.index}`;
     const renderCosts={total:0,chosen:0};
-    try{return await executeSlide(meter,renderCosts,slideRef,write);}
+    try{return await executeSlide(meter,renderCosts,slideRef,write,ctx);}
     finally{
       // Renders that were paid for but never shipped (unchosen candidates, a
       // failed slide's whole wave) are still provider spend.
@@ -1347,7 +1391,8 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       meter.flush(e.workspaceId,slideRef,write);
     }
   }};
-  async function executeSlide(meter:SlideMeter,renderCosts:{total:number;chosen:number},slideRef:string,write:AiCostWriter){
+  async function executeSlide(meter:SlideMeter,renderCosts:{total:number;chosen:number},slideRef:string,write:AiCostWriter,ctx?:ExecuteContext){
+    const executeStarted=Date.now();
     const model=process.env.EXPERIMENT_IMAGE_MODEL?.trim() || RECREATE_IMAGE_MODEL;
     const basePrompt=buildVariantSlidePrompt(brief,t.index!,{...e.instructions,styleFormula:e.styleFormula??null,unlocked:e.instructions.variables},slideContract,perSlide);
     const referenceLine=reference
@@ -1446,17 +1491,19 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     /* ---- QA + bounded correction + completion gate (D7/D8) ---- */
     // The checker sees the SAME contract record the render request carried. An
     // exception, an invalid response or a missing check is `error`, never a pass.
+    const mode=qaMode();
+    const verifyStory=mode==='off'?undefined:render.verifyStory;
     //
     // SLA-522: the mapped source frame the render used as its reference is read
     // ONCE here and handed to every QA call for this slide, so the initial
     // check and the one corrective re-check judge the candidate against the
     // same frame. An unreadable frame is passed as null and the checker records
     // the comparison as unverified. Nothing is read when there is no checker.
-    const baselineFrame=render.verifyStory?await resolveBaselineFrame(render,reference):null;
+    const baselineFrame=verifyStory?await resolveBaselineFrame(render,reference):null;
     const verify=async(candidate:Buffer):Promise<SlideVerification|null>=>{
-      if(!render.verifyStory)return null;
+      if(!verifyStory)return null;
       try{
-        const result=await render.verifyStory({contract:perSlide,candidate,baseline:baselineFrame,meter:meter.sink});
+        const result=await verifyStory({contract:perSlide,candidate,baseline:baselineFrame,meter:meter.sink});
         // Normalise: a checker that does not return a real per-check verdict is
         // unverified, never a pass — an "ok"-shaped or empty answer cannot ship.
         const raw=result&&typeof result==='object'?result as Partial<SlideVerification>:null;
@@ -1472,6 +1519,9 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
           // deadline, for how long, and how it ended. A checker that threw
           // before answering is categorised here too.
           ...(raw?.diagnostics?{diagnostics:raw.diagnostics}:{}),
+          ...(Array.isArray(raw?.warnings)&&raw.warnings.length?{warnings:raw.warnings.map(w=>String(w).slice(0,240)).slice(0,6)}:{}),
+          ...(raw?.softOnly===true?{softOnly:true}:{}),
+          ...(raw?.rerenderable===true?{rerenderable:true}:{}),
         };
       }catch(err){
         // Transport failures reach the engine's bounded provider retry path.
@@ -1480,35 +1530,49 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     };
     let story:SlideVerification=await verify(chosen.buffer)
       ??{verdict:'skipped',reasons:[],checks:[],contractHash:perSlide.contractHash,corrected:false,attempts:0};
-    story.attempts=render.verifyStory?1:0;
-    if(render.verifyStory)judgeTrail.push({storyCheck:{verdict:story.verdict,contractHash:story.contractHash,reasons:story.reasons}});
-    // At most ONE corrective render per slide, shared by the style retry and the
-    // story retry. No retry after a verified pass, and no retry after a checker
-    // error — a blind re-render cannot un-verify anything (D8).
-    //
-    // SLA-511: the shared wave is bought by a VERIFIED FAIL, or by an
-    // off-style candidate when no checker exists at all (`skipped`). An `error`
-    // — unavailable, refused or unusable/incomplete QA — never buys one, even
-    // when the candidate is also off-style: a checker that could not answer is
-    // not a finding about the image, and paying for another image would spend a
-    // second time to learn nothing. That case previously reached the corrective
-    // render through the style flag.
-    const mustCorrect=story.verdict==='fail'||(story.verdict==='skipped'&&styleViolation);
-    if(mustCorrect){
+    story.attempts=verifyStory?1:0;
+    if(verifyStory)judgeTrail.push({storyCheck:{verdict:story.verdict,contractHash:story.contractHash,reasons:story.reasons}});
+    // SLA-545: bounded corrective renders. A VERIFIED fail, or an `error` that
+    // rests on a real per-check answer (a hard check came back unknown), buys a
+    // re-render carrying the failing-check feedback — up to EXPERIMENT_QA_MAX_ATTEMPTS
+    // renders in total. A checker that never answered (transport, refusal,
+    // incomplete coverage) never buys one: a blind re-render cannot un-verify
+    // anything (D8). Soft-only failures get one correction. Every attempt happens
+    // inside this task's single charge, so nothing here can exceed maxCredits.
+    // An off-style candidate with no checker at all (`skipped`) still gets its one
+    // style correction (SLA-511).
+    const maxAttempts=qaMaxAttempts();
+    const leaseBudgetMs=qaLeaseBudgetMs();
+    let attempt=1;
+    let lastAttemptMs=Date.now()-executeStarted;
+    const wantsRender=()=>story.verdict==='fail'||(story.verdict==='error'&&story.rerenderable===true)||(story.verdict==='skipped'&&styleViolation);
+    const attemptLimit=()=>story.softOnly||story.verdict==='skipped'?Math.min(2,maxAttempts):maxAttempts;
+    const admissionWarnings:string[]=[];
+    while(wantsRender()&&attempt<attemptLimit()&&Date.now()-executeStarted+lastAttemptMs*1.25<=leaseBudgetMs){
+      // Every corrective wave is paid provider work: it is debited durably BEFORE the call. With
+      // no admission hook, or no remaining credit/request capacity, the standing verdict stands.
+      if(!ctx||!await ctx.admit(fanout)){
+        admissionWarnings.push('correction_not_admitted:credit_or_request_limit');
+        judgeTrail.push({storyRetry:{skipped:'not_admitted'}});
+        break;
+      }
+      attempt++;
+      const attemptStarted=Date.now();
       const corrective=finalPrompt
         +(styleViolation?hardLock:'')
         +(story.reasons.length?'\nCORRECTIVE QA FEEDBACK — the previous attempt failed this slide\'s contract:'
           +story.reasons.map(r=>'\n- '+r).join('')
           +'\nFix exactly these problems. Keep every preserved lock, the medium and the exact overlay text.':'')
-        +'\nThis is the only corrective attempt for this slide.';
+        +`\nThis is attempt ${attempt} of at most ${attemptLimit()} for this slide.`;
       lastPrompt=corrective;
+      const before={wave,pick,described,describeError,winner,chosen};
       try{
         const wave2=await renderWave(corrective);
         const second=wave2.length>1?await describeSafe(wave2):{described:[{id:'c0',description:'single-render'}],error:null as string|null};
         const pick2=wave2.length>1?await chooseSafe(second.described):{winner:0,judge:{choice:'c0',index:0,note:'single-render'}};
         pick=pick2;described=second.described;describeError=second.error;
         judgeTrail.push(pick.judge);
-        const savedWave=wave;wave=wave2;
+        wave=wave2;
         winner=pickClean();
         chosen=wave[winner]!;
         const retry=await verify(chosen.buffer);
@@ -1516,12 +1580,32 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
         if(retry){
           // Only a VERIFIED pass replaces the previous attempt. Fewer reasons is
           // not a pass, and a failed or unverified correction never ships.
-          if(retry.verdict==='pass'){finalPrompt=corrective;styleViolation=styleViolationOf();story={...retry,corrected:true,attempts:2};}
-          else story={...retry,corrected:true,attempts:2};
-        }else{wave=savedWave;winner=pickClean();chosen=wave[winner]!;story={...story,attempts:2};}
-      }catch(err){judgeTrail.push({storyRetry:{error:String(err instanceof Error?err.message:err).slice(0,120)}});}
+          if(retry.verdict==='pass'){finalPrompt=corrective;styleViolation=styleViolationOf();}
+          story={...retry,corrected:true,attempts:attempt};
+        }else{({wave,pick,described,describeError,winner,chosen}=before);story={...story,attempts:attempt};break;}
+      }catch(err){
+        // A correction that could not finish never ships: restore the candidate
+        // the standing verdict was actually about.
+        ({wave,pick,described,describeError,winner,chosen}=before);
+        story={...story,attempts:attempt};
+        // A transient provider or checker failure (timeout, throttle, empty
+        // response) is not a verdict on the slide: it reaches the engine's
+        // bounded retry path, and the waves already admitted stay on the
+        // receipt. Only a non-retryable failure leaves the standing verdict.
+        if(retryableCorrectionError(err))throw err;
+        judgeTrail.push({storyRetry:{error:String(err instanceof Error?err.message:err).slice(0,120)}});
+        break;
+      }
+      lastAttemptMs=Date.now()-attemptStarted;
     }
-    const audit={verdict:story.verdict,contractHash:story.contractHash,corrected:story.corrected,attempts:story.attempts,reasons:story.reasons,checks:story.checks,prompt:lastPrompt,...(story.diagnostics?{diagnostics:story.diagnostics}:{}),
+    // `warn`: a slide whose ONLY failures are soft checks ships, with the
+    // findings on the audit. `enforce` keeps them terminal.
+    const warnings=[...(story.warnings??[]),...admissionWarnings];
+    if(story.verdict==='fail'&&story.softOnly&&mode==='warn'){
+      warnings.push(...story.reasons.map(r=>`soft_check_failed:${r}`));
+      story={...story,verdict:'pass',reasons:[]};
+    }
+    const audit={verdict:story.verdict,contractHash:story.contractHash,corrected:story.corrected,attempts:story.attempts,reasons:story.reasons,checks:story.checks,prompt:lastPrompt,...(warnings.length?{warnings:warnings.slice(0,10)}:{}),...(story.diagnostics?{diagnostics:story.diagnostics}:{}),
       // Which mapped frame this verdict was made against, and whether it was
       // actually attached. A `pass` with `attached:false` cannot be produced by
       // the production checker, and the record says why if it ever were.

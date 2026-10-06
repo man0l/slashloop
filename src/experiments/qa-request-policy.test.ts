@@ -23,6 +23,7 @@ import {
 } from './providers.js';
 import { compileSlideContract, contractChecks, contractQaBlock } from './render-prompt.js';
 import { sanitizeRequestId } from '../lib/openrouter.js';
+import { admission } from './test-admission.js';
 import { slideFanout } from './schema.js';
 import type { BriefData, Experiment, Task } from './schema.js';
 
@@ -542,7 +543,7 @@ describe('an unavailable checker is unverified, and buys nothing', () => {
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ checks, reasons: ['overlay cropped'] }) } }], usage: {} }), { status: 200, headers: { 'content-type': 'application/json' } });
     }) as unknown as typeof fetch;
 
-    const result = await (await prepare(fixture(), task, { ...deps.deps, verifyStory: renderDeps.verifyStory } as never)).execute() as { story: { verdict: string; corrected: boolean } };
+    const result = await (await prepare(fixture(), task, { ...deps.deps, verifyStory: renderDeps.verifyStory } as never)).execute(admission(1)) as { story: { verdict: string; corrected: boolean } };
     expect(result.story).toMatchObject({ verdict: 'pass', corrected: true });
     expect(contract).toBeDefined();
     // Initial wave plus the single shared corrective wave.

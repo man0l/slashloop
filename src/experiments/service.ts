@@ -236,19 +236,26 @@ export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: 
     const analysisCredits = jobs.filter(t=>t.kind==='analysis').reduce((n,t)=>n+priceOf(t),0);
     const planningCredits = jobs.filter(t=>t.kind==='report'||t.kind==='briefs').reduce((n,t)=>n+priceOf(t),0);
     const generationCredits = jobs.filter(t=>t.kind==='slide').reduce((n,t)=>n+priceOf(t),0);
+    const correctionCredits = jobs.filter(t=>t.kind==='slide').length*CREDIT_COSTS.experimentSlide*S.slideFanout()*(S.qaMaxAttempts()-1);
     return { analysisCredits,planningCredits,generationCredits,totalCredits:analysisCredits+planningCredits+generationCredits,
+      correctionCredits,maxTotalCredits:analysisCredits+planningCredits+generationCredits+correctionCredits,
       remainingCredits:e.maxCredits-e.creditsCharged, workspaceCredits:(await creditBalance(e.workspaceId)).total,
       maxCredits:e.maxCredits,generationBasis:e.generationBasis,exactProviderUsdCap:false,
-      maxProviderRequests:jobs.reduce((n,t)=>n+(t.kind==='slide'?S.slideFanout():1),0),
+      maxProviderRequests:jobs.reduce((n,t)=>n+(t.kind==='slide'?S.slideTaskRequestCap():1),0),
       pricing:{analysis:CREDIT_COSTS.analyzeVideo,planningCall:CREDIT_COSTS.experimentPlanningCall,slide:CREDIT_COSTS.experimentSlide} };
   }
   const analysisCredits = stage === 'plan' ? e.inputs.filter(x=>x.status!=='ready').length*CREDIT_COSTS.analyzeVideo : 0;
   const planningCredits = stage === 'plan' ? (e.report ? 0 : CREDIT_COSTS.experimentPlanningCall) + (e.variants.length ? 0 : CREDIT_COSTS.experimentPlanningCall) : 0;
   const generationCredits = stage === 'generate' ? variants.reduce((n,v)=>n+(v.slides.length ? v.slides.filter(s=>s.status!=='done').length : e.slideCount)*CREDIT_COSTS.experimentSlide,0)*S.slideFanout() : 0;
+  // Every slide can buy up to qaMaxAttempts-1 more full fan-out waves; each is admitted against the
+  // remaining experiment credit and the wallet before its provider calls, so this is a ceiling on
+  // requests, never an amount charged up front.
+  const correctionCredits = generationCredits*(S.qaMaxAttempts()-1);
   return { analysisCredits,planningCredits,generationCredits,totalCredits:analysisCredits+planningCredits+generationCredits,
+    correctionCredits,maxTotalCredits:analysisCredits+planningCredits+generationCredits+correctionCredits,
     remainingCredits:e.maxCredits-e.creditsCharged, workspaceCredits:(await creditBalance(e.workspaceId)).total,
     maxCredits:e.maxCredits,generationBasis:e.generationBasis,exactProviderUsdCap:false,
-    maxProviderRequests: (stage==='plan' ? analysisCredits/CREDIT_COSTS.analyzeVideo+planningCredits/CREDIT_COSTS.experimentPlanningCall : generationCredits/CREDIT_COSTS.experimentSlide),
+    maxProviderRequests: (stage==='plan' ? analysisCredits/CREDIT_COSTS.analyzeVideo+planningCredits/CREDIT_COSTS.experimentPlanningCall : generationCredits/CREDIT_COSTS.experimentSlide/S.slideFanout()*S.slideTaskRequestCap()),
     pricing:{analysis:CREDIT_COSTS.analyzeVideo,planningCall:CREDIT_COSTS.experimentPlanningCall,slide:CREDIT_COSTS.experimentSlide} };
 }
 const task = (kind:S.Task['kind'], target?:string,index?:number):S.Task => ({id:randomUUID(),kind,target,index,status:'pending',attempts:0,charged:0});
@@ -270,7 +277,12 @@ const task = (kind:S.Task['kind'], target?:string,index?:number):S.Task => ({id:
  * counting so the manual-retry ceiling still holds.
  */
 export function applyRetry(e:S.Experiment,retryTasks:readonly S.Task[]):void{
-  for(const t of retryTasks){t.status='pending';t.error=undefined;t.nextAttemptAt=undefined;}
+  // An explicit retry of a failed/unknown slide is priced by the per-job estimate and authorizes one more allowance;
+  // a merely paused (pending) task keeps what it has left.
+  for(const t of retryTasks){
+    if(t.kind==='slide'&&t.status!=='pending')t.requestCap=(t.requests??0)+S.slideTaskRequestCap();
+    t.status='pending';t.error=undefined;t.nextAttemptAt=undefined;
+  }
   for(const v of e.variants){
     const vt=retryTasks.filter(t=>t.target===v.id);
     if(!vt.length) continue;

@@ -21,6 +21,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Video } from '@prisma/client';
 import { prepare, renderDeps, TerminalFailure } from './providers.js';
+import { admission } from './test-admission.js';
 import { contractCheckPlan, contractChecks } from './render-prompt.js';
 import { thumbBucket } from '../lib/storage.js';
 import { editInstructions } from '../tools/experiments.js';
@@ -248,6 +249,7 @@ describe('the mapped source frame reaches the checker', () => {
       expect(byAttribute(attribute)).toEqual({
         check: `the subject's ${attribute} is unchanged from the reference frame`,
         scope: 'comparison',
+        severity: 'soft',
       });
     }
     // Overlay, labels and medium/beat stay candidate-only: they are absolute
@@ -346,7 +348,9 @@ describe('an unavailable comparison stays unverified', () => {
     expect(result.verdict).toBe('error');
     expect(result.diagnostics).toMatchObject({ outcome: 'ok' });
     expect(result.diagnostics!.errorCategory).toBeUndefined();
-    expect(result.reasons.join(' ')).toContain('gaze');
+    // A soft comparison the frames cannot settle is a recorded warning (SLA-545);
+    // the hard unknowns are what keep the slide unverified.
+    expect([...result.reasons, ...(result.warnings ?? [])].join(' ')).toContain('gaze');
   });
 
   test('a text-directed contract asks absolute requirements and invents no comparison', async () => {
@@ -363,6 +367,7 @@ describe('an unavailable comparison stays unverified', () => {
     expect(plan.filter(entry => entry.check.includes(' matches this slide\'s scene'))).toContainEqual({
       check: `the subject's complexion matches this slide's scene: ${JSON.stringify(contract.compiledScene)}`,
       scope: 'candidate',
+      severity: 'soft',
     });
 
     const requests = captureQaRequests();
@@ -385,7 +390,7 @@ describe('the corrective re-check compares against the same frame', () => {
         return { verdict: pass ? 'pass' : 'fail', reasons: pass ? [] : [`the subject's complexion is unchanged from the reference frame: the source frame shows a different complexion`], checks: [], contractHash: o.contract.contractHash, corrected: false, attempts: 1 };
       },
     });
-    const result = await (await prepare(e, task, harness.deps)).execute() as { story: { verdict: string; attempts: number; corrected: boolean; qaBaseline: { attached: boolean } } };
+    const result = await (await prepare(e, task, harness.deps)).execute(admission()) as { story: { verdict: string; attempts: number; corrected: boolean; qaBaseline: { attached: boolean } } };
 
     // Two QA calls happened: the initial check and the one bounded correction.
     expect(harness.qa).toHaveLength(2);
