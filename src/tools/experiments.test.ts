@@ -690,10 +690,10 @@ describe('reads', () => {
 });
 
 describe('helpers', () => {
-  test('default cap matches the site auto-cap (2x estimate, rounded up to 10, min 30)', () => {
-    // site: estimateExperimentCredits(1, 3, 5).total = 9 + 450 = 459 → 920
-    expect(defaultExperimentCap(3, 5)).toBe(920);
-    expect(defaultExperimentCap(1, 3)).toBe(200);
+  test('default cap is 2x the estimate, rounded up to 10, min 30 (priced at the current fan-out)', () => {
+    // 9 + 3 variants x 5 slides x 10 credits x fan-out 2 = 309 → 620
+    expect(defaultExperimentCap(3, 5)).toBe(620);
+    expect(defaultExperimentCap(1, 3)).toBe(140);
   });
   test('derived keys are deterministic and valid Keys', () => {
     const k = derivedKey('plan', { experimentId: 'e1' });

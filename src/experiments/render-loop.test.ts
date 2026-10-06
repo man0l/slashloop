@@ -3,6 +3,7 @@
 // failed or unverified check can never complete the slide (SLA-430 D7/D8).
 import { describe, expect, test } from 'bun:test';
 import { prepare, TerminalFailure } from './providers.js';
+import { slideFanout } from './schema.js';
 import type { Experiment, SlideVerification, Task } from './schema.js';
 import type { SlideContract } from './render-prompt.js';
 
@@ -40,7 +41,7 @@ describe('verified success requires a schema-valid composite pass',()=>{
   test('passing QA ships directly without a second render',async()=>{
     const render=deps({verifyStory:async()=>pass(3)});
     const result=await run(render);
-    expect(render.counts.renders).toBe(3); // single fanout wave, no corrective render
+    expect(render.counts.renders).toBe(slideFanout()); // single fanout wave, no corrective render
     expect(result.story).toMatchObject({verdict:'pass',reasons:[],corrected:false,attempts:1});
   });
 
@@ -50,7 +51,7 @@ describe('verified success requires a schema-valid composite pass',()=>{
       return opts.candidate[0]===1?fail('the steaming cup is missing'):pass(3);
     }});
     const result=await run(render);
-    expect(render.counts.renders).toBe(6); // fanout 3 initial wave + fanout 3 corrective wave
+    expect(render.counts.renders).toBe(2 * slideFanout()); // one fan-out wave + one corrective wave
     expect(result.story).toMatchObject({verdict:'pass',corrected:true,attempts:2});
     expect(result.prompt).toContain('CORRECTIVE QA FEEDBACK');
     expect(result.prompt).toContain('the steaming cup is missing');
@@ -124,7 +125,7 @@ describe('verified success requires a schema-valid composite pass',()=>{
     expect(err).toBeInstanceOf(TerminalFailure);
     expect((err as TerminalFailure).audit).toMatchObject({attempts:2,corrected:true});
     // 2 waves only: initial + the single shared corrective wave.
-    expect(render.counts.renders).toBe(6);
+    expect(render.counts.renders).toBe(2 * slideFanout());
     expect(((err as TerminalFailure).audit as { prompt: string }).prompt).toContain('only corrective attempt');
   });
 
@@ -133,13 +134,13 @@ describe('verified success requires a schema-valid composite pass',()=>{
     const err=await run(render).catch(e=>e);
     expect(err).toBeInstanceOf(TerminalFailure);
     expect((err as TerminalFailure).verdict).toBe('unverified');
-    expect(render.counts.renders).toBe(3); // no correction after an unverifiable check
+    expect(render.counts.renders).toBe(slideFanout()); // no correction after an unverifiable check
   });
 
   test('a verified pass is never corrected even when the wave is off-style',async()=>{
     const render=deps({describeCandidates:async()=>[{id:'c0',description:'app UI dashboard',overdesigned:true}],verifyStory:async()=>pass(2)});
     const result=await run(render);
     expect(result.story).toMatchObject({verdict:'pass',attempts:1});
-    expect(render.counts.renders).toBe(3);
+    expect(render.counts.renders).toBe(slideFanout());
   });
 });
