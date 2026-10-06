@@ -999,7 +999,7 @@ export interface SlideContract {
   slideIndex: number;
   role: string;
   medium: string;
-  sourceMap: { videoId: string | null; analysisId: string | null; sourceIndex: number | null; referenceKind: string; path: string | null };
+  sourceMap: { videoId: string | null; analysisId: string | null; sourceIndex: number | null; referenceKind: string; path: string | null; observation?: 'observed' | 'missing' };
   observedCopy: ObservedCopy | null;
   overlay: OverlayDecision;
   subject: SubjectContract;

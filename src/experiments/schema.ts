@@ -354,6 +354,13 @@ export const QA_HISTORY_LIMIT = 3;
 export const PARALLEL_SLIDES = 48;
 /** Candidates rendered per slide; Jev (TypeSafe) picks the most viral one. */
 export const SLIDE_FANOUT = 3;
+/** Total render waves per slide (the first plus QA corrections); the env knob is capped at 5. */
+export function qaMaxAttempts(env:NodeJS.ProcessEnv=process.env):number{
+  const n=Number.parseInt(env.EXPERIMENT_QA_MAX_ATTEMPTS??'',10);
+  return Number.isFinite(n)&&n>=1?Math.min(n,5):3;
+}
+/** Worst-case provider requests one slide task attempt can start: every render wave at full fan-out. */
+export const slideRequestAllowance=(fanout:number=SLIDE_FANOUT,env:NodeJS.ProcessEnv=process.env)=>fanout*qaMaxAttempts(env);
 /** Parameter deltas generated at the briefs stage; Jev ranks them, top variantCount-1 win. */
 export const BRIEF_CANDIDATES = 8;
 export const RETRY_BACKOFF_MS = 60_000;
@@ -430,10 +437,14 @@ export interface SlideQaRecord {
   qaBaseline?: { referenceKind: string; path: string | null; attached: boolean };
   /** The contract's own source mapping, kept beside the hash so a failed slide
    *  says which frame it claims to preserve. */
-  sourceMap?: { videoId: string | null; analysisId: string | null; sourceIndex: number | null; referenceKind: string; path: string | null };
+  sourceMap?: { videoId: string | null; analysisId: string | null; sourceIndex: number | null; referenceKind: string; path: string | null; observation?: 'observed' | 'missing' };
 }
 export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide'; target?: string; index?: number;
-  status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number; }
+  status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number;
+  /** Provider requests started, internal QA correction waves included. Absent on tasks that predate it (then `attempts`). */
+  requests?: number;
+  /** Durable debits for paid QA corrections, one ledger ref each, so every one is refundable by its own receipt. */
+  corrections?: Array<{ ref: string; attempt: number; charged: number }>; }
 export interface Input { videoId: string; status: string; analysisId: string | null; jobId: string | null; error: string | null;
   coverage: { basis: string; observed: number; total: number | null; complete: boolean } | null; evidence: Array<{ location: string; observation: string }>;
   /** Recorded source copy state per slide, kept outside the truncated prose so a

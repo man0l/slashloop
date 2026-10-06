@@ -9,7 +9,7 @@ import { callOpenRouterText, classifyOpenRouterError, extractFirstJson, generate
 import { buildVariantSlidePrompt, compileSlideContract, contractCheckPlan, contractChecks, contractQaBlock, effectiveOverlayText, experimentVisualLock, labelPolicy, lockCarouselIdentity, overlayDecision, renderContract, type ObservedCopy, type SlideContract } from './render-prompt.js';
 import { jevPick, jevAsk, type JevQuestion, type JevAnswer } from '../lib/typesafe.js';
 import { putObject, getObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
-import { ExperimentError, Report, VariantProposal, BriefStoryboard, BriefDelta, BRIEF_CANDIDATES, EXACT_EDIT_OPERATION, VARIABLE_FIELDS, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type QaCheck, type SlideVerification, type Task } from './schema.js';
+import { ExperimentError, qaMaxAttempts, Report, VariantProposal, BriefStoryboard, BriefDelta, BRIEF_CANDIDATES, EXACT_EDIT_OPERATION, VARIABLE_FIELDS, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type QaCheck, type SlideVerification, type Task } from './schema.js';
 import { candidateSlides, jevEvidence } from './jev-evidence.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { assertExactEditContractIntact, assertSingleVariant, exactEditChecks } from './exact-edit.js';
@@ -165,7 +165,11 @@ export function selectSlideReference(e:Experiment,index:number,videos:Video[]) {
   const path=thumbPath(e.workspaceId,anchorVideo.id);
   return {kind:'thumb' as const,videoId:anchorVideo.id,index:null,path,url:publicUrl(thumbBucket(),path)};
 }
-export interface Prepared { execute():Promise<unknown>; free?: boolean; units?: number; }
+/** Granted by the engine per task attempt. `admit(units)` durably debits one more paid wave of
+ *  `units` provider requests against the experiment's remaining credit and the wallet, and
+ *  resolves false (nothing charged, nothing started) when capacity is absent. */
+export interface ExecuteContext { admit(units:number):Promise<boolean>; }
+export interface Prepared { execute(ctx?:ExecuteContext):Promise<unknown>; free?: boolean; units?: number; }
 interface RenderDeps {
   findSources(workspaceId:string, ids:string[]):Promise<Video[]>;
   generateImage(opts:{prompt:string;referenceUrl?:string;model:string;quality:'low'|'medium'|'high';aspectRatio:string}):Promise<{buffer:Buffer;contentType:string;costUsd:number}>;
@@ -385,42 +389,27 @@ const BRIEF_DELTA_SLIDES={type:'array',minItems:3,maxItems:8,items:{type:'object
 const BRIEF_DELTA_OVERLAYS={type:'array',minItems:3,maxItems:8,items:{type:'string'}};
 const BRIEF_DELTA_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['candidates'],properties:{candidates:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['title','hypothesis','mechanism','changedVariables'],properties:{title:{type:'string'},hypothesis:{type:'string'},mechanism:{type:'string'},changedVariables:{type:'array',minItems:1,maxItems:3,items:{type:'object',additionalProperties:false,required:['name','value'],properties:{name:{type:'string',enum:['hook','character','visualStyle','caption','cta','concept','slides']},value:{type:'string'}}}},slides:BRIEF_DELTA_SLIDES,overlayTexts:BRIEF_DELTA_OVERLAYS}}}}};
 const BRIEF_BOARD_JSON_SCHEMA:Record<string,unknown>={type:'object',additionalProperties:false,required:['baseline'],properties:{baseline:{type:'object',additionalProperties:false,required:['title','hypothesis','concept','hook','character','visualStyle','caption','slides'],properties:{title:{type:'string'},hypothesis:{type:'string'},concept:{type:'string'},hook:{type:'string'},character:{type:'string'},visualStyle:{type:'string'},caption:{type:'string'},slides:{type:'array',minItems:3,maxItems:8,items:{type:'object',additionalProperties:false,required:['role','scene','overlayText'],properties:{role:{type:'string'},scene:{type:'string'},overlayText:{type:'string'}}}}}}}};
-/**
- * Per-storyboard-slide source description, mirroring selectSlideReference's
- * rotation (originals[index % n], sourceIndex = min(index, len-1)) so the
- * storyboard slide adapts exactly the frame the renderer will receive as
- * reference. Format-agnostic: structure flows from the observations.
- */
-/** The source description of the slide that storyboard slide `n` adapts — the
- *  same rotation as sourceSlidesBlock and the renderer's reference frame. */
-export function sourceSlideDescription(e: Pick<Experiment,'inputs'>, n: number): string | null {
-  const carousels: string[][] = [];
-  for (const i of e.inputs) {
-    if (i.status !== 'ready') continue;
-    const obs = (i.evidence ?? [])
-      .filter(v => v.location.startsWith('slide:'))
-      .sort((a, b) => Number(a.location.slice(6)) - Number(b.location.slice(6)));
-    if (obs.length) carousels.push(obs.map(v => v.observation));
-  }
-  if (!carousels.length) return null;
-  const car = carousels[n % carousels.length]!;
-  return car[Math.min(n, car.length - 1)] ?? null;
+/** The observation recorded for exactly the frame the renderer was handed: the input that owns
+ *  `ref.videoId`, evidence location `slide:${ref.index}`. No rotation, no compaction of sparse
+ *  evidence, no neighbouring frame — a frame without an observation has no description. */
+export function sourceSlideDescription(e: Pick<Experiment,'inputs'>, ref: { videoId: string; index: number | null } | null): string | null {
+  if (!ref || ref.index === null) return null;
+  const input = e.inputs.find(i => i.status === 'ready' && i.videoId === ref.videoId);
+  return (input?.evidence ?? []).find(v => v.location === `slide:${ref.index}`)?.observation ?? null;
 }
 export function sourceSlidesBlock(e: Experiment): string {
-  const carousels: string[][] = [];
-  for (const i of e.inputs) {
-    if (i.status !== 'ready') continue;
-    const obs = i.evidence
-      .filter(v => v.location.startsWith('slide:'))
-      .sort((a, b) => Number(a.location.slice(6)) - Number(b.location.slice(6)));
-    if (obs.length) carousels.push(obs.map(v => `slide ${v.location.slice(6)}: ${v.observation}`));
-  }
+  // A carousel is a ready input that owns slide frames — the same set selectSlideReference rotates
+  // over — and each is read by exact `slide:N`, so sparse evidence never shifts a neighbour in.
+  const carousels = e.inputs.filter(i => i.status === 'ready' && (i.coverage?.total != null || i.evidence.some(v => v.location.startsWith('slide:'))));
   if (!carousels.length) return '';
   const lines: string[] = [];
   for (let n = 0; n < e.slideCount; n++) {
-    const car = carousels[n % carousels.length]!;
-    const idx = Math.min(n, car.length - 1);
-    lines.push(`- storyboard slide ${n + 1} adapts carousel ${(n % carousels.length) + 1}: ${car[idx]}`);
+    const input = carousels[n % carousels.length]!;
+    const slides = input.evidence.filter(v => v.location.startsWith('slide:')).map(v => Number(v.location.slice(6)));
+    const last = (input.coverage?.total ?? Math.max(-1, ...slides) + 1) - 1;
+    const idx = Math.min(n, last);
+    const obs = input.evidence.find(v => v.location === `slide:${idx}`)?.observation;
+    lines.push(`- storyboard slide ${n + 1} adapts carousel ${(n % carousels.length) + 1}: slide ${idx}: ${obs ?? 'no recorded observation — keep this frame, invent no description'}`);
   }
   return lines.join('\n');
 }
@@ -827,10 +816,11 @@ export function qaMode(env:NodeJS.ProcessEnv=process.env):QaMode{
   const v=env.EXPERIMENT_QA_MODE?.trim().toLowerCase();
   return v==='enforce'||v==='off'?v:'warn';
 }
-/** Total render attempts per slide (the first render plus corrections). */
-export function qaMaxAttempts(env:NodeJS.ProcessEnv=process.env):number{
-  const n=Number.parseInt(env.EXPERIMENT_QA_MAX_ATTEMPTS??'',10);
-  return Number.isFinite(n)&&n>=1?Math.min(n,5):3;
+export {qaMaxAttempts};
+/** Throttles, timeouts and empty upstream responses can change on a repeat; the engine owns that retry. */
+function retryableCorrectionError(err:unknown):boolean{
+  if(classifyOpenRouterError(err).retryable)return true;
+  return err instanceof SafeFailure&&!(err instanceof TerminalFailure)&&/^(rate_limited_429|in_flight_budget)/.test(err.message);
 }
 /** A slide task is leased for 180s (engine.ts). Further attempts only start while
  *  the next one is expected to finish inside this share of it, so a retry loop
@@ -1311,13 +1301,14 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       : contract;
   const fanout=Math.max(1,slideContract.fanout);
   /* ---- one resolved per-slide contract for BOTH render and QA (D1/D3/D7) ---- */
-  // Mirror sourceSlidesBlock's rotation so the contract's source copy, the board's
-  // source description and the renderer's reference frame name the same slide.
-  const readyInputs=e.inputs.filter(i=>i.status==='ready'&&i.copy?.length);
-  const mappedInput=readyInputs.length?readyInputs[t.index!%readyInputs.length]!:undefined;
-  const mappedRows=mappedInput?[...mappedInput.copy!].sort((a,b)=>a.slideIndex-b.slideIndex).map(r=>({state:r.state,text:r.text})):null;
-  const mappedIndex=mappedRows?Math.min(t.index!,mappedRows.length-1):null;
-  const mapped=mappedRows&&mappedIndex!==null?{rows:mappedRows,sourceIndex:mappedIndex}:null;
+  // The source frame this slide adapts is the one selectSlideReference picks. Scene, copy and
+  // sourceMap are all read from that frame's own input and exact slide index; a baseline
+  // identity frame still maps back to the source frame the baseline adapted.
+  const sourceRef=identityFrame?(()=>{try{return selectSlideReference(e,t.index!,sources);}catch(err){if(err instanceof SafeFailure)return null;throw err;}})():reference;
+  const mappedInput=sourceRef?e.inputs.find(i=>i.status==='ready'&&i.videoId===sourceRef.videoId&&!!i.copy?.length):undefined;
+  const mappedRow=mappedInput&&sourceRef?.index!=null?mappedInput.copy!.find(r=>r.slideIndex===sourceRef.index):undefined;
+  const mapped=mappedInput?{row:mappedRow?{state:mappedRow.state,text:mappedRow.text}:{state:'unknown' as const,text:null}}:null;
+  const sourceObservation=sourceSlideDescription(e,sourceRef);
   const briefOverlay=effectiveOverlayText(brief,t.index!);
   const overrides=brief.copyOverrides;
   const hasOverride=!!overrides&&String(t.index!)in overrides;
@@ -1327,7 +1318,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     ||e.instructions.variables.some(x=>x==='hook'||x==='caption'||x==='concept'||x==='slides')
     ||(v.changedVariables??[]).some(c=>c.name==='hook'||c.name==='caption'||c.name==='concept'||c.name==='slides');
   const overlay=overlayDecision({
-    source:mapped?mapped.rows[mapped.sourceIndex]??null:null,
+    source:mapped?mapped.row:null,
     hasOverride,overrideText:hasOverride?String(overrides![String(t.index!)]):null,
     briefText:briefOverlay,copyUnlocked,
   });
@@ -1337,22 +1328,23 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     slideIndex:t.index!,role:slide.role,medium:e.styleFormula?.medium||'unknown',
     // One contract: a text-edit of the attached frame is judged against that
     // frame's own description, never the exploration board's new layout.
-    scene:(copyLock?sourceSlideDescription(e,t.index!):null)??slide.scene,
-    overlay,observedCopy:mapped?mapped.rows[mapped.sourceIndex]??null:null,
+    scene:(copyLock?sourceObservation:null)??slide.scene,
+    overlay,observedCopy:mapped?mapped.row:null,
     // SLA-510: the character field is deck-level, so hand it over as the roster
     // it is and let the contract resolve it against THIS slide's subject. The
     // single-subject case resolves exactly as the old castingRequest path did.
     deckCasting:castingRequest,castingRequest,identityLocked:!slideContract.changeFaces,
     sourceMap:{
-      videoId:mappedInput?mappedInput.videoId:(reference?reference.videoId:null),
-      analysisId:mappedInput?mappedInput.analysisId:null,
-      sourceIndex:mappedIndex??(reference?.index??null),
+      videoId:sourceRef?sourceRef.videoId:(reference?reference.videoId:null),
+      analysisId:e.inputs.find(i=>i.status==='ready'&&i.videoId===sourceRef?.videoId)?.analysisId??null,
+      sourceIndex:sourceRef?sourceRef.index:(reference?.index??null),
       referenceKind:reference?reference.kind:'none',path:reference?reference.path:null,
+      observation:sourceRef?.index==null?undefined:sourceObservation===null?'missing':'observed',
     },
     sceneLocks:e.instructions.lockedConstraints,
     labels:labelPolicy(e.instructions.lockedConstraints),
   });
-  return { units: fanout, execute:async()=>{
+  return { units: fanout, execute:async(ctx?:ExecuteContext)=>{
     const executeStarted=Date.now();
     const model=process.env.EXPERIMENT_IMAGE_MODEL?.trim() || RECREATE_IMAGE_MODEL;
     const basePrompt=buildVariantSlidePrompt(brief,t.index!,{...e.instructions,styleFormula:e.styleFormula??null,unlocked:e.instructions.variables},slideContract,perSlide);
@@ -1505,7 +1497,15 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     let lastAttemptMs=Date.now()-executeStarted;
     const wantsRender=()=>story.verdict==='fail'||(story.verdict==='error'&&story.rerenderable===true)||(story.verdict==='skipped'&&styleViolation);
     const attemptLimit=()=>story.softOnly||story.verdict==='skipped'?Math.min(2,maxAttempts):maxAttempts;
+    const admissionWarnings:string[]=[];
     while(wantsRender()&&attempt<attemptLimit()&&Date.now()-executeStarted+lastAttemptMs*1.25<=leaseBudgetMs){
+      // Every corrective wave is paid provider work: it is debited durably BEFORE the call. With
+      // no admission hook, or no remaining credit/request capacity, the standing verdict stands.
+      if(!ctx||!await ctx.admit(fanout)){
+        admissionWarnings.push('correction_not_admitted:credit_or_request_limit');
+        judgeTrail.push({storyRetry:{skipped:'not_admitted'}});
+        break;
+      }
       attempt++;
       const attemptStarted=Date.now();
       const corrective=finalPrompt
@@ -1538,6 +1538,11 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
         // the standing verdict was actually about.
         ({wave,pick,described,describeError,winner,chosen}=before);
         story={...story,attempts:attempt};
+        // A transient provider or checker failure (timeout, throttle, empty
+        // response) is not a verdict on the slide: it reaches the engine's
+        // bounded retry path, and the waves already admitted stay on the
+        // receipt. Only a non-retryable failure leaves the standing verdict.
+        if(retryableCorrectionError(err))throw err;
         judgeTrail.push({storyRetry:{error:String(err instanceof Error?err.message:err).slice(0,120)}});
         break;
       }
@@ -1545,7 +1550,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     }
     // `warn`: a slide whose ONLY failures are soft checks ships, with the
     // findings on the audit. `enforce` keeps them terminal.
-    const warnings=[...(story.warnings??[])];
+    const warnings=[...(story.warnings??[]),...admissionWarnings];
     if(story.verdict==='fail'&&story.softOnly&&mode==='warn'){
       warnings.push(...story.reasons.map(r=>`soft_check_failed:${r}`));
       story={...story,verdict:'pass',reasons:[]};

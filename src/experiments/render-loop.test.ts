@@ -5,6 +5,7 @@ import { describe, expect, test } from 'bun:test';
 import { prepare, resolveQaVerdict, TerminalFailure } from './providers.js';
 import type { Experiment, SlideVerification, Task } from './schema.js';
 import type { SlideContract } from './render-prompt.js';
+import { admission } from './test-admission.js';
 
 const instructions={goal:'Sell tea',brand:'Tea',audience:'Adults',language:'English',direction:'Calm',lockedConstraints:[],variables:['hook' as const],mode:'controlled' as const};
 const brief={concept:'Tea routine',hook:'Take a break',character:'Adult',visualStyle:'Warm',caption:'Tea time',cta:'',lockedConstraints:[],slides:[{role:'hook',scene:'A steaming cup on a wooden table by a window',overlayText:'Take a break'},{role:'body',scene:'Hands holding the cup',overlayText:'Breathe'},{role:'end',scene:'Empty cup, calm morning',overlayText:''}]};
@@ -29,11 +30,11 @@ function deps(overrides:Record<string,unknown>={}){
   };
   return {...base,...overrides,counts} as unknown as Parameters<typeof prepare>[2] & {counts:{renders:number}};
 }
-async function run(render:Parameters<typeof prepare>[2]){
+async function run(render:Parameters<typeof prepare>[2],waves:number=Infinity){
   process.env.OPENROUTER_API_KEY='test';
   process.env.R2_THUMB_PUBLIC_BASE='https://thumbs.test';
   const prepared=await prepare(fixture(),{id:'t0',kind:'slide',target:'v1',index:0,attempts:0,charged:10} as unknown as Task,render);
-  return await prepared.execute() as any;
+  return await prepared.execute(admission(waves)) as any;
 }
 
 describe('verified success requires a schema-valid composite pass',()=>{
@@ -249,5 +250,82 @@ describe('prepare() with soft checks and QA mode',()=>{
     expect(result.story.verdict).toBe('pass');
     expect(result.story.warnings).toEqual(['unverified:the story beat: unknown']);
     expect(render.counts.renders).toBe(3);
+  });
+});
+
+describe('corrections need durable admission before any provider call (SLA-550)',()=>{
+  test('no admission context means no paid correction: the first wave only, a verified failure',async()=>{
+    const render=deps({verifyStory:async()=>fail('the steaming cup is missing')});
+    process.env.OPENROUTER_API_KEY='test';
+    const prepared=await prepare(fixture(),{id:'t0',kind:'slide',target:'v1',index:0,attempts:0,charged:10} as unknown as Task,render);
+    const err=await prepared.execute().catch(e=>e);
+    expect(err).toBeInstanceOf(TerminalFailure);
+    expect(render.counts.renders).toBe(3);
+    expect(JSON.stringify((err as TerminalFailure).audit)).toContain('correction_not_admitted');
+  });
+
+  test('a denied wave starts zero provider requests and ends the slide on its standing verdict',async()=>{
+    const ctx=admission(0);
+    const render=deps({verifyStory:async()=>fail('the steaming cup is missing')});
+    process.env.OPENROUTER_API_KEY='test';
+    const prepared=await prepare(fixture(),{id:'t0',kind:'slide',target:'v1',index:0,attempts:0,charged:10} as unknown as Task,render);
+    const err=await prepared.execute(ctx).catch(e=>e);
+    expect(err).toBeInstanceOf(TerminalFailure);
+    expect(ctx.asked).toEqual([3]);
+    expect(render.counts.renders).toBe(3);
+  });
+
+  test('every started wave was admitted first: renders never exceed admitted waves x fan-out',async()=>{
+    for(const waves of [0,1,2,3]){
+      const ctx=admission(waves);
+      const render=deps({verifyStory:async()=>fail('the steaming cup is missing')});
+      process.env.OPENROUTER_API_KEY='test';
+      const prepared=await prepare(fixture(),{id:'t0',kind:'slide',target:'v1',index:0,attempts:0,charged:10} as unknown as Task,render);
+      await prepared.execute(ctx).catch(()=>{});
+      expect(render.counts.renders).toBeLessThanOrEqual((1+ctx.granted)*3);
+      expect(render.counts.renders).toBe((1+Math.min(waves,2))*3);
+    }
+  });
+
+  test('a correction that times out is retryable, keeps no half result, and asks no further wave',async()=>{
+    const ctx=admission();
+    let calls=0;
+    const render=deps({
+      generateImage:async()=>{calls++;if(calls>3){const err=new Error('The operation timed out.');err.name='TimeoutError';throw err;}return {buffer:Buffer.alloc(600,1),contentType:'image/jpeg',costUsd:0.01};},
+      verifyStory:async()=>fail('the steaming cup is missing'),
+    });
+    process.env.OPENROUTER_API_KEY='test';
+    const prepared=await prepare(fixture(),{id:'t0',kind:'slide',target:'v1',index:0,attempts:0,charged:10} as unknown as Task,render);
+    const err=await prepared.execute(ctx).catch(e=>e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(TerminalFailure);
+    expect(ctx.granted).toBe(1);
+  });
+
+  test('a corrective render that returns no image is retryable, not a verdict',async()=>{
+    let calls=0;
+    const render=deps({
+      generateImage:async()=>{calls++;if(calls>3)throw new Error('OpenRouter returned no image');return {buffer:Buffer.alloc(600,1),contentType:'image/jpeg',costUsd:0.01};},
+      verifyStory:async()=>fail('the steaming cup is missing'),
+    });
+    const err=await run(render).catch(e=>e);
+    expect(err).not.toBeInstanceOf(TerminalFailure);
+    expect((err as Error).message).toContain('no image');
+  });
+
+  test('a transient checker failure inside the corrective wave is retryable, never an unverified terminal',async()=>{
+    let checks=0;
+    const render=deps({verifyStory:async()=>{checks++;if(checks>1)throw new Error('The operation timed out.');return fail('the steaming cup is missing');}});
+    const err=await run(render).catch(e=>e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(TerminalFailure);
+  });
+
+  test('a non-transient checker failure inside the corrective wave is unverified, never a pass',async()=>{
+    let checks=0;
+    const render=deps({verifyStory:async()=>{checks++;if(checks>1)throw new Error('checker exploded');return fail('the steaming cup is missing');}});
+    const err=await run(render).catch(e=>e);
+    expect(err).toBeInstanceOf(TerminalFailure);
+    expect((err as TerminalFailure).verdict).toBe('unverified');
   });
 });

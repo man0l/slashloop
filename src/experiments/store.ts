@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { db, dbDialect, rawBatch, type Dialect, type RawStatement } from '../store.js';
 import { resolveBillingWorkspace, InsufficientCreditsError } from '../lib/credits.js';
-import { ExperimentError, type Experiment } from './schema.js';
+import { ExperimentError, SLIDE_FANOUT, qaMaxAttempts, type Experiment } from './schema.js';
 import { encodeExperiment } from './document-budget.js';
 
 export async function batch(statements: RawStatement[]): Promise<unknown[][]> {
@@ -116,5 +116,5 @@ export function serialize(e: Experiment) {
   // Compact per-job projection so the UI can offer manual retry on a single failed job.
   const jobs = tasks.map(({ id, kind, target, index, status, error, attempts, nextAttemptAt, startedAt }) => ({ id, kind, target, index, status, error, attempts, nextAttemptAt, startedAt }));
   return { ...publicData, jobs, inputs: e.inputs.map(({ evidence, ...input }) => input), variants: e.variants.map(({ history, frozenBrief, ...v }) => v),
-    providerBudget: { maxRequests: 2 * (e.inputs.length + 2 + e.variantCount * e.slideCount), requestsStarted: tasks.reduce((n,t) => n+t.attempts,0), exactUsdCap: false } };
+    providerBudget: { maxRequests: 2 * (e.inputs.length + 2 + e.variantCount * e.slideCount * SLIDE_FANOUT * qaMaxAttempts()), requestsStarted: tasks.reduce((n,t) => n+(t.requests ?? t.attempts),0), exactUsdCap: false } };
 }
