@@ -33,7 +33,10 @@
 //       DB_CONNECTION_LIMIT with it (Postgres mode only; D1 serializes).
 //       WORKER_RECLAIM_INTERVAL_MS (default 300000) throttles BOTH whole-queue
 //       sweeps (stuck-claim reclaim + never-claimed fail) on the maintenance
-//       worker. WORKER_INTERNAL_URL + CRON_SECRET route rawBatch through the
+//       worker. WORKER_METRICS_PORT (unset = off) serves GET /metrics with the
+//       fallback-backlog gauges (src/worker/metrics.ts); internal network only,
+//       and only the maintenance worker's listener carries series.
+//       WORKER_INTERNAL_URL + CRON_SECRET route rawBatch through the
 //       Worker's atomic /internal/raw-batch; without them multi-statement
 //       batches run WITHOUT atomicity (dev only).
 // ---------------------------------------------------------------------------
@@ -56,6 +59,7 @@ import { initLogShipping } from './ship-logs.js';
 import { tick as experimentTick } from '../experiments/engine.js';
 import { candidates as experimentCandidates } from '../experiments/store.js';
 import { createKindBreaker } from './kind-breaker.js';
+import { parseMetricsPort, recordFallbackSweep, startWorkerMetricsServer } from './metrics.js';
 import {
   describeExperimentTickGate, experimentTickFailureDetail, nextExperimentCadence,
   experimentTickIntervalMs, EXPERIMENT_TICK_MIN_INTERVAL_MS, EXPERIMENT_TICK_SLOW_INTERVAL_MS,
@@ -251,6 +255,18 @@ try {
   pgQueue = null;
 }
 
+// Opt-in Prometheus listener (SLA-359). Internal network only; a bind failure
+// must never stop the worker from draining jobs.
+const metricsPort = parseMetricsPort(process.env.WORKER_METRICS_PORT);
+if (metricsPort) {
+  try {
+    await startWorkerMetricsServer(metricsPort);
+    console.log(`[worker] metrics listening on :${metricsPort}/metrics`);
+  } catch (err) {
+    console.warn(`[worker] metrics listener failed to start: ${(err as Error).message}`);
+  }
+}
+
 let shuttingDown = false;
 let sigName = '';
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
@@ -369,10 +385,14 @@ while (!shuttingDown) {
       } else if (runD1Recovery) {
         d1RecoverySkippedLogged = false;
       }
+      let fallbackSweepOk = true;
       const fallback = await reconcileFallbackJobs().catch((err) => {
+        fallbackSweepOk = false;
         console.warn(`[worker] fallback reconcile sweep failed: ${(err as Error).message}`);
         return { reconciled: 0, failed: 0, more: false, backlog: 0, oldestAt: null };
       });
+      // A failed sweep records nothing: its zeroed result is not a measurement.
+      if (fallbackSweepOk) recordFallbackSweep(fallback);
       if (fallback.reconciled || fallback.failed) {
         console.log(
           `[worker] fallback reconcile reconciled=${fallback.reconciled} failed=${fallback.failed}`
@@ -384,7 +404,8 @@ while (!shuttingDown) {
       // metrics cannot see it (it lives in D1 MediaJob). While a backlog
       // exists, one line per maintenance sweep reports its size and the
       // reconcile lag (age of the oldest parked row, the sweep-start
-      // snapshot) — silent parking now has a metric in the shipped logs.
+      // snapshot). The same sample feeds the alertable gauges in
+      // ./metrics.ts (SLA-359); this line stays as the human-readable trail.
       if (fallback.backlog > 0) {
         const oldestSec = fallback.oldestAt
           ? Math.max(0, Math.round((Date.now() - fallback.oldestAt.getTime()) / 1000))
