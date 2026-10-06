@@ -287,6 +287,32 @@ export function applyRetry(e:S.Experiment,retryTasks:readonly S.Task[]):void{
     }
   }
 }
+/**
+ * Brief-edit matrix for `update_experiment_variant`. Throws unless the variant's brief may be rewritten.
+ *   review            draft variant        edit
+ *   completed         draft variant        edit (a rendered/frozen variant never)
+ *   failed | paused   draft variant        edit only while no in-flight/unknown provider job could resume from it
+ *   draft             no variants yet      refused: not_editable (plan first)
+ *   planning | generating                  refused: experiment_active
+ *   cancelled                              refused: experiment_cancelled
+ * A frozen or non-draft variant is variant_frozen; a stale revision is revision_conflict.
+ */
+export function assertVariantEditable(e:S.Experiment,variantId:string|undefined,revision:number):S.Experiment['variants'][number] {
+  if (!variantId) throw new S.ExperimentError(400,'variant_required','Name the variant to edit.');
+  switch (e.status) {
+    case 'planning': case 'generating': throw new S.ExperimentError(409,'experiment_active');
+    case 'cancelled': throw new S.ExperimentError(409,'experiment_cancelled');
+    case 'draft': throw new S.ExperimentError(409,'not_editable');
+    case 'review': case 'completed': case 'failed': case 'paused': break;
+    default: throw new S.ExperimentError(409,'not_editable');
+  }
+  const v=selected(e,[variantId])[0]!;
+  if (v.status!=='draft' || v.frozenBrief) throw new S.ExperimentError(409,'variant_frozen');
+  if (v.revision!==revision) throw new S.ExperimentError(409,'revision_conflict');
+  if ((e.status==='failed' || e.status==='paused') && e.tasks.some(t=>(t.status==='running'||t.status==='unknown') && (t.kind!=='slide' || t.target===v.id)))
+    throw new S.ExperimentError(409,'variant_in_flight');
+  return v;
+}
 export async function mutate(workspaceId:string,id:string,action:string,raw:unknown,variantId?:string) {
   // SLA-451: exact_edit is a separately selected operation. Its actions are
   // refused on a legacy experiment and legacy actions are refused on it, so a
@@ -336,9 +362,8 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     e.status='planning';
     e.tasks=[...e.inputs.filter(i=>i.status!=='ready').map(i=>task('analysis',i.videoId)),task('report'),task('briefs')];
   } else if (action==='edit') {
-    if (e.status!=='review' || !variantId) throw new S.ExperimentError(409,'not_idle');
-    const v=selected(e,[variantId])[0]!; const edit=S.EditBrief.parse(b);
-    if(v.status!=='draft' || v.revision!==edit.revision || v.frozenBrief) throw new S.ExperimentError(409,'revision_conflict');
+    const edit=S.EditBrief.parse(b);
+    const v=assertVariantEditable(e,variantId,edit.revision);
     S.assertBrief(e,edit.brief);
     const proposals=e.variants.map(p=>p.id===v.id?{...p,brief:edit.brief}:p);
     // Derive factual delta labels rather than accepting stale model labels after editing.
