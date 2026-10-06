@@ -54,11 +54,12 @@ import { withMeterScope } from '../lib/scrapers/bandwidth.js';
 import { refundCredits } from '../lib/credits.js';
 import { initLogShipping } from './ship-logs.js';
 import { tick as experimentTick } from '../experiments/engine.js';
+import { candidates as experimentCandidates } from '../experiments/store.js';
 import { createKindBreaker } from './kind-breaker.js';
 import {
   describeExperimentTickGate, experimentTickFailureDetail, nextExperimentCadence,
   experimentTickIntervalMs, EXPERIMENT_TICK_MIN_INTERVAL_MS, EXPERIMENT_TICK_SLOW_INTERVAL_MS,
-  IDLE_TICK_STREAK_MAX,
+  IDLE_TICK_STREAK_MAX, nextStallLog, type StallLogState,
 } from './experiment-tick.js';
 import { controlEnabled, filterKindsByControl } from '../lib/worker-control.js';
 import { snapshotD1Usage, deltaD1Usage, formatD1Usage, totalD1Usage } from '../lib/d1-usage.js';
@@ -149,6 +150,9 @@ let experimentTickInFlight: Promise<unknown> | null = null;
 // loop drops back to the 120s cadence even while an experiment reports
 // active; a later tick that runs a step re-arms fast cadence automatically.
 let idleTickStreak = 0;
+// STALLED log cooldown (SLA-548): one warn per stall episode, hourly info
+// reminder after it; reset by any progress tick. Cadence parking is unaffected.
+let stallLog: StallLogState = { idleSince: null, lastLoggedAt: null };
 // Last logged step count — the per-tick line is logged only when the count
 // changes or the tick wrote rows, so a steady 5s cadence doesn't crowd real
 // errors out of the 400-entry log shipper.
@@ -492,7 +496,7 @@ while (!shuttingDown) {
       lastExperimentTickAt = Date.now();
       const tickSnap = snapshotD1Usage();
       experimentTickInFlight = experimentTick(120_000)
-        .then(({ steps, active }) => {
+        .then(async ({ steps, active }) => {
           const usage = deltaD1Usage(tickSnap);
           if (steps > 0 && (steps !== lastTickSteps || usage.writes > 0)) {
             console.log(`[worker] experiment tick advanced ${steps} step(s)${formatD1Usage(usage)}`);
@@ -509,10 +513,23 @@ while (!shuttingDown) {
           );
           experimentsActiveUntil = cadence.activeUntil;
           idleTickStreak = cadence.idleTickStreak;
-          if (cadence.parkedStreak !== null) {
-            console.warn(
-              `[worker] experiment STALLED? still active after ${cadence.parkedStreak}/${IDLE_TICK_STREAK_MAX} consecutive no-progress ticks (0 steps) — parked to ${Math.round(EXPERIMENT_TICK_SLOW_INTERVAL_MS / 1000)}s cadence. Check EXPERIMENT_TICK_ENABLED / experiments.enabled and stuck experiment rows.`,
-            );
+          const stall = nextStallLog(stallLog, { steps, active }, cadence.parkedStreak !== null, Date.now());
+          stallLog = { idleSince: stall.idleSince, lastLoggedAt: stall.lastLoggedAt };
+          if (stall.level !== null) {
+            const level = stall.level;
+            const idleMin = Math.round(stall.idleMs / 60_000);
+            // Ids are looked up only when a line is actually emitted (once per
+            // episode + hourly), so the cooldown never adds a steady D1 read.
+            const ids = await experimentCandidates()
+              .then((rows) => rows.map((r) => r.id).join(',') || 'none')
+              .catch(() => 'unavailable');
+            const msg =
+              `[worker] experiment STALLED? still active after ${cadence.parkedStreak}/${IDLE_TICK_STREAK_MAX} consecutive no-progress ticks (0 steps), idle ~${idleMin}m — parked to ${Math.round(EXPERIMENT_TICK_SLOW_INTERVAL_MS / 1000)}s cadence; oldest active experiment(s): ${ids}. `
+              + (level === 'warn'
+                ? 'Logged once per stall; reminders hourly at info level. Check EXPERIMENT_TICK_ENABLED / experiments.enabled and stuck experiment rows.'
+                : 'Still stalled (hourly reminder).');
+            if (level === 'warn') console.warn(msg);
+            else console.log(msg);
           }
           experimentTickErrorRounds = 0;
           experimentTickBackoffUntil = 0;

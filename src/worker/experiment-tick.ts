@@ -134,6 +134,59 @@ export function nextExperimentCadence(
   return { activeUntil: prev.activeUntil, idleTickStreak: streak, rearmed: false, parkedStreak: null };
 }
 
+// ---------------------------------------------------------------------------
+// STALLED log cooldown (SLA-548).
+//
+// An experiment stuck `active` with nothing runnable re-parks every
+// IDLE_TICK_STREAK_MAX slow ticks (~6-10 min), and each park used to be a
+// console.warn — ~90 of the last 100 warns in production, all identical.
+// The cadence parking stays; only the logging cools down: one warn when the
+// stall starts, silence while it persists, an hourly info reminder (the same
+// shape as the experiment-gate reminder in index.ts), and a reset the moment
+// a tick makes progress or no experiment is left, so the next stall warns.
+// ---------------------------------------------------------------------------
+
+/** How often a persisting stall is re-mentioned (at info level) after its one warn. */
+export const STALL_REMIND_EVERY_MS = 3_600_000;
+
+export interface StallLogState {
+  /** First no-progress tick of the current stall episode; null when healthy. */
+  idleSince: number | null;
+  /** Last time this episode logged (warn or reminder); null before the first. */
+  lastLoggedAt: number | null;
+}
+
+export interface StallLogDecision extends StallLogState {
+  /** `warn` once per episode, `remind` hourly after it, null = stay silent. */
+  level: 'warn' | 'remind' | null;
+  /** How long the episode has been idle at this tick. */
+  idleMs: number;
+}
+
+/**
+ * Fold one tick into the stall-log state. `parked` is true when
+ * nextExperimentCadence() just parked the loop (parkedStreak !== null) — the
+ * only moment a line is ever considered.
+ */
+export function nextStallLog(
+  prev: StallLogState,
+  tick: ExperimentTickOutcome,
+  parked: boolean,
+  now: number,
+): StallLogDecision {
+  if (!tick.active || tick.steps > 0) {
+    return { idleSince: null, lastLoggedAt: null, level: null, idleMs: 0 };
+  }
+  const idleSince = prev.idleSince ?? now;
+  const idleMs = Math.max(0, now - idleSince);
+  if (!parked) return { idleSince, lastLoggedAt: prev.lastLoggedAt, level: null, idleMs };
+  if (prev.lastLoggedAt === null) return { idleSince, lastLoggedAt: now, level: 'warn', idleMs };
+  if (now - prev.lastLoggedAt >= STALL_REMIND_EVERY_MS) {
+    return { idleSince, lastLoggedAt: now, level: 'remind', idleMs };
+  }
+  return { idleSince, lastLoggedAt: prev.lastLoggedAt, level: null, idleMs };
+}
+
 /** True when this container owns the experiment tick. */
 export function experimentsTickEnabled(
   kinds: string[],
