@@ -28,7 +28,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { withNextSteps, type NextStep } from '../lib/next-steps.js';
 import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload } from '../lib/credits.js';
-import { createExperiment, estimate, mutate, fingerprint } from '../experiments/service.js';
+import { createExperiment, dedupeSourcePosts, estimate, mutate, fingerprint } from '../experiments/service.js';
+import { SOURCE_FORMATS } from '../experiments/source-format.js';
 import { load, list, serialize } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
@@ -50,9 +51,11 @@ export interface ExperimentToolDeps {
   serialize: typeof serialize;
   deleteExperiment: typeof deleteExperiment;
   deleteExperiments: typeof deleteExperiments;
+  /** Optional so a caller that supplies its own deps keeps the old pass-through. */
+  dedupeSourcePosts?: typeof dedupeSourcePosts;
 }
 export const defaultExperimentToolDeps: ExperimentToolDeps = {
-  resolveWorkspace: resolveToolWorkspace, createExperiment, estimate, mutate, load, list, serialize, deleteExperiment, deleteExperiments,
+  resolveWorkspace: resolveToolWorkspace, createExperiment, dedupeSourcePosts, estimate, mutate, load, list, serialize, deleteExperiment, deleteExperiments,
 };
 
 // ---- helpers ---------------------------------------------------------------
@@ -365,13 +368,19 @@ const instructionsInput = z.object({
   brand: z.string().max(2000).default(''),
   audience: z.string().max(2000).default(''),
   language: z.string().min(1).max(80).default('English'),
-  direction: z.string().max(2000).default('').describe('Creative direction; add desired variable values here, e.g. "Desired variable values: a question versus a statement".'),
-  lockedConstraints: z.array(z.string().min(1).max(2000)).max(20).default([]).describe('Rules every variant must keep, one per entry.'),
-  variables: z.array(VARIABLE_INPUT).min(1).max(7).describe(
-    'What to vary: hook, character, visualStyle, caption, cta (controlled mode), plus concept/"angle" and slides (exploration mode only).',
+  direction: z.string().max(2000).optional().describe('Creative direction; add desired variable values here, e.g. "Desired variable values: a question versus a statement". Omit it to use the sourceFormat preset\'s direction.'),
+  lockedConstraints: z.array(z.string().min(1).max(2000)).max(20).optional().describe('Rules every variant must keep, one per entry. Added to the always-on and sourceFormat locks, never replacing them.'),
+  sourceFormat: z.enum(SOURCE_FORMATS).optional().describe(
+    'What kind of source this is: statue-collage, sprite-vs-real, annotated-face, ai-render, sketch, portrait-collage or photo-person. '
+    + 'Expands to default variables, mode, direction and locks, and emits person-appearance locks (hair, eyes, wardrobe...) only where the source shows a photographic person. '
+    + 'Always locks: no source watermarks/handles/competitor brands, our app on the CTA slide, no real or celebrity likeness, adults only. '
+    + 'Inferred from the source analysis when omitted; your own variables/mode/direction win over the preset.',
   ),
-  mode: z.enum(['controlled', 'exploration']).default('controlled').describe(
-    'controlled: each alternate changes one of the selected variables vs the baseline. exploration (SaaS Explore combinations): an alternate may change several selected variables together, including hook + character + visualStyle; concept/slides are allowed.',
+  variables: z.array(VARIABLE_INPUT).min(1).max(7).optional().describe(
+    'What to vary: hook, character, visualStyle, caption, cta (controlled mode), plus concept/"angle" and slides (exploration mode only). Required unless sourceFormat is given or can be inferred.',
+  ),
+  mode: z.enum(['controlled', 'exploration']).optional().describe(
+    'controlled (default without a preset): each alternate changes one of the selected variables vs the baseline. exploration (SaaS Explore combinations): an alternate may change several selected variables together, including hook + character + visualStyle; concept/slides are allowed.',
   ),
   varySupportingOverlays: z.boolean().optional().describe('Hook tests only (controlled, variables=["hook"]): variants may also retell slide 2+ overlay text while scenes stay identical.'),
   preserveSourceCtaSlide: z.boolean().optional().describe('Keep the source deck\'s own closing call-to-action slide in the deck instead of subtracting it from the slide count (default false, which drops a detected final CTA slide).'),
@@ -504,13 +513,15 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         : { instructions: instructions!, variantCount, maxCredits: maxCredits ?? defaultExperimentCap(variantCount, slideCount) };
       const created: Array<Record<string, unknown>> = [];
       const failed: Array<Record<string, unknown>> = [];
-      for (const [i, videoId] of videoIds.entries()) {
+      const deduped = d.dedupeSourcePosts ? await d.dedupeSourcePosts(workspace.id, videoIds) : { videoIds, duplicates: [] };
+      for (const videoId of deduped.videoIds) {
+        const i = videoIds.indexOf(videoId);
         const body = { workspaceId: workspace.id, videoIds: [videoId], ...edit, slideCount, maxCredits: edit.maxCredits };
         const key = idempotencyKey
           ? (videoIds.length === 1 ? idempotencyKey : `${idempotencyKey}:${i + 1}`)
           : derivedKey('create', body);
         try {
-          const e = await d.createExperiment({ ...body, idempotencyKey: key });
+          const e = await d.createExperiment({ ...body, idempotencyKey: key }, undefined, mode === 'edit' ? { expandFormat: false } : undefined);
           created.push({ ...listRow(e), idempotencyKey: key, planEstimate: await d.estimate(e, 'plan') });
         } catch (err) {
           const payload = JSON.parse(experimentToolError(err).content[0]!.text);
@@ -518,9 +529,10 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         }
       }
       const payload = {
-        message: `Created ${created.length} of ${videoIds.length} draft experiment${videoIds.length === 1 ? '' : 's'}. Nothing was charged.`,
+        message: `Created ${created.length} of ${deduped.videoIds.length} draft experiment${deduped.videoIds.length === 1 ? '' : 's'}. Nothing was charged.`,
         experiments: created,
         failed,
+        ...(deduped.duplicates.length ? { skippedDuplicates: deduped.duplicates, duplicateNote: 'These videoIds are the same post as another id in this call (same platform and externalId), so no second experiment was created.' } : {}),
         note: 'Repeating this exact call returns the same drafts. To deliberately create a duplicate, pass a new idempotencyKey.',
       };
       return text(withNextSteps(payload, created.map(c => ({
