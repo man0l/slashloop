@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, expect, test } from 'bun:test';
+import { isUniqueViolation } from '../store.js';
 const originalDialect = process.env.DB_DIALECT;
 afterEach(() => { if (originalDialect === undefined) delete process.env.DB_DIALECT; else process.env.DB_DIALECT = originalDialect; });
 import { creditStatements } from './store.js';
@@ -37,6 +38,16 @@ test.each([2, 0, 5])('SQLite refunds restore original buckets with %i plan credi
   expect(() => apply(-5)).toThrow();
   expect(db.query('SELECT planCredits,packCredits FROM Workspace').get()).toEqual({planCredits,packCredits:10});
   db.close();
+});
+
+test('the raw-batch idempotency conflict is recognizable without misreading other UNIQUE keys', () => {
+  expect(
+    isUniqueViolation(new Error(
+      'D1 batch via worker failed: D1_ERROR: UNIQUE constraint failed: '
+      + 'CreditLedger.workspaceId, CreditLedger.refId',
+    )),
+  ).toBe(true);
+  expect(isUniqueViolation(new Error('UNIQUE constraint failed: Workspace.id'))).toBe(false);
 });
 
 test('engine rejection atomically restores SQL balances while unknown outcomes retain them', async () => {
