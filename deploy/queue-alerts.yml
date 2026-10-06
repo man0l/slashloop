@@ -6,7 +6,7 @@
 #
 # Signals covered: queue depth + oldest age by kind, retries/lease expiry,
 # API auth/rejection rates (rate-limit rejects labelled by limiter gate),
-# projection lag, backup age, restore-test state.
+# worker-side fallback backlog, projection lag, backup age, restore-test state.
 # ===========================================================================
 
 groups:
@@ -83,6 +83,36 @@ groups:
             per_kind_workspace (10/min) usually means one kind in one workspace is
             over-publishing; per_workspace (30/min) one workspace is over-publishing
             across kinds; per_key (120/min) one key spans too many workspaces.
+
+      # -- worker-side fallback backlog (SLA-359) ----------------------------
+      # Rows parked in D1 MediaJob after a failed PG publish; invisible to
+      # every claimer until the maintenance worker's reclaim sweep republishes
+      # them. These gauges come from the worker's WORKER_METRICS_PORT listener
+      # (src/worker/metrics.ts), NOT queue-api, and are start-of-sweep
+      # snapshots: a backlog drained in one sweep still reads non-zero until
+      # the next one (one WORKER_RECLAIM_INTERVAL_MS, default 5 min). So
+      # "non-zero for the whole 10m window" = it survived two sweeps, i.e.
+      # more than one RECLAIM_INTERVAL_MS. Retune the window if that interval
+      # changes. Series are absent until the first successful sweep and when
+      # the maintenance worker is down — absence is covered by the stale rule.
+      - alert: QueueFallbackBacklogStuck
+        expr: min_over_time(slashloop_worker_fallback_backlog_parked[10m]) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "Fallback-parked jobs not draining for 10m+ — worker reconcile lag growing"
+          description: >-
+            MediaJob rows parked after a failed PG publish stayed parked across
+            two reclaim sweeps. Usual cause: queue-api rate limiting
+            (QueueRateLimitGateSustained) or a PG publish outage. See
+            slashloop_worker_fallback_oldest_age_seconds for the lag.
+
+      - alert: QueueFallbackSweepStale
+        expr: time() - max(slashloop_worker_fallback_last_sweep_timestamp_seconds) > 1800
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "No successful fallback reconcile sweep for 30m+ — backlog gauges are stale"
 
       - alert: QueueApiDown
         expr: up{job="queue-api"} == 0
