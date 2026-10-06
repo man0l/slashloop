@@ -1064,25 +1064,48 @@ export function compileSlideContract(opts: {
   return { ...base, contractHash: contractHash(base) };
 }
 
+/** Which attached frames a QA check can be answered from.
+ *  `comparison` needs BOTH the mapped source frame and the candidate; `candidate`
+ *  is settled by the candidate frame alone. */
+export type ContractCheckScope = 'comparison' | 'candidate';
+export interface ContractCheck { check: string; scope: ContractCheckScope }
+/** A text-directed contract has no source frame, so a lock with no observed
+ *  value is stated as an absolute requirement against the slide's own scene —
+ *  never as a comparison against a frame that was never attached. */
+const UNOBSERVED_LOCK_LIMIT = 300;
+function absoluteLockCheck(attribute: string, scene: string): string {
+  return `the subject's ${attribute} matches this slide's scene: ${JSON.stringify(scene.slice(0, UNOBSERVED_LOCK_LIMIT))}`;
+}
 /** D7: QA checks are derived from the contract, so a checker is never asked to
- *  re-assert a source attribute the contract replaced, and never omits a lock. */
-export function contractChecks(c: SlideContract): string[] {
-  const checks: string[] = [];
+ *  re-assert a source attribute the contract replaced, and never omits a lock.
+ *
+ *  Each check also carries the frames it may be answered from. A preserved
+ *  attribute the contract never observed cannot be settled from the candidate
+ *  alone — it is exactly the comparison the mapped source frame exists to make
+ *  (SLA-522), so it is routed to both frames. Everything the contract states in
+ *  absolute terms (a requested casting target, the exact overlay, the medium and
+ *  story beat, an observed lock value) stays candidate-only. */
+export function contractCheckPlan(c: SlideContract, opts?: { sourceBaseline?: boolean }): ContractCheck[] {
+  const comparative = opts?.sourceBaseline !== false;
+  const checks: ContractCheck[] = [];
   for (const [attribute, value] of Object.entries(c.subject.castingTarget)) {
-    checks.push(`the subject's ${attribute} matches the requested casting target: ${value}`);
+    checks.push({ check: `the subject's ${attribute} matches the requested casting target: ${value}`, scope: 'candidate' });
   }
   for (const lock of c.subject.lockedAttributes) {
-    checks.push(lock.observed
-      ? `the subject's ${lock.attribute} is unchanged: "${lock.observed}"`
-      : `the subject's ${lock.attribute} is unchanged from the reference frame`);
+    if (lock.observed) checks.push({ check: `the subject's ${lock.attribute} is unchanged: "${lock.observed}"`, scope: 'candidate' });
+    else if (comparative) checks.push({ check: `the subject's ${lock.attribute} is unchanged from the reference frame`, scope: 'comparison' });
+    else checks.push({ check: absoluteLockCheck(lock.attribute, c.compiledScene), scope: 'candidate' });
   }
-  checks.push(c.overlay.text
+  checks.push({ check: c.overlay.text
     ? `the on-image overlay matches exactly: ${JSON.stringify(c.overlay.text)}`
-    : 'the slide carries no added overlay text');
-  for (const label of c.sourceLabels.preserve) checks.push(`the source label "${label}" is still present, in its original position`);
-  for (const label of c.sourceLabels.remove) checks.push(`the mark "${label}" is not present anywhere on the slide`);
-  checks.push(`the medium is ${c.medium} and the story beat for role "${c.role}" is visible`);
+    : 'the slide carries no added overlay text', scope: 'candidate' });
+  for (const label of c.sourceLabels.preserve) checks.push({ check: `the source label "${label}" is still present, in its original position`, scope: 'candidate' });
+  for (const label of c.sourceLabels.remove) checks.push({ check: `the mark "${label}" is not present anywhere on the slide`, scope: 'candidate' });
+  checks.push({ check: `the medium is ${c.medium} and the story beat for role "${c.role}" is visible`, scope: 'candidate' });
   return checks;
+}
+export function contractChecks(c: SlideContract, opts?: { sourceBaseline?: boolean }): string[] {
+  return contractCheckPlan(c, opts).map(entry => entry.check);
 }
 
 /** QA prompt body. Evaluates ONLY the resolved contract plus the reference. */

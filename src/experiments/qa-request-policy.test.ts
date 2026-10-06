@@ -82,6 +82,16 @@ async function probeContract() {
   await (await prepare(fixture(), task, spy as never)).execute();
   return seen[0] as Parameters<typeof contractChecks>[0];
 }
+/** The check list the checker is actually asked for.
+ *
+ *  SLA-522: an unobserved preserved lock is a COMPARISON against the mapped
+ *  source frame, and a contract whose own source map says `referenceKind:'none'`
+ *  has no such frame — so it asks absolute requirements instead. `probeContract()`
+ *  resolves a text-directed fixture, hence `sourceBaseline:false` here; a
+ *  contract built from a mapped source keeps the comparative labels. */
+function requestedChecks(c: Parameters<typeof contractChecks>[0]): string[] {
+  return contractChecks(c, { sourceBaseline: c.sourceMap.referenceKind !== 'none' });
+}
 /** A stubbed OpenRouter answer: an HTTP 200 with the caller's JSON body. */
 function openRouterOk(body: unknown, requestId?: string) {
   const requests: Array<Record<string, unknown>> = [];
@@ -155,7 +165,7 @@ describe('the request carries that policy, and the record stays sanitized', () =
   test('a real contract drives the budget, and a good answer verifies with diagnostics', async () => {
     const deps = renderDepsWith();
     const contract = await probeContract();
-    const checks = contractChecks(contract);
+    const checks = requestedChecks(contract);
     expect(checks.length).toBeGreaterThan(1);
 
     process.env.EXPERIMENT_QA_MODEL = 'openai/gpt-5.1-mini';
@@ -219,7 +229,7 @@ describe('the request carries that policy, and the record stays sanitized', () =
 describe('a pass requires the answer that was asked for', () => {
   test('a complete answer passes, and an incomplete one is unverified', async () => {
     const contract = await probeContract();
-    const labels = contractChecks(contract);
+    const labels = requestedChecks(contract);
     expect(labels.length).toBeGreaterThan(1);
     process.env.OPENROUTER_API_KEY = 'test';
 
@@ -242,7 +252,7 @@ describe('a pass requires the answer that was asked for', () => {
 
   test('missing, duplicate, unexpected and malformed entries are all unverified', async () => {
     const contract = await probeContract();
-    const labels = contractChecks(contract);
+    const labels = requestedChecks(contract);
     process.env.OPENROUTER_API_KEY = 'test';
     const check = async (checks: unknown[]) => {
       openRouterResponse({ status: 200, body: { choices: [{ message: { content: JSON.stringify({ checks, reasons: [] }) } }], usage: {} } });
@@ -328,18 +338,22 @@ describe('a pass requires the answer that was asked for', () => {
     // The contract really does carry the repeated space, unchanged.
     expect(overlayLabel).toBe('the on-image overlay matches exactly: "Take  a break"');
     process.env.OPENROUTER_API_KEY = 'test';
+    // SLA-522: this contract is mapped to a source slide, so its unobserved
+    // locks are comparisons and the checker is given that frame. The point of
+    // the test below is the LABEL, not the frame, so every answer is complete.
+    const baseline = Buffer.alloc(600, 4);
 
     // 1. Identical echo: complete coverage.
-    const labels = contractChecks(spaced);
+    const labels = requestedChecks(spaced);
     openRouterResponse({ status: 200, body: answersFor(labels) });
-    const echoed = await renderDeps.verifyStory!({ contract: spaced, candidate: Buffer.alloc(600, 9) });
+    const echoed = await renderDeps.verifyStory!({ contract: spaced, candidate: Buffer.alloc(600, 9), baseline });
     expect(echoed.verdict).toBe('pass');
     expect(echoed.diagnostics!.errorCategory).toBeUndefined();
 
     // 2. Whitespace-only variation in what the checker sent: still the same
     // check, so still complete coverage.
     openRouterResponse({ status: 200, body: answersFor(labels.map(l => l.replace(/ /g, '   '))) });
-    const respaced = await renderDeps.verifyStory!({ contract: spaced, candidate: Buffer.alloc(600, 9) });
+    const respaced = await renderDeps.verifyStory!({ contract: spaced, candidate: Buffer.alloc(600, 9), baseline });
     expect(respaced.verdict).toBe('pass');
 
     // The rule is symmetric, not a special case for this label.
@@ -351,14 +365,14 @@ describe('a pass requires the answer that was asked for', () => {
     // still missing. (Collapsing `Take  a break` to `Take a break` is NOT a
     // different answer — that is the whitespace case above, by design.)
     openRouterResponse({ status: 200, body: answersFor(labels.map(l => l === overlayLabel ? 'the on-image overlay matches exactly: "Take a breather"' : l)) });
-    const reworded = await renderDeps.verifyStory!({ contract: spaced, candidate: Buffer.alloc(600, 9) });
+    const reworded = await renderDeps.verifyStory!({ contract: spaced, candidate: Buffer.alloc(600, 9), baseline });
     // Rejected as the unknown label it is (unexpected is detected before the
     // missing-label pass), and categorised as an unusable answer.
     expect(reworded.verdict).toBe('error');
     expect(reworded.reasons[0]).toBe('qa_unexpected_check:the on-image overlay matches exactly: "Take a breather"');
     expect(reworded.diagnostics!.errorCategory).toBe('invalid_response');
     openRouterResponse({ status: 200, body: answersFor(labels.filter(l => l !== overlayLabel)) });
-    const omitted = await renderDeps.verifyStory!({ contract: spaced, candidate: Buffer.alloc(600, 9) });
+    const omitted = await renderDeps.verifyStory!({ contract: spaced, candidate: Buffer.alloc(600, 9), baseline });
     expect(omitted.verdict).toBe('error');
     expect(omitted.reasons[0]).toContain('qa_incomplete_coverage');
     // The overlay text sent to the checker is untouched by the matching rule.
@@ -367,7 +381,7 @@ describe('a pass requires the answer that was asked for', () => {
 
   test('an incomplete answer uploads nothing and buys no corrective wave', async () => {
     const contract = await probeContract();
-    const labels = contractChecks(contract);
+    const labels = requestedChecks(contract);
     const deps = renderDepsWith();
     process.env.OPENROUTER_API_KEY = 'test';
     openRouterResponse({ status: 200, body: answersFor(labels.slice(0, 3)) });
@@ -388,7 +402,7 @@ describe('a pass requires the answer that was asked for', () => {
     const contract = await probeContract();
     const deps = renderDepsWith();
     process.env.OPENROUTER_API_KEY = 'test';
-    openRouterResponse({ status: 200, body: answersFor(contractChecks(contract)) });
+    openRouterResponse({ status: 200, body: answersFor(requestedChecks(contract)) });
 
     const result = await (await prepare(fixture(), task, { ...deps.deps, verifyStory: renderDeps.verifyStory } as never)).execute() as { story: { verdict: string }; qa: { verdict: string } };
     expect(result.story.verdict).toBe('pass');
@@ -513,7 +527,7 @@ describe('an unavailable checker is unverified, and buys nothing', () => {
 
   test('a VERIFIED failure still corrects, so the gate did not lose its one retry', async () => {
     const contract = await probeContract();
-    const labels = contractChecks(contract);
+    const labels = requestedChecks(contract);
     const deps = renderDepsWith();
     process.env.OPENROUTER_API_KEY = 'test';
     // Complete coverage, but a real contract finding: that is the one case a
