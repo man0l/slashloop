@@ -394,7 +394,7 @@ export interface QaDiagnostics {
   checksRequested: number;
   elapsedMs: number;
   outcome: 'ok' | 'error';
-  errorCategory?: 'timeout' | 'rate_limit' | 'quota' | 'auth' | 'invalid_request' | 'server' | 'invalid_response' | 'unknown';
+  errorCategory?: 'timeout' | 'rate_limit' | 'quota' | 'auth' | 'invalid_request' | 'server' | 'invalid_response' | 'baseline_missing' | 'unknown';
   requestId?: string;
 }
 export interface SlideVerification {
@@ -424,6 +424,13 @@ export interface SlideQaRecord {
   prompt?: string;
   diagnostics?: QaDiagnostics;
   warnings?: string[];
+  /** SLA-522: the mapped source frame this slide's comparison was made against.
+   *  `attached:false` means the frame could not be read and the slide stayed
+   *  unverified — the record says so instead of passing an unmade comparison. */
+  qaBaseline?: { referenceKind: string; path: string | null; attached: boolean };
+  /** The contract's own source mapping, kept beside the hash so a failed slide
+   *  says which frame it claims to preserve. */
+  sourceMap?: { videoId: string | null; analysisId: string | null; sourceIndex: number | null; referenceKind: string; path: string | null };
 }
 export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide'; target?: string; index?: number;
   status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number; }

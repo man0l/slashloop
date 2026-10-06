@@ -33,13 +33,13 @@ export function identitySubject(formula: StyleFormula | null): IdentitySubject {
  *  sprite or a food collage has no hair, eyes or jewelry to keep unchanged. */
 const PERSON_ONLY_ATTRIBUTES = new Set(['hair', 'eyes', 'facial-hair', 'complexion', 'wardrobe', 'jewelry']);
 
-/** A lock exists only for what the source actually stated (`observed` non-null),
- *  and person-appearance locks only for a photographed person. An unknown or
- *  mixed medium cannot rule a person out, so it keeps observed-only locks. */
+/** Person-appearance locks exist only when the medium is a photographed person
+ *  (identitySubject === 'person'). Unknown, mixed and non-person media carry only
+ *  what the source actually stated for role, gaze and setting — never a person
+ *  attribute, observed or not. */
 function lockPolicy(medium: string, locks: SubjectContract['lockedAttributes']): SubjectContract['lockedAttributes'] {
-  const m = medium.trim().toLowerCase();
-  const personRuledOut = !!m && m !== 'unknown' && m !== 'mixed' && identitySubject({ medium: m } as StyleFormula) !== 'person';
-  return locks.filter(l => l.observed && !(personRuledOut && PERSON_ONLY_ATTRIBUTES.has(l.attribute)));
+  if (identitySubject({ medium: medium.trim().toLowerCase() } as StyleFormula) === 'person') return locks;
+  return locks.filter(l => l.observed && !PERSON_ONLY_ATTRIBUTES.has(l.attribute));
 }
 
 export function renderContract(unlocked: readonly string[] = VARIABLE_FIELDS, changed: Array<{ name: string }> = []): RenderContract {
@@ -395,7 +395,7 @@ export function labelRenderInstruction(policy?: LabelPolicy): string {
  *  of the attribute span. A qualifier left outside the span survives the
  *  replacement next to the new value, so the scene states both ("a patchy
  *  patchy beard"). */
-const EXTRA_SPAN_QUALIFIERS = ['patchy', 'buzz', 'buzz-cut', 'buzzcut', 'copper-red', 'copper', 'rust-red', 'rust', 'ginger', 'platinum', 'platinum-blonde', 'sandy', 'receding', 'wavy', 'neat', 'side-parted', 'side-part', 'oval', 'square', 'diamond', 'moon-round', 'moon', 'recessed', 'tousled'];
+const EXTRA_SPAN_QUALIFIERS = ['patchy', 'buzz', 'buzz-cut', 'buzzcut', 'copper-red', 'copper', 'rust-red', 'rust', 'ginger', 'platinum', 'platinum-blonde', 'sandy', 'receding', 'wavy', 'neat', 'side-parted', 'side-part', 'oval', 'square', 'diamond', 'moon-round', 'moon', 'recessed', 'tousled', 'oily', 'dry', 'greasy', 'sallow', 'blemished', 'ruddy', 'rosy', 'smooth', 'rough', 'side', 'centre', 'center', 'middle', 'zigzag', 'zig-zag'];
 /** A compound ending in a colour ("blue-green", "copper-red") qualifies the noun
  *  it modifies. Left out of the span, it survives the replacement in front of
  *  the new value ("blue-green ice-blue eyes") — the scene states both. */
@@ -406,11 +406,13 @@ const COLOUR_QUALIFIER = new RegExp(`^[a-z]+-(?:${SPAN_COLOURS.join('|')})$`);
  *  background, layout, camera and medium (D4). */
 const APPEARANCE_NOUNS: Record<string, RegExp> = {
   role: /\b(?:men|man|women|woman|boys?|girls?|males?|females?|gentleman|gentlemen|lady|ladies|guy|guys)\b/gi,
-  hair: /\b(?:hair|hairstyle)\b/gi,
+  // A hair-style phrase that never says "hair" still states hair: "blonde part", "side part", "quiff". `part` only counts behind a
+  // hair-style or colour word and never as "part of", so "a black part of the plate" is not hair.
+  hair: /\b(?:hair|hairstyle|(?<=\b(?:side|centre|center|middle|deep|zig-?zag|blonde|blond|brown|black|dark|red|ginger|auburn|grey|gray|silver|white|platinum)[\s-])part(?:ing)?(?!\s+of\b)|comb-?overs?|quiffs?|mullets?|pompadours?)\b/gi,
   eyes: /\b(?:eyes?|eyecolou?rs?)\b/gi,
   'facial-hair': /\b(?:beards?|mustaches?|moustaches?|stubble|facial\s+hair|goatees?|clean-?shaven)\b/gi,
   complexion: /\b(?:skin|complexion|freckles?)\b/gi,
-  wardrobe: /\b(?:tops?|t-?shirts?|tees?|shirts?|jerseys?|sweaters?|hoodies?|blouses?|dresses?|polos?|tank\s+tops?|uniforms?|kits?|shirtless|topless)\b/gi,
+  wardrobe: /\b(?:tops?(?![-\u2013]\s*(?:left|right|cent(?:er|re)|middle)\b|\s*:)|t-?shirts?|tees?|shirts?|jerseys?|sweaters?|hoodies?|blouses?|dresses?|polos?|tank\s+tops?|uniforms?|kits?|shirtless|topless)\b/gi,
   jewelry: /\b(?:earrings?|necklaces?|bracelets?|hoops?|studs?|pendants?)\b/gi,
   gaze: /\b(?:looking|looks|gaze|gazes|gazing|glance|glances|staring|stares)\b/gi,
   setting: /\b(?:background|backdrop|behind)\b/gi,
@@ -842,8 +844,8 @@ export interface CastingResolution {
   /** Clauses deliberately NOT applied to this slide, each with its reason. */
   skipped: Array<{ clause: string; reason: CastingSkipReason }>;
 }
-export type CastingSkipReason = 'not_this_slide' | 'preservation' | 'attribute_preserved' | 'descriptive_clause' | 'ambiguous_subject' | 'unattributed_target';
-export type WithheldReason = 'ambiguous_subject' | 'unattributed_target';
+export type CastingSkipReason = 'not_this_slide' | 'preservation' | 'attribute_preserved' | 'descriptive_clause' | 'ambiguous_subject' | 'unattributed_target' | 'monochrome_medium';
+export type WithheldReason = 'ambiguous_subject' | 'unattributed_target' | 'monochrome_medium';
 
 /** Resolve a deck-level character field against one slide's scene. */
 export function resolveSlideCasting(scene: string, field: string): CastingResolution {
@@ -889,6 +891,32 @@ export function resolveSlideCasting(scene: string, field: string): CastingResolu
   return { request: targets.length ? request : null, subject, targets, unresolved: parsed.unresolved, skipped };
 }
 
+/* --- Medium-aware casting (SLA-528) ------------------------------------- */
+
+/** Attributes whose requested value can be a colour. */
+const COLOUR_VALUED_ATTRIBUTES = new Set(['eyes', 'hair', 'complexion', 'facial-hair']);
+/** Chromatic words only. Achromatic ones (black, white, grey, silver, dark, light)
+ *  are tones a monochrome drawing can carry, so they never block a target. */
+const CHROMATIC_WORDS = new Set(['red', 'ginger', 'auburn', 'copper', 'rust', 'blue', 'green', 'hazel', 'amber', 'brown', 'blonde', 'blond', 'golden', 'gold', 'chestnut', 'pink', 'purple', 'violet', 'orange', 'yellow', 'teal', 'turquoise', 'burgundy', 'strawberry', 'honey', 'caramel', 'emerald', 'navy', 'lavender', 'magenta']);
+const namesChromaticColour = (value: string): boolean => value.toLowerCase().split(/[^a-z]+/).some(w => CHROMATIC_WORDS.has(w));
+const MONOCHROME_MEDIUM = /\b(?:black[\s-]+and[\s-]+white|b\s*[&/]\s*w|monochrom\w*|gr[ae]yscale|uncolou?red|colou?rless)\b/i;
+const LINE_MEDIUM = /\b(?:line[\s-]?(?:drawing|art|drawn)|pencil[\s-]sketch|ink[\s-](?:drawing|sketch)|outline[\s-]drawing)\b/i;
+const COLOUR_MEDIUM = /\b(?:full[\s-]colou?r|colou?red|colou?rful|painted|watercolou?r)\b/i;
+
+/** True when the scene states that the resolved subject is drawn in a medium with
+ *  no colour (a black-and-white line drawing). Read from the sentences that
+ *  actually name a person inside the subject's range, never from the whole
+ *  collage: a photograph in the next quadrant says nothing about this subject. */
+export function subjectIsColourless(scene: string, scope?: SubjectScope): boolean {
+  const range = scope ?? { start: 0, end: scene.length };
+  const own = sentences(scene)
+    .filter(s => s.start >= range.start && s.end <= range.end)
+    .map(s => scene.slice(s.start, s.end))
+    .filter(text => personHeads(text).length > 0);
+  const text = own.join(' ');
+  return MONOCHROME_MEDIUM.test(text) || (LINE_MEDIUM.test(text) && !COLOUR_MEDIUM.test(text));
+}
+
 /** Apply a compiled casting target to the source scene prose. The source's own
  *  wording for an unlocked attribute is REPLACED, so the compiled scene can
  *  never simultaneously require the old and the new value (D4).
@@ -907,8 +935,14 @@ export function resolveSlideCasting(scene: string, field: string): CastingResolu
  *  would require both values at once — the contradictory-instruction class this
  *  contract exists to prevent. Those targets come back in `conflicted`, so the
  *  instruction is dropped instead of being half-applied. */
-export function compileCasting(scene: string, targets: readonly CastingTarget[], scope?: SubjectScope): { effectiveScene: string; superseded: string[]; subject: SubjectContract; rejected: CastingTarget[]; conflicted: CastingTarget[] } {
-  const effective = scope?.ambiguous ? [] : [...targets];
+export function compileCasting(scene: string, targets: readonly CastingTarget[], scope?: SubjectScope): { effectiveScene: string; superseded: string[]; subject: SubjectContract; rejected: CastingTarget[]; conflicted: CastingTarget[]; inexpressible: CastingTarget[] } {
+  const colourless = !scope?.ambiguous && subjectIsColourless(scene, scope);
+  // A colour asked of a subject whose medium cannot carry colour can never be
+  // satisfied, by the renderer or by the checker. It is dropped here, in
+  // preparation, instead of being paid for as a generation that must fail.
+  const inexpressible = colourless ? targets.filter(t => COLOUR_VALUED_ATTRIBUTES.has(t.attribute) && namesChromaticColour(t.value)) : [];
+  const askable = targets.filter(t => !inexpressible.includes(t));
+  const effective = scope?.ambiguous ? [] : [...askable];
   const rejected = scope?.ambiguous ? [...targets] : [];
   const referrals = scope && !scope.ambiguous ? subjectClausesElsewhere(scene, scope) : [];
   const owned = (span: Span, range: SubjectScope): boolean => span.start >= range.start && span.end <= range.end;
@@ -941,13 +975,14 @@ export function compileCasting(scene: string, targets: readonly CastingTarget[],
   const lockedAttributes = APPEARANCE_ATTRIBUTES
     .filter(a => !unlocked.has(a))
     .map(attribute => ({ attribute, observed: appearanceSpans(scene, attribute, lockScope)[0]?.text ?? null }));
-  const withheld = [...rejected, ...conflicted].map(t => t.value);
-  const withheldReason: WithheldReason | null = rejected.length ? 'ambiguous_subject' : conflicted.length ? 'unattributed_target' : null;
+  const withheld = [...rejected, ...conflicted, ...inexpressible].map(t => t.value);
+  const withheldReason: WithheldReason | null = rejected.length ? 'ambiguous_subject' : conflicted.length ? 'unattributed_target' : inexpressible.length ? 'monochrome_medium' : null;
   return {
     effectiveScene: effectiveScene.trim(),
     superseded,
     rejected,
     conflicted,
+    inexpressible,
     subject: {
       slotId: 's0', identityMode: 'replace', supersededPhrases: superseded, castingTarget,
       lockedAttributes, request: honoured.length ? honoured.map(t => t.value).join('; ') : null,
@@ -984,6 +1019,47 @@ function canonicalJson(value: unknown): string {
 }
 export function contractHash(contract: Omit<SlideContract, 'contractHash'>): string {
   return createHash('sha256').update(canonicalJson(contract)).digest('hex').slice(0, 32);
+}
+
+/* --- Overlay / removal-list reconciliation (SLA-528) -------------------- */
+
+const HANDLE_TOKEN = /(?<![\w.])@[A-Za-z0-9_.]{2,}/g;
+const PLATFORM_NAME_ONLY = /^\s*(?:tiktok|instagram|reels?|youtube(?:\s+shorts)?|capcut|snapchat)\s*$/i;
+/** A quoted watermark/handle the scene prose states as part of the picture
+ *  ("faint watermark 'Back on my sh'"). Left in, the renderer is told to draw it
+ *  while the removal list tells the checker to fail the slide if it is there. */
+const SCENE_MARK_PHRASE = /,?\s*(?:an?\s+)?(?:(?:faint|small|subtle|tiny|semi-transparent|translucent)\s+)*(?:watermark(?:ed)?|username|handle)(?:\s+(?:text|reading|saying|of|that\s+reads))?\s*:?\s*['\u2018\u2019"\u201c\u201d][^'\u2018\u2019"\u201c\u201d]{0,80}['\u2018\u2019"\u201d\u201c]/gi;
+const removes = (labels: LabelPolicy, pattern: RegExp): boolean => labels.remove.some(l => pattern.test(l));
+
+/** A preserved source overlay can never also be a mark the removal list forbids:
+ *  "present exactly" next to "absent anywhere" is a check no image can pass.
+ *  Source copy that is (or contains) a platform mark loses that mark; explicit
+ *  override and brief copy is the author's own text and is never rewritten. */
+function reconcileOverlay(overlay: OverlayDecision, labels: LabelPolicy): OverlayDecision {
+  if (overlay.mode !== 'preserve' || overlay.origin !== 'source') return overlay;
+  if (labels.preserve.some(l => l.trim().toLowerCase() === overlay.text.trim().toLowerCase())) return overlay;
+  let text = overlay.text;
+  if (removes(labels, /handle|username/i)) text = text.replace(HANDLE_TOKEN, '').replace(/\s{2,}/g, ' ').trim();
+  if (removes(labels, /watermark/i) && PLATFORM_NAME_ONLY.test(text)) text = '';
+  if (text === overlay.text) return overlay;
+  return text === '' ? { mode: 'clear', text: '', origin: 'source' } : { mode: 'preserve', text, origin: 'source' };
+}
+
+function scrubRemovedMarks(scene: string, labels: LabelPolicy): string {
+  if (!removes(labels, /watermark|handle|username/i)) return scene;
+  return scene.replace(SCENE_MARK_PHRASE, '').replace(/\s{2,}/g, ' ').replace(/\s+([,.;])/g, '$1');
+}
+
+/** A colour the scene states for a subject drawn without colour ("hazel eyes" on
+ *  a black-and-white line drawing) cannot be preserved or checked either: the
+ *  checker answers "eyes cannot be hazel in a B&W line drawing". The lock keeps
+ *  its attribute but is judged against the reference frame, not the colour word. */
+function relaxColourLocks(subject: SubjectContract, scene: string): SubjectContract {
+  const scope = subjectScope(scene, subject.resolution?.subject ?? null);
+  if (scope.ambiguous || !subjectIsColourless(scene, scope)) return subject;
+  const relaxed = subject.lockedAttributes.map(l =>
+    l.observed && COLOUR_VALUED_ATTRIBUTES.has(l.attribute) && namesChromaticColour(l.observed) ? { attribute: l.attribute, observed: null } : l);
+  return relaxed.some((l, i) => l !== subject.lockedAttributes[i]) ? { ...subject, lockedAttributes: relaxed } : subject;
 }
 
 /** Compile the single record both the render request and the QA checker consume.
@@ -1028,6 +1104,7 @@ export function compileSlideContract(opts: {
     const compiled = compileCasting(opts.scene, resolution.targets, scope);
     for (const target of compiled.rejected) resolution.skipped.push({ clause: target.value, reason: 'ambiguous_subject' });
     for (const target of compiled.conflicted) resolution.skipped.push({ clause: target.value, reason: 'unattributed_target' });
+    for (const target of compiled.inexpressible) resolution.skipped.push({ clause: target.value, reason: 'monochrome_medium' });
     if (Object.keys(compiled.subject.castingTarget).length) {
       subject = { ...compiled.subject, slotId, resolution };
       compiledScene = compiled.effectiveScene;
@@ -1050,7 +1127,7 @@ export function compileSlideContract(opts: {
     if (Object.keys(compiled.subject.castingTarget).length) {
       subject = { ...compiled.subject, slotId };
       compiledScene = compiled.effectiveScene;
-    } else if (scope.ambiguous || compiled.conflicted.length) {
+    } else if (scope.ambiguous || compiled.conflicted.length || compiled.inexpressible.length) {
       subject = withheldSubject(scope, castingRequest.trim(), null, compiled.subject);
     } else {
       // No attribute grammar matched: keep the deck-level casting prose and lock
@@ -1061,6 +1138,7 @@ export function compileSlideContract(opts: {
     subject = preserveSubject();
   }
   subject = { ...subject, lockedAttributes: lockPolicy(opts.medium, subject.lockedAttributes) };
+  const sourceLabels = opts.labels ?? labelPolicy();
   const base = {
     contractVersion: CONTRACT_VERSION,
     slideIndex: opts.slideIndex,
@@ -1068,48 +1146,64 @@ export function compileSlideContract(opts: {
     medium: opts.medium,
     sourceMap: opts.sourceMap,
     observedCopy: opts.observedCopy,
-    overlay: opts.overlay,
-    subject,
+    overlay: reconcileOverlay(opts.overlay, sourceLabels),
+    subject: relaxColourLocks(subject, opts.scene),
     sceneLocks: [...(opts.sceneLocks ?? [])].map(s => String(s).slice(0, 200)),
-    sourceLabels: opts.labels ?? labelPolicy(),
-    compiledScene,
+    sourceLabels,
+    compiledScene: scrubRemovedMarks(compiledScene, sourceLabels),
     slideDisposition: { included: opts.included !== false, reason: opts.dispositionReason ?? (opts.included === false ? 'excluded_by_request' : 'mapped_source_slide') },
   };
   return { ...base, contractHash: contractHash(base) };
 }
 
+/** Which attached frames a QA check can be answered from.
+ *  `comparison` needs BOTH the mapped source frame and the candidate; `candidate`
+ *  is settled by the candidate frame alone. */
+export type ContractCheckScope = 'comparison' | 'candidate';
 export type QaSeverity = 'hard' | 'soft';
-export interface ContractCheck { check: string; severity: QaSeverity }
-
+export interface ContractCheck { check: string; scope: ContractCheckScope; severity: QaSeverity }
+/** A text-directed contract has no source frame, so a lock with no observed
+ *  value is stated as an absolute requirement against the slide's own scene —
+ *  never as a comparison against a frame that was never attached. */
+const UNOBSERVED_LOCK_LIMIT = 300;
+function absoluteLockCheck(attribute: string, scene: string): string {
+  return `the subject's ${attribute} matches this slide's scene: ${JSON.stringify(scene.slice(0, UNOBSERVED_LOCK_LIMIT))}`;
+}
 /** D7: QA checks are derived from the contract, so a checker is never asked to
  *  re-assert a source attribute the contract replaced, and never omits a lock.
- *  HARD checks (exact overlay, forbidden marks, labels, medium) gate shipping;
- *  SOFT checks (subject attributes, setting, story beat) are judgement calls a
- *  checker may be unable to settle, so an `unknown` there is only a warning. */
-export function contractCheckSpecs(c: SlideContract): ContractCheck[] {
+ *
+ *  Severity: HARD checks (exact overlay, source labels, forbidden marks, medium)
+ *  gate shipping; SOFT checks (subject attributes, story beat) are judgement
+ *  calls a checker may be unable to settle, so an `unknown` there is a warning.
+ *
+ *  Each check also carries the frames it may be answered from. A preserved
+ *  attribute the contract never observed cannot be settled from the candidate
+ *  alone — it is exactly the comparison the mapped source frame exists to make
+ *  (SLA-522), so it is routed to both frames. Everything the contract states in
+ *  absolute terms (a requested casting target, the exact overlay, the medium and
+ *  story beat, an observed lock value) stays candidate-only. */
+export function contractCheckPlan(c: SlideContract, opts?: { sourceBaseline?: boolean }): ContractCheck[] {
+  const comparative = opts?.sourceBaseline !== false;
   const checks: ContractCheck[] = [];
   for (const [attribute, value] of Object.entries(c.subject.castingTarget)) {
-    checks.push({ check: `the subject's ${attribute} matches the requested casting target: ${value}`, severity: 'soft' });
+    checks.push({ check: `the subject's ${attribute} matches the requested casting target: ${value}`, scope: 'candidate', severity: 'soft' });
   }
   for (const lock of c.subject.lockedAttributes) {
-    if (!lock.observed) continue;
-    checks.push({ check: `the subject's ${lock.attribute} is unchanged: "${lock.observed}"`, severity: 'soft' });
+    if (lock.observed) checks.push({ check: `the subject's ${lock.attribute} is unchanged: "${lock.observed}"`, scope: 'candidate', severity: 'soft' });
+    else if (comparative) checks.push({ check: `the subject's ${lock.attribute} is unchanged from the reference frame`, scope: 'comparison', severity: 'soft' });
+    else checks.push({ check: absoluteLockCheck(lock.attribute, c.compiledScene), scope: 'candidate', severity: 'soft' });
   }
-  checks.push({
-    check: c.overlay.text
-      ? `the on-image overlay matches exactly: ${JSON.stringify(c.overlay.text)}`
-      : 'the slide carries no added overlay text',
-    severity: 'hard',
-  });
-  for (const label of c.sourceLabels.preserve) checks.push({ check: `the source label "${label}" is still present, in its original position`, severity: 'hard' });
-  for (const label of c.sourceLabels.remove) checks.push({ check: `the mark "${label}" is not present anywhere on the slide`, severity: 'hard' });
-  checks.push({ check: `the medium is ${c.medium}`, severity: 'hard' });
-  checks.push({ check: `the story beat for role "${c.role}" is visible`, severity: 'soft' });
+  checks.push({ check: c.overlay.text
+    ? `the on-image overlay matches exactly: ${JSON.stringify(c.overlay.text)}`
+    : 'the slide carries no added overlay text', scope: 'candidate', severity: 'hard' });
+  for (const label of c.sourceLabels.preserve) checks.push({ check: `the source label "${label}" is still present, in its original position`, scope: 'candidate', severity: 'hard' });
+  for (const label of c.sourceLabels.remove) checks.push({ check: `the mark "${label}" is not present anywhere on the slide`, scope: 'candidate', severity: 'hard' });
+  checks.push({ check: `the medium is ${c.medium}`, scope: 'candidate', severity: 'hard' });
+  checks.push({ check: `the story beat for role "${c.role}" is visible`, scope: 'candidate', severity: 'soft' });
   return checks;
 }
-
-export function contractChecks(c: SlideContract): string[] {
-  return contractCheckSpecs(c).map(x => x.check);
+export function contractChecks(c: SlideContract, opts?: { sourceBaseline?: boolean }): string[] {
+  return contractCheckPlan(c, opts).map(entry => entry.check);
 }
 
 /** QA prompt body. Evaluates ONLY the resolved contract plus the reference. */
@@ -1153,8 +1247,10 @@ export function contractPromptLines(c: SlideContract): string[] {
   if (c.subject.withheld?.length) {
     const why = c.subject.withheldReason === 'unattributed_target'
       ? `this slide's scene states that attribute somewhere outside its own subject's description, so applying it would leave the source's value and the requested value on the same subject at once`
-      : `this slide's scene describes more than one person and does not say which one owns those attributes`;
-    lines.push(`CASTING WITHHELD (this slide only): the deck requested ${c.subject.withheld.map(v => JSON.stringify(v)).join('; ')}, but ${why}. Applying it would move attributes between subjects, so it is NOT applied. Keep every subject in this frame exactly as the scene and PRESERVE list state; never transfer an attribute from one person to another.`);
+      : c.subject.withheldReason === 'monochrome_medium'
+        ? `this slide's subject is drawn in a medium with no colour, so a colour value cannot be shown on it`
+        : `this slide's scene describes more than one person and does not say which one owns those attributes`;
+    lines.push(`CASTING WITHHELD (this slide only): the deck requested ${c.subject.withheld.map(v => JSON.stringify(v)).join('; ')}, but ${why}. ${c.subject.withheldReason === 'monochrome_medium' ? 'It is NOT applied and is not checked.' : 'Applying it would move attributes between subjects, so it is NOT applied.'} Keep every subject in this frame exactly as the scene and PRESERVE list state; never transfer an attribute from one person to another.`);
   }
   if (c.subject.lockedAttributes.length) {
     lines.push(`PRESERVE (this slide's subject, unchanged from the attached reference): ${c.subject.lockedAttributes.map(l => l.observed ? `${l.attribute} ("${l.observed}")` : l.attribute).join('; ')}.`);

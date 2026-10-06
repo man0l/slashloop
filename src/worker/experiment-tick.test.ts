@@ -10,7 +10,7 @@ import {
   describeExperimentTickGate, experimentsTickEnabled, experimentTickFailureDetail,
   nextExperimentCadence, experimentTickIntervalMs,
   EXPERIMENT_ACTIVE_WINDOW_MS, EXPERIMENT_TICK_MIN_INTERVAL_MS, EXPERIMENT_TICK_SLOW_INTERVAL_MS,
-  IDLE_TICK_STREAK_MAX,
+  IDLE_TICK_STREAK_MAX, nextStallLog, STALL_REMIND_EVERY_MS, type StallLogState,
 } from './experiment-tick.js';
 
 describe('experimentsTickEnabled', () => {
@@ -301,5 +301,74 @@ describe('worker loop cadence wiring', () => {
     expect(src).not.toContain('experimentsActiveUntil = Date.now() + 10 * 60_000');
     expect(src).toContain('experimentsActiveUntil = cadence.activeUntil;');
     expect(src).toContain('idleTickStreak = cadence.idleTickStreak;');
+  });
+});
+
+describe('nextStallLog (SLA-548 cooldown)', () => {
+  const T0 = 1_700_000_000_000;
+  /** Drive cadence + stall-log together, as index.ts does, one tick per entry. */
+  function run(ticks: Array<{ steps: number; active: boolean; at: number }>) {
+    let cadence = { activeUntil: 0, idleTickStreak: 0 };
+    let stall: StallLogState = { idleSince: null, lastLoggedAt: null };
+    return ticks.map((t) => {
+      const c = nextExperimentCadence(cadence, t, t.at);
+      cadence = { activeUntil: c.activeUntil, idleTickStreak: c.idleTickStreak };
+      const d = nextStallLog(stall, t, c.parkedStreak !== null, t.at);
+      stall = { idleSince: d.idleSince, lastLoggedAt: d.lastLoggedAt };
+      return { level: d.level, idleMs: d.idleMs };
+    });
+  }
+  // A stuck experiment: a zero-step active tick every 120s (the parked cadence).
+  const stuck = (n: number, from = 0) =>
+    Array.from({ length: n }, (_, i) => ({ ...NO_PROGRESS, at: T0 + (from + i) * 120_000 }));
+
+  test('warns once when the stall parks, then stays silent through repeated re-parks', () => {
+    // 3-tick streak per park; 30 ticks = 10 parks over one hour is the prod shape.
+    const out = run(stuck(29));
+    const levels = out.map((o) => o.level);
+    expect(levels.filter((l) => l === 'warn')).toHaveLength(1);
+    expect(levels[IDLE_TICK_STREAK_MAX - 1]).toBe('warn');
+    expect(levels.filter((l) => l === 'remind')).toHaveLength(0);
+  });
+
+  test('reports how long the episode has been idle', () => {
+    const out = run(stuck(3));
+    expect(out[2]).toEqual({ level: 'warn', idleMs: 2 * 120_000 });
+  });
+
+  test('an hourly reminder (not a warn) follows while the stall persists', () => {
+    const perHour = STALL_REMIND_EVERY_MS / 120_000;
+    const out = run(stuck(3 * perHour + 6));
+    const logged = out.map((o, i) => [i, o.level] as const).filter(([, l]) => l !== null);
+    expect(logged.map(([, l]) => l)).toEqual(['warn', 'remind', 'remind', 'remind']);
+    // Reminders carry the growing idle duration.
+    expect(out[logged[1]![0]]!.idleMs).toBeGreaterThanOrEqual(STALL_REMIND_EVERY_MS);
+  });
+
+  test('progress ends the episode so the next stall warns again', () => {
+    const first = stuck(3);
+    const progress = [{ ...PROGRESS, at: T0 + 3 * 120_000 }];
+    const second = stuck(3, 4);
+    const levels = run([...first, ...progress, ...second]).map((o) => o.level);
+    expect(levels.filter((l) => l === 'warn')).toHaveLength(2);
+  });
+
+  test('no experiments left ends the episode', () => {
+    const idle = nextStallLog({ idleSince: T0, lastLoggedAt: T0 }, NO_EXPERIMENTS, false, T0 + 1);
+    expect(idle).toEqual({ idleSince: null, lastLoggedAt: null, level: null, idleMs: 0 });
+  });
+
+  test('never logs on a tick that did not park', () => {
+    const d = nextStallLog({ idleSince: null, lastLoggedAt: null }, NO_PROGRESS, false, T0);
+    expect(d.level).toBeNull();
+    expect(d.idleSince).toBe(T0);
+  });
+
+  test('index.ts routes the STALLED line through the cooldown', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'index.ts'), 'utf8');
+    expect(src).toContain('nextStallLog(stallLog,');
+    // The only console.warn on the STALLED path is gated on the warn level.
+    expect(src).toContain("if (level === 'warn') console.warn(msg);");
+    expect(src).not.toMatch(/if \(cadence\.parkedStreak !== null\) \{\s*console\.warn/);
   });
 });

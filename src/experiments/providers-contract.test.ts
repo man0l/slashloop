@@ -6,7 +6,7 @@ import type { Video } from '@prisma/client';
 import { observedCopy, prepare, resolvedCopyBlock } from './providers.js';
 import { VideoAnalysisDataSchema } from '../analysis/schema.js';
 import type { Experiment, Input, Task } from './schema.js';
-import { compileSlideContract, contractCheckSpecs, contractChecks, labelPolicy, type SlideContract } from './render-prompt.js';
+import { compileSlideContract, contractCheckPlan, contractChecks, labelPolicy, type SlideContract } from './render-prompt.js';
 import { editInstructions } from '../tools/experiments.js';
 
 const analysis = (shots: Array<{ timestampSec: number; description: string }>, onScreenText: Array<{ timestampSec: number; text: string }> = []) => VideoAnalysisDataSchema.parse({
@@ -208,15 +208,25 @@ test('a pixel-art / objects contract emits no subject-appearance checks', () => 
   expect(contractChecks(objects).some(x => /hair|eyes|jewelry|wardrobe/.test(x))).toBe(false);
 });
 
-test('a photographed person locks only the attributes the scene actually states', () => {
+test('a photographed person keeps observed locks, and unobserved ones only as soft source-frame comparisons', () => {
   const c = contractFor('photograph', 'A man with dark hair and a black t-shirt, looking left.');
-  expect(attributesOf(c)).toEqual(expect.arrayContaining(['hair', 'wardrobe', 'gaze']));
-  expect(attributesOf(c)).not.toContain('eyes');
+  expect(c.subject.lockedAttributes.filter(l => l.observed).map(l => l.attribute)).toEqual(expect.arrayContaining(['hair', 'wardrobe', 'gaze']));
+  const plan = contractCheckPlan(c, { sourceBaseline: true });
+  const unobserved = plan.filter(x => x.check.includes('unchanged from the reference frame'));
+  expect(unobserved.every(x => x.scope === 'comparison' && x.severity === 'soft')).toBe(true);
+});
+
+test.each(['unknown', 'mixed', 'collage', 'animated'])('a %s medium emits no person-appearance lock, observed or not', medium => {
+  const c = contractFor(medium, 'A man with red hair, a black t-shirt and gold earrings, looking left in a grey room.');
+  const attrs = attributesOf(c);
+  for (const person of ['hair', 'eyes', 'facial-hair', 'complexion', 'wardrobe', 'jewelry']) expect(attrs).not.toContain(person);
+  expect(attrs).toEqual(expect.arrayContaining(['role', 'gaze']));
   expect(c.subject.lockedAttributes.every(l => l.observed)).toBe(true);
+  expect(contractChecks(c, { sourceBaseline: true }).join('\n')).not.toMatch(/hair|wardrobe|jewelry|eyes|complexion/);
 });
 
 test('overlay and medium are hard checks; subject, setting and story beat are soft', () => {
-  const specs = contractCheckSpecs(contractFor('photograph', 'A man with dark hair, looking left, grey backdrop.'));
+  const specs = contractCheckPlan(contractFor('photograph', 'A man with dark hair, looking left, grey backdrop.'));
   const sev = (needle: string) => specs.find(x => x.check.includes(needle))!.severity;
   expect(sev('overlay')).toBe('hard');
   expect(sev('medium')).toBe('hard');

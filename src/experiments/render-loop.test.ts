@@ -215,7 +215,7 @@ describe('prepare() with soft checks and QA mode',()=>{
     const err=await run(render).catch(e=>e);
     expect(err).toBeInstanceOf(TerminalFailure);
     expect((err as TerminalFailure).verdict).toBe('unverified');
-    expect((err as Error).message).toBe('story_unverified:the medium is photograph: unknown reason');
+    expect((err as Error).message).toStartWith('story_unverified:the medium is photograph: unknown reason');
     expect(render.counts.renders).toBe(9);
   });
   test('warn mode ships a soft-only failure after one correction, with warnings',async()=>{
@@ -230,7 +230,7 @@ describe('prepare() with soft checks and QA mode',()=>{
     try{
       const err=await run(deps({verifyStory:async()=>softFail()})).catch(e=>e);
       expect(err).toBeInstanceOf(TerminalFailure);
-      expect((err as Error).message).toContain("story_check_failed:the subject's hair is unchanged: fail reason");
+      expect((err as Error).message).toStartWith("story_check_failed:the subject's hair is unchanged");
     }finally{delete process.env.EXPERIMENT_QA_MODE;}
   });
   test('off mode never calls the checker',async()=>{

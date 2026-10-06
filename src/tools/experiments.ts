@@ -207,7 +207,7 @@ const STATUS_HINTS: Record<string, string> = {
   review: 'Variant briefs are ready. Review them (optionally edit with update_experiment_variant), then estimate_experiment(stage="generate", variantIds) and generate_experiment for the chosen variants.',
   generating: 'Rendering slide images in the background. Check back with get_experiment in a few minutes — do not poll rapidly.',
   completed: 'All selected variants are rendered. Image URLs are in progress.variants[].imageUrls.',
-  failed: 'A step failed. See error / progress.retryableJobs, then estimate and retry_experiment.',
+  failed: 'A step failed. See error / progress.retryableJobs, then estimate and retry_experiment. Jobs marked terminalQa are verdicts on the slide contract: do not retry them until the brief or contract changes.',
   paused: 'Paused (budget guard or provider outcome unknown). See error; retry_experiment resumes named jobs.',
   cancelled: 'Cancelled — terminal. delete_experiment removes it and its images.',
 };
@@ -222,6 +222,14 @@ function countJobs(e: Experiment): Record<string, JobCounts> {
   return out;
 }
 
+/** A terminal QA verdict (SLA-528) is a finding about the slide's compiled
+ *  contract, not about one render: a retry re-asks the identical questions and
+ *  pays for the render fan-out and QA calls again. A checker that failed to
+ *  answer (`story_check_error`) is infrastructure and stays an ordinary retry. */
+const TERMINAL_QA_ERROR = /(?:^|:)story_(?:check_failed|unverified):(?!story_check_error)/;
+export const isTerminalQaError = (error: string | undefined | null): boolean => TERMINAL_QA_ERROR.test(error ?? '');
+const TERMINAL_QA_ADVICE = 'Terminal QA verdict on this slide\'s contract. Not retryable as-is: a retry re-asks the same checks and pays again. Read the failing checks in the error, change the brief or fix the contract first.';
+
 /** Agent-sized view of where an experiment is. Reads only. */
 export function experimentProgress(e: Experiment) {
   return {
@@ -234,7 +242,10 @@ export function experimentProgress(e: Experiment) {
     jobs: countJobs(e),
     retryableJobs: e.tasks
       .filter(t => (t.status === 'failed' || t.status === 'unknown') && t.attempts < MAX_MANUAL_ATTEMPTS)
-      .map(({ id, kind, target, index, status, error, attempts }) => ({ id, kind, target, index, status, error, attempts })),
+      .map(({ id, kind, target, index, status, error, attempts }) => {
+        const terminalQa = isTerminalQaError(error);
+        return { id, kind, target, index, status, error, attempts, terminalQa, ...(terminalQa ? { advice: TERMINAL_QA_ADVICE } : {}) };
+      }),
     variants: e.variants.map((v, i) => {
       const done = v.slides.filter(s => s.status === 'done' && s.url);
       return {
@@ -289,8 +300,12 @@ function lifecycleSteps(e: Experiment): NextStep[] {
         : [];
     case 'failed':
     case 'paused': {
-      const jobs = experimentProgress(e).retryableJobs.map(j => j.id);
-      return [{ label: 'Price a retry of the failed jobs', tool: 'estimate_experiment', args: jobs.length ? { experimentId: id, stage: 'generate', taskIds: jobs } : { experimentId: id, stage: e.report && e.variants.length ? 'generate' : 'plan' }, why: 'Free. Retries re-charge the retried jobs.' }];
+      const all = experimentProgress(e).retryableJobs;
+      const jobs = all.filter(j => !j.terminalQa).map(j => j.id);
+      if (all.length && !jobs.length) {
+        return [{ label: 'Do not retry: every failed slide is a terminal QA verdict', tool: 'get_experiment', args: { experimentId: id }, why: TERMINAL_QA_ADVICE }];
+      }
+      return [{ label: 'Price a retry of the failed jobs', tool: 'estimate_experiment', args: jobs.length ? { experimentId: id, stage: 'generate', taskIds: jobs } : { experimentId: id, stage: e.report && e.variants.length ? 'generate' : 'plan' }, why: all.length > jobs.length ? 'Free. Retries re-charge the retried jobs. Slides marked terminalQa are left out: they cannot pass without a contract or brief change.' : 'Free. Retries re-charge the retried jobs.' }];
     }
     case 'cancelled':
       return [{ label: 'Delete the cancelled experiment', tool: 'delete_experiment', args: { experimentId: id }, why: 'Free. Removes the record and its retained images.' }];
