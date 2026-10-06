@@ -244,8 +244,9 @@ describe('edit-mode payload emission (source guards)', () => {
 
   test('the edit payload carries structured copyOverrides next to the prose', () => {
     // Exact values keyed by 0-based slide index, including explicit blanks.
-    expect(source).toContain("var copyOverrides = { '0': hook };");
-    expect(source).toContain('copyOverrides[String(k + 1)] = t;');
+    // Only touched slides get a key (SLA-458); an untouched slide is absent.
+    expect(source).toContain("if (hook !== null) copyOverrides['0'] = hook;");
+    expect(source).toContain("if (t !== null) copyOverrides[String(k + 1)] = t;");
     expect(source).toContain('copyOverrides: copyOverrides,');
     // Bounded by the clamped slideCount, ONCE, before either carrier is built.
     // A long deck still shows a box per source slide, but a key per box — or a
@@ -254,8 +255,8 @@ describe('edit-mode payload emission (source guards)', () => {
     // The slice must come BEFORE the prose lines are built, or direction stays
     // unbounded and a 10-slide deck fails on the 2000-char field instead.
     const slice = source.indexOf('overlays = overlays.slice(0,');
-    const lines = source.indexOf('var lines = [\'Slide 1 (hook)');
-    const keys = source.indexOf('copyOverrides[String(k + 1)] = t;');
+    const lines = source.indexOf('var lines = [hook === null');
+    const keys = source.indexOf("copyOverrides[String(k + 1)] = t;");
     expect(slice).toBeGreaterThan(-1);
     expect(lines).toBeGreaterThan(slice);
     expect(keys).toBeGreaterThan(slice);
@@ -279,10 +280,64 @@ describe('edit-mode payload emission (source guards)', () => {
   test('the host/chat payload is a real edit call, not a prose-only create', () => {
     // Deleting surveyMode alone left the pasted call with no mode, so it fell
     // through to create mode and the requested copy was never pinned.
-    expect(source).toContain("mode: 'edit', videoIds: p.videoIds,");
-    expect(source).toContain('hook: ov[\'0\'], overlayTexts: ovs');
-    // The overlay list is rebuilt positionally, which is the only shape
-    // overlayTexts can express.
-    expect(source).toContain('for (var k = 1; ov[String(k)] !== undefined; k++) ovs.push(ov[String(k)]);');
+    expect(source).toContain("chatPayload = { mode: 'edit', videoIds: p.videoIds };");
+    expect(source).toContain('chatPayload.overlayTexts = ovs;');
+  });
+});
+
+// ── SLA-458: "never touched" and "deliberately cleared" must not share a wire value ──
+//
+// Run the SERVED script's buildPayload()/conversion against stubbed inputs and
+// assert on what the wizard emits, not on the template.
+describe('edit wizard: omitted vs explicit blank (SLA-458)', () => {
+  const html = renderGallery([fakeCard({ isSlideshow: true, experimentEligible: true })], undefined, {});
+  const script = html.match(/<script>([\s\S]*)<\/script>/)![1]!;
+  const build = script.slice(script.indexOf('function buildPayload()'), script.indexOf('// sourceSlides is display-only'));
+  const conversion = script.slice(script.indexOf('var chatPayload;'), script.indexOf("document.getElementById('exp-host-payload').textContent"));
+
+  function emit(slides: number, sourceSlideCount: number, values: Record<string, string>, touchedIds: string[]) {
+    const str = (id: string) => (values[id] ?? '').trim();
+    const touched = (id: string) => touchedIds.includes(id);
+    const doc = { getElementById: () => ({ dataset: { slides: String(slides) } }) };
+    const payload = new Function('selCards', 'selected', 'mode', 'str', 'touched', 'document', build + '; return buildPayload();')(
+      () => [{ getAttribute: () => String(sourceSlideCount) }], ['vid-1'], 'edit', str, touched, doc,
+    );
+    const chat = new Function('mode', 'p', 'str', conversion + '; return chatPayload;')('edit', payload, str);
+    return { payload, chat };
+  }
+
+  test('only the hook touched: no overlay key is emitted for the untouched slides', () => {
+    const { payload, chat } = emit(4, 4, { 'edit-hook': 'New hook' }, ['edit-hook']);
+    expect(payload.instructions.copyOverrides).toEqual({ '0': 'New hook' });
+    expect(payload.instructions.direction).not.toContain('strip');
+    expect(payload.instructions.direction).toContain('Slide 2: unchanged');
+    expect(chat.hook).toBe('New hook');
+    expect(chat.overlayTexts).toEqual([]);
+    const { surveyMode, ...rest } = payload;
+    expect(Create.safeParse({ workspaceId: 'w1', idempotencyKey: 'gallery:omit', ...rest }).success).toBe(true);
+  });
+
+  test('a touched-then-cleared slide is still an explicit blank that strips', () => {
+    const { payload, chat } = emit(4, 4, { 'edit-hook': 'New hook', 'edit-ov-3': '' }, ['edit-hook', 'edit-ov-3']);
+    expect(payload.instructions.copyOverrides).toEqual({ '0': 'New hook', '2': '' });
+    expect(payload.instructions.direction).toContain('Slide 3: "" (strip — no text)');
+    expect(payload.instructions.direction).toContain('Slide 2: unchanged');
+    // Positional host carrier: slide 2 is a null gap, slide 3 the blank.
+    expect(chat.overlayTexts).toEqual([null, '']);
+  });
+
+  test('an untouched hook is omitted too, and a gap between edited slides is null in the pasted call', () => {
+    const { payload, chat } = emit(4, 4, { 'edit-ov-2': 'Two', 'edit-ov-4': 'Four' }, ['edit-ov-2', 'edit-ov-4']);
+    expect(payload.instructions.copyOverrides).toEqual({ '1': 'Two', '3': 'Four' });
+    expect(chat).not.toHaveProperty('hook');
+    expect(chat.overlayTexts).toEqual(['Two', null, 'Four']);
+    // The pasted tool call and the site payload describe the same edit.
+    expect(payload.instructions).toEqual(editInstructions(undefined, ['Two', null, 'Four'], 'English'));
+  });
+
+  test('long deck: the clamp still bounds the keys, and only touched slides carry any', () => {
+    const { payload } = emit(12, 12, { 'edit-hook': 'H', 'edit-ov-2': 'Two', 'edit-ov-12': 'Twelve' }, ['edit-hook', 'edit-ov-2', 'edit-ov-12']);
+    expect(payload.slideCount).toBe(8);
+    expect(payload.instructions.copyOverrides).toEqual({ '0': 'H', '1': 'Two' });
   });
 });

@@ -101,7 +101,7 @@ export const EDIT_MAX_CREDITS = 100;
  * inside the sentence, so leading or trailing whitespace would be rendered as
  * part of the overlay text instead of being a typo in the request.
  */
-export function editSlideDirection(hook: string | undefined, overlayTexts: string[]): string {
+export function editSlideDirection(hook: string | undefined, overlayTexts: Array<string | null>): string {
   // An omitted hook must not be described as a cleared slide: the structured
   // carrier treats an omitted index as "unchanged", and prose that says the
   // opposite would instruct the planner to blank a slide the user never touched.
@@ -109,6 +109,8 @@ export function editSlideDirection(hook: string | undefined, overlayTexts: strin
     ? 'Slide 1 (hook): unchanged — no new hook was requested'
     : `Slide 1 (hook): "${hook.trim()}" (empty clears it too)`];
   overlayTexts.forEach((text, index) => {
+    // null is an omitted slide: it is described as unchanged, never as cleared.
+    if (text === null) { lines.push(`Slide ${index + 2}: unchanged — no new text was requested`); return; }
     const trimmed = text.trim();
     lines.push(`Slide ${index + 2}: "${trimmed}"${trimmed ? '' : ' (strip — no text)'}`);
   });
@@ -116,13 +118,13 @@ export function editSlideDirection(hook: string | undefined, overlayTexts: strin
 }
 
 /** Edit mode is a single deck, so the "one experiment per source" loop is length 1 by definition. */
-export function editInstructions(hook: string | undefined, overlayTexts: string[], language: string,
+export function editInstructions(hook: string | undefined, overlayTexts: Array<string | null>, language: string,
   options: { variables?: Array<'hook' | 'character'>; character?: string } = {}): InstructionsData {
   const variables = options.variables ?? [options.character !== undefined ? 'character' : 'hook'];
   if (variables.length !== 1) throw new ExperimentError(400, 'invalid_request', 'Edit mode tests exactly one variable: hook or character. Use create mode for several variables.');
   if (variables[0] === 'character') {
     if (!options.character?.trim()) throw new ExperimentError(400, 'invalid_request', 'Character edits need a non-empty character casting direction.');
-    if (hook !== undefined || overlayTexts.length) throw new ExperimentError(400, 'invalid_request', 'Character-only edits keep source copy. Omit hook and overlayTexts, or use create mode.');
+    if (hook !== undefined || overlayTexts.some(t => t !== null)) throw new ExperimentError(400, 'invalid_request', 'Character-only edits keep source copy. Omit hook and overlayTexts, or use create mode.');
     return Instructions.parse({
       goal: EDIT_CHARACTER_GOAL, brand: '', audience: '', language: language.trim() || 'English',
       direction: editCharacterDirection(options.character), lockedConstraints: [], variables, mode: 'controlled',
@@ -136,7 +138,7 @@ export function editInstructions(hook: string | undefined, overlayTexts: string[
   // two cases and silently re-injects stripped source words.
   const copyOverrides: Record<string, string> = {};
   if (hook !== undefined) copyOverrides['0'] = hook.trim();
-  overlayTexts.forEach((value, index) => { copyOverrides[String(index + 1)] = value.trim(); });
+  overlayTexts.forEach((value, index) => { if (value !== null) copyOverrides[String(index + 1)] = value.trim(); });
   return {
     goal: EDIT_GOAL, brand: '', audience: '', language: language.trim() || 'English',
     direction: editSlideDirection(hook, overlayTexts),
@@ -452,7 +454,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     + '• mode "edit" — exactly ONE deck. For a character-only edit pass variables:["character"] and `character` '
     + '(visible casting direction); omit hook/overlayTexts to keep all source copy, style, setting and story locked. '
     + 'For a copy edit (variables:["hook"], default), keep the same images and pass `hook` '
-    + '(slide 1) and `overlayTexts` (slides 2, 3, … in order; an empty string strips that slide\'s text) instead of '
+    + '(slide 1) and `overlayTexts` (slides 2, 3, … in order; an empty string strips that slide\'s text, null leaves it unchanged) instead of '
     + '`instructions`; the tool assembles the same brief the site sends — fixed goal, one selected variable, '
     + 'controlled mode, 2 variants, a 100-credit cap — with the copy quoted per slide in the site\'s wording. '
     + 'The source deck\'s own slide count wins when it is known; pass slideCount only if you do not have it.\n'
@@ -479,8 +481,8 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       hook: z.string().max(EDIT_COPY_MAX).optional().describe(
         'EDIT mode: the exact words for slide 1. OMIT this field to leave slide 1 unchanged; send an empty string only to strip slide 1\'s text.',
       ),
-      overlayTexts: z.array(z.string().max(EDIT_COPY_MAX)).max(7).optional().describe(
-        'EDIT mode: overlay text for slides 2, 3, … in order. Empty string = render no text on that slide.',
+      overlayTexts: z.array(z.string().max(EDIT_COPY_MAX).nullable()).max(7).optional().describe(
+        'EDIT mode: overlay text for slides 2, 3, … in order. Empty string = render no text on that slide. null = leave that slide\'s original text unchanged (use it to skip a slide between two you are editing).',
       ),
       language: z.string().trim().min(1).max(80).optional().describe('EDIT mode: output language for the copy (default English).'),
       variantCount: z.number().int().min(1).max(12).default(3).describe('CREATE mode: variants per experiment, including the baseline (1–12). Edit mode is always 2.'),
@@ -501,7 +503,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         if (videoIds.length !== 1) {
           return text({ error: 'invalid_request', message: 'mode "edit" works on exactly one slideshow — pass a single videoId, or use mode "create".' }, true);
         }
-        if (!character && variables?.[0] !== 'character' && !hook?.trim() && !(overlayTexts ?? []).some(t => t.trim())) {
+        if (!character && variables?.[0] !== 'character' && !hook?.trim() && !(overlayTexts ?? []).some(t => t?.trim())) {
           return text({ error: 'invalid_request', message: 'mode "edit" needs new copy: a hook for slide 1, or overlay text for a later slide.' }, true);
         }
       } else if (variables || character !== undefined) {

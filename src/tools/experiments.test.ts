@@ -320,6 +320,13 @@ describe('create_experiment', () => {
     const omitted = editInstructions(undefined, ['New support'], 'English').copyOverrides!;
     expect(Object.keys(omitted)).toEqual(['1']);
     expect(omitted).not.toHaveProperty('0');
+    // A null entry is an omitted slide (SLA-458): no key, and the prose says
+    // "unchanged", never "strip", while '' still strips.
+    const gap = editInstructions('H', ['Two', null, ''], 'English');
+    expect(Object.keys(gap.copyOverrides!)).toEqual(['0', '1', '3']);
+    expect(gap.copyOverrides!['3']).toBe('');
+    expect(gap.direction).toContain('Slide 3: unchanged');
+    expect(gap.direction).toContain('Slide 4: "" (strip — no text)');
     // Prose is still emitted for the model's benefit; the structured values are
     // what the effective brief and render request are built from.
     const both = editInstructions('H', ['S'], 'Danish');
