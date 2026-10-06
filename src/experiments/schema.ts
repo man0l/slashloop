@@ -1,4 +1,5 @@
 ﻿import { z } from 'zod/v4';
+import { SOURCE_FORMATS } from './source-format.js';
 
 export class ExperimentError extends Error {
   constructor(public statusCode: number, public code: string, message = code) { super(message); }
@@ -20,10 +21,14 @@ const constraints = z.union([z.array(text.min(1)).max(20), text]).transform(v =>
  *  where an oversized value would blow the prompt budget and fail a paid task. */
 export const CopyOverrides = z.record(z.string().regex(/^(?:0|[1-9]\d*)$/), z.string().max(2000))
   .refine(v => Object.keys(v).length <= 8, { message: 'At most 8 per-slide copy overrides: one per slide.' });
-export const Instructions = z.object({
+const instructionsShape = {
   goal: text.min(1), brand: text, audience: text, language: z.string().trim().min(1).max(80),
   direction: text, lockedConstraints: constraints,
   variables: z.array(z.union([z.enum(VARIABLE_FIELDS), z.literal('angle')]).transform(v => v === 'angle' ? 'concept' as const : v)).min(1).max(7), mode: z.enum(['controlled', 'exploration']),
+  // SLA-555: which kind of source this is. Expands to default variables, mode,
+  // direction and locks (source-format.ts); stored resolved so a later reader
+  // sees which preset shaped the locks. Optional: older experiments have none.
+  sourceFormat: z.enum(SOURCE_FORMATS).optional(),
   // Hook-test scope: when true, hook candidates may also retell the supporting
   // overlay copy (slides 2..N) while scenes stay locked to the baseline.
   // Optional so older experiments (stored without the key) keep working —
@@ -41,7 +46,8 @@ export const Instructions = z.object({
   // and the planning boundary. True keeps every source slide (still clamped to
   // 3-8). Optional so experiments stored before it resolve exactly as before.
   preserveSourceCtaSlide: z.boolean().optional(),
-}).strict().superRefine((v, ctx) => {
+};
+export const Instructions = z.object(instructionsShape).strict().superRefine((v, ctx) => {
   if (new Set(v.variables).size !== v.variables.length) ctx.addIssue({ code: 'custom', message: 'Duplicate variables' });
   if (v.mode === 'controlled' && v.variables.some(x => x === 'concept' || x === 'slides')) {
     ctx.addIssue({ code: 'custom', message: 'Controlled variables: hook, character, visualStyle, caption, cta. Concept/slides require exploration.' });
@@ -58,6 +64,15 @@ export const Instructions = z.object({
     }
   }
 });
+/** Create-time shape: with a source format, variables/mode/direction/lockedConstraints may be omitted
+ *  and are filled from the preset before the strict `Instructions` parse. */
+export const InstructionsInput = z.object({
+  ...instructionsShape,
+  direction: instructionsShape.direction.optional(),
+  lockedConstraints: instructionsShape.lockedConstraints.optional(),
+  variables: instructionsShape.variables.optional(),
+  mode: instructionsShape.mode.optional(),
+}).strict();
 export const BriefSlide = z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text.default('') });
 export const Brief = z.object({
   concept: text.min(1), hook: text.min(1), character: text, visualStyle: text.min(1), caption: text,
@@ -86,10 +101,14 @@ export const BriefDelta = z.object({
   slides: z.array(BriefSlide).min(3).max(8).optional(),
   overlayTexts: z.array(text.default('')).min(3).max(8).optional(),
 });
-export const Create = z.object({ workspaceId: Id, videoIds: z.array(Id).min(1).max(20), instructions: Instructions,
+const createShape = <I extends z.ZodType>(instructions: I) => ({ workspaceId: Id, videoIds: z.array(Id).min(1).max(20), instructions,
   variantCount: z.number().int().min(1).max(12), slideCount: z.number().int().min(3).max(8),
   maxCredits: z.number().int().min(1).max(10000), idempotencyKey: Key,
-}).strict().superRefine((v, c) => { if (new Set(v.videoIds).size !== v.videoIds.length) c.addIssue({ code: 'custom', message: 'Duplicate videoIds' }); });
+});
+const noDuplicateVideoIds = (v: { videoIds: string[] }, c: z.RefinementCtx) => { if (new Set(v.videoIds).size !== v.videoIds.length) c.addIssue({ code: 'custom', message: 'Duplicate videoIds' }); };
+export const Create = z.object(createShape(Instructions)).strict().superRefine(noDuplicateVideoIds);
+/** Same request with preset-fillable instructions; `Create` re-validates after expansion. */
+export const CreateRequest = z.object(createShape(InstructionsInput)).strict().superRefine(noDuplicateVideoIds);
 export const WorkspaceBody = z.object({ workspaceId: Id }).strict();
 export const Command = WorkspaceBody.extend({ idempotencyKey: Key });
 export const Plan = Command.extend({ allowPartial: z.boolean().optional() });

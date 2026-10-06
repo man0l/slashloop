@@ -9,6 +9,7 @@ import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { formatNumber } from '../scoring.js';
 import { resolveThumbUrl } from '../lib/media.js';
 import { withNextSteps, analyzeCostLabel } from '../lib/next-steps.js';
+import { firstPerPost, postKey } from '../lib/post-key.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerFeedTools(server: McpServer) {
@@ -399,7 +400,7 @@ export function registerFeedTools(server: McpServer) {
           video: wsFilter,
         },
         include: {
-          video: { select: { id: true, creatorHandle: true, creatorFollowers: true, platform: true, views: true, postedAt: true, source: { select: { query: true } } } },
+          video: { select: { id: true, externalId: true, creatorHandle: true, creatorFollowers: true, platform: true, views: true, postedAt: true, source: { select: { query: true } } } },
         },
         orderBy: { outlierScore: 'desc' },
         take: 50, // over-fetch so we can rank actual-first after the cut
@@ -417,16 +418,20 @@ export function registerFeedTools(server: McpServer) {
       // recommended. @mikaylanogueira ranked #2 at 438x and was actually 1.3x.
       //
       // Free: creatorFollowers is selected above, no extra query.
+      // The same post can be stored under two video ids (two sources surfacing
+      // it). Keep the highest-scored row per platform+externalId so one post is
+      // not listed, or counted as new unanalyzed work, twice.
+      const distinctOutliers = firstPerPost(outliers, s => s.video);
       const underReaches = (s: typeof outliers[number]) => {
         const f = s.video.creatorFollowers;
         return s.scoreType === 'estimated' && !!f && f > 0 && s.video.views / f < 1;
       };
       const ranked = [
-        ...outliers.filter(s => s.scoreType === 'actual'),
-        ...outliers.filter(s => s.scoreType === 'estimated' && !underReaches(s)),
-        ...outliers.filter(underReaches),
+        ...distinctOutliers.filter(s => s.scoreType === 'actual'),
+        ...distinctOutliers.filter(s => s.scoreType === 'estimated' && !underReaches(s)),
+        ...distinctOutliers.filter(underReaches),
       ].slice(0, 20);
-      const underReachCount = outliers.filter(underReaches).length;
+      const underReachCount = distinctOutliers.filter(underReaches).length;
 
       const analyzed = await db.analysis.count({ where: { video: wsFilter } });
       const hooks = await db.hook.count({ where: { video: wsFilter } });
@@ -435,15 +440,15 @@ export function registerFeedTools(server: McpServer) {
 
       // The unanalyzed, creator-relative outliers — what credits are best spent
       // on. Read off `ranked`, which already puts actual before estimated.
-      const analyzedIds = new Set(
+      const analyzedPosts = new Set(
         (await db.analysis.findMany({
           where: { video: wsFilter },
-          select: { videoId: true },
+          select: { video: { select: { platform: true, externalId: true } } },
           distinct: ['videoId'],
-        })).map(a => a.videoId),
+        })).map(a => postKey(a.video)),
       );
       const unanalyzedActual = ranked
-        .filter(s => s.scoreType === 'actual' && !analyzedIds.has(s.video.id))
+        .filter(s => s.scoreType === 'actual' && !analyzedPosts.has(postKey(s.video)))
         .slice(0, 5);
 
       return {
@@ -487,7 +492,7 @@ export function registerFeedTools(server: McpServer) {
             // a fresh one, so an unattended digest recommends the same video
             // every single morning. Observed: a scheduled run proposed
             // analysing a video that had been analysed AND hook-extracted.
-            hasAnalysis: analyzedIds.has(s.video.id),
+            hasAnalysis: analyzedPosts.has(postKey(s.video)),
           })),
         }, [
           // A digest should recommend what is still worth doing. Without

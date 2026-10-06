@@ -17,15 +17,35 @@ the resolved ID as `workspaceId` in every experiment call.
 
 ## Create
 
-Require 1–20 distinct `videoIds`. They must be Gallery slideshow cards or
+Require 1–20 distinct `videoIds`. Ids that are the same post (same platform
+and external id; the feed can list one post under two ids) are collapsed to one
+experiment, preferring the already-analyzed id, and returned as
+`skippedDuplicates`. They must be Gallery slideshow cards or
 videos with a Recreate deck; the server creates one isolated experiment per
 video and rejects the others with `video_not_slideshow`.
 
 Build `instructions`:
 
 - `goal` required.
+- `sourceFormat` (recommended): what the source is — `statue-collage`,
+  `sprite-vs-real`, `annotated-face`, `ai-render`, `sketch`,
+  `portrait-collage`, or `photo-person`. It fills `variables`, `mode`,
+  `direction` and `lockedConstraints`, so `goal` + `sourceFormat` is a complete
+  request. Your own `variables`, `mode` and `direction` win; your
+  `lockedConstraints` are added to the preset's, never replacing them. When
+  omitted the server infers it from the source's analysis (an unanalyzed draft
+  usually cannot be inferred, so set it). Never write hair, eye, complexion,
+  wardrobe or jewelry locks yourself for a statue, sprite, sketch or food
+  source: there is no person to preserve. Person-appearance locks come only
+  from `photo-person` (and framing-only locks for `annotated-face`,
+  `portrait-collage`, and `ai-render` with a visible person). Every preset
+  also locks: no source watermarks, handles or competitor brands; only our own
+  app on the closing CTA slide; no real or celebrity likeness; adults only.
+  Do not paste source analysis text into `direction` or `lockedConstraints`
+  (it names real people and the source's own brand).
 - `variables`: 1–7 values from `hook`, `character`, `visualStyle`, `caption`,
-  `cta`, `concept`/`angle`, or `slides`.
+  `cta`, `concept`/`angle`, or `slides`. Required unless a `sourceFormat` is
+  given or inferred.
 - `mode`: `controlled` by default; each alternate changes one selected variable.
   `exploration` permits combined changes in a variant; `concept`/`slides` require it.
   For the SaaS "Explore combinations" test mode, use `mode:"create"` with
