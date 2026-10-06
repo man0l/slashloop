@@ -782,6 +782,9 @@ ${cards.length ? toolbarHtml(filters) : ''}
     function buildEditOverlays() {
       var wrap = document.getElementById('edit-overlays');
       wrap.innerHTML = '';
+      var hookBox = document.getElementById('edit-hook');
+      hookBox.value = '';
+      delete hookBox.dataset.touched;
       var cards = selCards();
       var n = cards.length
         ? Math.max.apply(null, cards.map(function (c) { return parseInt(c.getAttribute('data-slide-count'), 10) || 1; }))
