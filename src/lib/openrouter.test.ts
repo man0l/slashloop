@@ -137,6 +137,18 @@ describe('classifyOpenRouterError', () => {
     expect(c.category).toBe('unknown');
   });
 
+  test('empty upstream choice -> server, retryable (SLA-515)', () => {
+    const c = classifyOpenRouterError(new Error('OpenRouter returned no content'));
+    expect(c.category).toBe('server');
+    expect(c.retryable).toBe(true);
+  });
+
+  test('checker timeout -> server, retryable (SLA-515)', () => {
+    const c = classifyOpenRouterError(new Error('The operation timed out.'));
+    expect(c.category).toBe('server');
+    expect(c.retryable).toBe(true);
+  });
+
   test('non-Error input handled', () => {
     expect(classifyOpenRouterError('boom').category).toBe('unknown');
   });

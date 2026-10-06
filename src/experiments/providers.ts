@@ -650,7 +650,8 @@ function qaFailureDiagnostics(err:unknown,checkCount:number):QaDiagnostics{
  * One checker call: explicit model policy, explicit deadline, a bounded budget
  * sized for every contract check, and sanitized diagnostics on BOTH outcomes.
  *
- * A checker that fails stays `error` (unverified) — never a pass, never a paid
+ * A transient transport failure reaches the engine retry path; an actual
+ * unverified answer stays `error` — never a pass, never a paid
  * corrective render. What changes is diagnosability: the recorded category,
  * elapsed time and upstream id say whether the request timed out, was
  * throttled or was refused, which is what the previous
@@ -696,6 +697,12 @@ async function requestQaVerification(contract:SlideContract,candidate:Buffer):Pr
     diagnostics.requestId=requestIdOf(err)??diagnostics.requestId;
     diagnostics.elapsedMs=Date.now()-started;
     logQaDiagnostic(diagnostics,contract.contractHash);
+    // Keep the original provider error for engine classification and preserve
+    // sanitized request diagnostics for callers inspecting the failure.
+    if(classifyOpenRouterError(err).retryable){
+      if(err instanceof Error)Object.assign(err,{qaDiagnostics:diagnostics});
+      throw err;
+    }
     return {...resolveQaVerdict(null,contract.contractHash),reasons:[`story_check_error:${String(err instanceof Error?err.message:err).replace(/\s+/g,' ').slice(0,80)}`],diagnostics};
   }
 }
@@ -1318,7 +1325,10 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
           // before answering is categorised here too.
           ...(raw?.diagnostics?{diagnostics:raw.diagnostics}:{}),
         };
-      }catch(err){return {verdict:'error',reasons:[`story_check_error:${String(err instanceof Error?err.message:err).replace(/\s+/g,' ').slice(0,80)}`],checks:[],contractHash:perSlide.contractHash,corrected:false,attempts:1,diagnostics:qaFailureDiagnostics(err,contractChecks(perSlide).length)};}
+      }catch(err){
+        // Transport failures reach the engine's bounded provider retry path.
+        if(classifyOpenRouterError(err).retryable)throw err;
+        return {verdict:'error',reasons:[`story_check_error:${String(err instanceof Error?err.message:err).replace(/\s+/g,' ').slice(0,80)}`],checks:[],contractHash:perSlide.contractHash,corrected:false,attempts:1,diagnostics:qaFailureDiagnostics(err,contractChecks(perSlide).length)};}
     };
     let story:SlideVerification=await verify(chosen.buffer)
       ??{verdict:'skipped',reasons:[],checks:[],contractHash:perSlide.contractHash,corrected:false,attempts:0};
