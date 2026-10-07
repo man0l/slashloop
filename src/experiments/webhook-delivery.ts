@@ -1,7 +1,7 @@
 // SLA-617: signed delivery of experiment completion events. Runs on the VPS
 // worker only (it needs node:dns/https and, for Paperclip mode, an API key that
 // must never live in the Cloudflare Worker).
-import { createHash, createHmac } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import dns from 'node:dns';
 import https from 'node:https';
 import { isIP } from 'node:net';
@@ -15,16 +15,24 @@ export interface DeliveryResult {
   status: number | null;
   error: string | null;
 }
-export type HttpPost = (url: URL, headers: Record<string, string>, body: string) => Promise<{ status: number }>;
+export type HttpPost = (url: URL, headers: Record<string, string>, body: string) => Promise<{ status: number; body?: string }>;
 
 const ok = (status: number): DeliveryResult => ({ ok: true, permanent: false, status, error: null });
 const fail = (error: string, status: number | null = null, permanent = false): DeliveryResult => ({ ok: false, permanent, status, error });
 
 /** 2xx delivered; 408/425/429/401/403/5xx and network errors retry; every other status is final. */
-export function classifyStatus(status: number): DeliveryResult {
+export function classifyStatus(status: number, detail = ''): DeliveryResult {
   if (status >= 200 && status < 300) return ok(status);
   const retryable = status >= 500 || [401, 403, 408, 425, 429].includes(status);
-  return fail(`http_${status}`, status, !retryable);
+  return fail(detail ? `http_${status}: ${detail}` : `http_${status}`, status, !retryable);
+}
+
+/** One-line, length-capped response snippet for `lastError`, with the bridge key and anything token-shaped masked. */
+export function redactedSnippet(body: string | undefined, secrets: string[] = [], max = 160): string {
+  let t = (body ?? '').replace(/\s+/g, ' ').trim();
+  for (const s of secrets) if (s) t = t.split(s).join('[redacted]');
+  t = t.replace(/Bearer\s+\S+/gi, 'Bearer [redacted]').replace(/[A-Za-z0-9_\-.]{24,}/g, '[redacted]');
+  return t.slice(0, max);
 }
 
 /** Standard Webhooks signing: HMAC-SHA256 over `${id}.${timestamp}.${body}`; a whsec_ secret is base64 key material. */
@@ -71,7 +79,9 @@ export interface PostTransport {
 }
 const GUARDED_HTTPS: PostTransport = { request: https.request, protocol: 'https:', port: 443, resolve: h => resolvePublic(h) };
 
-/** One POST, no redirects, response body discarded, idle timeout plus an overall deadline. */
+const RESPONSE_SNIPPET_BYTES = 1024;
+
+/** One POST, no redirects, first 1 KB of the response kept for diagnostics, idle timeout plus an overall deadline. */
 export function createGuardedPost(deadlineMs: number = REQUEST_DEADLINE_MS, transport: PostTransport = GUARDED_HTTPS): HttpPost {
   return (url, headers, body) => new Promise((resolve, reject) => {
     const hostname = url.hostname.replace(/^\[|\]$/g, '');
@@ -92,10 +102,13 @@ export function createGuardedPost(deadlineMs: number = REQUEST_DEADLINE_MS, tran
         ...(pinned ? { servername: isIP(hostname) ? undefined : hostname } : {}),
         headers: { ...headers, ...(pinned ? { host: url.host } : {}), 'content-length': String(Buffer.byteLength(body)) }, timeout: REQUEST_IDLE_TIMEOUT_MS,
       }, res => {
-        res.resume();
-        res.on('end', () => settle(() => resolve({ status: res.statusCode ?? 0 })));
+        const chunks: Buffer[] = [];
+        let kept = 0;
+        res.on('data', (c: Buffer) => { if (kept < RESPONSE_SNIPPET_BYTES) { chunks.push(c); kept += c.length; } });
+        const result = () => ({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).subarray(0, RESPONSE_SNIPPET_BYTES).toString('utf8') });
+        res.on('end', () => settle(() => resolve(result())));
         res.on('error', err => settle(() => reject(err)));
-        res.on('close', () => settle(() => (res.complete ? resolve({ status: res.statusCode ?? 0 }) : reject(new Error('response_aborted')))));
+        res.on('close', () => settle(() => (res.complete ? resolve(result()) : reject(new Error('response_aborted')))));
       });
       req.on('timeout', () => req!.destroy(new Error('timeout')));
       req.on('error', err => settle(() => reject(err)));
@@ -109,37 +122,45 @@ export const guardedPost: HttpPost = createGuardedPost();
 export interface PaperclipBridge {
   baseUrl: string;
   apiKey: string;
+  companyId: string;
+  /** Delivery project; must be inside the bridge key's `projectIds` scope. */
+  projectId: string;
+  /** Agent woken by the created issue; must be in the key's `allowedAssigneeAgentIds`. */
+  assigneeAgentId: string;
 }
 
-/** Reads the bridge from env; null unless a public https URL and a key are set. */
+/** Reads the bridge from env; null unless a public https URL, the key and the three target ids are set. */
 export function paperclipBridgeFromEnv(env: Record<string, string | undefined> = process.env): PaperclipBridge | null {
   const baseUrl = env.SLASHLOOP_PAPERCLIP_API_URL?.trim().replace(/\/+$/, '').replace(/\/api$/, '');
   const apiKey = (env.SLASHLOOP_PAPERCLIP_API_KEY || env.PAPERCLIP_API_KEY_FOR_SLASHLOOP_BRIDGE_AGENT)?.trim();
-  if (!baseUrl || !apiKey) return null;
+  const companyId = env.SLASHLOOP_PAPERCLIP_COMPANY_ID?.trim();
+  const projectId = env.SLASHLOOP_PAPERCLIP_PROJECT_ID?.trim();
+  const assigneeAgentId = env.SLASHLOOP_PAPERCLIP_ASSIGNEE_AGENT_ID?.trim();
+  if (!baseUrl || !apiKey || !companyId || !projectId || !assigneeAgentId) return null;
   try { assertPublicHttpsUrl(baseUrl); } catch { return null; }
-  return { baseUrl, apiKey };
+  return { baseUrl, apiKey, companyId, projectId, assigneeAgentId };
 }
 
-/** Deterministic UUID so a retried comment is the same Paperclip client request. */
-export function clientRequestId(idempotencyKey: string): string {
-  const h = createHash('sha256').update(`slashloop-webhook:${idempotencyKey}`).digest();
-  h[6] = (h[6]! & 0x0f) | 0x50;
-  h[8] = (h[8]! & 0x3f) | 0x80;
-  const x = h.subarray(0, 16).toString('hex');
-  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`;
+/** Stable per (experiment, terminal status, version): a retry or replay is the same Paperclip issue. */
+export function paperclipIdempotencyKey(deliveryKey: string): string {
+  return `slashloop-experiment:${deliveryKey}`.slice(0, 240);
 }
 
-export function paperclipCommentBody(payload: Record<string, unknown>): string {
+export function paperclipIssueTitle(payload: Record<string, unknown>): string {
+  return `Slashloop experiment ${String(payload.experimentId).slice(0, 8)} ${payload.status}`;
+}
+
+export function paperclipIssueDescription(payload: Record<string, unknown>, referenceIssueId: string | null): string {
   const summary = (payload.summary ?? {}) as { variants?: number; spentCredits?: number };
-  const lines = [
-    `**slashloop experiment \`${payload.experimentId}\` is ${payload.status}.**`,
+  return [
+    `Slashloop experiment \`${payload.experimentId}\` reached **${payload.status}**.`,
     '',
     `Variants: ${summary.variants ?? 0} · credits spent: ${summary.spentCredits ?? 0}`,
     ...(typeof payload.error === 'string' ? [`Error: ${payload.error}`] : []),
+    ...(referenceIssueId ? ['', `Requested for issue: ${referenceIssueId}`] : []),
     '',
     `Call \`get_experiment\` with experimentId \`${payload.experimentId}\` to review the result.`,
-  ];
-  return lines.join('\n');
+  ].join('\n');
 }
 
 export interface DeliverDeps {
@@ -166,12 +187,19 @@ export async function deliver(
     if (issueId) {
       const bridge = deps.bridge === undefined ? paperclipBridgeFromEnv() : deps.bridge;
       if (!bridge) return fail('paperclip_bridge_not_configured', null, false);
-      const body = JSON.stringify({ body: paperclipCommentBody(payload), clientRequestId: clientRequestId(row.idempotencyKey) });
-      const res = await post(new URL(`${bridge.baseUrl}/api/issues/${issueId}/comments`), {
+      const body = JSON.stringify({
+        title: paperclipIssueTitle(payload),
+        description: paperclipIssueDescription(payload, issueId),
+        projectId: bridge.projectId,
+        assigneeAgentId: bridge.assigneeAgentId,
+        idempotencyKey: paperclipIdempotencyKey(row.idempotencyKey),
+      });
+      const res = await post(new URL(`${bridge.baseUrl}/api/companies/${encodeURIComponent(bridge.companyId)}/issues`), {
         'content-type': 'application/json', authorization: `Bearer ${bridge.apiKey}`, 'idempotency-key': row.idempotencyKey,
         'user-agent': 'slashloop-webhooks/1',
       }, body);
-      return classifyStatus(res.status);
+      // A 2xx is delivered whether the issue was created or the server deduplicated it (idempotency_key or recent_open_title).
+      return classifyStatus(res.status, redactedSnippet(res.body, [bridge.apiKey]));
     }
     if (!notify.url) return fail('no_target', null, true);
     const url = assertPublicHttpsUrl(notify.url);

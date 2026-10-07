@@ -13,7 +13,7 @@ import { createExperiment, type CreateExperimentDeps } from './service.js';
 import { ExperimentError, parseNotify, takeNotify, TERMINAL_STATUSES, type Experiment, type NotifyConfig } from './schema.js';
 import { assertPublicHttpsUrl, isPrivateAddress, WebhookUrlError } from '../lib/webhook-url.js';
 import {
-  classifyStatus, clientRequestId, deliver, guardedPost, paperclipBridgeFromEnv, signWebhook, webhookHeaders,
+  classifyStatus, deliver, guardedPost, paperclipBridgeFromEnv, paperclipIdempotencyKey, redactedSnippet, signWebhook, webhookHeaders,
   type HttpPost, type PaperclipBridge,
 } from './webhook-delivery.js';
 import { claimDue, MAX_ATTEMPTS, pruneSettled, retryDelayMs, RETRY_DELAYS_MS, runWebhookDeliveries } from './webhook-outbox.js';
@@ -320,27 +320,52 @@ describe('deliver', () => {
   });
 
   describe('Paperclip mode', () => {
-    const bridge: PaperclipBridge = { baseUrl: 'https://paperclip.example.com', apiKey: 'pcp_test_key' };
-    test('comments on the issue with the bearer key and a stable clientRequestId', async () => {
+    const bridge: PaperclipBridge = { baseUrl: 'https://paperclip.example.com', apiKey: 'pcp_test_key', companyId: 'co-1', projectId: 'proj-1', assigneeAgentId: 'agent-1' };
+    test('creates an issue in the delivery project with the bearer key and a stable idempotencyKey', async () => {
       const { seen, post } = capture(201);
       const res = await deliver(row(paperclipNotify()), { post, bridge });
       expect(res).toMatchObject({ ok: true });
-      expect(seen[0]!.url).toBe(`https://paperclip.example.com/api/issues/${ISSUE}/comments`);
+      expect(seen[0]!.url).toBe('https://paperclip.example.com/api/companies/co-1/issues');
       expect(seen[0]!.headers.authorization).toBe('Bearer pcp_test_key');
       const body = JSON.parse(seen[0]!.body);
-      expect(body.body).toContain('experiment `e1` is review');
-      expect(body.clientRequestId).toBe(clientRequestId('e1:review:3'));
-      expect(body.clientRequestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(body).toMatchObject({ projectId: 'proj-1', assigneeAgentId: 'agent-1', idempotencyKey: 'slashloop-experiment:e1:review:3' });
+      expect(body.title).toBe('Slashloop experiment e1 review');
+      expect(body.description).toContain('`e1` reached **review**');
+      expect(body.description).toContain(`Requested for issue: ${ISSUE}`);
+      expect(body.description).toContain('get_experiment');
       await deliver(row(paperclipNotify()), { post, bridge });
-      expect(JSON.parse(seen[1]!.body).clientRequestId).toBe(body.clientRequestId);
-      expect(clientRequestId('e1:failed:4')).not.toBe(body.clientRequestId);
+      expect(JSON.parse(seen[1]!.body).idempotencyKey).toBe(body.idempotencyKey);
+      expect(paperclipIdempotencyKey('e1:failed:4')).not.toBe(body.idempotencyKey);
+      expect(paperclipIdempotencyKey('x'.repeat(400)).length).toBe(240);
       expect(seen[0]!.body).not.toContain('pcp_test_key');
     });
-    test('any workspace may target a Paperclip issue; the target comes from notify metadata', async () => {
+    test('the caller cannot choose project or assignee', async () => {
       const { seen, post } = capture(201);
-      const res = await deliver(row(paperclipNotify(), { workspaceId: 'someone-else' }), { post, bridge });
-      expect(res).toMatchObject({ ok: true });
-      expect(seen).toHaveLength(1);
+      const n = { ...paperclipNotify(), metadata: { paperclipIssueId: ISSUE, projectId: 'evil', assigneeAgentId: 'evil' } };
+      await deliver(row(n), { post, bridge });
+      expect(JSON.parse(seen[0]!.body)).toMatchObject({ projectId: 'proj-1', assigneeAgentId: 'agent-1' });
+    });
+    test('a deduplicated 200 counts as delivered', async () => {
+      const post: HttpPost = async () => ({ status: 200, body: '{"deduplicated":true,"deduplicationReason":"recent_open_title"}' });
+      expect(await deliver(row(paperclipNotify()), { post, bridge })).toMatchObject({ ok: true, error: null });
+    });
+    test('403 keeps retrying and records a redacted body snippet', async () => {
+      const post: HttpPost = async () => ({ status: 403, body: '{"error":"Task bridge key can only access assigned or bridge-created issues","token":"pcp_test_key","x":"abcdefghijklmnopqrstuvwxyz0123456789"}' });
+      const res = await deliver(row(paperclipNotify()), { post, bridge });
+      expect(res).toMatchObject({ ok: false, permanent: false, status: 403 });
+      expect(res.error).toContain('http_403: ');
+      expect(res.error).toContain('Task bridge key can only access');
+      expect(res.error).not.toContain('pcp_test_key');
+      expect(res.error).not.toContain('abcdefghijklmnopqrstuvwxyz');
+    });
+    test('400 is permanent, 5xx retries', async () => {
+      expect(await deliver(row(paperclipNotify()), { post: async () => ({ status: 400, body: 'bad' }), bridge })).toMatchObject({ ok: false, permanent: true, error: 'http_400: bad' });
+      expect(await deliver(row(paperclipNotify()), { post: async () => ({ status: 503 }), bridge })).toMatchObject({ ok: false, permanent: false, error: 'http_503' });
+    });
+    test('redactedSnippet masks keys, bearer tokens and long tokens, and caps length', () => {
+      expect(redactedSnippet('Bearer abc.def key=SECRETVALUE1 ok', ['SECRETVALUE1'])).toBe('Bearer [redacted] key=[redacted] ok');
+      expect(redactedSnippet('a'.repeat(500)).length).toBeLessThanOrEqual(160);
+      expect(redactedSnippet(undefined)).toBe('');
     });
     test('no bridge configured retries instead of losing the event', async () => {
       const { seen, post } = capture();
@@ -350,13 +375,17 @@ describe('deliver', () => {
     test('a Paperclip issue id wins over any url in the same notify', async () => {
       const { seen, post } = capture(201);
       await deliver(row({ ...urlNotify(), metadata: { paperclipIssueId: ISSUE } }), { post, bridge });
-      expect(seen[0]!.url).toContain('/api/issues/');
+      expect(seen[0]!.url).toContain('/api/companies/');
     });
-    test('bridge env needs a public https API URL and a key', () => {
-      const env = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com/api/', SLASHLOOP_PAPERCLIP_API_KEY: ' k ' };
-      expect(paperclipBridgeFromEnv(env)).toMatchObject({ baseUrl: 'https://paperclip.example.com', apiKey: 'k' });
-      expect(paperclipBridgeFromEnv({ SLASHLOOP_PAPERCLIP_API_URL: env.SLASHLOOP_PAPERCLIP_API_URL, PAPERCLIP_API_KEY_FOR_SLASHLOOP_BRIDGE_AGENT: 'bk' })).toMatchObject({ apiKey: 'bk' });
+    test('bridge env needs a public https API URL, a key and the company, project and assignee ids', () => {
+      const env = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com/api/', SLASHLOOP_PAPERCLIP_API_KEY: ' k ', SLASHLOOP_PAPERCLIP_COMPANY_ID: 'c', SLASHLOOP_PAPERCLIP_PROJECT_ID: 'p', SLASHLOOP_PAPERCLIP_ASSIGNEE_AGENT_ID: 'a' };
+      expect(paperclipBridgeFromEnv(env)).toEqual({ baseUrl: 'https://paperclip.example.com', apiKey: 'k', companyId: 'c', projectId: 'p', assigneeAgentId: 'a' });
+      const { SLASHLOOP_PAPERCLIP_API_KEY: _k, ...noKey } = env;
+      expect(paperclipBridgeFromEnv({ ...noKey, PAPERCLIP_API_KEY_FOR_SLASHLOOP_BRIDGE_AGENT: 'bk' })).toMatchObject({ apiKey: 'bk' });
       expect(paperclipBridgeFromEnv({ ...env, SLASHLOOP_PAPERCLIP_API_KEY: '' })).toBeNull();
+      for (const k of ['SLASHLOOP_PAPERCLIP_COMPANY_ID', 'SLASHLOOP_PAPERCLIP_PROJECT_ID', 'SLASHLOOP_PAPERCLIP_ASSIGNEE_AGENT_ID'] as const) {
+        expect(paperclipBridgeFromEnv({ ...env, [k]: '' })).toBeNull();
+      }
       expect(paperclipBridgeFromEnv({ ...env, SLASHLOOP_PAPERCLIP_API_URL: 'http://paperclip.example.com' })).toBeNull();
       expect(paperclipBridgeFromEnv({})).toBeNull();
     });
@@ -445,9 +474,9 @@ describe('runWebhookDeliveries (end to end on SQLite)', () => {
     await queue('pc1', paperclipNotify(), 'failed');
     const calls: string[] = [];
     const post: HttpPost = async (u) => { calls.push(u.toString()); return { status: 201 }; };
-    const bridge: PaperclipBridge = { baseUrl: 'https://paperclip.example.com', apiKey: 'k' };
+    const bridge: PaperclipBridge = { baseUrl: 'https://paperclip.example.com', apiKey: 'k', companyId: 'co-1', projectId: 'proj-1', assigneeAgentId: 'agent-1' };
     expect(await runWebhookDeliveries({ run, post, bridge, clock: () => T0 })).toEqual({ delivered: 1, retried: 0, dead: 0 });
-    expect(calls).toEqual([`https://paperclip.example.com/api/issues/${ISSUE}/comments`]);
+    expect(calls).toEqual(['https://paperclip.example.com/api/companies/co-1/issues']);
   });
 
   test('settled rows are pruned after 30 days; pending rows never are', async () => {

@@ -380,7 +380,7 @@ const ranByField = z.string().max(400).optional().describe(
 const notifyField = z.object({
   url: z.string().max(2048).optional().describe('https URL (port 443, public host) that receives a signed POST when the experiment reaches completed, review, failed, paused or cancelled.'),
   secret: z.string().min(16).max(256).optional().describe('Signing secret for the Standard Webhooks HMAC-SHA256 headers (webhook-id, webhook-timestamp, webhook-signature). Omit it and one is generated and returned once as notify.signingSecret.'),
-  metadata: z.record(z.string(), z.unknown()).optional().describe('Opaque JSON (up to 4 KB) echoed back unchanged in every delivery. Paperclip agents: set { paperclipIssueId } (the issue UUID) instead of a url to be woken by a comment on that issue.'),
+  metadata: z.record(z.string(), z.unknown()).optional().describe('Opaque JSON (up to 4 KB) echoed back unchanged in every delivery. Paperclip agents: set { paperclipIssueId } (the issue UUID) instead of a url to be woken by a new issue that references it.'),
 }).optional().describe(
   'Optional completion webhook. Instead of polling get_experiment, get one POST per terminal transition (idempotency key experimentId:status:version, retried with backoff for ~24h). '
   + 'Needs a url, or metadata.paperclipIssueId for Paperclip delivery. Applies to every experiment this call creates.',
