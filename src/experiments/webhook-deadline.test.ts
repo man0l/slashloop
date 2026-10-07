@@ -2,7 +2,7 @@
 import http from 'node:http';
 import net, { type AddressInfo, type Socket } from 'node:net';
 import { afterEach, describe, expect, test } from 'bun:test';
-import { createGuardedPost, deliver, REQUEST_DEADLINE_MS, resolvePublic, type PostTransport } from './webhook-delivery.js';
+import { createGuardedGet, createGuardedPost, deliver, REQUEST_DEADLINE_MS, resolvePublic, type PostTransport } from './webhook-delivery.js';
 
 const plainHttp = (): PostTransport => ({ request: http.request as unknown as PostTransport['request'], protocol: 'http:' });
 
@@ -23,6 +23,20 @@ describe('guardedPost response snippet', () => {
     const res = await createGuardedPost(2_000, plainHttp())(url, {}, '{}');
     expect(res.status).toBe(403);
     expect(res.body).toBe('E'.repeat(1024));
+  });
+});
+
+describe('guardedGet', () => {
+  test('sends a bodyless GET with its headers and keeps far more than 1 KB so a marker deep in a listing is found', async () => {
+    let seen: { method?: string; auth?: string; length?: string } = {};
+    const url = await listen(http.createServer((req, res) => {
+      seen = { method: req.method, auth: req.headers.authorization, length: req.headers['content-length'] };
+      res.end('x'.repeat(100_000) + '<!-- slashloop-experiment:e1:review:3 -->');
+    }));
+    const res = await createGuardedGet(2_000, plainHttp())(url, { authorization: 'Bearer k' });
+    expect(seen).toEqual({ method: 'GET', auth: 'Bearer k', length: undefined });
+    expect(res.status).toBe(200);
+    expect(res.body).toContain('<!-- slashloop-experiment:e1:review:3 -->');
   });
 });
 

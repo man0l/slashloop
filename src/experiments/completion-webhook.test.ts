@@ -13,8 +13,8 @@ import { createExperiment, type CreateExperimentDeps } from './service.js';
 import { ExperimentError, parseNotify, takeNotify, TERMINAL_STATUSES, type Experiment, type NotifyConfig } from './schema.js';
 import { assertPublicHttpsUrl, isPrivateAddress, WebhookUrlError } from '../lib/webhook-url.js';
 import {
-  classifyStatus, deliver, guardedPost, paperclipBridgeFromEnv, paperclipIdempotencyKey, redactedSnippet, signWebhook, webhookHeaders,
-  type HttpPost, type PaperclipBridge,
+  classifyCommentStatus, classifyStatus, deliver, guardedPost, paperclipConfigFromEnv, paperclipMarker, redactedSnippet, signWebhook, webhookHeaders,
+  type HttpGet, type HttpPost, type PaperclipConfig,
 } from './webhook-delivery.js';
 import { claimDue, MAX_ATTEMPTS, pruneSettled, retryDelayMs, RETRY_DELAYS_MS, runWebhookDeliveries } from './webhook-outbox.js';
 import { webhookIdempotencyKey } from './webhook-payload.js';
@@ -37,7 +37,11 @@ const outbox = () => db.query(`SELECT * FROM "ExperimentWebhookOutbox" ORDER BY 
 const ISSUE = '3b3b7ddf-0e2d-4c1a-9a6f-1d2e3f4a5b6c';
 const SECRET = 'whsec_' + Buffer.from('0123456789abcdef0123456789abcdef').toString('base64');
 const urlNotify = (over: Partial<NotifyConfig> = {}): NotifyConfig => ({ url: 'https://hooks.example.com/slashloop', secret: SECRET, secretGenerated: false, metadata: { ticket: 'T-1' }, ...over });
-const paperclipNotify = (): NotifyConfig => ({ url: null, secret: null, secretGenerated: false, metadata: { paperclipIssueId: ISSUE } });
+const MARKETING_OPS = '1309863b-f9f9-4478-a379-854290f83ed8';
+const MARKETING_OPS_CODEX = '6ec93e60-0093-4b66-90e1-ccde0b7fb410';
+const paperclipNotify = (agentId: string | null = MARKETING_OPS): NotifyConfig => ({
+  url: null, secret: null, secretGenerated: false, metadata: { paperclipIssueId: ISSUE, ...(agentId ? { agentId } : {}) },
+});
 
 function exp(id: string, over: Partial<Experiment> = {}): Experiment {
   return {
@@ -320,74 +324,158 @@ describe('deliver', () => {
   });
 
   describe('Paperclip mode', () => {
-    const bridge: PaperclipBridge = { baseUrl: 'https://paperclip.example.com', apiKey: 'pcp_test_key', companyId: 'co-1', projectId: 'proj-1', assigneeAgentId: 'agent-1' };
-    test('creates an issue in the delivery project with the bearer key and a stable idempotencyKey', async () => {
-      const { seen, post } = capture(201);
-      const res = await deliver(row(paperclipNotify()), { post, bridge });
-      expect(res).toMatchObject({ ok: true });
-      expect(seen[0]!.url).toBe('https://paperclip.example.com/api/companies/co-1/issues');
-      expect(seen[0]!.headers.authorization).toBe('Bearer pcp_test_key');
-      const body = JSON.parse(seen[0]!.body);
-      expect(body).toMatchObject({ projectId: 'proj-1', assigneeAgentId: 'agent-1', idempotencyKey: 'slashloop-experiment:e1:review:3' });
-      expect(body.title).toBe('Slashloop experiment e1 review');
-      expect(body.description).toContain('`e1` reached **review**');
-      expect(body.description).toContain(`Requested for issue: ${ISSUE}`);
-      expect(body.description).toContain('get_experiment');
-      await deliver(row(paperclipNotify()), { post, bridge });
-      expect(JSON.parse(seen[1]!.body).idempotencyKey).toBe(body.idempotencyKey);
-      expect(paperclipIdempotencyKey('e1:failed:4')).not.toBe(body.idempotencyKey);
-      expect(paperclipIdempotencyKey('x'.repeat(400)).length).toBe(240);
-      expect(seen[0]!.body).not.toContain('pcp_test_key');
+    const paperclip: PaperclipConfig = { baseUrl: 'https://paperclip.example.com', keys: { [MARKETING_OPS]: 'pcp_key_claude', [MARKETING_OPS_CODEX]: 'pcp_key_codex' } };
+    const MARKER = 'e1:review:3';
+    /** A fake issue thread: GET lists the stored comments, POST appends one. */
+    const thread = (existing: string[] = [], over: { listing?: number; posting?: number } = {}) => {
+      const comments = [...existing];
+      const calls: Array<{ method: 'GET' | 'POST'; url: string; headers: Record<string, string>; body?: string }> = [];
+      const get: HttpGet = async (url, headers) => {
+        calls.push({ method: 'GET', url: url.toString(), headers });
+        return { status: over.listing ?? 200, body: JSON.stringify(comments.map(body => ({ body }))) };
+      };
+      const post: HttpPost = async (url, headers, body) => {
+        calls.push({ method: 'POST', url: url.toString(), headers, body });
+        if ((over.posting ?? 201) < 300) comments.push(JSON.parse(body).body);
+        return { status: over.posting ?? 201 };
+      };
+      return { comments, calls, get, post };
+    };
+    const posts = (t: ReturnType<typeof thread>) => t.calls.filter(c => c.method === 'POST');
+
+    test('comments on the originating issue with resume:true, as the requesting agent, without a run id', async () => {
+      const t = thread();
+      const res = await deliver(row(paperclipNotify()), { ...t, paperclip });
+      expect(res).toMatchObject({ ok: true, error: null });
+      expect(t.calls.map(c => c.method)).toEqual(['GET', 'POST']);
+      const sent = posts(t)[0]!;
+      expect(sent.url).toBe(`https://paperclip.example.com/api/issues/${ISSUE}/comments`);
+      expect(sent.headers.authorization).toBe('Bearer pcp_key_claude');
+      expect(Object.keys(sent.headers).map(k => k.toLowerCase())).not.toContain('x-paperclip-run-id');
+      const body = JSON.parse(sent.body!);
+      expect(body.resume).toBe(true);
+      expect(body.body).toContain('`e1` reached **review**');
+      expect(body.body).toContain('Variants: 2 · credits spent: 40');
+      expect(body.body).toContain('get_experiment');
+      expect(body.body.trimEnd().endsWith(`<!-- slashloop-experiment:${MARKER} -->`)).toBe(true);
+      expect(sent.body).not.toContain('pcp_key_claude');
+      expect(t.calls[0]!.url).toStartWith(`https://paperclip.example.com/api/issues/${ISSUE}/comments`);
     });
-    test('the caller cannot choose project or assignee', async () => {
-      const { seen, post } = capture(201);
-      const n = { ...paperclipNotify(), metadata: { paperclipIssueId: ISSUE, projectId: 'evil', assigneeAgentId: 'evil' } };
-      await deliver(row(n), { post, bridge });
-      expect(JSON.parse(seen[0]!.body)).toMatchObject({ projectId: 'proj-1', assigneeAgentId: 'agent-1' });
+    test('the key is chosen by metadata.agentId', async () => {
+      const t = thread();
+      await deliver(row(paperclipNotify(MARKETING_OPS_CODEX)), { ...t, paperclip });
+      expect(t.calls.map(c => c.headers.authorization)).toEqual(['Bearer pcp_key_codex', 'Bearer pcp_key_codex']);
     });
-    test('a deduplicated 200 counts as delivered', async () => {
-      const post: HttpPost = async () => ({ status: 200, body: '{"deduplicated":true,"deduplicationReason":"recent_open_title"}' });
-      expect(await deliver(row(paperclipNotify()), { post, bridge })).toMatchObject({ ok: true, error: null });
+    test('no issue is ever created', async () => {
+      const t = thread();
+      await deliver(row(paperclipNotify()), { ...t, paperclip });
+      expect(t.calls.every(c => c.url.includes('/api/issues/') && c.url.includes('/comments'))).toBe(true);
+      expect(t.calls.some(c => c.url.includes('/api/companies/'))).toBe(false);
     });
-    test('403 keeps retrying and records a redacted body snippet', async () => {
-      const post: HttpPost = async () => ({ status: 403, body: '{"error":"Task bridge key can only access assigned or bridge-created issues","token":"pcp_test_key","x":"abcdefghijklmnopqrstuvwxyz0123456789"}' });
-      const res = await deliver(row(paperclipNotify()), { post, bridge });
-      expect(res).toMatchObject({ ok: false, permanent: false, status: 403 });
-      expect(res.error).toContain('http_403: ');
-      expect(res.error).toContain('Task bridge key can only access');
-      expect(res.error).not.toContain('pcp_test_key');
-      expect(res.error).not.toContain('abcdefghijklmnopqrstuvwxyz');
+    test('one comment per experiment: four experiments on one task make four comments', async () => {
+      const t = thread();
+      for (const id of ['a', 'b', 'c', 'd']) {
+        const r = row(paperclipNotify(), { idempotencyKey: `${id}:review:3`, payloadJson: JSON.stringify({ experimentId: id, status: 'review', version: 3, summary: { variants: 1, spentCredits: 0 } }) });
+        expect(await deliver(r, { ...t, paperclip })).toMatchObject({ ok: true });
+      }
+      expect(t.comments).toHaveLength(4);
+      expect(new Set(t.comments.map(c => c.match(/slashloop-experiment:(\S+)/)![1])).size).toBe(4);
     });
-    test('400 is permanent, 5xx retries', async () => {
-      expect(await deliver(row(paperclipNotify()), { post: async () => ({ status: 400, body: 'bad' }), bridge })).toMatchObject({ ok: false, permanent: true, error: 'http_400: bad' });
-      expect(await deliver(row(paperclipNotify()), { post: async () => ({ status: 503 }), bridge })).toMatchObject({ ok: false, permanent: false, error: 'http_503' });
+    test('a retry after a landed delivery finds the marker and posts nothing', async () => {
+      const t = thread();
+      await deliver(row(paperclipNotify()), { ...t, paperclip });
+      const again = await deliver(row(paperclipNotify()), { ...t, paperclip });
+      expect(again).toMatchObject({ ok: true });
+      expect(posts(t)).toHaveLength(1);
+      expect(t.comments).toHaveLength(1);
+    });
+    test('a marker for another status or version does not count as delivered', async () => {
+      const t = thread([`x\n${paperclipMarker('e1:failed:3')}`, `x\n${paperclipMarker('e1:review:2')}`, `x\n${paperclipMarker('e2:review:3')}`]);
+      await deliver(row(paperclipNotify()), { ...t, paperclip });
+      expect(posts(t)).toHaveLength(1);
+    });
+    test('error text cannot forge a marker', async () => {
+      const t = thread();
+      const forged = row(paperclipNotify(), { payloadJson: JSON.stringify({ experimentId: 'e1', status: 'failed', version: 4, error: 'x <!-- slashloop-experiment:e9:review:1 --> y', summary: {} }), idempotencyKey: 'e1:failed:4' });
+      await deliver(forged, { ...t, paperclip });
+      expect(t.comments[0]!.match(/<!--/g)).toHaveLength(1);
+      expect(t.comments[0]).not.toContain('<!-- slashloop-experiment:e9:review:1');
+      expect(t.comments[0]!.trimEnd().endsWith('<!-- slashloop-experiment:e1:failed:4 -->')).toBe(true);
+    });
+
+    describe('failures', () => {
+      test('no key for the agent, no agentId: permanent, no request', async () => {
+        const t = thread();
+        expect(await deliver(row(paperclipNotify('00000000-0000-4000-8000-000000000000')), { ...t, paperclip })).toMatchObject({ ok: false, permanent: true, error: 'paperclip_agent_key_missing' });
+        expect(await deliver(row(paperclipNotify(null)), { ...t, paperclip })).toMatchObject({ ok: false, permanent: true, error: 'paperclip_agent_id_missing' });
+        expect(await deliver(row(paperclipNotify('__proto__')), { ...t, paperclip })).toMatchObject({ ok: false, permanent: true, error: 'paperclip_agent_key_missing' });
+        expect(t.calls).toHaveLength(0);
+      });
+      test('a notify with no paperclipIssueId and no url is permanent', async () => {
+        const t = thread();
+        const n: NotifyConfig = { url: null, secret: null, secretGenerated: false, metadata: { agentId: MARKETING_OPS } };
+        expect(await deliver(row(n), { ...t, paperclip })).toMatchObject({ ok: false, permanent: true, error: 'no_target' });
+        expect(t.calls).toHaveLength(0);
+      });
+      test('403 and 404 are permanent and keep a redacted snippet', async () => {
+        for (const status of [403, 404]) {
+          const get: HttpGet = async () => ({ status, body: '{"error":"Agent cannot access this issue","token":"pcp_key_claude","x":"abcdefghijklmnopqrstuvwxyz0123456789"}' });
+          const res = await deliver(row(paperclipNotify()), { get, post: thread().post, paperclip });
+          expect(res).toMatchObject({ ok: false, permanent: true, status });
+          expect(res.error).toContain(`http_${status}: `);
+          expect(res.error).toContain('Agent cannot access this issue');
+          expect(res.error).not.toContain('pcp_key_claude');
+          expect(res.error).not.toContain('abcdefghijklmnopqrstuvwxyz');
+        }
+        const t = thread([], { posting: 403 });
+        expect(await deliver(row(paperclipNotify()), { ...t, paperclip })).toMatchObject({ ok: false, permanent: true, status: 403 });
+      });
+      test('5xx, 429, 401 and network errors retry, on the listing and on the post', async () => {
+        for (const status of [500, 502, 503, 429, 408, 401]) {
+          const t = thread([], { listing: status });
+          expect(await deliver(row(paperclipNotify()), { ...t, paperclip })).toMatchObject({ ok: false, permanent: false, status });
+          expect(posts(t)).toHaveLength(0);
+          expect(await deliver(row(paperclipNotify()), { ...thread([], { posting: status }), paperclip })).toMatchObject({ ok: false, permanent: false, status });
+        }
+        const boom = () => { throw Object.assign(new Error('boom'), { code: 'ECONNRESET' }); };
+        expect(await deliver(row(paperclipNotify()), { get: async () => boom(), post: thread().post, paperclip })).toMatchObject({ ok: false, permanent: false, error: 'network_error:ECONNRESET' });
+        expect(await deliver(row(paperclipNotify()), { get: thread().get, post: async () => boom(), paperclip })).toMatchObject({ ok: false, permanent: false, error: 'network_error:ECONNRESET' });
+      });
+      test('other 4xx are permanent', async () => {
+        for (const status of [400, 409, 422]) {
+          expect(await deliver(row(paperclipNotify()), { ...thread([], { posting: status }), paperclip })).toMatchObject({ ok: false, permanent: true, status });
+        }
+        expect(classifyCommentStatus(204)).toMatchObject({ ok: true });
+      });
+      test('not configured at all retries instead of losing the event', async () => {
+        const t = thread();
+        expect(await deliver(row(paperclipNotify()), { ...t, paperclip: null })).toMatchObject({ ok: false, permanent: false, error: 'paperclip_not_configured' });
+        expect(t.calls).toHaveLength(0);
+      });
+    });
+
+    test('a Paperclip issue id wins over any url in the same notify', async () => {
+      const t = thread();
+      await deliver(row({ ...urlNotify(), metadata: { paperclipIssueId: ISSUE, agentId: MARKETING_OPS } }), { ...t, paperclip });
+      expect(posts(t)[0]!.url).toContain('/comments');
     });
     test('redactedSnippet masks keys, bearer tokens and long tokens, and caps length', () => {
       expect(redactedSnippet('Bearer abc.def key=SECRETVALUE1 ok', ['SECRETVALUE1'])).toBe('Bearer [redacted] key=[redacted] ok');
       expect(redactedSnippet('a'.repeat(500)).length).toBeLessThanOrEqual(160);
       expect(redactedSnippet(undefined)).toBe('');
     });
-    test('no bridge configured retries instead of losing the event', async () => {
-      const { seen, post } = capture();
-      expect(await deliver(row(paperclipNotify()), { post, bridge: null })).toMatchObject({ ok: false, permanent: false, error: 'paperclip_bridge_not_configured' });
-      expect(seen).toHaveLength(0);
+    test('env needs a public https API URL and a JSON map of agent keys', () => {
+      const env = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com/api/', SLASHLOOP_PAPERCLIP_AGENT_KEYS: JSON.stringify({ [MARKETING_OPS]: ' k1 ', [MARKETING_OPS_CODEX]: 'k2', empty: '', bad: 5 }) };
+      expect(paperclipConfigFromEnv(env)).toEqual({ baseUrl: 'https://paperclip.example.com', keys: { [MARKETING_OPS]: 'k1', [MARKETING_OPS_CODEX]: 'k2' } });
+      expect(paperclipConfigFromEnv({ ...env, SLASHLOOP_PAPERCLIP_API_URL: 'http://paperclip.example.com' })).toBeNull();
+      expect(paperclipConfigFromEnv({ ...env, SLASHLOOP_PAPERCLIP_API_URL: '' })).toBeNull();
+      for (const keys of ['', 'not json', '[]', '"x"', '{}', '{"a":""}']) expect(paperclipConfigFromEnv({ ...env, SLASHLOOP_PAPERCLIP_AGENT_KEYS: keys })).toBeNull();
+      expect(paperclipConfigFromEnv({})).toBeNull();
     });
-    test('a Paperclip issue id wins over any url in the same notify', async () => {
-      const { seen, post } = capture(201);
-      await deliver(row({ ...urlNotify(), metadata: { paperclipIssueId: ISSUE } }), { post, bridge });
-      expect(seen[0]!.url).toContain('/api/companies/');
-    });
-    test('bridge env needs a public https API URL, a key and the company, project and assignee ids', () => {
-      const env = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com/api/', SLASHLOOP_PAPERCLIP_API_KEY: ' k ', SLASHLOOP_PAPERCLIP_COMPANY_ID: 'c', SLASHLOOP_PAPERCLIP_PROJECT_ID: 'p', SLASHLOOP_PAPERCLIP_ASSIGNEE_AGENT_ID: 'a' };
-      expect(paperclipBridgeFromEnv(env)).toEqual({ baseUrl: 'https://paperclip.example.com', apiKey: 'k', companyId: 'c', projectId: 'p', assigneeAgentId: 'a' });
-      const { SLASHLOOP_PAPERCLIP_API_KEY: _k, ...noKey } = env;
-      expect(paperclipBridgeFromEnv({ ...noKey, PAPERCLIP_API_KEY_FOR_SLASHLOOP_BRIDGE_AGENT: 'bk' })).toMatchObject({ apiKey: 'bk' });
-      expect(paperclipBridgeFromEnv({ ...env, SLASHLOOP_PAPERCLIP_API_KEY: '' })).toBeNull();
-      for (const k of ['SLASHLOOP_PAPERCLIP_COMPANY_ID', 'SLASHLOOP_PAPERCLIP_PROJECT_ID', 'SLASHLOOP_PAPERCLIP_ASSIGNEE_AGENT_ID'] as const) {
-        expect(paperclipBridgeFromEnv({ ...env, [k]: '' })).toBeNull();
-      }
-      expect(paperclipBridgeFromEnv({ ...env, SLASHLOOP_PAPERCLIP_API_URL: 'http://paperclip.example.com' })).toBeNull();
-      expect(paperclipBridgeFromEnv({})).toBeNull();
+    test('the bridge is gone: its env names are not read', () => {
+      const legacy = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com', SLASHLOOP_PAPERCLIP_API_KEY: 'k', PAPERCLIP_API_KEY_FOR_SLASHLOOP_BRIDGE_AGENT: 'k', SLASHLOOP_PAPERCLIP_COMPANY_ID: 'c', SLASHLOOP_PAPERCLIP_PROJECT_ID: 'p', SLASHLOOP_PAPERCLIP_ASSIGNEE_AGENT_ID: 'a' };
+      expect(paperclipConfigFromEnv(legacy)).toBeNull();
+      expect(readFileSync(new URL('./webhook-delivery.ts', import.meta.url), 'utf8')).not.toMatch(/BRIDGE|ASSIGNEE_AGENT_ID|PAPERCLIP_PROJECT_ID|\/issues`/);
     });
   });
 });
@@ -470,13 +558,21 @@ describe('runWebhookDeliveries (end to end on SQLite)', () => {
     expect((await claimDue(new Date(T0.getTime() + 121_000), 10, run)).length).toBe(3);
   });
 
-  test('Paperclip-mode events are delivered through the bridge', async () => {
+  test('Paperclip-mode events are delivered as a comment on the originating issue', async () => {
     await queue('pc1', paperclipNotify(), 'failed');
     const calls: string[] = [];
-    const post: HttpPost = async (u) => { calls.push(u.toString()); return { status: 201 }; };
-    const bridge: PaperclipBridge = { baseUrl: 'https://paperclip.example.com', apiKey: 'k', companyId: 'co-1', projectId: 'proj-1', assigneeAgentId: 'agent-1' };
-    expect(await runWebhookDeliveries({ run, post, bridge, clock: () => T0 })).toEqual({ delivered: 1, retried: 0, dead: 0 });
-    expect(calls).toEqual(['https://paperclip.example.com/api/companies/co-1/issues']);
+    const get: HttpGet = async (u) => { calls.push(`GET ${u.pathname}`); return { status: 200, body: '[]' }; };
+    const post: HttpPost = async (u) => { calls.push(`POST ${u.pathname}`); return { status: 201 }; };
+    const paperclip: PaperclipConfig = { baseUrl: 'https://paperclip.example.com', keys: { [MARKETING_OPS]: 'k' } };
+    expect(await runWebhookDeliveries({ run, get, post, paperclip, clock: () => T0 })).toEqual({ delivered: 1, retried: 0, dead: 0 });
+    expect(calls).toEqual([`GET /api/issues/${ISSUE}/comments`, `POST /api/issues/${ISSUE}/comments`]);
+  });
+
+  test('a Paperclip event whose agent has no key goes dead at once with the reason kept', async () => {
+    await queue('pc2', paperclipNotify('00000000-0000-4000-8000-000000000000'), 'failed');
+    const paperclip: PaperclipConfig = { baseUrl: 'https://paperclip.example.com', keys: { [MARKETING_OPS]: 'k' } };
+    expect(await runWebhookDeliveries({ run, paperclip, clock: () => T0 })).toEqual({ delivered: 0, retried: 0, dead: 1 });
+    expect(outbox()[0]).toMatchObject({ state: 'dead', lastError: 'paperclip_agent_key_missing' });
   });
 
   test('settled rows are pruned after 30 days; pending rows never are', async () => {

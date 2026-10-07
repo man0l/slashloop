@@ -111,21 +111,24 @@ experiment that reaches a terminal status again sends a new event.
   response (an idempotent replay returns the same one). Store it; it is never
   readable again.
 - `metadata`: up to 4 KB of JSON echoed back in the event body.
-- Paperclip agents: set `metadata.paperclipIssueId` to the issue UUID and
-  omit `url`. The event becomes a new issue in the Slashloop delivery project,
-  assigned to the experiment owner (which wakes them); the description names
-  the experiment, its status and your `paperclipIssueId` as the reference.
-  The project and assignee are fixed by the delivery config, not by this metadata.
-  Also pass your own `agentId` in `metadata` (`{paperclipIssueId, agentId}`);
-  it is echoed back unchanged so the event names who asked.
+- Paperclip agents: set `metadata` to `{paperclipIssueId: <the current task's
+  UUID>, agentId: <your own agent ID>}` and omit `url`. When the experiment
+  reaches a terminal status slashloop posts one comment on that task, authored
+  by you (the key is picked by `agentId`), and wakes you. A task that opens four
+  experiments gets four comments; no new issue is created. The comment names the
+  experiment, its status, variants and credits, and ends with a hidden marker
+  `<!-- slashloop-experiment:<experimentId>:<status>:<version> -->`. It reopens
+  the task if it was already `done`. Both ids are required: with no key for
+  `agentId` (or no `agentId`) the delivery fails permanently and nothing is posted.
 
 **Paperclip agents: notify, never poll.** Do not loop on `get_experiment`.
 After `plan_experiment` or `generate_experiment` starts a run, end the heartbeat
-and let the completion event wake you. Create every experiment with
-`notify:{metadata:{paperclipIssueId:<this issue's UUID>, agentId:<your agent ID>}}`
-(omit `url` and `secret`). The webhook can be lost or its delivery project can
-be unconfigured, so also set a monitor on the same issue as a safety net. It
-needs no slashloop change:
+and let the comment wake you (`issue_commented`). Create every experiment with
+`notify:{metadata:{paperclipIssueId:<this task's UUID>, agentId:<your agent ID>}}`
+(omit `url` and `secret`). When woken, a comment carrying the marker is the
+result: run `get_experiment` once for that `experimentId` and act on it. The
+webhook can be lost or its keys can be unconfigured, so also set a monitor on the
+same issue as a safety net. It needs no slashloop change:
 
 ```json
 PATCH /api/issues/<issue UUID>
@@ -138,7 +141,7 @@ PATCH /api/issues/<issue UUID>
 
 Pick `nextCheckAt` well past the expected run time (a plan or generation
 run takes minutes; two hours is a safe default) so the monitor fires only when
-the webhook did not. When the completion issue arrives first, clear the monitor.
+the webhook did not. When the completion comment arrives first, clear the monitor.
 If the monitor fires instead, check the experiment once with `get_experiment`:
 a terminal status means act on it; a non-terminal status means re-arm with a
 later `nextCheckAt`. An issue holds one monitor: with several experiments, set
