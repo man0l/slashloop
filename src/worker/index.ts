@@ -59,6 +59,7 @@ import { initLogShipping } from './ship-logs.js';
 import { tick as experimentTick } from '../experiments/engine.js';
 import { candidates as experimentCandidates } from '../experiments/store.js';
 import { pruneSettled, runWebhookDeliveries } from '../experiments/webhook-outbox.js';
+import { describePaperclipEnv } from '../experiments/webhook-delivery.js';
 import { createKindBreaker } from './kind-breaker.js';
 import { parseMetricsPort, recordFallbackSweep, startWorkerMetricsServer } from './metrics.js';
 import {
@@ -298,6 +299,7 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 console.log(`[worker] started — dialect=${isD1Mode ? 'sqlite(D1)' : 'postgres'} kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms → max ${MAX_IDLE_MS}ms, concurrency ${CONCURRENCY}, rescore every ${Math.round(RESCORE_INTERVAL_MS / 1000)}s, experiments ${doesExperiments ? 'on' : 'off'} (${experimentGate.reason})`);
+console.log(`[worker] webhook delivery ${doesWebhooks ? 'on' : 'off'}; ${describePaperclipEnv()}`);
 // Startup stagger so sibling containers (same image, restarted together by a
 // deploy) don't walk the claim/experiment cadence in phase: each container
 // offsets its first loop iteration by a random 0–5s before the while loop.

@@ -138,19 +138,65 @@ export interface PaperclipConfig {
   keys: Record<string, string>;
 }
 
-/** Reads SLASHLOOP_PAPERCLIP_API_URL (public https) and SLASHLOOP_PAPERCLIP_AGENT_KEYS (JSON `{agentId: key}`); null unless both yield something usable. */
-export function paperclipConfigFromEnv(env: Record<string, string | undefined> = process.env): PaperclipConfig | null {
-  const baseUrl = env.SLASHLOOP_PAPERCLIP_API_URL?.trim().replace(/\/+$/, '').replace(/\/api$/, '');
-  if (!baseUrl) return null;
-  try { assertPublicHttpsUrl(baseUrl); } catch { return null; }
-  let parsed: unknown;
-  try { parsed = JSON.parse(env.SLASHLOOP_PAPERCLIP_AGENT_KEYS ?? ''); } catch { return null; }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+export type PaperclipConfigReason =
+  | 'paperclip_url_missing'
+  | 'paperclip_url_not_public_https'
+  | 'paperclip_keys_missing'
+  | 'paperclip_keys_invalid_json'
+  | 'paperclip_keys_empty';
+export type PaperclipConfigResult = { config: PaperclipConfig; reason: null } | { config: null; reason: PaperclipConfigReason };
+
+export interface PaperclipConfigState {
+  urlSet: boolean;
+  keyCount: number;
+  agentIds: string[];
+  /** First fault found, null when delivery can run. */
+  reason: PaperclipConfigReason | null;
+  config: PaperclipConfig | null;
+}
+
+/** Inspects SLASHLOOP_PAPERCLIP_API_URL (public https) and SLASHLOOP_PAPERCLIP_AGENT_KEYS (JSON `{agentId: key}`); every fault is retryable, the reason says which one. */
+export function inspectPaperclipEnv(env: Record<string, string | undefined> = process.env): PaperclipConfigState {
+  const baseUrl = env.SLASHLOOP_PAPERCLIP_API_URL?.trim().replace(/\/+$/, '').replace(/\/api$/, '') ?? '';
+  let urlReason: PaperclipConfigReason | null = null;
+  if (!baseUrl) urlReason = 'paperclip_url_missing';
+  else { try { assertPublicHttpsUrl(baseUrl); } catch { urlReason = 'paperclip_url_not_public_https'; } }
+
+  const rawKeys = env.SLASHLOOP_PAPERCLIP_AGENT_KEYS?.trim() ?? '';
   const keys: Record<string, string> = {};
-  for (const [agentId, key] of Object.entries(parsed)) {
-    if (typeof key === 'string' && key.trim()) keys[agentId.trim()] = key.trim();
+  let keysReason: PaperclipConfigReason | null = null;
+  if (!rawKeys) keysReason = 'paperclip_keys_missing';
+  else {
+    let parsed: unknown;
+    try { parsed = JSON.parse(rawKeys); } catch { parsed = undefined; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) keysReason = 'paperclip_keys_invalid_json';
+    else {
+      for (const [agentId, key] of Object.entries(parsed)) {
+        if (typeof key === 'string' && key.trim()) keys[agentId.trim()] = key.trim();
+      }
+      if (!Object.keys(keys).length) keysReason = 'paperclip_keys_empty';
+    }
   }
-  return Object.keys(keys).length ? { baseUrl, keys } : null;
+
+  const reason = urlReason ?? keysReason;
+  return {
+    urlSet: Boolean(baseUrl),
+    keyCount: Object.keys(keys).length,
+    agentIds: Object.keys(keys),
+    reason,
+    config: reason ? null : { baseUrl, keys },
+  };
+}
+
+export function paperclipConfigFromEnv(env: Record<string, string | undefined> = process.env): PaperclipConfigResult {
+  const { config, reason } = inspectPaperclipEnv(env);
+  return config ? { config, reason: null } : { config: null, reason: reason! };
+}
+
+/** One startup line: what the worker can see of the Paperclip delivery env. Agent ids only, never key values. */
+export function describePaperclipEnv(env: Record<string, string | undefined> = process.env): string {
+  const s = inspectPaperclipEnv(env);
+  return `paperclip delivery config: url=${s.urlSet ? 'set' : 'unset'} keys=${s.keyCount} agents=[${s.agentIds.join(', ')}] status=${s.reason ?? 'ok'}`;
 }
 
 /** Hidden line that makes a delivery recognisable in the issue thread: one per (experiment, terminal status, version). */
@@ -183,8 +229,9 @@ export function classifyCommentStatus(status: number, detail = ''): DeliveryResu
 export interface DeliverDeps {
   post?: HttpPost;
   get?: HttpGet;
-  /** Undefined reads the env; null means "not configured". */
-  paperclip?: PaperclipConfig | null;
+  /** Undefined reads `paperclipEnv` (default process.env). */
+  paperclip?: PaperclipConfig;
+  paperclipEnv?: Record<string, string | undefined>;
   now?: () => number;
 }
 
@@ -194,8 +241,9 @@ async function deliverPaperclipComment(
 ): Promise<DeliveryResult> {
   const post = deps.post ?? guardedPost;
   const get = deps.get ?? guardedGet;
-  const config = deps.paperclip === undefined ? paperclipConfigFromEnv() : deps.paperclip;
-  if (!config) return fail('paperclip_not_configured', null, false);
+  const resolved: PaperclipConfigResult = deps.paperclip ? { config: deps.paperclip, reason: null } : paperclipConfigFromEnv(deps.paperclipEnv);
+  if (!resolved.config) return fail(resolved.reason, null, false);
+  const config = resolved.config;
   const agentId = typeof notify.metadata?.agentId === 'string' ? notify.metadata.agentId.trim() : '';
   const apiKey = agentId && Object.hasOwn(config.keys, agentId) ? config.keys[agentId] : undefined;
   if (!apiKey) return fail(agentId ? 'paperclip_agent_key_missing' : 'paperclip_agent_id_missing', null, true);

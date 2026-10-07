@@ -13,7 +13,7 @@ import { createExperiment, type CreateExperimentDeps } from './service.js';
 import { ExperimentError, parseNotify, takeNotify, TERMINAL_STATUSES, type Experiment, type NotifyConfig } from './schema.js';
 import { assertPublicHttpsUrl, isPrivateAddress, WebhookUrlError } from '../lib/webhook-url.js';
 import {
-  classifyCommentStatus, classifyStatus, deliver, guardedPost, paperclipConfigFromEnv, paperclipMarker, redactedSnippet, signWebhook, webhookHeaders,
+  classifyCommentStatus, classifyStatus, deliver, describePaperclipEnv, guardedPost, paperclipConfigFromEnv, paperclipMarker, redactedSnippet, signWebhook, webhookHeaders,
   type HttpGet, type HttpPost, type PaperclipConfig,
 } from './webhook-delivery.js';
 import { claimDue, MAX_ATTEMPTS, pruneSettled, retryDelayMs, RETRY_DELAYS_MS, runWebhookDeliveries } from './webhook-outbox.js';
@@ -447,10 +447,20 @@ describe('deliver', () => {
         }
         expect(classifyCommentStatus(204)).toMatchObject({ ok: true });
       });
-      test('not configured at all retries instead of losing the event', async () => {
-        const t = thread();
-        expect(await deliver(row(paperclipNotify()), { ...t, paperclip: null })).toMatchObject({ ok: false, permanent: false, error: 'paperclip_not_configured' });
-        expect(t.calls).toHaveLength(0);
+      test('each env fault is retryable and names itself in lastError', async () => {
+        const good = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com', SLASHLOOP_PAPERCLIP_AGENT_KEYS: JSON.stringify({ [MARKETING_OPS]: 'k1' }) };
+        const cases: Array<[Record<string, string | undefined>, string]> = [
+          [{ ...good, SLASHLOOP_PAPERCLIP_API_URL: undefined }, 'paperclip_url_missing'],
+          [{ ...good, SLASHLOOP_PAPERCLIP_API_URL: 'http://paperclip.example.com' }, 'paperclip_url_not_public_https'],
+          [{ ...good, SLASHLOOP_PAPERCLIP_AGENT_KEYS: undefined }, 'paperclip_keys_missing'],
+          [{ ...good, SLASHLOOP_PAPERCLIP_AGENT_KEYS: 'not json' }, 'paperclip_keys_invalid_json'],
+          [{ ...good, SLASHLOOP_PAPERCLIP_AGENT_KEYS: '{"a":""}' }, 'paperclip_keys_empty'],
+        ];
+        for (const [paperclipEnv, error] of cases) {
+          const t = thread();
+          expect(await deliver(row(paperclipNotify()), { ...t, paperclipEnv })).toMatchObject({ ok: false, permanent: false, status: null, error });
+          expect(t.calls).toHaveLength(0);
+        }
       });
     });
 
@@ -466,15 +476,28 @@ describe('deliver', () => {
     });
     test('env needs a public https API URL and a JSON map of agent keys', () => {
       const env = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com/api/', SLASHLOOP_PAPERCLIP_AGENT_KEYS: JSON.stringify({ [MARKETING_OPS]: ' k1 ', [MARKETING_OPS_CODEX]: 'k2', empty: '', bad: 5 }) };
-      expect(paperclipConfigFromEnv(env)).toEqual({ baseUrl: 'https://paperclip.example.com', keys: { [MARKETING_OPS]: 'k1', [MARKETING_OPS_CODEX]: 'k2' } });
-      expect(paperclipConfigFromEnv({ ...env, SLASHLOOP_PAPERCLIP_API_URL: 'http://paperclip.example.com' })).toBeNull();
-      expect(paperclipConfigFromEnv({ ...env, SLASHLOOP_PAPERCLIP_API_URL: '' })).toBeNull();
-      for (const keys of ['', 'not json', '[]', '"x"', '{}', '{"a":""}']) expect(paperclipConfigFromEnv({ ...env, SLASHLOOP_PAPERCLIP_AGENT_KEYS: keys })).toBeNull();
-      expect(paperclipConfigFromEnv({})).toBeNull();
+      expect(paperclipConfigFromEnv(env)).toEqual({ reason: null, config: { baseUrl: 'https://paperclip.example.com', keys: { [MARKETING_OPS]: 'k1', [MARKETING_OPS_CODEX]: 'k2' } } });
+      const reasonOf = (over: Record<string, string>) => paperclipConfigFromEnv({ ...env, ...over }).reason;
+      expect(reasonOf({ SLASHLOOP_PAPERCLIP_API_URL: 'http://paperclip.example.com' })).toBe('paperclip_url_not_public_https');
+      expect(reasonOf({ SLASHLOOP_PAPERCLIP_API_URL: 'https://10.0.0.5' })).toBe('paperclip_url_not_public_https');
+      expect(reasonOf({ SLASHLOOP_PAPERCLIP_API_URL: '' })).toBe('paperclip_url_missing');
+      expect(reasonOf({ SLASHLOOP_PAPERCLIP_API_URL: '  ' })).toBe('paperclip_url_missing');
+      for (const keys of ['', '  ']) expect(reasonOf({ SLASHLOOP_PAPERCLIP_AGENT_KEYS: keys })).toBe('paperclip_keys_missing');
+      for (const keys of ['not json', '[]', '"x"', 'null']) expect(reasonOf({ SLASHLOOP_PAPERCLIP_AGENT_KEYS: keys })).toBe('paperclip_keys_invalid_json');
+      for (const keys of ['{}', '{"a":""}', '{"a":5}']) expect(reasonOf({ SLASHLOOP_PAPERCLIP_AGENT_KEYS: keys })).toBe('paperclip_keys_empty');
+      expect(paperclipConfigFromEnv({})).toEqual({ config: null, reason: 'paperclip_url_missing' });
+    });
+    test('the startup line reports url, key count and agent ids, never key values', () => {
+      const env = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com', SLASHLOOP_PAPERCLIP_AGENT_KEYS: JSON.stringify({ [MARKETING_OPS]: 'secret-one', [MARKETING_OPS_CODEX]: 'secret-two' }) };
+      const line = describePaperclipEnv(env);
+      expect(line).toBe(`paperclip delivery config: url=set keys=2 agents=[${MARKETING_OPS}, ${MARKETING_OPS_CODEX}] status=ok`);
+      expect(line).not.toMatch(/secret|paperclip\.example/);
+      expect(describePaperclipEnv({})).toBe('paperclip delivery config: url=unset keys=0 agents=[] status=paperclip_url_missing');
+      expect(describePaperclipEnv({ ...env, SLASHLOOP_PAPERCLIP_AGENT_KEYS: '{bad' })).toContain('keys=0 agents=[] status=paperclip_keys_invalid_json');
     });
     test('the bridge is gone: its env names are not read', () => {
       const legacy = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com', SLASHLOOP_PAPERCLIP_API_KEY: 'k', PAPERCLIP_API_KEY_FOR_SLASHLOOP_BRIDGE_AGENT: 'k', SLASHLOOP_PAPERCLIP_COMPANY_ID: 'c', SLASHLOOP_PAPERCLIP_PROJECT_ID: 'p', SLASHLOOP_PAPERCLIP_ASSIGNEE_AGENT_ID: 'a' };
-      expect(paperclipConfigFromEnv(legacy)).toBeNull();
+      expect(paperclipConfigFromEnv(legacy).reason).toBe('paperclip_keys_missing');
       expect(readFileSync(new URL('./webhook-delivery.ts', import.meta.url), 'utf8')).not.toMatch(/BRIDGE|ASSIGNEE_AGENT_ID|PAPERCLIP_PROJECT_ID|\/issues`/);
     });
   });
