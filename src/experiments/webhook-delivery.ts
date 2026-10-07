@@ -136,6 +136,8 @@ export interface PaperclipConfig {
   baseUrl: string;
   /** Agent id -> that agent's own Paperclip API key. The child task is authored by, and assigned to, whichever agent asked. */
   keys: Record<string, string>;
+  /** Board API key (SLASHLOOP_BOARD_API_KEY). When set, results are posted as board comments and no agent key is needed. */
+  boardKey?: string;
 }
 
 export type PaperclipConfigReason =
@@ -150,12 +152,13 @@ export interface PaperclipConfigState {
   urlSet: boolean;
   keyCount: number;
   agentIds: string[];
+  boardKeySet: boolean;
   /** First fault found, null when delivery can run. */
   reason: PaperclipConfigReason | null;
   config: PaperclipConfig | null;
 }
 
-/** Inspects SLASHLOOP_PAPERCLIP_API_URL (public https) and SLASHLOOP_PAPERCLIP_AGENT_KEYS (JSON `{agentId: key}`); every fault is retryable, the reason says which one. */
+/** Inspects SLASHLOOP_PAPERCLIP_API_URL (public https), SLASHLOOP_BOARD_API_KEY (primary) and SLASHLOOP_PAPERCLIP_AGENT_KEYS (JSON `{agentId: key}`, the child-task fallback; optional when a board key is set); every fault is retryable, the reason says which one. */
 export function inspectPaperclipEnv(env: Record<string, string | undefined> = process.env): PaperclipConfigState {
   const baseUrl = env.SLASHLOOP_PAPERCLIP_API_URL?.trim().replace(/\/+$/, '').replace(/\/api$/, '') ?? '';
   let urlReason: PaperclipConfigReason | null = null;
@@ -178,13 +181,15 @@ export function inspectPaperclipEnv(env: Record<string, string | undefined> = pr
     }
   }
 
-  const reason = urlReason ?? keysReason;
+  const boardKey = env.SLASHLOOP_BOARD_API_KEY?.trim() ?? '';
+  const reason = urlReason ?? (boardKey ? null : keysReason);
   return {
     urlSet: Boolean(baseUrl),
     keyCount: Object.keys(keys).length,
     agentIds: Object.keys(keys),
+    boardKeySet: Boolean(boardKey),
     reason,
-    config: reason ? null : { baseUrl, keys },
+    config: reason ? null : { baseUrl, keys, ...(boardKey ? { boardKey } : {}) },
   };
 }
 
@@ -196,7 +201,27 @@ export function paperclipConfigFromEnv(env: Record<string, string | undefined> =
 /** One startup line: what the worker can see of the Paperclip delivery env. Agent ids only, never key values. */
 export function describePaperclipEnv(env: Record<string, string | undefined> = process.env): string {
   const s = inspectPaperclipEnv(env);
-  return `paperclip delivery config: url=${s.urlSet ? 'set' : 'unset'} keys=${s.keyCount} agents=[${s.agentIds.join(', ')}] status=${s.reason ?? 'ok'}`;
+  return `paperclip delivery config: url=${s.urlSet ? 'set' : 'unset'} board=${s.boardKeySet ? 'set' : 'unset'} keys=${s.keyCount} agents=[${s.agentIds.join(', ')}] status=${s.reason ?? 'ok'}`;
+}
+
+/** Hidden line that makes a board comment recognisable in the thread: one per (experiment, terminal status, version). */
+export function paperclipMarker(deliveryKey: string): string {
+  return `<!-- slashloop-experiment:${deliveryKey} -->`;
+}
+
+export function paperclipCommentBody(payload: Record<string, unknown>, marker: string): string {
+  const summary = (payload.summary ?? {}) as { variants?: number; spentCredits?: number };
+  const error = typeof payload.error === 'string' ? payload.error.replace(/<!--|-->/g, '').replace(/\s+/g, ' ').trim() : '';
+  return [
+    `Slashloop experiment \`${payload.experimentId}\` reached **${payload.status}**.`,
+    '',
+    `Variants: ${summary.variants ?? 0} · credits spent: ${summary.spentCredits ?? 0}`,
+    ...(error ? [`Error: ${error}`] : []),
+    '',
+    `Call \`get_experiment\` with experimentId \`${payload.experimentId}\` to review the result.`,
+    '',
+    marker,
+  ].join('\n');
 }
 
 /** Stable per (experiment, terminal status, version): a retry or replay is the same Paperclip issue. */
@@ -234,9 +259,18 @@ export function classifyPaperclipStatus(status: number, rawBody: string | undefi
   return fail(detail ? `http_${status}: ${detail}` : `http_${status}`, status, !retryable);
 }
 
+/** Board-key delivery: 2xx delivered; 401/403 mean the key is expired or lacks access, which only a new key fixes, so they are named and retried (a rotated key lands within the backoff window); 408/425/429/5xx retry; every other status is final. */
+export function classifyBoardStatus(status: number, rawBody: string | undefined = '', secrets: string[] = []): DeliveryResult {
+  if (status >= 200 && status < 300) return ok(status);
+  const detail = redactedSnippet(rawBody, secrets);
+  if (status === 401 || status === 403) return fail(`paperclip_board_key_rejected: http_${status}${detail ? ` ${detail}` : ''}`, status, false);
+  const retryable = status >= 500 || [408, 425, 429].includes(status);
+  return fail(detail ? `http_${status}: ${detail}` : `http_${status}`, status, !retryable);
+}
+
 /** Errors in this set mean the delivery path itself is misconfigured or refused; the sweep logs them at error level. */
 export function isPaperclipConfigError(error: string | null): boolean {
-  return Boolean(error && (error.startsWith('paperclip_run_context_required') || error.startsWith('paperclip_agent_key_missing') || error.startsWith('paperclip_agent_id_missing')));
+  return Boolean(error && (error.startsWith('paperclip_run_context_required') || error.startsWith('paperclip_board_key_rejected') || error.startsWith('paperclip_agent_key_missing') || error.startsWith('paperclip_agent_id_missing')));
 }
 
 export interface DeliverDeps {
@@ -248,6 +282,26 @@ export interface DeliverDeps {
   now?: () => number;
 }
 
+/** Posts one comment on the originating issue as the board. A board actor skips the agent run-context rule, and the comment wakes the issue's assignee, whichever agent that is. A marker already in the thread means a previous attempt landed. */
+async function deliverPaperclipBoardComment(
+  deliveryKey: string, issueId: string, boardKey: string, baseUrl: string, payload: Record<string, unknown>, deps: DeliverDeps,
+): Promise<DeliveryResult> {
+  const post = deps.post ?? guardedPost;
+  const get = deps.get ?? guardedGet;
+  const headers = { authorization: `Bearer ${boardKey}`, 'user-agent': 'slashloop-webhooks/1' };
+  const commentsUrl = `${baseUrl}/api/issues/${encodeURIComponent(issueId)}/comments`;
+  const marker = paperclipMarker(deliveryKey);
+
+  const listing = await get(new URL(`${commentsUrl}?order=desc&limit=100`), headers);
+  if (listing.status < 200 || listing.status >= 300) return classifyBoardStatus(listing.status, listing.body, [boardKey]);
+  if ((listing.body ?? '').includes(marker)) return ok(listing.status);
+
+  // `resume` reopens a done task so the assignee wakes; no run header, a board actor needs none.
+  const body = JSON.stringify({ body: paperclipCommentBody(payload, marker), resume: true });
+  const res = await post(new URL(commentsUrl), { ...headers, 'content-type': 'application/json' }, body);
+  return classifyBoardStatus(res.status, res.body, [boardKey]);
+}
+
 /** Creates one child task under the originating issue, assigned to the requesting agent, authored with that agent's key. Child creation is the one write an agent key may make without a heartbeat run; it also wakes the assignee, so the agent reads the result inside its own run. */
 async function deliverPaperclipIssue(
   deliveryKey: string, issueId: string, notify: NotifyConfig, payload: Record<string, unknown>, deps: DeliverDeps,
@@ -257,6 +311,7 @@ async function deliverPaperclipIssue(
   const resolved: PaperclipConfigResult = deps.paperclip ? { config: deps.paperclip, reason: null } : paperclipConfigFromEnv(deps.paperclipEnv);
   if (!resolved.config) return fail(resolved.reason, null, false);
   const config = resolved.config;
+  if (config.boardKey) return deliverPaperclipBoardComment(deliveryKey, issueId, config.boardKey, config.baseUrl, payload, deps);
   const agentId = typeof notify.metadata?.agentId === 'string' ? notify.metadata.agentId.trim() : '';
   const apiKey = agentId && Object.hasOwn(config.keys, agentId) ? config.keys[agentId] : undefined;
   if (!apiKey) return fail(agentId ? 'paperclip_agent_key_missing' : 'paperclip_agent_id_missing', null, true);
