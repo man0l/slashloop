@@ -76,6 +76,13 @@ describe('pinned address (works on Node and Bun, whose https shim ignores `looku
   test('resolvePublic returns the first public address', async () => {
     await expect(resolvePublic('hooks.example.com', answers([{ address: '93.184.216.34', family: 4 }, { address: '2606:2800:220:1::1', family: 6 }]))).resolves.toBe('93.184.216.34');
   });
+  test('resolvePublic prefers IPv4 when an AAAA answer comes first, and falls back to IPv6 when it is the only family', async () => {
+    await expect(resolvePublic('hooks.example.com', answers([{ address: '2606:2800:220:1::1', family: 6 }, { address: '93.184.216.34', family: 4 }]))).resolves.toBe('93.184.216.34');
+    await expect(resolvePublic('v6.example.com', answers([{ address: '2606:2800:220:1::1', family: 6 }]))).resolves.toBe('2606:2800:220:1::1');
+  });
+  test('a private AAAA answer still blocks the host even when a public IPv4 is preferred', async () => {
+    await expect(resolvePublic('rebind6.example.com', answers([{ address: '93.184.216.34', family: 4 }, { address: 'fd00::1', family: 6 }]))).rejects.toMatchObject({ code: 'blocked_address' });
+  });
   test('one private address among public ones blocks the host', async () => {
     await expect(resolvePublic('rebind.example.com', answers([{ address: '93.184.216.34', family: 4 }, { address: '10.0.0.5', family: 4 }]))).rejects.toMatchObject({ code: 'blocked_address' });
   });
