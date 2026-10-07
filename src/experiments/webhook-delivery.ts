@@ -47,13 +47,13 @@ export function webhookHeaders(id: string, secret: string | null, nowMs: number,
 
 type Resolver = (host: string, opts: { all: true }, cb: (err: Error | null, addresses: Array<{ address: string; family: number }>) => void) => void;
 
-/** Resolves once and returns one public address to connect to; any private address among the answers blocks the host, so DNS rebinding cannot reach the private network. */
+/** Resolves once and returns one public address to connect to, preferring IPv4 (a worker without an IPv6 route would fail on a leading AAAA answer, and there is no happy-eyeballs fallback once the IP is pinned). Any private address among the answers blocks the host, so DNS rebinding cannot reach the private network. */
 export function resolvePublic(hostname: string, resolve: Resolver = dns.lookup as unknown as Resolver): Promise<string> {
   if (isIP(hostname)) return isPrivateAddress(hostname) ? Promise.reject(new WebhookUrlError('blocked_address')) : Promise.resolve(hostname);
   return new Promise((res, rej) => resolve(hostname, { all: true }, (err, addresses) => {
     if (err) return rej(err);
     if (!addresses.length || addresses.some(a => isPrivateAddress(a.address))) return rej(new WebhookUrlError('blocked_address'));
-    res(addresses[0]!.address);
+    res((addresses.find(a => a.family === 4) ?? addresses[0]!).address);
   }));
 }
 
