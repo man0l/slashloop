@@ -57,21 +57,50 @@ const guardedLookup = ((hostname: string, _opts: unknown, cb: (err: Error | null
   });
 }) as unknown as NonNullable<https.RequestOptions['lookup']>;
 
-const REQUEST_TIMEOUT_MS = 10_000;
+const REQUEST_IDLE_TIMEOUT_MS = 10_000;
+/** Wall-clock cap per request (DNS + connect + send + full response); the idle timeout alone lets a slow-drip endpoint hold the single-flight sweep. */
+export const REQUEST_DEADLINE_MS = 15_000;
 
-/** One POST, no redirects, response body discarded, hard timeout. */
-export const guardedPost: HttpPost = (url, headers, body) => new Promise((resolve, reject) => {
-  // Node never calls `lookup` for an IP literal, so the literal is checked here.
-  const hostname = url.hostname.replace(/^\[|\]$/g, '');
-  if (isIP(hostname) && isPrivateAddress(hostname)) return reject(new WebhookUrlError('blocked_address'));
-  const req = https.request({
-    protocol: 'https:', hostname, port: 443, path: `${url.pathname}${url.search}`, method: 'POST',
-    headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) }, lookup: guardedLookup, timeout: REQUEST_TIMEOUT_MS,
-  }, res => { res.resume(); res.on('end', () => resolve({ status: res.statusCode ?? 0 })); res.on('error', reject); });
-  req.on('timeout', () => req.destroy(new Error('timeout')));
-  req.on('error', reject);
-  req.end(body);
-});
+export interface PostTransport {
+  request: typeof https.request;
+  protocol: 'https:' | 'http:';
+  /** Fixed port, or undefined to use the URL's own. */
+  port?: number;
+  lookup?: https.RequestOptions['lookup'];
+  /** Refuse private IP literals before opening a socket (Node never calls `lookup` for a literal). */
+  guardLiteral: boolean;
+}
+const GUARDED_HTTPS: PostTransport = { request: https.request, protocol: 'https:', port: 443, lookup: guardedLookup, guardLiteral: true };
+
+/** One POST, no redirects, response body discarded, idle timeout plus an overall deadline. */
+export function createGuardedPost(deadlineMs: number = REQUEST_DEADLINE_MS, transport: PostTransport = GUARDED_HTTPS): HttpPost {
+  return (url, headers, body) => new Promise((resolve, reject) => {
+    const hostname = url.hostname.replace(/^\[|\]$/g, '');
+    if (transport.guardLiteral && isIP(hostname) && isPrivateAddress(hostname)) return reject(new WebhookUrlError('blocked_address'));
+    let settled = false;
+    const settle = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(deadline); fn(); };
+    const req = transport.request({
+      protocol: transport.protocol, hostname, port: transport.port ?? url.port, path: `${url.pathname}${url.search}`, method: 'POST',
+      headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) }, lookup: transport.lookup, timeout: REQUEST_IDLE_TIMEOUT_MS,
+    }, res => {
+      res.resume();
+      res.on('end', () => settle(() => resolve({ status: res.statusCode ?? 0 })));
+      res.on('error', err => settle(() => reject(err)));
+      res.on('close', () => settle(() => (res.complete ? resolve({ status: res.statusCode ?? 0 }) : reject(new Error('response_aborted')))));
+    });
+    // Settle before destroying so the error the destroy emits cannot win the race; the timer is a plain setTimeout because it behaves the same on Node and Bun.
+    const deadline = setTimeout(() => {
+      const err = Object.assign(new Error('deadline_exceeded'), { code: 'DEADLINE_EXCEEDED' });
+      settle(() => reject(err));
+      req.destroy(err);
+    }, deadlineMs);
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', err => settle(() => reject(err)));
+    req.end(body);
+  });
+}
+
+export const guardedPost: HttpPost = createGuardedPost();
 
 export interface PaperclipBridge {
   baseUrl: string;

@@ -1,0 +1,70 @@
+// SLA-624: the per-request deadline must hold against endpoints that never trip the socket idle timeout.
+import http from 'node:http';
+import net, { type AddressInfo, type Socket } from 'node:net';
+import { afterEach, describe, expect, test } from 'bun:test';
+import { createGuardedPost, deliver, REQUEST_DEADLINE_MS, type PostTransport } from './webhook-delivery.js';
+
+const plainHttp = (): PostTransport => ({ request: http.request as unknown as PostTransport['request'], protocol: 'http:', guardLiteral: false });
+
+const closers: Array<() => void> = [];
+afterEach(() => { while (closers.length) closers.pop()!(); });
+
+const listen = async (server: net.Server): Promise<URL> => {
+  const sockets = new Set<Socket>();
+  server.on('connection', s => { sockets.add(s); s.on('close', () => sockets.delete(s)); });
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  closers.push(() => { for (const s of sockets) s.destroy(); server.close(); });
+  return new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/hook`);
+};
+
+describe('guardedPost overall deadline', () => {
+  test('the default deadline is 15s', () => expect(REQUEST_DEADLINE_MS).toBe(15_000));
+
+  test('a body that trickles a byte every 20ms is cut off at the deadline', async () => {
+    let open = 0;
+    const url = await listen(net.createServer(sock => {
+      open++;
+      sock.on('error', () => {});
+      const t = setInterval(() => sock.write('1\r\nx\r\n'), 20);
+      sock.on('close', () => { open--; clearInterval(t); });
+      sock.once('data', () => sock.write('HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n'));
+    }));
+    const started = Date.now();
+    await expect(createGuardedPost(300, plainHttp())(url, {}, '{}')).rejects.toMatchObject({ code: 'DEADLINE_EXCEEDED' });
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(250);
+    expect(elapsed).toBeLessThan(2_000);
+    await Bun.sleep(200);
+    expect(open).toBe(0);
+  });
+
+  test('a status line that trickles in byte by byte is cut off at the deadline', async () => {
+    const url = await listen(net.createServer(sock => {
+      sock.on('error', () => {});
+      sock.once('data', () => {
+        let i = 0;
+        const line = 'HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello';
+        const t = setInterval(() => { if (i < line.length) sock.write(line[i++]!); }, 100);
+        sock.on('close', () => clearInterval(t));
+      });
+    }));
+    const started = Date.now();
+    await expect(createGuardedPost(400, plainHttp())(url, {}, '{}')).rejects.toMatchObject({ code: 'DEADLINE_EXCEEDED' });
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  test('a prompt response resolves with its status and leaves no timer behind', async () => {
+    const url = await listen(http.createServer((_req, res) => { res.writeHead(204); res.end(); }));
+    const post = createGuardedPost(60_000, plainHttp());
+    await expect(post(url, {}, '{}')).resolves.toEqual({ status: 204 });
+    await expect(post(url, {}, '{}')).resolves.toEqual({ status: 204 });
+  });
+
+  test('a deadline hit is a retryable network error, not a permanent failure', async () => {
+    const url = await listen(http.createServer((_req, res) => { res.writeHead(200); const t = setInterval(() => res.write('x'), 20); res.on('close', () => clearInterval(t)); }));
+    const post = createGuardedPost(200, plainHttp());
+    const row = { idempotencyKey: 'k', workspaceId: 'w', notifyJson: JSON.stringify({ url: 'https://hooks.example.com/x', secret: null }), payloadJson: '{}' };
+    const res = await deliver(row, { post: () => post(url, {}, '{}') });
+    expect(res).toMatchObject({ ok: false, permanent: false, status: null, error: 'network_error:DEADLINE_EXCEEDED' });
+  });
+});
