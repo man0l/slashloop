@@ -17,6 +17,15 @@ const listen = async (server: net.Server): Promise<URL> => {
   return new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/hook`);
 };
 
+describe('guardedPost response snippet', () => {
+  test('returns the status and at most the first 1 KB of the body', async () => {
+    const url = await listen(http.createServer((_req, res) => { res.statusCode = 403; res.end('E'.repeat(5000)); }));
+    const res = await createGuardedPost(2_000, plainHttp())(url, {}, '{}');
+    expect(res.status).toBe(403);
+    expect(res.body).toBe('E'.repeat(1024));
+  });
+});
+
 describe('guardedPost overall deadline', () => {
   test('the default deadline is 15s', () => expect(REQUEST_DEADLINE_MS).toBe(15_000));
 
@@ -56,8 +65,8 @@ describe('guardedPost overall deadline', () => {
   test('a prompt response resolves with its status and leaves no timer behind', async () => {
     const url = await listen(http.createServer((_req, res) => { res.writeHead(204); res.end(); }));
     const post = createGuardedPost(60_000, plainHttp());
-    await expect(post(url, {}, '{}')).resolves.toEqual({ status: 204 });
-    await expect(post(url, {}, '{}')).resolves.toEqual({ status: 204 });
+    await expect(post(url, {}, '{}')).resolves.toMatchObject({ status: 204 });
+    await expect(post(url, {}, '{}')).resolves.toMatchObject({ status: 204 });
   });
 
   test('a deadline hit is a retryable network error, not a permanent failure', async () => {
@@ -96,7 +105,7 @@ describe('pinned address (works on Node and Bun, whose https shim ignores `looku
     const url = await listen(http.createServer((req, res) => { host = String(req.headers.host); res.writeHead(204); res.end(); }));
     const named = new URL(`http://hooks.example.test:${url.port}/hook`);
     const post = createGuardedPost(5_000, { ...plainHttp(), resolve: async h => (h === 'hooks.example.test' ? '127.0.0.1' : h) });
-    await expect(post(named, {}, '{}')).resolves.toEqual({ status: 204 });
+    await expect(post(named, {}, '{}')).resolves.toMatchObject({ status: 204 });
     expect(host).toBe(`hooks.example.test:${url.port}`);
   });
   test('a blocked resolution never opens a socket', async () => {
