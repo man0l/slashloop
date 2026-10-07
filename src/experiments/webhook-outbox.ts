@@ -1,7 +1,7 @@
 // SLA-617: outbox queue operations. Rows are written by store.save() in the same
 // batch as the terminal status change; this file claims, settles and prunes them.
 import { batch, type Run } from './store.js';
-import { deliver, type DeliverDeps } from './webhook-delivery.js';
+import { deliver, isPaperclipConfigError, type DeliverDeps } from './webhook-delivery.js';
 
 /** Delay before retry n (after the nth failed attempt). Sums to ~23.7h, then the row goes dead. */
 export const RETRY_DELAYS_MS = [30_000, 120_000, 600_000, 1_800_000, 3_600_000, 7_200_000, 14_400_000, 21_600_000, 36_000_000] as const;
@@ -60,6 +60,7 @@ export async function runWebhookDeliveries(
   for (const row of await claimDue(clock(), deps.limit ?? 10, run)) {
     const result = await deliver(row, deps);
     if (result.ok) { await markDelivered(row.id, clock(), run); sweep.delivered++; continue; }
+    if (isPaperclipConfigError(result.error)) console.error(`[webhook] CONFIG ERROR delivering ${row.idempotencyKey}: ${result.error}. Retrying cannot fix this; the row will not be re-sent until it is requeued.`);
     const settled = await markFailed(row, result.error ?? 'delivery_failed', result.permanent, clock(), run);
     sweep[settled === 'dead' ? 'dead' : 'retried']++;
     if (settled === 'dead') console.warn(`[webhook] dead ${row.idempotencyKey} after ${row.attempts} attempt(s): ${result.error}`);

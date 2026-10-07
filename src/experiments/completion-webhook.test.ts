@@ -13,7 +13,7 @@ import { createExperiment, type CreateExperimentDeps } from './service.js';
 import { ExperimentError, parseNotify, takeNotify, TERMINAL_STATUSES, type Experiment, type NotifyConfig } from './schema.js';
 import { assertPublicHttpsUrl, isPrivateAddress, WebhookUrlError } from '../lib/webhook-url.js';
 import {
-  classifyCommentStatus, classifyStatus, deliver, describePaperclipEnv, guardedPost, paperclipConfigFromEnv, paperclipMarker, redactedSnippet, signWebhook, webhookHeaders,
+  classifyPaperclipStatus, classifyStatus, deliver, describePaperclipEnv, guardedPost, isPaperclipConfigError, paperclipConfigFromEnv, redactedSnippet, signWebhook, webhookHeaders,
   type HttpGet, type HttpPost, type PaperclipConfig,
 } from './webhook-delivery.js';
 import { claimDue, MAX_ATTEMPTS, pruneSettled, retryDelayMs, RETRY_DELAYS_MS, runWebhookDeliveries } from './webhook-outbox.js';
@@ -325,127 +325,145 @@ describe('deliver', () => {
 
   describe('Paperclip mode', () => {
     const paperclip: PaperclipConfig = { baseUrl: 'https://paperclip.example.com', keys: { [MARKETING_OPS]: 'pcp_key_claude', [MARKETING_OPS_CODEX]: 'pcp_key_codex' } };
-    const MARKER = 'e1:review:3';
-    /** A fake issue thread: GET lists the stored comments, POST appends one. */
-    const thread = (existing: string[] = [], over: { listing?: number; posting?: number } = {}) => {
-      const comments = [...existing];
+    const COMPANY = '458c3a0e-dfbb-4a07-930c-ae211413197f';
+    const PROJECT = '1be9c1ac-e4ae-4536-a251-a911167c050e';
+    /** A fake Paperclip: GET returns the origin issue, POST creates a child task (deduped on idempotencyKey like the real server). */
+    const paperclipServer = (over: { origin?: number; originBody?: string; create?: number; createBody?: string } = {}) => {
+      const created = new Map<string, Record<string, unknown>>();
       const calls: Array<{ method: 'GET' | 'POST'; url: string; headers: Record<string, string>; body?: string }> = [];
       const get: HttpGet = async (url, headers) => {
         calls.push({ method: 'GET', url: url.toString(), headers });
-        return { status: over.listing ?? 200, body: JSON.stringify(comments.map(body => ({ body }))) };
+        return { status: over.origin ?? 200, body: over.originBody ?? JSON.stringify({ id: ISSUE, identifier: 'SLA-657', companyId: COMPANY, projectId: PROJECT }) };
       };
       const post: HttpPost = async (url, headers, body) => {
         calls.push({ method: 'POST', url: url.toString(), headers, body });
-        if ((over.posting ?? 201) < 300) comments.push(JSON.parse(body).body);
-        return { status: over.posting ?? 201 };
+        const status = over.create ?? 201;
+        if (status < 300) { const j = JSON.parse(body); if (!created.has(j.idempotencyKey)) created.set(j.idempotencyKey, j); }
+        return { status, body: over.createBody };
       };
-      return { comments, calls, get, post };
+      return { created, calls, get, post };
     };
-    const posts = (t: ReturnType<typeof thread>) => t.calls.filter(c => c.method === 'POST');
+    const posts = (t: ReturnType<typeof paperclipServer>) => t.calls.filter(c => c.method === 'POST');
+    const RUN_CONTEXT_403 = '{"error":"Cross-issue writes need a run to attribute them to","code":"cross_issue_influence_run_context_required"}';
 
-    test('comments on the originating issue with resume:true, as the requesting agent, without a run id', async () => {
-      const t = thread();
+    test('creates a child task under the originating issue, assigned to the requesting agent, without a run id', async () => {
+      const t = paperclipServer();
       const res = await deliver(row(paperclipNotify()), { ...t, paperclip });
       expect(res).toMatchObject({ ok: true, error: null });
       expect(t.calls.map(c => c.method)).toEqual(['GET', 'POST']);
+      expect(t.calls[0]!.url).toBe(`https://paperclip.example.com/api/issues/${ISSUE}`);
       const sent = posts(t)[0]!;
-      expect(sent.url).toBe(`https://paperclip.example.com/api/issues/${ISSUE}/comments`);
+      expect(sent.url).toBe(`https://paperclip.example.com/api/companies/${COMPANY}/issues`);
       expect(sent.headers.authorization).toBe('Bearer pcp_key_claude');
       expect(Object.keys(sent.headers).map(k => k.toLowerCase())).not.toContain('x-paperclip-run-id');
       const body = JSON.parse(sent.body!);
-      expect(body.resume).toBe(true);
-      expect(body.body).toContain('`e1` reached **review**');
-      expect(body.body).toContain('Variants: 2 · credits spent: 40');
-      expect(body.body).toContain('get_experiment');
-      expect(body.body.trimEnd().endsWith(`<!-- slashloop-experiment:${MARKER} -->`)).toBe(true);
+      expect(body).toMatchObject({ parentId: ISSUE, assigneeAgentId: MARKETING_OPS, projectId: PROJECT, status: 'todo', idempotencyKey: 'slashloop-experiment:e1:review:3' });
+      expect(body.title).toBe('Slashloop experiment e1 review');
+      expect(body.description).toContain('`e1` reached **review**');
+      expect(body.description).toContain('Variants: 2 · credits spent: 40');
+      expect(body.description).toContain('Requested for SLA-657.');
+      expect(body.description).toContain('get_experiment');
       expect(sent.body).not.toContain('pcp_key_claude');
-      expect(t.calls[0]!.url).toStartWith(`https://paperclip.example.com/api/issues/${ISSUE}/comments`);
     });
-    test('the key is chosen by metadata.agentId', async () => {
-      const t = thread();
+    test('the key and the assignee are chosen by metadata.agentId', async () => {
+      const t = paperclipServer();
       await deliver(row(paperclipNotify(MARKETING_OPS_CODEX)), { ...t, paperclip });
       expect(t.calls.map(c => c.headers.authorization)).toEqual(['Bearer pcp_key_codex', 'Bearer pcp_key_codex']);
+      expect(JSON.parse(posts(t)[0]!.body!).assigneeAgentId).toBe(MARKETING_OPS_CODEX);
     });
-    test('no issue is ever created', async () => {
-      const t = thread();
+    test('no comment is ever posted', async () => {
+      const t = paperclipServer();
       await deliver(row(paperclipNotify()), { ...t, paperclip });
-      expect(t.calls.every(c => c.url.includes('/api/issues/') && c.url.includes('/comments'))).toBe(true);
-      expect(t.calls.some(c => c.url.includes('/api/companies/'))).toBe(false);
+      expect(t.calls.some(c => c.url.includes('/comments'))).toBe(false);
     });
-    test('one comment per experiment: four experiments on one task make four comments', async () => {
-      const t = thread();
+    test('one task per experiment: four experiments on one issue make four tasks', async () => {
+      const t = paperclipServer();
       for (const id of ['a', 'b', 'c', 'd']) {
         const r = row(paperclipNotify(), { idempotencyKey: `${id}:review:3`, payloadJson: JSON.stringify({ experimentId: id, status: 'review', version: 3, summary: { variants: 1, spentCredits: 0 } }) });
         expect(await deliver(r, { ...t, paperclip })).toMatchObject({ ok: true });
       }
-      expect(t.comments).toHaveLength(4);
-      expect(new Set(t.comments.map(c => c.match(/slashloop-experiment:(\S+)/)![1])).size).toBe(4);
+      expect(t.created.size).toBe(4);
     });
-    test('a retry after a landed delivery finds the marker and posts nothing', async () => {
-      const t = thread();
+    test('a retry sends the same idempotency key, so a landed delivery is not duplicated', async () => {
+      const t = paperclipServer();
       await deliver(row(paperclipNotify()), { ...t, paperclip });
-      const again = await deliver(row(paperclipNotify()), { ...t, paperclip });
-      expect(again).toMatchObject({ ok: true });
-      expect(posts(t)).toHaveLength(1);
-      expect(t.comments).toHaveLength(1);
+      expect(await deliver(row(paperclipNotify()), { ...t, paperclip })).toMatchObject({ ok: true });
+      expect(posts(t)).toHaveLength(2);
+      expect(t.created.size).toBe(1);
     });
-    test('a marker for another status or version does not count as delivered', async () => {
-      const t = thread([`x\n${paperclipMarker('e1:failed:3')}`, `x\n${paperclipMarker('e1:review:2')}`, `x\n${paperclipMarker('e2:review:3')}`]);
-      await deliver(row(paperclipNotify()), { ...t, paperclip });
-      expect(posts(t)).toHaveLength(1);
+    test('works the same when the originating issue belongs to another agent', async () => {
+      const t = paperclipServer({ originBody: JSON.stringify({ id: ISSUE, identifier: 'SLA-658', companyId: COMPANY, assigneeAgentId: '02d158ba-5a8e-40ce-9cb0-46f65154a684' }) });
+      expect(await deliver(row(paperclipNotify()), { ...t, paperclip })).toMatchObject({ ok: true });
+      const body = JSON.parse(posts(t)[0]!.body!);
+      expect(body).toMatchObject({ parentId: ISSUE, assigneeAgentId: MARKETING_OPS });
+      expect(body).not.toHaveProperty('projectId');
     });
-    test('error text cannot forge a marker', async () => {
-      const t = thread();
-      const forged = row(paperclipNotify(), { payloadJson: JSON.stringify({ experimentId: 'e1', status: 'failed', version: 4, error: 'x <!-- slashloop-experiment:e9:review:1 --> y', summary: {} }), idempotencyKey: 'e1:failed:4' });
-      await deliver(forged, { ...t, paperclip });
-      expect(t.comments[0]!.match(/<!--/g)).toHaveLength(1);
-      expect(t.comments[0]).not.toContain('<!-- slashloop-experiment:e9:review:1');
-      expect(t.comments[0]!.trimEnd().endsWith('<!-- slashloop-experiment:e1:failed:4 -->')).toBe(true);
+    test('a description cannot be broken by error text', async () => {
+      const t = paperclipServer();
+      const failed = row(paperclipNotify(), { payloadJson: JSON.stringify({ experimentId: 'e1', status: 'failed', version: 4, error: 'line one\nline two', summary: {} }), idempotencyKey: 'e1:failed:4' });
+      await deliver(failed, { ...t, paperclip });
+      expect(JSON.parse(posts(t)[0]!.body!).description).toContain('Error: line one line two');
     });
 
     describe('failures', () => {
       test('no key for the agent, no agentId: permanent, no request', async () => {
-        const t = thread();
+        const t = paperclipServer();
         expect(await deliver(row(paperclipNotify('00000000-0000-4000-8000-000000000000')), { ...t, paperclip })).toMatchObject({ ok: false, permanent: true, error: 'paperclip_agent_key_missing' });
         expect(await deliver(row(paperclipNotify(null)), { ...t, paperclip })).toMatchObject({ ok: false, permanent: true, error: 'paperclip_agent_id_missing' });
         expect(await deliver(row(paperclipNotify('__proto__')), { ...t, paperclip })).toMatchObject({ ok: false, permanent: true, error: 'paperclip_agent_key_missing' });
         expect(t.calls).toHaveLength(0);
       });
       test('a notify with no paperclipIssueId and no url is permanent', async () => {
-        const t = thread();
+        const t = paperclipServer();
         const n: NotifyConfig = { url: null, secret: null, secretGenerated: false, metadata: { agentId: MARKETING_OPS } };
         expect(await deliver(row(n), { ...t, paperclip })).toMatchObject({ ok: false, permanent: true, error: 'no_target' });
         expect(t.calls).toHaveLength(0);
       });
+      test('the run-context 403 is its own permanent, loudly-named config error', async () => {
+        const t = paperclipServer({ create: 403, createBody: RUN_CONTEXT_403 });
+        const res = await deliver(row(paperclipNotify()), { ...t, paperclip });
+        expect(res).toMatchObject({ ok: false, permanent: true, status: 403 });
+        expect(res.error).toStartWith('paperclip_run_context_required: ');
+        expect(res.error).toContain('Cross-issue writes need a run');
+        expect(isPaperclipConfigError(res.error)).toBe(true);
+        expect(isPaperclipConfigError('http_403: Agent cannot access this issue')).toBe(false);
+        expect(isPaperclipConfigError('paperclip_url_missing')).toBe(false);
+      });
       test('403 and 404 are permanent and keep a redacted snippet', async () => {
         for (const status of [403, 404]) {
           const get: HttpGet = async () => ({ status, body: '{"error":"Agent cannot access this issue","token":"pcp_key_claude","x":"abcdefghijklmnopqrstuvwxyz0123456789"}' });
-          const res = await deliver(row(paperclipNotify()), { get, post: thread().post, paperclip });
+          const res = await deliver(row(paperclipNotify()), { get, post: paperclipServer().post, paperclip });
           expect(res).toMatchObject({ ok: false, permanent: true, status });
           expect(res.error).toContain(`http_${status}: `);
           expect(res.error).toContain('Agent cannot access this issue');
           expect(res.error).not.toContain('pcp_key_claude');
           expect(res.error).not.toContain('abcdefghijklmnopqrstuvwxyz');
         }
-        const t = thread([], { posting: 403 });
-        expect(await deliver(row(paperclipNotify()), { ...t, paperclip })).toMatchObject({ ok: false, permanent: true, status: 403 });
+        expect(await deliver(row(paperclipNotify()), { ...paperclipServer({ create: 403 }), paperclip })).toMatchObject({ ok: false, permanent: true, status: 403 });
       });
-      test('5xx, 429, 401 and network errors retry, on the listing and on the post', async () => {
+      test('5xx, 429, 401 and network errors retry, on the origin read and on the create', async () => {
         for (const status of [500, 502, 503, 429, 408, 401]) {
-          const t = thread([], { listing: status });
+          const t = paperclipServer({ origin: status });
           expect(await deliver(row(paperclipNotify()), { ...t, paperclip })).toMatchObject({ ok: false, permanent: false, status });
           expect(posts(t)).toHaveLength(0);
-          expect(await deliver(row(paperclipNotify()), { ...thread([], { posting: status }), paperclip })).toMatchObject({ ok: false, permanent: false, status });
+          expect(await deliver(row(paperclipNotify()), { ...paperclipServer({ create: status }), paperclip })).toMatchObject({ ok: false, permanent: false, status });
         }
         const boom = () => { throw Object.assign(new Error('boom'), { code: 'ECONNRESET' }); };
-        expect(await deliver(row(paperclipNotify()), { get: async () => boom(), post: thread().post, paperclip })).toMatchObject({ ok: false, permanent: false, error: 'network_error:ECONNRESET' });
-        expect(await deliver(row(paperclipNotify()), { get: thread().get, post: async () => boom(), paperclip })).toMatchObject({ ok: false, permanent: false, error: 'network_error:ECONNRESET' });
+        expect(await deliver(row(paperclipNotify()), { get: async () => boom(), post: paperclipServer().post, paperclip })).toMatchObject({ ok: false, permanent: false, error: 'network_error:ECONNRESET' });
+        expect(await deliver(row(paperclipNotify()), { get: paperclipServer().get, post: async () => boom(), paperclip })).toMatchObject({ ok: false, permanent: false, error: 'network_error:ECONNRESET' });
       });
       test('other 4xx are permanent', async () => {
         for (const status of [400, 409, 422]) {
-          expect(await deliver(row(paperclipNotify()), { ...thread([], { posting: status }), paperclip })).toMatchObject({ ok: false, permanent: true, status });
+          expect(await deliver(row(paperclipNotify()), { ...paperclipServer({ create: status }), paperclip })).toMatchObject({ ok: false, permanent: true, status });
         }
-        expect(classifyCommentStatus(204)).toMatchObject({ ok: true });
+        expect(classifyPaperclipStatus(204)).toMatchObject({ ok: true });
+      });
+      test('an unreadable origin issue retries and posts nothing', async () => {
+        for (const originBody of ['<html>', '{}', '{"companyId":""}']) {
+          const t = paperclipServer({ originBody });
+          expect(await deliver(row(paperclipNotify()), { ...t, paperclip })).toMatchObject({ ok: false, permanent: false, error: 'paperclip_origin_unreadable' });
+          expect(posts(t)).toHaveLength(0);
+        }
       });
       test('each env fault is retryable and names itself in lastError', async () => {
         const good = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com', SLASHLOOP_PAPERCLIP_AGENT_KEYS: JSON.stringify({ [MARKETING_OPS]: 'k1' }) };
@@ -457,7 +475,7 @@ describe('deliver', () => {
           [{ ...good, SLASHLOOP_PAPERCLIP_AGENT_KEYS: '{"a":""}' }, 'paperclip_keys_empty'],
         ];
         for (const [paperclipEnv, error] of cases) {
-          const t = thread();
+          const t = paperclipServer();
           expect(await deliver(row(paperclipNotify()), { ...t, paperclipEnv })).toMatchObject({ ok: false, permanent: false, status: null, error });
           expect(t.calls).toHaveLength(0);
         }
@@ -465,9 +483,9 @@ describe('deliver', () => {
     });
 
     test('a Paperclip issue id wins over any url in the same notify', async () => {
-      const t = thread();
+      const t = paperclipServer();
       await deliver(row({ ...urlNotify(), metadata: { paperclipIssueId: ISSUE, agentId: MARKETING_OPS } }), { ...t, paperclip });
-      expect(posts(t)[0]!.url).toContain('/comments');
+      expect(posts(t)[0]!.url).toContain('/issues');
     });
     test('redactedSnippet masks keys, bearer tokens and long tokens, and caps length', () => {
       expect(redactedSnippet('Bearer abc.def key=SECRETVALUE1 ok', ['SECRETVALUE1'])).toBe('Bearer [redacted] key=[redacted] ok');
@@ -498,7 +516,7 @@ describe('deliver', () => {
     test('the bridge is gone: its env names are not read', () => {
       const legacy = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com', SLASHLOOP_PAPERCLIP_API_KEY: 'k', PAPERCLIP_API_KEY_FOR_SLASHLOOP_BRIDGE_AGENT: 'k', SLASHLOOP_PAPERCLIP_COMPANY_ID: 'c', SLASHLOOP_PAPERCLIP_PROJECT_ID: 'p', SLASHLOOP_PAPERCLIP_ASSIGNEE_AGENT_ID: 'a' };
       expect(paperclipConfigFromEnv(legacy).reason).toBe('paperclip_keys_missing');
-      expect(readFileSync(new URL('./webhook-delivery.ts', import.meta.url), 'utf8')).not.toMatch(/BRIDGE|ASSIGNEE_AGENT_ID|PAPERCLIP_PROJECT_ID|\/issues`/);
+      expect(readFileSync(new URL('./webhook-delivery.ts', import.meta.url), 'utf8')).not.toMatch(/BRIDGE|ASSIGNEE_AGENT_ID|PAPERCLIP_PROJECT_ID|PAPERCLIP_COMPANY_ID/);
     });
   });
 });
@@ -581,14 +599,29 @@ describe('runWebhookDeliveries (end to end on SQLite)', () => {
     expect((await claimDue(new Date(T0.getTime() + 121_000), 10, run)).length).toBe(3);
   });
 
-  test('Paperclip-mode events are delivered as a comment on the originating issue', async () => {
+  test('Paperclip-mode events are delivered as a child task of the originating issue', async () => {
     await queue('pc1', paperclipNotify(), 'failed');
     const calls: string[] = [];
-    const get: HttpGet = async (u) => { calls.push(`GET ${u.pathname}`); return { status: 200, body: '[]' }; };
+    const get: HttpGet = async (u) => { calls.push(`GET ${u.pathname}`); return { status: 200, body: '{"companyId":"c1"}' }; };
     const post: HttpPost = async (u) => { calls.push(`POST ${u.pathname}`); return { status: 201 }; };
     const paperclip: PaperclipConfig = { baseUrl: 'https://paperclip.example.com', keys: { [MARKETING_OPS]: 'k' } };
     expect(await runWebhookDeliveries({ run, get, post, paperclip, clock: () => T0 })).toEqual({ delivered: 1, retried: 0, dead: 0 });
-    expect(calls).toEqual([`GET /api/issues/${ISSUE}/comments`, `POST /api/issues/${ISSUE}/comments`]);
+    expect(calls).toEqual([`GET /api/issues/${ISSUE}`, 'POST /api/companies/c1/issues']);
+  });
+
+  test('the run-context 403 goes dead at once, is logged as a config error, and can be requeued', async () => {
+    await queue('pc3', paperclipNotify(), 'failed');
+    const get: HttpGet = async () => ({ status: 200, body: '{"companyId":"c1"}' });
+    const post: HttpPost = async () => ({ status: 403, body: '{"error":"Cross-issue writes need a run to attribute them to","code":"cross_issue_influence_run_context_required"}' });
+    const paperclip: PaperclipConfig = { baseUrl: 'https://paperclip.example.com', keys: { [MARKETING_OPS]: 'k' } };
+    const errors: string[] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+    try { expect(await runWebhookDeliveries({ run, get, post, paperclip, clock: () => T0 })).toEqual({ delivered: 0, retried: 0, dead: 1 }); } finally { console.error = orig; }
+    expect(outbox()[0]).toMatchObject({ state: 'dead', attempts: 1 });
+    expect(outbox()[0]!.lastError).toStartWith('paperclip_run_context_required:');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('CONFIG ERROR');
   });
 
   test('a Paperclip event whose agent has no key goes dead at once with the reason kept', async () => {
