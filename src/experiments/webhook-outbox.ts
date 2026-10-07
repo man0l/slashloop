@@ -60,7 +60,7 @@ export async function runWebhookDeliveries(
   for (const row of await claimDue(clock(), deps.limit ?? 10, run)) {
     const result = await deliver(row, deps);
     if (result.ok) { await markDelivered(row.id, clock(), run); sweep.delivered++; continue; }
-    if (isPaperclipConfigError(result.error)) console.error(`[webhook] CONFIG ERROR delivering ${row.idempotencyKey}: ${result.error}. Retrying cannot fix this; the row will not be re-sent until it is requeued.`);
+    if (isPaperclipConfigError(result.error)) console.error(`[webhook] CONFIG ERROR delivering ${row.idempotencyKey}: ${result.error}. ${result.permanent ? 'Retrying cannot fix this; the row will not be re-sent until it is requeued.' : 'Fix the key or env and recreate the worker; the row retries on its backoff schedule.'}`);
     const settled = await markFailed(row, result.error ?? 'delivery_failed', result.permanent, clock(), run);
     sweep[settled === 'dead' ? 'dead' : 'retried']++;
     if (settled === 'dead') console.warn(`[webhook] dead ${row.idempotencyKey} after ${row.attempts} attempt(s): ${result.error}`);

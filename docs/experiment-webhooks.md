@@ -9,10 +9,38 @@ same batch. The VPS worker's experiment leader sweeps the outbox
 ## Targets
 
 - `notify.url`: a signed Standard Webhooks POST (unchanged).
-- `notify.metadata.paperclipIssueId` (+ `agentId`): a **child task of that
-  Paperclip task, created with that agent's key and assigned to that agent**.
+- `notify.metadata.paperclipIssueId`: a **comment on that Paperclip task, posted with
+  the board API key** (`SLASHLOOP_BOARD_API_KEY`). Without a board key, a **child task
+  of that task, created with the `agentId`'s key and assigned to that agent**.
 
-## Paperclip child-task delivery (SLA-666)
+## Paperclip board-comment delivery (SLA-666, primary)
+
+Agent keys cannot comment without a live heartbeat run
+(`cross_issue_influence_run_context_required`, even on the agent's own issue). A board
+actor is exempt from that rule, and a board comment wakes the issue's assignee with
+`issue_commented`, whichever agent that is. So when `SLASHLOOP_BOARD_API_KEY` is set:
+
+1. `GET {api}/api/issues/{paperclipIssueId}/comments?order=desc&limit=100`. A comment
+   already carrying the hidden marker `<!-- slashloop-experiment:<experimentId>:<status>:<version> -->`
+   means an earlier attempt landed: delivered, nothing posted.
+2. `POST {api}/api/issues/{paperclipIssueId}/comments` with `{body, resume: true}`
+   (`resume` reopens a `done` task) and no `X-Paperclip-Run-Id`. `agentId` is not needed.
+
+| Outcome | Class | `lastError` |
+| --- | --- | --- |
+| `401` / `403` | retry on the normal backoff, **config error**: logged as `[webhook] CONFIG ERROR ...` on every attempt | `paperclip_board_key_rejected: http_<status> <redacted snippet>` |
+| `408`, `425`, `429`, `5xx`, network error | retry | `http_<status>` / `network_error:<code>` |
+| other `4xx` (404, 400, 409, 422) | permanent | `http_<status>: <redacted snippet>` |
+
+**Rotation:** board keys expire after 30 days, so the expected failure is an expired key.
+Create a new board key, update `SLASHLOOP_BOARD_API_KEY` in the host `.env`, and recreate
+the three worker services (`docker compose restart` does not reload `env_file`). Rows
+that failed in the meantime retry on their backoff schedule (~24h); a row that already
+went `dead` can be requeued as below.
+
+With a board key set, `SLASHLOOP_PAPERCLIP_AGENT_KEYS` is not required.
+
+## Paperclip child-task delivery (SLA-666, fallback when no board key is set)
 
 Why not a comment: Paperclip's `POST /issues/:id/comments` requires a live heartbeat
 run for any agent actor (`cross_issue_influence_run_context_required`), even on the
@@ -44,7 +72,7 @@ One child task per experiment: a task that opens four experiments gets four task
 | other `403`, `404`, other `4xx` (400, 409, 422) | permanent | `http_<status>: <redacted snippet>` |
 | `401`, `408`, `425`, `429`, `5xx`, network error | retry (~24h backoff) | `http_<status>` / `network_error:<code>` |
 
-Env fault reasons (the URL is checked first, then the keys):
+Env fault reasons (the URL is checked first, then the agent keys, which a board key makes optional):
 
 | `lastError` | Meaning |
 | --- | --- |
@@ -62,7 +90,8 @@ and have keys and token-shaped strings masked.
 | Name | Value |
 | --- | --- |
 | `SLASHLOOP_PAPERCLIP_API_URL` | Paperclip base URL, public https |
-| `SLASHLOOP_PAPERCLIP_AGENT_KEYS` | JSON `{agentId: apiKey}`, one entry per agent allowed to request experiments (Marketing Ops (claude) and Marketing Ops (codex)) |
+| `SLASHLOOP_BOARD_API_KEY` | Paperclip board API key (primary path; expires after 30 days, see rotation) |
+| `SLASHLOOP_PAPERCLIP_AGENT_KEYS` | Fallback when no board key is set. JSON `{agentId: apiKey}`, one entry per agent allowed to request experiments (Marketing Ops (claude) and Marketing Ops (codex)) |
 
 Retired, and no longer read: `PAPERCLIP_API_KEY_FOR_SLASHLOOP_BRIDGE_AGENT`,
 `SLASHLOOP_PAPERCLIP_API_KEY`, `SLASHLOOP_PAPERCLIP_ASSIGNEE_AGENT_ID`,
@@ -75,7 +104,7 @@ delivery; rows keep queueing and go out after re-enabling.
 - Inspect: `SELECT state, attempts, lastError FROM ExperimentWebhookOutbox` (D1).
 - A permanent row can be requeued by setting `state='pending', attempts=0` after
   the key or ids are fixed.
-- At startup each worker logs one line, e.g. `[worker] webhook delivery on; paperclip delivery config: url=set keys=2 agents=[<id>, <id>] status=ok`.
+- At startup each worker logs one line, e.g. `[worker] webhook delivery on; paperclip delivery config: url=set board=set keys=0 agents=[] status=ok`.
   `status` is `ok` or the first reason above; key values and the URL are never logged.
   `docker compose restart` does **not** reload `env_file` changes; recreate the service with
   `docker compose -f docker-compose.prod.yml up -d <service>` and check the line again.

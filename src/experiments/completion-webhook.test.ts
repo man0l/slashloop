@@ -405,6 +405,78 @@ describe('deliver', () => {
       expect(JSON.parse(posts(t)[0]!.body!).description).toContain('Error: line one line two');
     });
 
+    describe('board key', () => {
+      const boardCfg: PaperclipConfig = { baseUrl: 'https://paperclip.example.com', keys: {}, boardKey: 'board_secret_key_value' };
+      /** A fake thread: GET lists comments, POST appends one. */
+      const thread = (over: { listing?: number; create?: number; createBody?: string } = {}) => {
+        const comments: string[] = [];
+        const calls: Array<{ method: 'GET' | 'POST'; url: string; headers: Record<string, string>; body?: string }> = [];
+        const get: HttpGet = async (url, headers) => { calls.push({ method: 'GET', url: url.toString(), headers }); return { status: over.listing ?? 200, body: JSON.stringify(comments) }; };
+        const post: HttpPost = async (url, headers, body) => {
+          calls.push({ method: 'POST', url: url.toString(), headers, body });
+          const status = over.create ?? 201;
+          if (status < 300) comments.push(JSON.parse(body).body);
+          return { status, body: over.createBody };
+        };
+        return { comments, calls, get, post };
+      };
+      test('posts a board comment on the origin issue: no run header, marker and resume, no agent key or agentId needed', async () => {
+        const t = thread();
+        expect(await deliver(row(paperclipNotify(null)), { ...t, paperclip: boardCfg })).toMatchObject({ ok: true, status: 201 });
+        const post = t.calls.find(c => c.method === 'POST')!;
+        expect(post.url).toBe(`https://paperclip.example.com/api/issues/${ISSUE}/comments`);
+        expect(post.headers.authorization).toBe('Bearer board_secret_key_value');
+        expect(Object.keys(post.headers).map(k => k.toLowerCase())).not.toContain('x-paperclip-run-id');
+        const j = JSON.parse(post.body!);
+        expect(j.resume).toBe(true);
+        expect(j.body).toContain('<!-- slashloop-experiment:');
+        expect(j.body).toContain('reached **review**');
+      });
+      test('works for any assignee: the same comment path whichever agent asked', async () => {
+        for (const agentId of [MARKETING_OPS, '02d158ba-5a8e-40ce-9cb0-46f65154a684', null]) {
+          const t = thread();
+          expect(await deliver(row(paperclipNotify(agentId)), { ...t, paperclip: boardCfg })).toMatchObject({ ok: true });
+          expect(t.calls.filter(c => c.method === 'POST')).toHaveLength(1);
+        }
+      });
+      test('a replay finds the marker in the thread and posts nothing', async () => {
+        const t = thread();
+        await deliver(row(paperclipNotify()), { ...t, paperclip: boardCfg });
+        expect(await deliver(row(paperclipNotify()), { ...t, paperclip: boardCfg })).toMatchObject({ ok: true });
+        expect(t.calls.filter(c => c.method === 'POST')).toHaveLength(1);
+      });
+      test('the board key wins over agent keys when both are set', async () => {
+        const t = thread();
+        await deliver(row(paperclipNotify()), { ...t, paperclip: { ...paperclip, boardKey: 'board_secret_key_value' } });
+        expect(t.calls.every(c => c.headers.authorization === 'Bearer board_secret_key_value')).toBe(true);
+        expect(t.calls.some(c => c.url.includes('/comments') && c.method === 'POST')).toBe(true);
+      });
+      test('401/403 name the key as rejected, stay retryable, are config errors, and never leak the key', async () => {
+        for (const status of [401, 403]) {
+          const t = thread({ create: status, createBody: '{"error":"expired","token":"board_secret_key_value"}' });
+          const res = await deliver(row(paperclipNotify()), { ...t, paperclip: boardCfg });
+          expect(res).toMatchObject({ ok: false, permanent: false, status });
+          expect(res.error).toStartWith(`paperclip_board_key_rejected: http_${status}`);
+          expect(res.error).not.toContain('board_secret_key_value');
+          expect(isPaperclipConfigError(res.error)).toBe(true);
+        }
+        const t = thread({ listing: 401 });
+        expect(await deliver(row(paperclipNotify()), { ...t, paperclip: boardCfg })).toMatchObject({ ok: false, status: 401 });
+        expect(t.calls.some(c => c.method === 'POST')).toBe(false);
+      });
+      test('404 is final, 5xx and 429 retry', async () => {
+        expect(await deliver(row(paperclipNotify()), { ...thread({ create: 404 }), paperclip: boardCfg })).toMatchObject({ ok: false, permanent: true, status: 404 });
+        for (const status of [429, 500, 503]) expect(await deliver(row(paperclipNotify()), { ...thread({ create: status }), paperclip: boardCfg })).toMatchObject({ ok: false, permanent: false, status });
+      });
+      test('env: a board key alone is enough, and the startup line reports only that it is set', () => {
+        const env = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com', SLASHLOOP_BOARD_API_KEY: ' board_secret_key_value ' };
+        expect(paperclipConfigFromEnv(env)).toEqual({ reason: null, config: { baseUrl: 'https://paperclip.example.com', keys: {}, boardKey: 'board_secret_key_value' } });
+        expect(describePaperclipEnv(env)).toBe('paperclip delivery config: url=set board=set keys=0 agents=[] status=ok');
+        expect(paperclipConfigFromEnv({ ...env, SLASHLOOP_BOARD_API_KEY: '  ' }).reason).toBe('paperclip_keys_missing');
+        expect(paperclipConfigFromEnv({ ...env, SLASHLOOP_PAPERCLIP_API_URL: '' }).reason).toBe('paperclip_url_missing');
+      });
+    });
+
     describe('failures', () => {
       test('no key for the agent, no agentId: permanent, no request', async () => {
         const t = paperclipServer();
@@ -508,10 +580,10 @@ describe('deliver', () => {
     test('the startup line reports url, key count and agent ids, never key values', () => {
       const env = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com', SLASHLOOP_PAPERCLIP_AGENT_KEYS: JSON.stringify({ [MARKETING_OPS]: 'secret-one', [MARKETING_OPS_CODEX]: 'secret-two' }) };
       const line = describePaperclipEnv(env);
-      expect(line).toBe(`paperclip delivery config: url=set keys=2 agents=[${MARKETING_OPS}, ${MARKETING_OPS_CODEX}] status=ok`);
+      expect(line).toBe(`paperclip delivery config: url=set board=unset keys=2 agents=[${MARKETING_OPS}, ${MARKETING_OPS_CODEX}] status=ok`);
       expect(line).not.toMatch(/secret|paperclip\.example/);
-      expect(describePaperclipEnv({})).toBe('paperclip delivery config: url=unset keys=0 agents=[] status=paperclip_url_missing');
-      expect(describePaperclipEnv({ ...env, SLASHLOOP_PAPERCLIP_AGENT_KEYS: '{bad' })).toContain('keys=0 agents=[] status=paperclip_keys_invalid_json');
+      expect(describePaperclipEnv({})).toBe('paperclip delivery config: url=unset board=unset keys=0 agents=[] status=paperclip_url_missing');
+      expect(describePaperclipEnv({ ...env, SLASHLOOP_PAPERCLIP_AGENT_KEYS: '{bad' })).toContain('board=unset keys=0 agents=[] status=paperclip_keys_invalid_json');
     });
     test('the bridge is gone: its env names are not read', () => {
       const legacy = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com', SLASHLOOP_PAPERCLIP_API_KEY: 'k', PAPERCLIP_API_KEY_FOR_SLASHLOOP_BRIDGE_AGENT: 'k', SLASHLOOP_PAPERCLIP_COMPANY_ID: 'c', SLASHLOOP_PAPERCLIP_PROJECT_ID: 'p', SLASHLOOP_PAPERCLIP_ASSIGNEE_AGENT_ID: 'a' };
