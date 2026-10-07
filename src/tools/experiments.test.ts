@@ -707,6 +707,31 @@ describe('reads', () => {
     expect(body.nextSteps[0]).toMatchObject({ tool: 'estimate_experiment', args: { taskIds: ['t1'] } });
   });
 
+  test('progress shows a pending task that is backing off as retrying, with its error and next attempt', async () => {
+    const next = Date.parse('2026-10-07T12:30:00Z');
+    store.set('e1', exp('e1', {
+      status: 'planning',
+      tasks: [
+        { id: 't1', kind: 'analysis', status: 'pending', attempts: 2, charged: 5, error: 'provider_outcome_unknown', nextAttemptAt: next },
+        { id: 't2', kind: 'report', status: 'pending', attempts: 0, charged: 0 },
+      ],
+    }));
+    const { body } = await call('get_experiment', { experimentId: 'e1' });
+    expect(body.progress.jobs.analysis).toEqual({ retrying: 1 });
+    expect(body.progress.jobs.report).toEqual({ pending: 1 });
+    expect(body.progress.retryingJobs).toEqual([
+      { id: 't1', kind: 'analysis', attempts: 2, error: 'provider_outcome_unknown', nextAttemptAt: '2026-10-07T12:30:00.000Z' },
+    ]);
+  });
+
+  test('plan_experiment and get_experiment say experiment job ids are not for await_job', async () => {
+    const client = await connect();
+    const { tools } = await client.listTools();
+    for (const name of ['plan_experiment', 'get_experiment']) {
+      expect(tools.find(t => t.name === name)!.description).toContain('NOT for await_job');
+    }
+  });
+
   test('an unowned workspace is refused', async () => {
     const { isError, body } = await call('get_experiment', { workspaceId: 'someone-else', experimentId: 'e1' });
     expect(isError).toBe(true);

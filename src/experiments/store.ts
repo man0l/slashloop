@@ -25,6 +25,16 @@ export async function list(workspaceId: string, limit = 50, offset = 0): Promise
   const result = await batch([{ sql: 'SELECT "dataJson" FROM "Experiment" WHERE "workspaceId" = ? ORDER BY "createdAt" DESC LIMIT ? OFFSET ?', params: [workspaceId, lim, off] }]);
   return (result[0] as Array<{ dataJson: string }>).map(r => JSON.parse(r.dataJson));
 }
+/** Experiment owning a task id in this workspace, or null. Tasks live inside dataJson, so this scans text then confirms in JS. */
+export async function findByTaskId(workspaceId: string, taskId: string): Promise<Experiment | null> {
+  if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(taskId)) return null;
+  const result = await batch([{ sql: 'SELECT "dataJson" FROM "Experiment" WHERE "workspaceId" = ? AND "dataJson" LIKE ? LIMIT 20', params: [workspaceId, `%"${taskId}"%`] }]);
+  for (const row of result[0] as Array<{ dataJson: string }>) {
+    const e: Experiment = JSON.parse(row.dataJson);
+    if (e.tasks.some(t => t.id === taskId)) return e;
+  }
+  return null;
+}
 export async function remove(workspaceId: string, id: string): Promise<boolean> {
   const result = await batch([{ sql: 'DELETE FROM "Experiment" WHERE "id" = ? AND "workspaceId" = ? RETURNING "id"', params: [id, workspaceId] }]);
   return ((result[0] ?? []) as unknown[]).length > 0;
