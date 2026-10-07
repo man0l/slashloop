@@ -45,17 +45,17 @@ export function webhookHeaders(id: string, secret: string | null, nowMs: number,
   };
 }
 
-/** Connect-time address check: every resolved address must be public, so DNS rebinding cannot reach the private network. */
-const guardedLookup = ((hostname: string, _opts: unknown, cb: (err: Error | null, address?: string, family?: number) => void) => {
-  if (isIP(hostname)) {
-    return isPrivateAddress(hostname) ? cb(new WebhookUrlError('blocked_address')) : cb(null, hostname, isIP(hostname));
-  }
-  dns.lookup(hostname, { all: true }, (err, addresses) => {
-    if (err) return cb(err);
-    if (!addresses.length || addresses.some(a => isPrivateAddress(a.address))) return cb(new WebhookUrlError('blocked_address'));
-    cb(null, addresses[0]!.address, addresses[0]!.family);
-  });
-}) as unknown as NonNullable<https.RequestOptions['lookup']>;
+type Resolver = (host: string, opts: { all: true }, cb: (err: Error | null, addresses: Array<{ address: string; family: number }>) => void) => void;
+
+/** Resolves once and returns one public address to connect to; any private address among the answers blocks the host, so DNS rebinding cannot reach the private network. */
+export function resolvePublic(hostname: string, resolve: Resolver = dns.lookup as unknown as Resolver): Promise<string> {
+  if (isIP(hostname)) return isPrivateAddress(hostname) ? Promise.reject(new WebhookUrlError('blocked_address')) : Promise.resolve(hostname);
+  return new Promise((res, rej) => resolve(hostname, { all: true }, (err, addresses) => {
+    if (err) return rej(err);
+    if (!addresses.length || addresses.some(a => isPrivateAddress(a.address))) return rej(new WebhookUrlError('blocked_address'));
+    res(addresses[0]!.address);
+  }));
+}
 
 const REQUEST_IDLE_TIMEOUT_MS = 10_000;
 /** Wall-clock cap per request (DNS + connect + send + full response); the idle timeout alone lets a slow-drip endpoint hold the single-flight sweep. */
@@ -66,37 +66,41 @@ export interface PostTransport {
   protocol: 'https:' | 'http:';
   /** Fixed port, or undefined to use the URL's own. */
   port?: number;
-  lookup?: https.RequestOptions['lookup'];
-  /** Refuse private IP literals before opening a socket (Node never calls `lookup` for a literal). */
-  guardLiteral: boolean;
+  /** Picks the address to connect to. The socket goes to that IP with the hostname as SNI/Host, so the certificate is still checked against the name. Bun's https shim ignores a custom `lookup` and `createConnection`, so the pin must be the request's own host. */
+  resolve?: (hostname: string) => Promise<string>;
 }
-const GUARDED_HTTPS: PostTransport = { request: https.request, protocol: 'https:', port: 443, lookup: guardedLookup, guardLiteral: true };
+const GUARDED_HTTPS: PostTransport = { request: https.request, protocol: 'https:', port: 443, resolve: h => resolvePublic(h) };
 
 /** One POST, no redirects, response body discarded, idle timeout plus an overall deadline. */
 export function createGuardedPost(deadlineMs: number = REQUEST_DEADLINE_MS, transport: PostTransport = GUARDED_HTTPS): HttpPost {
   return (url, headers, body) => new Promise((resolve, reject) => {
     const hostname = url.hostname.replace(/^\[|\]$/g, '');
-    if (transport.guardLiteral && isIP(hostname) && isPrivateAddress(hostname)) return reject(new WebhookUrlError('blocked_address'));
     let settled = false;
+    let req: ReturnType<typeof https.request> | undefined;
     const settle = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(deadline); fn(); };
-    const req = transport.request({
-      protocol: transport.protocol, hostname, port: transport.port ?? url.port, path: `${url.pathname}${url.search}`, method: 'POST',
-      headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) }, lookup: transport.lookup, timeout: REQUEST_IDLE_TIMEOUT_MS,
-    }, res => {
-      res.resume();
-      res.on('end', () => settle(() => resolve({ status: res.statusCode ?? 0 })));
-      res.on('error', err => settle(() => reject(err)));
-      res.on('close', () => settle(() => (res.complete ? resolve({ status: res.statusCode ?? 0 }) : reject(new Error('response_aborted')))));
-    });
     // Settle before destroying so the error the destroy emits cannot win the race; the timer is a plain setTimeout because it behaves the same on Node and Bun.
     const deadline = setTimeout(() => {
       const err = Object.assign(new Error('deadline_exceeded'), { code: 'DEADLINE_EXCEEDED' });
       settle(() => reject(err));
-      req.destroy(err);
+      req?.destroy(err);
     }, deadlineMs);
-    req.on('timeout', () => req.destroy(new Error('timeout')));
-    req.on('error', err => settle(() => reject(err)));
-    req.end(body);
+    (transport.resolve ? transport.resolve(hostname) : Promise.resolve(hostname)).then(address => {
+      if (settled) return;
+      const pinned = address !== hostname;
+      req = transport.request({
+        protocol: transport.protocol, hostname: address, port: transport.port ?? url.port, path: `${url.pathname}${url.search}`, method: 'POST',
+        ...(pinned ? { servername: isIP(hostname) ? undefined : hostname } : {}),
+        headers: { ...headers, ...(pinned ? { host: url.host } : {}), 'content-length': String(Buffer.byteLength(body)) }, timeout: REQUEST_IDLE_TIMEOUT_MS,
+      }, res => {
+        res.resume();
+        res.on('end', () => settle(() => resolve({ status: res.statusCode ?? 0 })));
+        res.on('error', err => settle(() => reject(err)));
+        res.on('close', () => settle(() => (res.complete ? resolve({ status: res.statusCode ?? 0 }) : reject(new Error('response_aborted')))));
+      });
+      req.on('timeout', () => req!.destroy(new Error('timeout')));
+      req.on('error', err => settle(() => reject(err)));
+      req.end(body);
+    }, err => settle(() => reject(err)));
   });
 }
 
