@@ -13,6 +13,7 @@ import { applyApprovedEstimate } from './budget.js';
 import { compileExactEdit } from './exact-edit.js';
 import { postKey } from '../lib/post-key.js';
 import { expandPreset, inferSharedFormat } from './source-format.js';
+import { assertPublicHttpsUrl } from '../lib/webhook-url.js';
 
 export const fingerprint = (v: unknown): string => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 /** Compact view count for experiment title differentiators: 8200000 -> 8.2M, 75600 -> 75.6k. */
@@ -88,7 +89,7 @@ export type CreateExperimentDeps = {
   findSource: (workspaceId: string, videoId: string) => Promise<Video | null>;
   findLatestAnalysis: (videoId: string) => Promise<{ analysisJson: string } | null>;
   buildInput: (video: Video) => Promise<S.Input>;
-  persist: (experiment: S.Experiment, idempotencyKey: string) => Promise<S.Experiment>;
+  persist: (experiment: S.Experiment, idempotencyKey: string, run?: store.Run, notify?: S.NotifyConfig | null) => Promise<S.Experiment>;
 };
 export const createDeps: CreateExperimentDeps = {
   findSource: (workspaceId, videoId) => db.video.findFirst({ where: { id: videoId, source: { workspaceId } } }),
@@ -101,8 +102,11 @@ export interface CreateExperimentOptions {
    *  instructions and must not pick up a source-format preset's locks. */
   expandFormat?: boolean;
 }
-export async function createExperiment(rawWithRunner: unknown, deps: CreateExperimentDeps = createDeps, options: CreateExperimentOptions = {}) {
+export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: CreateExperimentDeps = createDeps, options: CreateExperimentOptions = {}) {
+  const { body: rawWithRunner, notify: notifyRaw } = S.takeNotify(rawWithRunnerAndNotify);
   const { body: raw, ranBy } = S.takeRanBy(rawWithRunner);
+  // Completion webhook target: refused before any source lookup or write so a bad URL never costs a row.
+  const notify = S.parseNotify(notifyRaw, assertPublicHttpsUrl);
   // Legacy create: the two-variant planner path, unchanged. An exact_edit body
   // has its own entry point and must not be coerced through this schema.
   if (isExactEditRequest(raw)) throw new S.ExperimentError(409,'exact_edit_requires_exact_edit_action','Create an exact_edit deck with create_exact_edit; it does not use the legacy planner.');
@@ -179,12 +183,13 @@ export async function createExperiment(rawWithRunner: unknown, deps: CreateExper
       fields.instructions = { ...fields.instructions, goal: `${goal}${suffix}` };
     }
   }
-  return deps.persist({ id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,ranBy,
+  const draft: S.Experiment = { id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,ranBy,
     creditsCharged:0,report:null,inputs,variants:[],error:null,
     // Slideshow sources are attached as visual references during rendering; video-only stays text-directed.
     generationBasis:referenced?'source-referenced':'text-directed',
     assetPolicy:'Generated outputs retained until explicit deletion; never swept with source media. No Stream copies. Gemini uploads named experiment-temp expire at provider in approximately 48h; reusable handles expire locally at 40h.',
-    version:0,tasks:[],commands:{},allowPartial:false,createFingerprint:requestFingerprint },idempotencyKey);
+    version:0,tasks:[],commands:{},allowPartial:false,createFingerprint:requestFingerprint };
+  return notify ? deps.persist(draft,idempotencyKey,undefined,notify) : deps.persist(draft,idempotencyKey);
 }
 export interface DedupedVideoIds { videoIds: string[]; duplicates: Array<{ videoId: string; duplicateOf: string }> }
 /**

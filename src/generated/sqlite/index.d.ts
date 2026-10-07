@@ -84,6 +84,11 @@ export type Video = $Result.DefaultSelection<Prisma.$VideoPayload>
  */
 export type Experiment = $Result.DefaultSelection<Prisma.$ExperimentPayload>
 /**
+ * Model ExperimentWebhookOutbox
+ * SLA-617: one row per non-terminal -> terminal experiment transition that asked for a webhook, written in the same batch as the status change and delivered by the VPS worker.
+ */
+export type ExperimentWebhookOutbox = $Result.DefaultSelection<Prisma.$ExperimentWebhookOutboxPayload>
+/**
  * Model CanonicalScrapeLock
  * 
  */
@@ -397,6 +402,16 @@ export class PrismaClient<
     * ```
     */
   get experiment(): Prisma.ExperimentDelegate<ExtArgs, ClientOptions>;
+
+  /**
+   * `prisma.experimentWebhookOutbox`: Exposes CRUD operations for the **ExperimentWebhookOutbox** model.
+    * Example usage:
+    * ```ts
+    * // Fetch zero or more ExperimentWebhookOutboxes
+    * const experimentWebhookOutboxes = await prisma.experimentWebhookOutbox.findMany()
+    * ```
+    */
+  get experimentWebhookOutbox(): Prisma.ExperimentWebhookOutboxDelegate<ExtArgs, ClientOptions>;
 
   /**
    * `prisma.canonicalScrapeLock`: Exposes CRUD operations for the **CanonicalScrapeLock** model.
@@ -1007,6 +1022,7 @@ export namespace Prisma {
     Source: 'Source',
     Video: 'Video',
     Experiment: 'Experiment',
+    ExperimentWebhookOutbox: 'ExperimentWebhookOutbox',
     CanonicalScrapeLock: 'CanonicalScrapeLock',
     Baseline: 'Baseline',
     Score: 'Score',
@@ -1041,7 +1057,7 @@ export namespace Prisma {
       omit: GlobalOmitOptions
     }
     meta: {
-      modelProps: "user" | "workspace" | "workspaceMember" | "creditLedger" | "stripeEvent" | "suggestionDismissal" | "source" | "video" | "experiment" | "canonicalScrapeLock" | "baseline" | "score" | "analysis" | "hook" | "board" | "swipeEntry" | "idea" | "script" | "brief" | "usageLog" | "refreshRun" | "autoAnalyzeRun" | "mediaJob" | "workerControl" | "scrapeAlertState"
+      modelProps: "user" | "workspace" | "workspaceMember" | "creditLedger" | "stripeEvent" | "suggestionDismissal" | "source" | "video" | "experiment" | "experimentWebhookOutbox" | "canonicalScrapeLock" | "baseline" | "score" | "analysis" | "hook" | "board" | "swipeEntry" | "idea" | "script" | "brief" | "usageLog" | "refreshRun" | "autoAnalyzeRun" | "mediaJob" | "workerControl" | "scrapeAlertState"
       txIsolationLevel: Prisma.TransactionIsolationLevel
     }
     model: {
@@ -1708,6 +1724,80 @@ export namespace Prisma {
           count: {
             args: Prisma.ExperimentCountArgs<ExtArgs>
             result: $Utils.Optional<ExperimentCountAggregateOutputType> | number
+          }
+        }
+      }
+      ExperimentWebhookOutbox: {
+        payload: Prisma.$ExperimentWebhookOutboxPayload<ExtArgs>
+        fields: Prisma.ExperimentWebhookOutboxFieldRefs
+        operations: {
+          findUnique: {
+            args: Prisma.ExperimentWebhookOutboxFindUniqueArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentWebhookOutboxPayload> | null
+          }
+          findUniqueOrThrow: {
+            args: Prisma.ExperimentWebhookOutboxFindUniqueOrThrowArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentWebhookOutboxPayload>
+          }
+          findFirst: {
+            args: Prisma.ExperimentWebhookOutboxFindFirstArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentWebhookOutboxPayload> | null
+          }
+          findFirstOrThrow: {
+            args: Prisma.ExperimentWebhookOutboxFindFirstOrThrowArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentWebhookOutboxPayload>
+          }
+          findMany: {
+            args: Prisma.ExperimentWebhookOutboxFindManyArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentWebhookOutboxPayload>[]
+          }
+          create: {
+            args: Prisma.ExperimentWebhookOutboxCreateArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentWebhookOutboxPayload>
+          }
+          createMany: {
+            args: Prisma.ExperimentWebhookOutboxCreateManyArgs<ExtArgs>
+            result: BatchPayload
+          }
+          createManyAndReturn: {
+            args: Prisma.ExperimentWebhookOutboxCreateManyAndReturnArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentWebhookOutboxPayload>[]
+          }
+          delete: {
+            args: Prisma.ExperimentWebhookOutboxDeleteArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentWebhookOutboxPayload>
+          }
+          update: {
+            args: Prisma.ExperimentWebhookOutboxUpdateArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentWebhookOutboxPayload>
+          }
+          deleteMany: {
+            args: Prisma.ExperimentWebhookOutboxDeleteManyArgs<ExtArgs>
+            result: BatchPayload
+          }
+          updateMany: {
+            args: Prisma.ExperimentWebhookOutboxUpdateManyArgs<ExtArgs>
+            result: BatchPayload
+          }
+          updateManyAndReturn: {
+            args: Prisma.ExperimentWebhookOutboxUpdateManyAndReturnArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentWebhookOutboxPayload>[]
+          }
+          upsert: {
+            args: Prisma.ExperimentWebhookOutboxUpsertArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$ExperimentWebhookOutboxPayload>
+          }
+          aggregate: {
+            args: Prisma.ExperimentWebhookOutboxAggregateArgs<ExtArgs>
+            result: $Utils.Optional<AggregateExperimentWebhookOutbox>
+          }
+          groupBy: {
+            args: Prisma.ExperimentWebhookOutboxGroupByArgs<ExtArgs>
+            result: $Utils.Optional<ExperimentWebhookOutboxGroupByOutputType>[]
+          }
+          count: {
+            args: Prisma.ExperimentWebhookOutboxCountArgs<ExtArgs>
+            result: $Utils.Optional<ExperimentWebhookOutboxCountAggregateOutputType> | number
           }
         }
       }
@@ -3000,6 +3090,7 @@ export namespace Prisma {
     source?: SourceOmit
     video?: VideoOmit
     experiment?: ExperimentOmit
+    experimentWebhookOutbox?: ExperimentWebhookOutboxOmit
     canonicalScrapeLock?: CanonicalScrapeLockOmit
     baseline?: BaselineOmit
     score?: ScoreOmit
@@ -13250,6 +13341,7 @@ export namespace Prisma {
     updatedAt: Date | null
     createKey: string | null
     ranBy: string | null
+    notifyJson: string | null
   }
 
   export type ExperimentMaxAggregateOutputType = {
@@ -13262,6 +13354,7 @@ export namespace Prisma {
     updatedAt: Date | null
     createKey: string | null
     ranBy: string | null
+    notifyJson: string | null
   }
 
   export type ExperimentCountAggregateOutputType = {
@@ -13274,6 +13367,7 @@ export namespace Prisma {
     updatedAt: number
     createKey: number
     ranBy: number
+    notifyJson: number
     _all: number
   }
 
@@ -13296,6 +13390,7 @@ export namespace Prisma {
     updatedAt?: true
     createKey?: true
     ranBy?: true
+    notifyJson?: true
   }
 
   export type ExperimentMaxAggregateInputType = {
@@ -13308,6 +13403,7 @@ export namespace Prisma {
     updatedAt?: true
     createKey?: true
     ranBy?: true
+    notifyJson?: true
   }
 
   export type ExperimentCountAggregateInputType = {
@@ -13320,6 +13416,7 @@ export namespace Prisma {
     updatedAt?: true
     createKey?: true
     ranBy?: true
+    notifyJson?: true
     _all?: true
   }
 
@@ -13419,6 +13516,7 @@ export namespace Prisma {
     updatedAt: Date
     createKey: string
     ranBy: string | null
+    notifyJson: string | null
     _count: ExperimentCountAggregateOutputType | null
     _avg: ExperimentAvgAggregateOutputType | null
     _sum: ExperimentSumAggregateOutputType | null
@@ -13450,6 +13548,7 @@ export namespace Prisma {
     updatedAt?: boolean
     createKey?: boolean
     ranBy?: boolean
+    notifyJson?: boolean
   }, ExtArgs["result"]["experiment"]>
 
   export type ExperimentSelectCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
@@ -13462,6 +13561,7 @@ export namespace Prisma {
     updatedAt?: boolean
     createKey?: boolean
     ranBy?: boolean
+    notifyJson?: boolean
   }, ExtArgs["result"]["experiment"]>
 
   export type ExperimentSelectUpdateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
@@ -13474,6 +13574,7 @@ export namespace Prisma {
     updatedAt?: boolean
     createKey?: boolean
     ranBy?: boolean
+    notifyJson?: boolean
   }, ExtArgs["result"]["experiment"]>
 
   export type ExperimentSelectScalar = {
@@ -13486,9 +13587,10 @@ export namespace Prisma {
     updatedAt?: boolean
     createKey?: boolean
     ranBy?: boolean
+    notifyJson?: boolean
   }
 
-  export type ExperimentOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "status" | "version" | "dataJson" | "createdAt" | "updatedAt" | "createKey" | "ranBy", ExtArgs["result"]["experiment"]>
+  export type ExperimentOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "status" | "version" | "dataJson" | "createdAt" | "updatedAt" | "createKey" | "ranBy" | "notifyJson", ExtArgs["result"]["experiment"]>
 
   export type $ExperimentPayload<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
     name: "Experiment"
@@ -13506,6 +13608,10 @@ export namespace Prisma {
        * Free-text runner: "user" or "agent:<name> on behalf of <user>". Null on legacy rows.
        */
       ranBy: string | null
+      /**
+       * SLA-617: JSON {url, secret, secretGenerated, metadata} for the completion webhook. A column, not dataJson, so the secret never rides serialize(). Null = no webhook.
+       */
+      notifyJson: string | null
     }, ExtArgs["result"]["experiment"]>
     composites: {}
   }
@@ -13938,6 +14044,7 @@ export namespace Prisma {
     readonly updatedAt: FieldRef<"Experiment", 'DateTime'>
     readonly createKey: FieldRef<"Experiment", 'String'>
     readonly ranBy: FieldRef<"Experiment", 'String'>
+    readonly notifyJson: FieldRef<"Experiment", 'String'>
   }
     
 
@@ -14299,6 +14406,1166 @@ export namespace Prisma {
      * Omit specific fields from the Experiment
      */
     omit?: ExperimentOmit<ExtArgs> | null
+  }
+
+
+  /**
+   * Model ExperimentWebhookOutbox
+   */
+
+  export type AggregateExperimentWebhookOutbox = {
+    _count: ExperimentWebhookOutboxCountAggregateOutputType | null
+    _avg: ExperimentWebhookOutboxAvgAggregateOutputType | null
+    _sum: ExperimentWebhookOutboxSumAggregateOutputType | null
+    _min: ExperimentWebhookOutboxMinAggregateOutputType | null
+    _max: ExperimentWebhookOutboxMaxAggregateOutputType | null
+  }
+
+  export type ExperimentWebhookOutboxAvgAggregateOutputType = {
+    version: number | null
+    attempts: number | null
+  }
+
+  export type ExperimentWebhookOutboxSumAggregateOutputType = {
+    version: number | null
+    attempts: number | null
+  }
+
+  export type ExperimentWebhookOutboxMinAggregateOutputType = {
+    id: string | null
+    experimentId: string | null
+    workspaceId: string | null
+    status: string | null
+    version: number | null
+    idempotencyKey: string | null
+    notifyJson: string | null
+    payloadJson: string | null
+    state: string | null
+    attempts: number | null
+    nextAttemptAt: Date | null
+    lastError: string | null
+    deliveredAt: Date | null
+    createdAt: Date | null
+  }
+
+  export type ExperimentWebhookOutboxMaxAggregateOutputType = {
+    id: string | null
+    experimentId: string | null
+    workspaceId: string | null
+    status: string | null
+    version: number | null
+    idempotencyKey: string | null
+    notifyJson: string | null
+    payloadJson: string | null
+    state: string | null
+    attempts: number | null
+    nextAttemptAt: Date | null
+    lastError: string | null
+    deliveredAt: Date | null
+    createdAt: Date | null
+  }
+
+  export type ExperimentWebhookOutboxCountAggregateOutputType = {
+    id: number
+    experimentId: number
+    workspaceId: number
+    status: number
+    version: number
+    idempotencyKey: number
+    notifyJson: number
+    payloadJson: number
+    state: number
+    attempts: number
+    nextAttemptAt: number
+    lastError: number
+    deliveredAt: number
+    createdAt: number
+    _all: number
+  }
+
+
+  export type ExperimentWebhookOutboxAvgAggregateInputType = {
+    version?: true
+    attempts?: true
+  }
+
+  export type ExperimentWebhookOutboxSumAggregateInputType = {
+    version?: true
+    attempts?: true
+  }
+
+  export type ExperimentWebhookOutboxMinAggregateInputType = {
+    id?: true
+    experimentId?: true
+    workspaceId?: true
+    status?: true
+    version?: true
+    idempotencyKey?: true
+    notifyJson?: true
+    payloadJson?: true
+    state?: true
+    attempts?: true
+    nextAttemptAt?: true
+    lastError?: true
+    deliveredAt?: true
+    createdAt?: true
+  }
+
+  export type ExperimentWebhookOutboxMaxAggregateInputType = {
+    id?: true
+    experimentId?: true
+    workspaceId?: true
+    status?: true
+    version?: true
+    idempotencyKey?: true
+    notifyJson?: true
+    payloadJson?: true
+    state?: true
+    attempts?: true
+    nextAttemptAt?: true
+    lastError?: true
+    deliveredAt?: true
+    createdAt?: true
+  }
+
+  export type ExperimentWebhookOutboxCountAggregateInputType = {
+    id?: true
+    experimentId?: true
+    workspaceId?: true
+    status?: true
+    version?: true
+    idempotencyKey?: true
+    notifyJson?: true
+    payloadJson?: true
+    state?: true
+    attempts?: true
+    nextAttemptAt?: true
+    lastError?: true
+    deliveredAt?: true
+    createdAt?: true
+    _all?: true
+  }
+
+  export type ExperimentWebhookOutboxAggregateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Filter which ExperimentWebhookOutbox to aggregate.
+     */
+    where?: ExperimentWebhookOutboxWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of ExperimentWebhookOutboxes to fetch.
+     */
+    orderBy?: ExperimentWebhookOutboxOrderByWithRelationInput | ExperimentWebhookOutboxOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the start position
+     */
+    cursor?: ExperimentWebhookOutboxWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` ExperimentWebhookOutboxes from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` ExperimentWebhookOutboxes.
+     */
+    skip?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Count returned ExperimentWebhookOutboxes
+    **/
+    _count?: true | ExperimentWebhookOutboxCountAggregateInputType
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Select which fields to average
+    **/
+    _avg?: ExperimentWebhookOutboxAvgAggregateInputType
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Select which fields to sum
+    **/
+    _sum?: ExperimentWebhookOutboxSumAggregateInputType
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Select which fields to find the minimum value
+    **/
+    _min?: ExperimentWebhookOutboxMinAggregateInputType
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Select which fields to find the maximum value
+    **/
+    _max?: ExperimentWebhookOutboxMaxAggregateInputType
+  }
+
+  export type GetExperimentWebhookOutboxAggregateType<T extends ExperimentWebhookOutboxAggregateArgs> = {
+        [P in keyof T & keyof AggregateExperimentWebhookOutbox]: P extends '_count' | 'count'
+      ? T[P] extends true
+        ? number
+        : GetScalarType<T[P], AggregateExperimentWebhookOutbox[P]>
+      : GetScalarType<T[P], AggregateExperimentWebhookOutbox[P]>
+  }
+
+
+
+
+  export type ExperimentWebhookOutboxGroupByArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    where?: ExperimentWebhookOutboxWhereInput
+    orderBy?: ExperimentWebhookOutboxOrderByWithAggregationInput | ExperimentWebhookOutboxOrderByWithAggregationInput[]
+    by: ExperimentWebhookOutboxScalarFieldEnum[] | ExperimentWebhookOutboxScalarFieldEnum
+    having?: ExperimentWebhookOutboxScalarWhereWithAggregatesInput
+    take?: number
+    skip?: number
+    _count?: ExperimentWebhookOutboxCountAggregateInputType | true
+    _avg?: ExperimentWebhookOutboxAvgAggregateInputType
+    _sum?: ExperimentWebhookOutboxSumAggregateInputType
+    _min?: ExperimentWebhookOutboxMinAggregateInputType
+    _max?: ExperimentWebhookOutboxMaxAggregateInputType
+  }
+
+  export type ExperimentWebhookOutboxGroupByOutputType = {
+    id: string
+    experimentId: string
+    workspaceId: string
+    status: string
+    version: number
+    idempotencyKey: string
+    notifyJson: string
+    payloadJson: string
+    state: string
+    attempts: number
+    nextAttemptAt: Date
+    lastError: string | null
+    deliveredAt: Date | null
+    createdAt: Date
+    _count: ExperimentWebhookOutboxCountAggregateOutputType | null
+    _avg: ExperimentWebhookOutboxAvgAggregateOutputType | null
+    _sum: ExperimentWebhookOutboxSumAggregateOutputType | null
+    _min: ExperimentWebhookOutboxMinAggregateOutputType | null
+    _max: ExperimentWebhookOutboxMaxAggregateOutputType | null
+  }
+
+  type GetExperimentWebhookOutboxGroupByPayload<T extends ExperimentWebhookOutboxGroupByArgs> = Prisma.PrismaPromise<
+    Array<
+      PickEnumerable<ExperimentWebhookOutboxGroupByOutputType, T['by']> &
+        {
+          [P in ((keyof T) & (keyof ExperimentWebhookOutboxGroupByOutputType))]: P extends '_count'
+            ? T[P] extends boolean
+              ? number
+              : GetScalarType<T[P], ExperimentWebhookOutboxGroupByOutputType[P]>
+            : GetScalarType<T[P], ExperimentWebhookOutboxGroupByOutputType[P]>
+        }
+      >
+    >
+
+
+  export type ExperimentWebhookOutboxSelect<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
+    id?: boolean
+    experimentId?: boolean
+    workspaceId?: boolean
+    status?: boolean
+    version?: boolean
+    idempotencyKey?: boolean
+    notifyJson?: boolean
+    payloadJson?: boolean
+    state?: boolean
+    attempts?: boolean
+    nextAttemptAt?: boolean
+    lastError?: boolean
+    deliveredAt?: boolean
+    createdAt?: boolean
+  }, ExtArgs["result"]["experimentWebhookOutbox"]>
+
+  export type ExperimentWebhookOutboxSelectCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
+    id?: boolean
+    experimentId?: boolean
+    workspaceId?: boolean
+    status?: boolean
+    version?: boolean
+    idempotencyKey?: boolean
+    notifyJson?: boolean
+    payloadJson?: boolean
+    state?: boolean
+    attempts?: boolean
+    nextAttemptAt?: boolean
+    lastError?: boolean
+    deliveredAt?: boolean
+    createdAt?: boolean
+  }, ExtArgs["result"]["experimentWebhookOutbox"]>
+
+  export type ExperimentWebhookOutboxSelectUpdateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
+    id?: boolean
+    experimentId?: boolean
+    workspaceId?: boolean
+    status?: boolean
+    version?: boolean
+    idempotencyKey?: boolean
+    notifyJson?: boolean
+    payloadJson?: boolean
+    state?: boolean
+    attempts?: boolean
+    nextAttemptAt?: boolean
+    lastError?: boolean
+    deliveredAt?: boolean
+    createdAt?: boolean
+  }, ExtArgs["result"]["experimentWebhookOutbox"]>
+
+  export type ExperimentWebhookOutboxSelectScalar = {
+    id?: boolean
+    experimentId?: boolean
+    workspaceId?: boolean
+    status?: boolean
+    version?: boolean
+    idempotencyKey?: boolean
+    notifyJson?: boolean
+    payloadJson?: boolean
+    state?: boolean
+    attempts?: boolean
+    nextAttemptAt?: boolean
+    lastError?: boolean
+    deliveredAt?: boolean
+    createdAt?: boolean
+  }
+
+  export type ExperimentWebhookOutboxOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "experimentId" | "workspaceId" | "status" | "version" | "idempotencyKey" | "notifyJson" | "payloadJson" | "state" | "attempts" | "nextAttemptAt" | "lastError" | "deliveredAt" | "createdAt", ExtArgs["result"]["experimentWebhookOutbox"]>
+
+  export type $ExperimentWebhookOutboxPayload<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    name: "ExperimentWebhookOutbox"
+    objects: {}
+    scalars: $Extensions.GetPayloadResult<{
+      id: string
+      experimentId: string
+      workspaceId: string
+      /**
+       * The terminal status entered (completed, review, failed, paused, cancelled).
+       */
+      status: string
+      /**
+       * The experiment version that entered it.
+       */
+      version: number
+      /**
+       * experimentId:status:version — unique, so the transition can be queued once.
+       */
+      idempotencyKey: string
+      notifyJson: string
+      payloadJson: string
+      /**
+       * pending | delivered | dead
+       */
+      state: string
+      attempts: number
+      nextAttemptAt: Date
+      lastError: string | null
+      deliveredAt: Date | null
+      createdAt: Date
+    }, ExtArgs["result"]["experimentWebhookOutbox"]>
+    composites: {}
+  }
+
+  type ExperimentWebhookOutboxGetPayload<S extends boolean | null | undefined | ExperimentWebhookOutboxDefaultArgs> = $Result.GetResult<Prisma.$ExperimentWebhookOutboxPayload, S>
+
+  type ExperimentWebhookOutboxCountArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> =
+    Omit<ExperimentWebhookOutboxFindManyArgs, 'select' | 'include' | 'distinct' | 'omit'> & {
+      select?: ExperimentWebhookOutboxCountAggregateInputType | true
+    }
+
+  export interface ExperimentWebhookOutboxDelegate<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs, GlobalOmitOptions = {}> {
+    [K: symbol]: { types: Prisma.TypeMap<ExtArgs>['model']['ExperimentWebhookOutbox'], meta: { name: 'ExperimentWebhookOutbox' } }
+    /**
+     * Find zero or one ExperimentWebhookOutbox that matches the filter.
+     * @param {ExperimentWebhookOutboxFindUniqueArgs} args - Arguments to find a ExperimentWebhookOutbox
+     * @example
+     * // Get one ExperimentWebhookOutbox
+     * const experimentWebhookOutbox = await prisma.experimentWebhookOutbox.findUnique({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findUnique<T extends ExperimentWebhookOutboxFindUniqueArgs>(args: SelectSubset<T, ExperimentWebhookOutboxFindUniqueArgs<ExtArgs>>): Prisma__ExperimentWebhookOutboxClient<$Result.GetResult<Prisma.$ExperimentWebhookOutboxPayload<ExtArgs>, T, "findUnique", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find one ExperimentWebhookOutbox that matches the filter or throw an error with `error.code='P2025'`
+     * if no matches were found.
+     * @param {ExperimentWebhookOutboxFindUniqueOrThrowArgs} args - Arguments to find a ExperimentWebhookOutbox
+     * @example
+     * // Get one ExperimentWebhookOutbox
+     * const experimentWebhookOutbox = await prisma.experimentWebhookOutbox.findUniqueOrThrow({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findUniqueOrThrow<T extends ExperimentWebhookOutboxFindUniqueOrThrowArgs>(args: SelectSubset<T, ExperimentWebhookOutboxFindUniqueOrThrowArgs<ExtArgs>>): Prisma__ExperimentWebhookOutboxClient<$Result.GetResult<Prisma.$ExperimentWebhookOutboxPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find the first ExperimentWebhookOutbox that matches the filter.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentWebhookOutboxFindFirstArgs} args - Arguments to find a ExperimentWebhookOutbox
+     * @example
+     * // Get one ExperimentWebhookOutbox
+     * const experimentWebhookOutbox = await prisma.experimentWebhookOutbox.findFirst({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findFirst<T extends ExperimentWebhookOutboxFindFirstArgs>(args?: SelectSubset<T, ExperimentWebhookOutboxFindFirstArgs<ExtArgs>>): Prisma__ExperimentWebhookOutboxClient<$Result.GetResult<Prisma.$ExperimentWebhookOutboxPayload<ExtArgs>, T, "findFirst", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find the first ExperimentWebhookOutbox that matches the filter or
+     * throw `PrismaKnownClientError` with `P2025` code if no matches were found.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentWebhookOutboxFindFirstOrThrowArgs} args - Arguments to find a ExperimentWebhookOutbox
+     * @example
+     * // Get one ExperimentWebhookOutbox
+     * const experimentWebhookOutbox = await prisma.experimentWebhookOutbox.findFirstOrThrow({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findFirstOrThrow<T extends ExperimentWebhookOutboxFindFirstOrThrowArgs>(args?: SelectSubset<T, ExperimentWebhookOutboxFindFirstOrThrowArgs<ExtArgs>>): Prisma__ExperimentWebhookOutboxClient<$Result.GetResult<Prisma.$ExperimentWebhookOutboxPayload<ExtArgs>, T, "findFirstOrThrow", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find zero or more ExperimentWebhookOutboxes that matches the filter.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentWebhookOutboxFindManyArgs} args - Arguments to filter and select certain fields only.
+     * @example
+     * // Get all ExperimentWebhookOutboxes
+     * const experimentWebhookOutboxes = await prisma.experimentWebhookOutbox.findMany()
+     * 
+     * // Get first 10 ExperimentWebhookOutboxes
+     * const experimentWebhookOutboxes = await prisma.experimentWebhookOutbox.findMany({ take: 10 })
+     * 
+     * // Only select the `id`
+     * const experimentWebhookOutboxWithIdOnly = await prisma.experimentWebhookOutbox.findMany({ select: { id: true } })
+     * 
+     */
+    findMany<T extends ExperimentWebhookOutboxFindManyArgs>(args?: SelectSubset<T, ExperimentWebhookOutboxFindManyArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$ExperimentWebhookOutboxPayload<ExtArgs>, T, "findMany", GlobalOmitOptions>>
+
+    /**
+     * Create a ExperimentWebhookOutbox.
+     * @param {ExperimentWebhookOutboxCreateArgs} args - Arguments to create a ExperimentWebhookOutbox.
+     * @example
+     * // Create one ExperimentWebhookOutbox
+     * const ExperimentWebhookOutbox = await prisma.experimentWebhookOutbox.create({
+     *   data: {
+     *     // ... data to create a ExperimentWebhookOutbox
+     *   }
+     * })
+     * 
+     */
+    create<T extends ExperimentWebhookOutboxCreateArgs>(args: SelectSubset<T, ExperimentWebhookOutboxCreateArgs<ExtArgs>>): Prisma__ExperimentWebhookOutboxClient<$Result.GetResult<Prisma.$ExperimentWebhookOutboxPayload<ExtArgs>, T, "create", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Create many ExperimentWebhookOutboxes.
+     * @param {ExperimentWebhookOutboxCreateManyArgs} args - Arguments to create many ExperimentWebhookOutboxes.
+     * @example
+     * // Create many ExperimentWebhookOutboxes
+     * const experimentWebhookOutbox = await prisma.experimentWebhookOutbox.createMany({
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     *     
+     */
+    createMany<T extends ExperimentWebhookOutboxCreateManyArgs>(args?: SelectSubset<T, ExperimentWebhookOutboxCreateManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
+
+    /**
+     * Create many ExperimentWebhookOutboxes and returns the data saved in the database.
+     * @param {ExperimentWebhookOutboxCreateManyAndReturnArgs} args - Arguments to create many ExperimentWebhookOutboxes.
+     * @example
+     * // Create many ExperimentWebhookOutboxes
+     * const experimentWebhookOutbox = await prisma.experimentWebhookOutbox.createManyAndReturn({
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * 
+     * // Create many ExperimentWebhookOutboxes and only return the `id`
+     * const experimentWebhookOutboxWithIdOnly = await prisma.experimentWebhookOutbox.createManyAndReturn({
+     *   select: { id: true },
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * 
+     */
+    createManyAndReturn<T extends ExperimentWebhookOutboxCreateManyAndReturnArgs>(args?: SelectSubset<T, ExperimentWebhookOutboxCreateManyAndReturnArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$ExperimentWebhookOutboxPayload<ExtArgs>, T, "createManyAndReturn", GlobalOmitOptions>>
+
+    /**
+     * Delete a ExperimentWebhookOutbox.
+     * @param {ExperimentWebhookOutboxDeleteArgs} args - Arguments to delete one ExperimentWebhookOutbox.
+     * @example
+     * // Delete one ExperimentWebhookOutbox
+     * const ExperimentWebhookOutbox = await prisma.experimentWebhookOutbox.delete({
+     *   where: {
+     *     // ... filter to delete one ExperimentWebhookOutbox
+     *   }
+     * })
+     * 
+     */
+    delete<T extends ExperimentWebhookOutboxDeleteArgs>(args: SelectSubset<T, ExperimentWebhookOutboxDeleteArgs<ExtArgs>>): Prisma__ExperimentWebhookOutboxClient<$Result.GetResult<Prisma.$ExperimentWebhookOutboxPayload<ExtArgs>, T, "delete", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Update one ExperimentWebhookOutbox.
+     * @param {ExperimentWebhookOutboxUpdateArgs} args - Arguments to update one ExperimentWebhookOutbox.
+     * @example
+     * // Update one ExperimentWebhookOutbox
+     * const experimentWebhookOutbox = await prisma.experimentWebhookOutbox.update({
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: {
+     *     // ... provide data here
+     *   }
+     * })
+     * 
+     */
+    update<T extends ExperimentWebhookOutboxUpdateArgs>(args: SelectSubset<T, ExperimentWebhookOutboxUpdateArgs<ExtArgs>>): Prisma__ExperimentWebhookOutboxClient<$Result.GetResult<Prisma.$ExperimentWebhookOutboxPayload<ExtArgs>, T, "update", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Delete zero or more ExperimentWebhookOutboxes.
+     * @param {ExperimentWebhookOutboxDeleteManyArgs} args - Arguments to filter ExperimentWebhookOutboxes to delete.
+     * @example
+     * // Delete a few ExperimentWebhookOutboxes
+     * const { count } = await prisma.experimentWebhookOutbox.deleteMany({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     * 
+     */
+    deleteMany<T extends ExperimentWebhookOutboxDeleteManyArgs>(args?: SelectSubset<T, ExperimentWebhookOutboxDeleteManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
+
+    /**
+     * Update zero or more ExperimentWebhookOutboxes.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentWebhookOutboxUpdateManyArgs} args - Arguments to update one or more rows.
+     * @example
+     * // Update many ExperimentWebhookOutboxes
+     * const experimentWebhookOutbox = await prisma.experimentWebhookOutbox.updateMany({
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: {
+     *     // ... provide data here
+     *   }
+     * })
+     * 
+     */
+    updateMany<T extends ExperimentWebhookOutboxUpdateManyArgs>(args: SelectSubset<T, ExperimentWebhookOutboxUpdateManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
+
+    /**
+     * Update zero or more ExperimentWebhookOutboxes and returns the data updated in the database.
+     * @param {ExperimentWebhookOutboxUpdateManyAndReturnArgs} args - Arguments to update many ExperimentWebhookOutboxes.
+     * @example
+     * // Update many ExperimentWebhookOutboxes
+     * const experimentWebhookOutbox = await prisma.experimentWebhookOutbox.updateManyAndReturn({
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * 
+     * // Update zero or more ExperimentWebhookOutboxes and only return the `id`
+     * const experimentWebhookOutboxWithIdOnly = await prisma.experimentWebhookOutbox.updateManyAndReturn({
+     *   select: { id: true },
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * 
+     */
+    updateManyAndReturn<T extends ExperimentWebhookOutboxUpdateManyAndReturnArgs>(args: SelectSubset<T, ExperimentWebhookOutboxUpdateManyAndReturnArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$ExperimentWebhookOutboxPayload<ExtArgs>, T, "updateManyAndReturn", GlobalOmitOptions>>
+
+    /**
+     * Create or update one ExperimentWebhookOutbox.
+     * @param {ExperimentWebhookOutboxUpsertArgs} args - Arguments to update or create a ExperimentWebhookOutbox.
+     * @example
+     * // Update or create a ExperimentWebhookOutbox
+     * const experimentWebhookOutbox = await prisma.experimentWebhookOutbox.upsert({
+     *   create: {
+     *     // ... data to create a ExperimentWebhookOutbox
+     *   },
+     *   update: {
+     *     // ... in case it already exists, update
+     *   },
+     *   where: {
+     *     // ... the filter for the ExperimentWebhookOutbox we want to update
+     *   }
+     * })
+     */
+    upsert<T extends ExperimentWebhookOutboxUpsertArgs>(args: SelectSubset<T, ExperimentWebhookOutboxUpsertArgs<ExtArgs>>): Prisma__ExperimentWebhookOutboxClient<$Result.GetResult<Prisma.$ExperimentWebhookOutboxPayload<ExtArgs>, T, "upsert", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+
+    /**
+     * Count the number of ExperimentWebhookOutboxes.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentWebhookOutboxCountArgs} args - Arguments to filter ExperimentWebhookOutboxes to count.
+     * @example
+     * // Count the number of ExperimentWebhookOutboxes
+     * const count = await prisma.experimentWebhookOutbox.count({
+     *   where: {
+     *     // ... the filter for the ExperimentWebhookOutboxes we want to count
+     *   }
+     * })
+    **/
+    count<T extends ExperimentWebhookOutboxCountArgs>(
+      args?: Subset<T, ExperimentWebhookOutboxCountArgs>,
+    ): Prisma.PrismaPromise<
+      T extends $Utils.Record<'select', any>
+        ? T['select'] extends true
+          ? number
+          : GetScalarType<T['select'], ExperimentWebhookOutboxCountAggregateOutputType>
+        : number
+    >
+
+    /**
+     * Allows you to perform aggregations operations on a ExperimentWebhookOutbox.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentWebhookOutboxAggregateArgs} args - Select which aggregations you would like to apply and on what fields.
+     * @example
+     * // Ordered by age ascending
+     * // Where email contains prisma.io
+     * // Limited to the 10 users
+     * const aggregations = await prisma.user.aggregate({
+     *   _avg: {
+     *     age: true,
+     *   },
+     *   where: {
+     *     email: {
+     *       contains: "prisma.io",
+     *     },
+     *   },
+     *   orderBy: {
+     *     age: "asc",
+     *   },
+     *   take: 10,
+     * })
+    **/
+    aggregate<T extends ExperimentWebhookOutboxAggregateArgs>(args: Subset<T, ExperimentWebhookOutboxAggregateArgs>): Prisma.PrismaPromise<GetExperimentWebhookOutboxAggregateType<T>>
+
+    /**
+     * Group by ExperimentWebhookOutbox.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {ExperimentWebhookOutboxGroupByArgs} args - Group by arguments.
+     * @example
+     * // Group by city, order by createdAt, get count
+     * const result = await prisma.user.groupBy({
+     *   by: ['city', 'createdAt'],
+     *   orderBy: {
+     *     createdAt: true
+     *   },
+     *   _count: {
+     *     _all: true
+     *   },
+     * })
+     * 
+    **/
+    groupBy<
+      T extends ExperimentWebhookOutboxGroupByArgs,
+      HasSelectOrTake extends Or<
+        Extends<'skip', Keys<T>>,
+        Extends<'take', Keys<T>>
+      >,
+      OrderByArg extends True extends HasSelectOrTake
+        ? { orderBy: ExperimentWebhookOutboxGroupByArgs['orderBy'] }
+        : { orderBy?: ExperimentWebhookOutboxGroupByArgs['orderBy'] },
+      OrderFields extends ExcludeUnderscoreKeys<Keys<MaybeTupleToUnion<T['orderBy']>>>,
+      ByFields extends MaybeTupleToUnion<T['by']>,
+      ByValid extends Has<ByFields, OrderFields>,
+      HavingFields extends GetHavingFields<T['having']>,
+      HavingValid extends Has<ByFields, HavingFields>,
+      ByEmpty extends T['by'] extends never[] ? True : False,
+      InputErrors extends ByEmpty extends True
+      ? `Error: "by" must not be empty.`
+      : HavingValid extends False
+      ? {
+          [P in HavingFields]: P extends ByFields
+            ? never
+            : P extends string
+            ? `Error: Field "${P}" used in "having" needs to be provided in "by".`
+            : [
+                Error,
+                'Field ',
+                P,
+                ` in "having" needs to be provided in "by"`,
+              ]
+        }[HavingFields]
+      : 'take' extends Keys<T>
+      ? 'orderBy' extends Keys<T>
+        ? ByValid extends True
+          ? {}
+          : {
+              [P in OrderFields]: P extends ByFields
+                ? never
+                : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
+            }[OrderFields]
+        : 'Error: If you provide "take", you also need to provide "orderBy"'
+      : 'skip' extends Keys<T>
+      ? 'orderBy' extends Keys<T>
+        ? ByValid extends True
+          ? {}
+          : {
+              [P in OrderFields]: P extends ByFields
+                ? never
+                : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
+            }[OrderFields]
+        : 'Error: If you provide "skip", you also need to provide "orderBy"'
+      : ByValid extends True
+      ? {}
+      : {
+          [P in OrderFields]: P extends ByFields
+            ? never
+            : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
+        }[OrderFields]
+    >(args: SubsetIntersection<T, ExperimentWebhookOutboxGroupByArgs, OrderByArg> & InputErrors): {} extends InputErrors ? GetExperimentWebhookOutboxGroupByPayload<T> : Prisma.PrismaPromise<InputErrors>
+  /**
+   * Fields of the ExperimentWebhookOutbox model
+   */
+  readonly fields: ExperimentWebhookOutboxFieldRefs;
+  }
+
+  /**
+   * The delegate class that acts as a "Promise-like" for ExperimentWebhookOutbox.
+   * Why is this prefixed with `Prisma__`?
+   * Because we want to prevent naming conflicts as mentioned in
+   * https://github.com/prisma/prisma-client-js/issues/707
+   */
+  export interface Prisma__ExperimentWebhookOutboxClient<T, Null = never, ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs, GlobalOmitOptions = {}> extends Prisma.PrismaPromise<T> {
+    readonly [Symbol.toStringTag]: "PrismaPromise"
+    /**
+     * Attaches callbacks for the resolution and/or rejection of the Promise.
+     * @param onfulfilled The callback to execute when the Promise is resolved.
+     * @param onrejected The callback to execute when the Promise is rejected.
+     * @returns A Promise for the completion of which ever callback is executed.
+     */
+    then<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | undefined | null, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null): $Utils.JsPromise<TResult1 | TResult2>
+    /**
+     * Attaches a callback for only the rejection of the Promise.
+     * @param onrejected The callback to execute when the Promise is rejected.
+     * @returns A Promise for the completion of the callback.
+     */
+    catch<TResult = never>(onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null): $Utils.JsPromise<T | TResult>
+    /**
+     * Attaches a callback that is invoked when the Promise is settled (fulfilled or rejected). The
+     * resolved value cannot be modified from the callback.
+     * @param onfinally The callback to execute when the Promise is settled (fulfilled or rejected).
+     * @returns A Promise for the completion of the callback.
+     */
+    finally(onfinally?: (() => void) | undefined | null): $Utils.JsPromise<T>
+  }
+
+
+
+
+  /**
+   * Fields of the ExperimentWebhookOutbox model
+   */
+  interface ExperimentWebhookOutboxFieldRefs {
+    readonly id: FieldRef<"ExperimentWebhookOutbox", 'String'>
+    readonly experimentId: FieldRef<"ExperimentWebhookOutbox", 'String'>
+    readonly workspaceId: FieldRef<"ExperimentWebhookOutbox", 'String'>
+    readonly status: FieldRef<"ExperimentWebhookOutbox", 'String'>
+    readonly version: FieldRef<"ExperimentWebhookOutbox", 'Int'>
+    readonly idempotencyKey: FieldRef<"ExperimentWebhookOutbox", 'String'>
+    readonly notifyJson: FieldRef<"ExperimentWebhookOutbox", 'String'>
+    readonly payloadJson: FieldRef<"ExperimentWebhookOutbox", 'String'>
+    readonly state: FieldRef<"ExperimentWebhookOutbox", 'String'>
+    readonly attempts: FieldRef<"ExperimentWebhookOutbox", 'Int'>
+    readonly nextAttemptAt: FieldRef<"ExperimentWebhookOutbox", 'DateTime'>
+    readonly lastError: FieldRef<"ExperimentWebhookOutbox", 'String'>
+    readonly deliveredAt: FieldRef<"ExperimentWebhookOutbox", 'DateTime'>
+    readonly createdAt: FieldRef<"ExperimentWebhookOutbox", 'DateTime'>
+  }
+    
+
+  // Custom InputTypes
+  /**
+   * ExperimentWebhookOutbox findUnique
+   */
+  export type ExperimentWebhookOutboxFindUniqueArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the ExperimentWebhookOutbox
+     */
+    select?: ExperimentWebhookOutboxSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the ExperimentWebhookOutbox
+     */
+    omit?: ExperimentWebhookOutboxOmit<ExtArgs> | null
+    /**
+     * Filter, which ExperimentWebhookOutbox to fetch.
+     */
+    where: ExperimentWebhookOutboxWhereUniqueInput
+  }
+
+  /**
+   * ExperimentWebhookOutbox findUniqueOrThrow
+   */
+  export type ExperimentWebhookOutboxFindUniqueOrThrowArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the ExperimentWebhookOutbox
+     */
+    select?: ExperimentWebhookOutboxSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the ExperimentWebhookOutbox
+     */
+    omit?: ExperimentWebhookOutboxOmit<ExtArgs> | null
+    /**
+     * Filter, which ExperimentWebhookOutbox to fetch.
+     */
+    where: ExperimentWebhookOutboxWhereUniqueInput
+  }
+
+  /**
+   * ExperimentWebhookOutbox findFirst
+   */
+  export type ExperimentWebhookOutboxFindFirstArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the ExperimentWebhookOutbox
+     */
+    select?: ExperimentWebhookOutboxSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the ExperimentWebhookOutbox
+     */
+    omit?: ExperimentWebhookOutboxOmit<ExtArgs> | null
+    /**
+     * Filter, which ExperimentWebhookOutbox to fetch.
+     */
+    where?: ExperimentWebhookOutboxWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of ExperimentWebhookOutboxes to fetch.
+     */
+    orderBy?: ExperimentWebhookOutboxOrderByWithRelationInput | ExperimentWebhookOutboxOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the position for searching for ExperimentWebhookOutboxes.
+     */
+    cursor?: ExperimentWebhookOutboxWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` ExperimentWebhookOutboxes from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` ExperimentWebhookOutboxes.
+     */
+    skip?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}
+     * 
+     * Filter by unique combinations of ExperimentWebhookOutboxes.
+     */
+    distinct?: ExperimentWebhookOutboxScalarFieldEnum | ExperimentWebhookOutboxScalarFieldEnum[]
+  }
+
+  /**
+   * ExperimentWebhookOutbox findFirstOrThrow
+   */
+  export type ExperimentWebhookOutboxFindFirstOrThrowArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the ExperimentWebhookOutbox
+     */
+    select?: ExperimentWebhookOutboxSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the ExperimentWebhookOutbox
+     */
+    omit?: ExperimentWebhookOutboxOmit<ExtArgs> | null
+    /**
+     * Filter, which ExperimentWebhookOutbox to fetch.
+     */
+    where?: ExperimentWebhookOutboxWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of ExperimentWebhookOutboxes to fetch.
+     */
+    orderBy?: ExperimentWebhookOutboxOrderByWithRelationInput | ExperimentWebhookOutboxOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the position for searching for ExperimentWebhookOutboxes.
+     */
+    cursor?: ExperimentWebhookOutboxWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` ExperimentWebhookOutboxes from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` ExperimentWebhookOutboxes.
+     */
+    skip?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}
+     * 
+     * Filter by unique combinations of ExperimentWebhookOutboxes.
+     */
+    distinct?: ExperimentWebhookOutboxScalarFieldEnum | ExperimentWebhookOutboxScalarFieldEnum[]
+  }
+
+  /**
+   * ExperimentWebhookOutbox findMany
+   */
+  export type ExperimentWebhookOutboxFindManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the ExperimentWebhookOutbox
+     */
+    select?: ExperimentWebhookOutboxSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the ExperimentWebhookOutbox
+     */
+    omit?: ExperimentWebhookOutboxOmit<ExtArgs> | null
+    /**
+     * Filter, which ExperimentWebhookOutboxes to fetch.
+     */
+    where?: ExperimentWebhookOutboxWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of ExperimentWebhookOutboxes to fetch.
+     */
+    orderBy?: ExperimentWebhookOutboxOrderByWithRelationInput | ExperimentWebhookOutboxOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the position for listing ExperimentWebhookOutboxes.
+     */
+    cursor?: ExperimentWebhookOutboxWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` ExperimentWebhookOutboxes from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` ExperimentWebhookOutboxes.
+     */
+    skip?: number
+    distinct?: ExperimentWebhookOutboxScalarFieldEnum | ExperimentWebhookOutboxScalarFieldEnum[]
+  }
+
+  /**
+   * ExperimentWebhookOutbox create
+   */
+  export type ExperimentWebhookOutboxCreateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the ExperimentWebhookOutbox
+     */
+    select?: ExperimentWebhookOutboxSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the ExperimentWebhookOutbox
+     */
+    omit?: ExperimentWebhookOutboxOmit<ExtArgs> | null
+    /**
+     * The data needed to create a ExperimentWebhookOutbox.
+     */
+    data: XOR<ExperimentWebhookOutboxCreateInput, ExperimentWebhookOutboxUncheckedCreateInput>
+  }
+
+  /**
+   * ExperimentWebhookOutbox createMany
+   */
+  export type ExperimentWebhookOutboxCreateManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * The data used to create many ExperimentWebhookOutboxes.
+     */
+    data: ExperimentWebhookOutboxCreateManyInput | ExperimentWebhookOutboxCreateManyInput[]
+  }
+
+  /**
+   * ExperimentWebhookOutbox createManyAndReturn
+   */
+  export type ExperimentWebhookOutboxCreateManyAndReturnArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the ExperimentWebhookOutbox
+     */
+    select?: ExperimentWebhookOutboxSelectCreateManyAndReturn<ExtArgs> | null
+    /**
+     * Omit specific fields from the ExperimentWebhookOutbox
+     */
+    omit?: ExperimentWebhookOutboxOmit<ExtArgs> | null
+    /**
+     * The data used to create many ExperimentWebhookOutboxes.
+     */
+    data: ExperimentWebhookOutboxCreateManyInput | ExperimentWebhookOutboxCreateManyInput[]
+  }
+
+  /**
+   * ExperimentWebhookOutbox update
+   */
+  export type ExperimentWebhookOutboxUpdateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the ExperimentWebhookOutbox
+     */
+    select?: ExperimentWebhookOutboxSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the ExperimentWebhookOutbox
+     */
+    omit?: ExperimentWebhookOutboxOmit<ExtArgs> | null
+    /**
+     * The data needed to update a ExperimentWebhookOutbox.
+     */
+    data: XOR<ExperimentWebhookOutboxUpdateInput, ExperimentWebhookOutboxUncheckedUpdateInput>
+    /**
+     * Choose, which ExperimentWebhookOutbox to update.
+     */
+    where: ExperimentWebhookOutboxWhereUniqueInput
+  }
+
+  /**
+   * ExperimentWebhookOutbox updateMany
+   */
+  export type ExperimentWebhookOutboxUpdateManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * The data used to update ExperimentWebhookOutboxes.
+     */
+    data: XOR<ExperimentWebhookOutboxUpdateManyMutationInput, ExperimentWebhookOutboxUncheckedUpdateManyInput>
+    /**
+     * Filter which ExperimentWebhookOutboxes to update
+     */
+    where?: ExperimentWebhookOutboxWhereInput
+    /**
+     * Limit how many ExperimentWebhookOutboxes to update.
+     */
+    limit?: number
+  }
+
+  /**
+   * ExperimentWebhookOutbox updateManyAndReturn
+   */
+  export type ExperimentWebhookOutboxUpdateManyAndReturnArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the ExperimentWebhookOutbox
+     */
+    select?: ExperimentWebhookOutboxSelectUpdateManyAndReturn<ExtArgs> | null
+    /**
+     * Omit specific fields from the ExperimentWebhookOutbox
+     */
+    omit?: ExperimentWebhookOutboxOmit<ExtArgs> | null
+    /**
+     * The data used to update ExperimentWebhookOutboxes.
+     */
+    data: XOR<ExperimentWebhookOutboxUpdateManyMutationInput, ExperimentWebhookOutboxUncheckedUpdateManyInput>
+    /**
+     * Filter which ExperimentWebhookOutboxes to update
+     */
+    where?: ExperimentWebhookOutboxWhereInput
+    /**
+     * Limit how many ExperimentWebhookOutboxes to update.
+     */
+    limit?: number
+  }
+
+  /**
+   * ExperimentWebhookOutbox upsert
+   */
+  export type ExperimentWebhookOutboxUpsertArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the ExperimentWebhookOutbox
+     */
+    select?: ExperimentWebhookOutboxSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the ExperimentWebhookOutbox
+     */
+    omit?: ExperimentWebhookOutboxOmit<ExtArgs> | null
+    /**
+     * The filter to search for the ExperimentWebhookOutbox to update in case it exists.
+     */
+    where: ExperimentWebhookOutboxWhereUniqueInput
+    /**
+     * In case the ExperimentWebhookOutbox found by the `where` argument doesn't exist, create a new ExperimentWebhookOutbox with this data.
+     */
+    create: XOR<ExperimentWebhookOutboxCreateInput, ExperimentWebhookOutboxUncheckedCreateInput>
+    /**
+     * In case the ExperimentWebhookOutbox was found with the provided `where` argument, update it with this data.
+     */
+    update: XOR<ExperimentWebhookOutboxUpdateInput, ExperimentWebhookOutboxUncheckedUpdateInput>
+  }
+
+  /**
+   * ExperimentWebhookOutbox delete
+   */
+  export type ExperimentWebhookOutboxDeleteArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the ExperimentWebhookOutbox
+     */
+    select?: ExperimentWebhookOutboxSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the ExperimentWebhookOutbox
+     */
+    omit?: ExperimentWebhookOutboxOmit<ExtArgs> | null
+    /**
+     * Filter which ExperimentWebhookOutbox to delete.
+     */
+    where: ExperimentWebhookOutboxWhereUniqueInput
+  }
+
+  /**
+   * ExperimentWebhookOutbox deleteMany
+   */
+  export type ExperimentWebhookOutboxDeleteManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Filter which ExperimentWebhookOutboxes to delete
+     */
+    where?: ExperimentWebhookOutboxWhereInput
+    /**
+     * Limit how many ExperimentWebhookOutboxes to delete.
+     */
+    limit?: number
+  }
+
+  /**
+   * ExperimentWebhookOutbox without action
+   */
+  export type ExperimentWebhookOutboxDefaultArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the ExperimentWebhookOutbox
+     */
+    select?: ExperimentWebhookOutboxSelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the ExperimentWebhookOutbox
+     */
+    omit?: ExperimentWebhookOutboxOmit<ExtArgs> | null
   }
 
 
@@ -32156,10 +33423,31 @@ export namespace Prisma {
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
     createKey: 'createKey',
-    ranBy: 'ranBy'
+    ranBy: 'ranBy',
+    notifyJson: 'notifyJson'
   };
 
   export type ExperimentScalarFieldEnum = (typeof ExperimentScalarFieldEnum)[keyof typeof ExperimentScalarFieldEnum]
+
+
+  export const ExperimentWebhookOutboxScalarFieldEnum: {
+    id: 'id',
+    experimentId: 'experimentId',
+    workspaceId: 'workspaceId',
+    status: 'status',
+    version: 'version',
+    idempotencyKey: 'idempotencyKey',
+    notifyJson: 'notifyJson',
+    payloadJson: 'payloadJson',
+    state: 'state',
+    attempts: 'attempts',
+    nextAttemptAt: 'nextAttemptAt',
+    lastError: 'lastError',
+    deliveredAt: 'deliveredAt',
+    createdAt: 'createdAt'
+  };
+
+  export type ExperimentWebhookOutboxScalarFieldEnum = (typeof ExperimentWebhookOutboxScalarFieldEnum)[keyof typeof ExperimentWebhookOutboxScalarFieldEnum]
 
 
   export const CanonicalScrapeLockScalarFieldEnum: {
@@ -33236,6 +34524,7 @@ export namespace Prisma {
     updatedAt?: DateTimeFilter<"Experiment"> | Date | string
     createKey?: StringFilter<"Experiment"> | string
     ranBy?: StringNullableFilter<"Experiment"> | string | null
+    notifyJson?: StringNullableFilter<"Experiment"> | string | null
   }
 
   export type ExperimentOrderByWithRelationInput = {
@@ -33248,6 +34537,7 @@ export namespace Prisma {
     updatedAt?: SortOrder
     createKey?: SortOrder
     ranBy?: SortOrderInput | SortOrder
+    notifyJson?: SortOrderInput | SortOrder
   }
 
   export type ExperimentWhereUniqueInput = Prisma.AtLeast<{
@@ -33264,6 +34554,7 @@ export namespace Prisma {
     updatedAt?: DateTimeFilter<"Experiment"> | Date | string
     createKey?: StringFilter<"Experiment"> | string
     ranBy?: StringNullableFilter<"Experiment"> | string | null
+    notifyJson?: StringNullableFilter<"Experiment"> | string | null
   }, "id" | "workspaceId_createKey">
 
   export type ExperimentOrderByWithAggregationInput = {
@@ -33276,6 +34567,7 @@ export namespace Prisma {
     updatedAt?: SortOrder
     createKey?: SortOrder
     ranBy?: SortOrderInput | SortOrder
+    notifyJson?: SortOrderInput | SortOrder
     _count?: ExperimentCountOrderByAggregateInput
     _avg?: ExperimentAvgOrderByAggregateInput
     _max?: ExperimentMaxOrderByAggregateInput
@@ -33296,6 +34588,106 @@ export namespace Prisma {
     updatedAt?: DateTimeWithAggregatesFilter<"Experiment"> | Date | string
     createKey?: StringWithAggregatesFilter<"Experiment"> | string
     ranBy?: StringNullableWithAggregatesFilter<"Experiment"> | string | null
+    notifyJson?: StringNullableWithAggregatesFilter<"Experiment"> | string | null
+  }
+
+  export type ExperimentWebhookOutboxWhereInput = {
+    AND?: ExperimentWebhookOutboxWhereInput | ExperimentWebhookOutboxWhereInput[]
+    OR?: ExperimentWebhookOutboxWhereInput[]
+    NOT?: ExperimentWebhookOutboxWhereInput | ExperimentWebhookOutboxWhereInput[]
+    id?: StringFilter<"ExperimentWebhookOutbox"> | string
+    experimentId?: StringFilter<"ExperimentWebhookOutbox"> | string
+    workspaceId?: StringFilter<"ExperimentWebhookOutbox"> | string
+    status?: StringFilter<"ExperimentWebhookOutbox"> | string
+    version?: IntFilter<"ExperimentWebhookOutbox"> | number
+    idempotencyKey?: StringFilter<"ExperimentWebhookOutbox"> | string
+    notifyJson?: StringFilter<"ExperimentWebhookOutbox"> | string
+    payloadJson?: StringFilter<"ExperimentWebhookOutbox"> | string
+    state?: StringFilter<"ExperimentWebhookOutbox"> | string
+    attempts?: IntFilter<"ExperimentWebhookOutbox"> | number
+    nextAttemptAt?: DateTimeFilter<"ExperimentWebhookOutbox"> | Date | string
+    lastError?: StringNullableFilter<"ExperimentWebhookOutbox"> | string | null
+    deliveredAt?: DateTimeNullableFilter<"ExperimentWebhookOutbox"> | Date | string | null
+    createdAt?: DateTimeFilter<"ExperimentWebhookOutbox"> | Date | string
+  }
+
+  export type ExperimentWebhookOutboxOrderByWithRelationInput = {
+    id?: SortOrder
+    experimentId?: SortOrder
+    workspaceId?: SortOrder
+    status?: SortOrder
+    version?: SortOrder
+    idempotencyKey?: SortOrder
+    notifyJson?: SortOrder
+    payloadJson?: SortOrder
+    state?: SortOrder
+    attempts?: SortOrder
+    nextAttemptAt?: SortOrder
+    lastError?: SortOrderInput | SortOrder
+    deliveredAt?: SortOrderInput | SortOrder
+    createdAt?: SortOrder
+  }
+
+  export type ExperimentWebhookOutboxWhereUniqueInput = Prisma.AtLeast<{
+    id?: string
+    idempotencyKey?: string
+    AND?: ExperimentWebhookOutboxWhereInput | ExperimentWebhookOutboxWhereInput[]
+    OR?: ExperimentWebhookOutboxWhereInput[]
+    NOT?: ExperimentWebhookOutboxWhereInput | ExperimentWebhookOutboxWhereInput[]
+    experimentId?: StringFilter<"ExperimentWebhookOutbox"> | string
+    workspaceId?: StringFilter<"ExperimentWebhookOutbox"> | string
+    status?: StringFilter<"ExperimentWebhookOutbox"> | string
+    version?: IntFilter<"ExperimentWebhookOutbox"> | number
+    notifyJson?: StringFilter<"ExperimentWebhookOutbox"> | string
+    payloadJson?: StringFilter<"ExperimentWebhookOutbox"> | string
+    state?: StringFilter<"ExperimentWebhookOutbox"> | string
+    attempts?: IntFilter<"ExperimentWebhookOutbox"> | number
+    nextAttemptAt?: DateTimeFilter<"ExperimentWebhookOutbox"> | Date | string
+    lastError?: StringNullableFilter<"ExperimentWebhookOutbox"> | string | null
+    deliveredAt?: DateTimeNullableFilter<"ExperimentWebhookOutbox"> | Date | string | null
+    createdAt?: DateTimeFilter<"ExperimentWebhookOutbox"> | Date | string
+  }, "id" | "idempotencyKey">
+
+  export type ExperimentWebhookOutboxOrderByWithAggregationInput = {
+    id?: SortOrder
+    experimentId?: SortOrder
+    workspaceId?: SortOrder
+    status?: SortOrder
+    version?: SortOrder
+    idempotencyKey?: SortOrder
+    notifyJson?: SortOrder
+    payloadJson?: SortOrder
+    state?: SortOrder
+    attempts?: SortOrder
+    nextAttemptAt?: SortOrder
+    lastError?: SortOrderInput | SortOrder
+    deliveredAt?: SortOrderInput | SortOrder
+    createdAt?: SortOrder
+    _count?: ExperimentWebhookOutboxCountOrderByAggregateInput
+    _avg?: ExperimentWebhookOutboxAvgOrderByAggregateInput
+    _max?: ExperimentWebhookOutboxMaxOrderByAggregateInput
+    _min?: ExperimentWebhookOutboxMinOrderByAggregateInput
+    _sum?: ExperimentWebhookOutboxSumOrderByAggregateInput
+  }
+
+  export type ExperimentWebhookOutboxScalarWhereWithAggregatesInput = {
+    AND?: ExperimentWebhookOutboxScalarWhereWithAggregatesInput | ExperimentWebhookOutboxScalarWhereWithAggregatesInput[]
+    OR?: ExperimentWebhookOutboxScalarWhereWithAggregatesInput[]
+    NOT?: ExperimentWebhookOutboxScalarWhereWithAggregatesInput | ExperimentWebhookOutboxScalarWhereWithAggregatesInput[]
+    id?: StringWithAggregatesFilter<"ExperimentWebhookOutbox"> | string
+    experimentId?: StringWithAggregatesFilter<"ExperimentWebhookOutbox"> | string
+    workspaceId?: StringWithAggregatesFilter<"ExperimentWebhookOutbox"> | string
+    status?: StringWithAggregatesFilter<"ExperimentWebhookOutbox"> | string
+    version?: IntWithAggregatesFilter<"ExperimentWebhookOutbox"> | number
+    idempotencyKey?: StringWithAggregatesFilter<"ExperimentWebhookOutbox"> | string
+    notifyJson?: StringWithAggregatesFilter<"ExperimentWebhookOutbox"> | string
+    payloadJson?: StringWithAggregatesFilter<"ExperimentWebhookOutbox"> | string
+    state?: StringWithAggregatesFilter<"ExperimentWebhookOutbox"> | string
+    attempts?: IntWithAggregatesFilter<"ExperimentWebhookOutbox"> | number
+    nextAttemptAt?: DateTimeWithAggregatesFilter<"ExperimentWebhookOutbox"> | Date | string
+    lastError?: StringNullableWithAggregatesFilter<"ExperimentWebhookOutbox"> | string | null
+    deliveredAt?: DateTimeNullableWithAggregatesFilter<"ExperimentWebhookOutbox"> | Date | string | null
+    createdAt?: DateTimeWithAggregatesFilter<"ExperimentWebhookOutbox"> | Date | string
   }
 
   export type CanonicalScrapeLockWhereInput = {
@@ -35317,6 +36709,7 @@ export namespace Prisma {
     updatedAt?: Date | string
     createKey: string
     ranBy?: string | null
+    notifyJson?: string | null
   }
 
   export type ExperimentUncheckedCreateInput = {
@@ -35329,6 +36722,7 @@ export namespace Prisma {
     updatedAt?: Date | string
     createKey: string
     ranBy?: string | null
+    notifyJson?: string | null
   }
 
   export type ExperimentUpdateInput = {
@@ -35341,6 +36735,7 @@ export namespace Prisma {
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createKey?: StringFieldUpdateOperationsInput | string
     ranBy?: NullableStringFieldUpdateOperationsInput | string | null
+    notifyJson?: NullableStringFieldUpdateOperationsInput | string | null
   }
 
   export type ExperimentUncheckedUpdateInput = {
@@ -35353,6 +36748,7 @@ export namespace Prisma {
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createKey?: StringFieldUpdateOperationsInput | string
     ranBy?: NullableStringFieldUpdateOperationsInput | string | null
+    notifyJson?: NullableStringFieldUpdateOperationsInput | string | null
   }
 
   export type ExperimentCreateManyInput = {
@@ -35365,6 +36761,7 @@ export namespace Prisma {
     updatedAt?: Date | string
     createKey: string
     ranBy?: string | null
+    notifyJson?: string | null
   }
 
   export type ExperimentUpdateManyMutationInput = {
@@ -35377,6 +36774,7 @@ export namespace Prisma {
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createKey?: StringFieldUpdateOperationsInput | string
     ranBy?: NullableStringFieldUpdateOperationsInput | string | null
+    notifyJson?: NullableStringFieldUpdateOperationsInput | string | null
   }
 
   export type ExperimentUncheckedUpdateManyInput = {
@@ -35389,6 +36787,126 @@ export namespace Prisma {
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createKey?: StringFieldUpdateOperationsInput | string
     ranBy?: NullableStringFieldUpdateOperationsInput | string | null
+    notifyJson?: NullableStringFieldUpdateOperationsInput | string | null
+  }
+
+  export type ExperimentWebhookOutboxCreateInput = {
+    id: string
+    experimentId: string
+    workspaceId: string
+    status: string
+    version: number
+    idempotencyKey: string
+    notifyJson: string
+    payloadJson: string
+    state?: string
+    attempts?: number
+    nextAttemptAt: Date | string
+    lastError?: string | null
+    deliveredAt?: Date | string | null
+    createdAt?: Date | string
+  }
+
+  export type ExperimentWebhookOutboxUncheckedCreateInput = {
+    id: string
+    experimentId: string
+    workspaceId: string
+    status: string
+    version: number
+    idempotencyKey: string
+    notifyJson: string
+    payloadJson: string
+    state?: string
+    attempts?: number
+    nextAttemptAt: Date | string
+    lastError?: string | null
+    deliveredAt?: Date | string | null
+    createdAt?: Date | string
+  }
+
+  export type ExperimentWebhookOutboxUpdateInput = {
+    id?: StringFieldUpdateOperationsInput | string
+    experimentId?: StringFieldUpdateOperationsInput | string
+    workspaceId?: StringFieldUpdateOperationsInput | string
+    status?: StringFieldUpdateOperationsInput | string
+    version?: IntFieldUpdateOperationsInput | number
+    idempotencyKey?: StringFieldUpdateOperationsInput | string
+    notifyJson?: StringFieldUpdateOperationsInput | string
+    payloadJson?: StringFieldUpdateOperationsInput | string
+    state?: StringFieldUpdateOperationsInput | string
+    attempts?: IntFieldUpdateOperationsInput | number
+    nextAttemptAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    lastError?: NullableStringFieldUpdateOperationsInput | string | null
+    deliveredAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+  }
+
+  export type ExperimentWebhookOutboxUncheckedUpdateInput = {
+    id?: StringFieldUpdateOperationsInput | string
+    experimentId?: StringFieldUpdateOperationsInput | string
+    workspaceId?: StringFieldUpdateOperationsInput | string
+    status?: StringFieldUpdateOperationsInput | string
+    version?: IntFieldUpdateOperationsInput | number
+    idempotencyKey?: StringFieldUpdateOperationsInput | string
+    notifyJson?: StringFieldUpdateOperationsInput | string
+    payloadJson?: StringFieldUpdateOperationsInput | string
+    state?: StringFieldUpdateOperationsInput | string
+    attempts?: IntFieldUpdateOperationsInput | number
+    nextAttemptAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    lastError?: NullableStringFieldUpdateOperationsInput | string | null
+    deliveredAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+  }
+
+  export type ExperimentWebhookOutboxCreateManyInput = {
+    id: string
+    experimentId: string
+    workspaceId: string
+    status: string
+    version: number
+    idempotencyKey: string
+    notifyJson: string
+    payloadJson: string
+    state?: string
+    attempts?: number
+    nextAttemptAt: Date | string
+    lastError?: string | null
+    deliveredAt?: Date | string | null
+    createdAt?: Date | string
+  }
+
+  export type ExperimentWebhookOutboxUpdateManyMutationInput = {
+    id?: StringFieldUpdateOperationsInput | string
+    experimentId?: StringFieldUpdateOperationsInput | string
+    workspaceId?: StringFieldUpdateOperationsInput | string
+    status?: StringFieldUpdateOperationsInput | string
+    version?: IntFieldUpdateOperationsInput | number
+    idempotencyKey?: StringFieldUpdateOperationsInput | string
+    notifyJson?: StringFieldUpdateOperationsInput | string
+    payloadJson?: StringFieldUpdateOperationsInput | string
+    state?: StringFieldUpdateOperationsInput | string
+    attempts?: IntFieldUpdateOperationsInput | number
+    nextAttemptAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    lastError?: NullableStringFieldUpdateOperationsInput | string | null
+    deliveredAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+  }
+
+  export type ExperimentWebhookOutboxUncheckedUpdateManyInput = {
+    id?: StringFieldUpdateOperationsInput | string
+    experimentId?: StringFieldUpdateOperationsInput | string
+    workspaceId?: StringFieldUpdateOperationsInput | string
+    status?: StringFieldUpdateOperationsInput | string
+    version?: IntFieldUpdateOperationsInput | number
+    idempotencyKey?: StringFieldUpdateOperationsInput | string
+    notifyJson?: StringFieldUpdateOperationsInput | string
+    payloadJson?: StringFieldUpdateOperationsInput | string
+    state?: StringFieldUpdateOperationsInput | string
+    attempts?: IntFieldUpdateOperationsInput | number
+    nextAttemptAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    lastError?: NullableStringFieldUpdateOperationsInput | string | null
+    deliveredAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type CanonicalScrapeLockCreateInput = {
@@ -37335,6 +38853,7 @@ export namespace Prisma {
     updatedAt?: SortOrder
     createKey?: SortOrder
     ranBy?: SortOrder
+    notifyJson?: SortOrder
   }
 
   export type ExperimentAvgOrderByAggregateInput = {
@@ -37351,6 +38870,7 @@ export namespace Prisma {
     updatedAt?: SortOrder
     createKey?: SortOrder
     ranBy?: SortOrder
+    notifyJson?: SortOrder
   }
 
   export type ExperimentMinOrderByAggregateInput = {
@@ -37363,10 +38883,72 @@ export namespace Prisma {
     updatedAt?: SortOrder
     createKey?: SortOrder
     ranBy?: SortOrder
+    notifyJson?: SortOrder
   }
 
   export type ExperimentSumOrderByAggregateInput = {
     version?: SortOrder
+  }
+
+  export type ExperimentWebhookOutboxCountOrderByAggregateInput = {
+    id?: SortOrder
+    experimentId?: SortOrder
+    workspaceId?: SortOrder
+    status?: SortOrder
+    version?: SortOrder
+    idempotencyKey?: SortOrder
+    notifyJson?: SortOrder
+    payloadJson?: SortOrder
+    state?: SortOrder
+    attempts?: SortOrder
+    nextAttemptAt?: SortOrder
+    lastError?: SortOrder
+    deliveredAt?: SortOrder
+    createdAt?: SortOrder
+  }
+
+  export type ExperimentWebhookOutboxAvgOrderByAggregateInput = {
+    version?: SortOrder
+    attempts?: SortOrder
+  }
+
+  export type ExperimentWebhookOutboxMaxOrderByAggregateInput = {
+    id?: SortOrder
+    experimentId?: SortOrder
+    workspaceId?: SortOrder
+    status?: SortOrder
+    version?: SortOrder
+    idempotencyKey?: SortOrder
+    notifyJson?: SortOrder
+    payloadJson?: SortOrder
+    state?: SortOrder
+    attempts?: SortOrder
+    nextAttemptAt?: SortOrder
+    lastError?: SortOrder
+    deliveredAt?: SortOrder
+    createdAt?: SortOrder
+  }
+
+  export type ExperimentWebhookOutboxMinOrderByAggregateInput = {
+    id?: SortOrder
+    experimentId?: SortOrder
+    workspaceId?: SortOrder
+    status?: SortOrder
+    version?: SortOrder
+    idempotencyKey?: SortOrder
+    notifyJson?: SortOrder
+    payloadJson?: SortOrder
+    state?: SortOrder
+    attempts?: SortOrder
+    nextAttemptAt?: SortOrder
+    lastError?: SortOrder
+    deliveredAt?: SortOrder
+    createdAt?: SortOrder
+  }
+
+  export type ExperimentWebhookOutboxSumOrderByAggregateInput = {
+    version?: SortOrder
+    attempts?: SortOrder
   }
 
   export type CanonicalScrapeLockCountOrderByAggregateInput = {

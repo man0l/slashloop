@@ -20,6 +20,7 @@ beforeEach(() => {
   db = new Database(':memory:');
   db.exec(migration('0008_experiments.sql'));
   db.exec(migration('0016_experiment_ran_by.sql'));
+  db.exec(migration('0017_experiment_webhook_outbox.sql'));
 });
 // The real store functions over a real SQLite database; no process-global state.
 const run = async (statements: RawStatement[]) => statements.map(s => (

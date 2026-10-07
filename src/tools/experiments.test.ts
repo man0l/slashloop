@@ -806,3 +806,21 @@ describe('helpers', () => {
     expect(Key.safeParse(k).success).toBe(true);
   });
 });
+
+describe('notify (SLA-617)', () => {
+  test('create_experiment advertises notify and forwards it to createExperiment', async () => {
+    const { tools } = await (await connect()).listTools();
+    const props = tools.find(t => t.name === 'create_experiment')!.inputSchema.properties as Record<string, unknown>;
+    expect(props.notify).toBeDefined();
+    const notify = { url: 'https://hooks.example.com/x', metadata: { paperclipIssueId: '3b3b7ddf-0e2d-4c1a-9a6f-1d2e3f4a5b6c' } };
+    const created = await call('create_experiment', { videoIds: ['vid1'], instructions, notify });
+    expect(created.isError).toBe(false);
+    expect(callsOf('createExperiment')[0]![0]).toMatchObject({ notify });
+  });
+
+  test('without notify nothing is forwarded and the response has no notify key', async () => {
+    const created = await call('create_experiment', { videoIds: ['vid1'], instructions });
+    expect('notify' in (callsOf('createExperiment')[0]![0] as object)).toBe(false);
+    expect('notify' in created.body.experiments[0]).toBe(false);
+  });
+});
