@@ -116,6 +116,33 @@ experiment that reaches a terminal status again sends a new event.
   assigned to the experiment owner (which wakes them); the description names
   the experiment, its status and your `paperclipIssueId` as the reference.
   The project and assignee are fixed by the delivery config, not by this metadata.
+  Also pass your own `agentId` in `metadata` (`{paperclipIssueId, agentId}`);
+  it is echoed back unchanged so the event names who asked.
+
+**Paperclip agents: notify, never poll.** Do not loop on `get_experiment`.
+After `plan_experiment` or `generate_experiment` starts a run, end the heartbeat
+and let the completion event wake you. Create every experiment with
+`notify:{metadata:{paperclipIssueId:<this issue's UUID>, agentId:<your agent ID>}}`
+(omit `url` and `secret`). The webhook can be lost or its delivery project can
+be unconfigured, so also set a monitor on the same issue as a safety net. It
+needs no slashloop change:
+
+```json
+PATCH /api/issues/<issue UUID>
+{"executionPolicy":{"monitor":{
+  "kind":"external_service", "serviceName":"slashloop",
+  "externalRef":"<experimentId>", "scheduledBy":"assignee",
+  "nextCheckAt":"<now + 2h, ISO-8601>",
+  "notes":"Webhook is the primary wake. If woken by this monitor, call get_experiment once, then clear or re-arm."}}}
+```
+
+Pick `nextCheckAt` well past the expected run time (a plan or generation
+run takes minutes; two hours is a safe default) so the monitor fires only when
+the webhook did not. When the completion issue arrives first, clear the monitor.
+If the monitor fires instead, check the experiment once with `get_experiment`:
+a terminal status means act on it; a non-terminal status means re-arm with a
+later `nextCheckAt`. An issue holds one monitor: with several experiments, set
+`externalRef` to a comma-separated list of their IDs and check each on a wake.
 
 ## List
 
