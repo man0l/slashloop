@@ -316,11 +316,37 @@ model Experiment {
   createKey    String
   /// Free-text runner: "user" or "agent:<name> on behalf of <user>". Null on legacy rows.
   ranBy        String?
+  /// SLA-617: JSON {url, secret, secretGenerated, metadata} for the completion webhook. A column, not dataJson, so the secret never rides serialize(). Null = no webhook.
+  notifyJson   String?
 
   @@unique([workspaceId, createKey])
   @@index([workspaceId, createdAt])
   @@index([status, updatedAt])
   @@index([workspaceId, ranBy, createdAt])
+}
+
+/// SLA-617: one row per non-terminal -> terminal experiment transition that asked for a webhook, written in the same batch as the status change and delivered by the VPS worker.
+model ExperimentWebhookOutbox {
+  id             String    @id
+  experimentId   String
+  workspaceId    String
+  /// The terminal status entered (completed, review, failed, paused, cancelled).
+  status         String
+  /// The experiment version that entered it.
+  version        Int
+  /// experimentId:status:version — unique, so the transition can be queued once.
+  idempotencyKey String    @unique
+  notifyJson     String
+  payloadJson    String
+  /// pending | delivered | dead
+  state          String    @default("pending")
+  attempts       Int       @default(0)
+  nextAttemptAt  DateTime
+  lastError      String?
+  deliveredAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([state, nextAttemptAt])
 }
 
 model CanonicalScrapeLock {

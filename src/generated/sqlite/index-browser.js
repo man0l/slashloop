@@ -252,7 +252,25 @@ exports.Prisma.ExperimentScalarFieldEnum = {
   createdAt: 'createdAt',
   updatedAt: 'updatedAt',
   createKey: 'createKey',
-  ranBy: 'ranBy'
+  ranBy: 'ranBy',
+  notifyJson: 'notifyJson'
+};
+
+exports.Prisma.ExperimentWebhookOutboxScalarFieldEnum = {
+  id: 'id',
+  experimentId: 'experimentId',
+  workspaceId: 'workspaceId',
+  status: 'status',
+  version: 'version',
+  idempotencyKey: 'idempotencyKey',
+  notifyJson: 'notifyJson',
+  payloadJson: 'payloadJson',
+  state: 'state',
+  attempts: 'attempts',
+  nextAttemptAt: 'nextAttemptAt',
+  lastError: 'lastError',
+  deliveredAt: 'deliveredAt',
+  createdAt: 'createdAt'
 };
 
 exports.Prisma.CanonicalScrapeLockScalarFieldEnum = {
@@ -437,6 +455,7 @@ exports.Prisma.ModelName = {
   Source: 'Source',
   Video: 'Video',
   Experiment: 'Experiment',
+  ExperimentWebhookOutbox: 'ExperimentWebhookOutbox',
   CanonicalScrapeLock: 'CanonicalScrapeLock',
   Baseline: 'Baseline',
   Score: 'Score',

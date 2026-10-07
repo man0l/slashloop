@@ -377,6 +377,14 @@ const ranByField = z.string().max(400).optional().describe(
   'Who is running this: "user" when the user asked directly, or "agent:<name> on behalf of <user>" when an AI agent acts for them, '
   + 'e.g. "agent:Leo on behalf of man0l". Free text, trimmed and capped at 120 characters. Always pass it so the owner can see who ran what.',
 );
+const notifyField = z.object({
+  url: z.string().max(2048).optional().describe('https URL (port 443, public host) that receives a signed POST when the experiment reaches completed, review, failed, paused or cancelled.'),
+  secret: z.string().min(16).max(256).optional().describe('Signing secret for the Standard Webhooks HMAC-SHA256 headers (webhook-id, webhook-timestamp, webhook-signature). Omit it and one is generated and returned once as notify.signingSecret.'),
+  metadata: z.record(z.string(), z.unknown()).optional().describe('Opaque JSON (up to 4 KB) echoed back unchanged in every delivery. Paperclip agents: set { paperclipIssueId } (the issue UUID) instead of a url to be woken by a comment on that issue.'),
+}).optional().describe(
+  'Optional completion webhook. Instead of polling get_experiment, get one POST per terminal transition (idempotency key experimentId:status:version, retried with backoff for ~24h). '
+  + 'Needs a url, or metadata.paperclipIssueId for Paperclip delivery. Applies to every experiment this call creates.',
+);
 const approvedCreditsField = z.number().int().min(0).describe(
   'The totalCredits from estimate_experiment that the user explicitly approved. If the fresh estimate is higher, '
   + 'nothing is started and the new estimate is returned.',
@@ -507,9 +515,10 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       ),
       idempotencyKey: idempotencyKeyField,
       ran_by: ranByField,
+      notify: notifyField,
     },
     { readOnlyHint: false },
-    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, variantCount, slideCount, maxCredits, idempotencyKey, ran_by }) => guarded(async () => {
+    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, variantCount, slideCount, maxCredits, idempotencyKey, ran_by, notify }) => guarded(async () => {
       const workspace = await d.resolveWorkspace({ workspaceId });
       if (new Set(videoIds).size !== videoIds.length) return text({ error: 'invalid_request', message: 'videoIds must be distinct.' }, true);
       if (mode === 'edit') {
@@ -544,8 +553,8 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
           ? (videoIds.length === 1 ? idempotencyKey : `${idempotencyKey}:${i + 1}`)
           : derivedKey('create', body);
         try {
-          const e = await d.createExperiment({ ...body, idempotencyKey: key, ...(ran_by === undefined ? {} : { ran_by }) }, undefined, mode === 'edit' ? { expandFormat: false } : undefined);
-          created.push({ ...listRow(e), idempotencyKey: key, planEstimate: await d.estimate(e, 'plan') });
+          const e = await d.createExperiment({ ...body, idempotencyKey: key, ...(ran_by === undefined ? {} : { ran_by }), ...(notify === undefined ? {} : { notify }) }, undefined, mode === 'edit' ? { expandFormat: false } : undefined);
+          created.push({ ...listRow(e), ...(e.notify ? { notify: e.notify } : {}), idempotencyKey: key, planEstimate: await d.estimate(e, 'plan') });
         } catch (err) {
           const payload = JSON.parse(experimentToolError(err).content[0]!.text);
           failed.push({ videoId, ...payload });

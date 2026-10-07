@@ -122,6 +122,54 @@ export function takeRanBy(raw: unknown): { body: unknown; ranBy: string | null }
   const { ran_by, ranBy, ...body } = raw as Record<string, unknown>;
   return { body, ranBy: normalizeRanBy(ran_by ?? ranBy) };
 }
+/** Statuses an experiment can rest in until a human or agent acts. Entering one from outside this set is the completion event. */
+export const TERMINAL_STATUSES = ['completed', 'review', 'failed', 'paused', 'cancelled'] as const;
+export const NOTIFY_METADATA_MAX_BYTES = 4096;
+const NotifyInput = z.object({
+  url: z.string().trim().max(2048).optional(),
+  secret: z.string().min(16).max(256).optional(),
+  metadata: z.record(z.string().max(80), z.unknown()).optional(),
+}).strict();
+/** What is stored on the Experiment row (never in dataJson, so the secret cannot leak through serialize()). */
+export interface NotifyConfig { url: string | null; secret: string | null; secretGenerated: boolean; metadata: Record<string, unknown> | null }
+/** What the caller sees after create: the stored target, plus the signing secret only when we generated it. */
+export interface NotifyReceipt { url: string | null; paperclipIssueId: string | null; signingSecret?: string }
+export const paperclipIssueIdOf = (metadata: Record<string, unknown> | null | undefined): string | null => {
+  const v = metadata?.paperclipIssueId;
+  return typeof v === 'string' && z.uuid().safeParse(v).success ? v : null;
+};
+/** Splits the optional notify object off a create body so it never reaches the strict schemas or the idempotency fingerprint. */
+export function takeNotify(raw: unknown): { body: unknown; notify: unknown } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !('notify' in raw)) return { body: raw, notify: undefined };
+  const { notify, ...body } = raw as Record<string, unknown>;
+  return { body, notify };
+}
+/**
+ * Validates `notify` ({url, secret?, metadata?}). A target is either an https URL
+ * or a metadata.paperclipIssueId (Paperclip delivery mode, which needs no URL).
+ * A URL target with no secret gets a generated whsec_ one so every delivery is signed.
+ */
+export function parseNotify(raw: unknown, assertUrl: (u: string) => void): NotifyConfig | null {
+  if (raw === undefined || raw === null) return null;
+  const parsed = NotifyInput.safeParse(raw);
+  if (!parsed.success) throw new ExperimentError(400, 'invalid_notify', `notify: ${parsed.error.issues[0]?.message ?? 'invalid'}`);
+  const { url, secret, metadata } = parsed.data;
+  if (metadata && JSON.stringify(metadata).length > NOTIFY_METADATA_MAX_BYTES) {
+    throw new ExperimentError(400, 'invalid_notify', `notify.metadata must serialize to at most ${NOTIFY_METADATA_MAX_BYTES} bytes.`);
+  }
+  if (metadata && 'paperclipIssueId' in metadata && !paperclipIssueIdOf(metadata)) {
+    throw new ExperimentError(400, 'invalid_notify', 'notify.metadata.paperclipIssueId must be an issue UUID.');
+  }
+  const paperclip = paperclipIssueIdOf(metadata);
+  if (!url && !paperclip) throw new ExperimentError(400, 'invalid_notify', 'notify needs a url, or metadata.paperclipIssueId.');
+  if (url) {
+    try { assertUrl(url); } catch (err) { throw new ExperimentError(400, 'invalid_notify', err instanceof Error ? err.message : 'invalid url'); }
+  }
+  if (paperclip || !url) return { url: url ?? null, secret: null, secretGenerated: false, metadata: metadata ?? null };
+  if (secret) return { url, secret, secretGenerated: false, metadata: metadata ?? null };
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return { url, secret: `whsec_${btoa(String.fromCharCode(...bytes))}`, secretGenerated: true, metadata: metadata ?? null };
+}
 export const WorkspaceBody = z.object({ workspaceId: Id }).strict();
 export const Command = WorkspaceBody.extend({ idempotencyKey: Key });
 export const Plan = Command.extend({ allowPartial: z.boolean().optional() });
@@ -523,6 +571,8 @@ export interface Experiment {
   id: string; workspaceId: string; status: string; createdAt: string; updatedAt: string; instructions: InstructionsData;
   /** Who ran it: "user" or "agent:<name> on behalf of <user>". Mirrors the indexed `ranBy` column; absent/null on legacy rows. */
   ranBy?: string | null;
+  /** Create response only: where completion is delivered. Never persisted in dataJson. */
+  notify?: NotifyReceipt;
   /** Absent on every legacy row. Set only when the caller explicitly selected the
    *  versioned exact_edit operation; this is what separates the two contracts at
    *  dispatch and keeps a legacy request off that path. */

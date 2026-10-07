@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { db, dbDialect, rawBatch, type Dialect, type RawStatement } from '../store.js';
 import { resolveBillingWorkspace, InsufficientCreditsError } from '../lib/credits.js';
-import { ExperimentError, normalizeRanBy, slideTaskRequestCap, type Experiment } from './schema.js';
+import { ExperimentError, normalizeRanBy, slideTaskRequestCap, TERMINAL_STATUSES, type Experiment, type NotifyConfig } from './schema.js';
+import { buildWebhookPayload, notifyReceipt, webhookIdempotencyKey } from './webhook-payload.js';
 import { encodeExperiment } from './document-budget.js';
 
 export async function batch(statements: RawStatement[]): Promise<unknown[][]> {
@@ -12,7 +13,7 @@ export async function batch(statements: RawStatement[]): Promise<unknown[][]> {
     return out;
   });
 }
-type ExperimentRow = { dataJson: string; ranBy: string | null };
+type ExperimentRow = { dataJson: string; ranBy: string | null; notifyJson?: string | null };
 /** The indexed column is authoritative for ranBy; legacy rows have it NULL. */
 const hydrate = (r: ExperimentRow): Experiment => ({ ...JSON.parse(r.dataJson), ranBy: r.ranBy ?? null });
 /** Store access as an injectable seam: the default is the live database; tests pass a fixed executor so they do not depend on process-global module mocks (docs/test-suite-policy.md). */
@@ -52,13 +53,16 @@ export async function remove(workspaceId: string, id: string): Promise<boolean> 
   const result = await batch([{ sql: 'DELETE FROM "Experiment" WHERE "id" = ? AND "workspaceId" = ? RETURNING "id"', params: [id, workspaceId] }]);
   return ((result[0] ?? []) as unknown[]).length > 0;
 }
-export async function create(e: Experiment, key: string, run: Run = batch): Promise<Experiment> {
+export async function create(e: Experiment, key: string, run: Run = batch, notify: NotifyConfig | null = null): Promise<Experiment> {
   const json = encodeExperiment(e);
-  await run([{ sql: 'INSERT INTO "Experiment" ("id","workspaceId","status","version","dataJson","createdAt","updatedAt","createKey","ranBy") VALUES (?,?,?,0,?,?,?,?,?) ON CONFLICT ("workspaceId","createKey") DO NOTHING RETURNING "id"',
-    params: [e.id,e.workspaceId,e.status,json,new Date(e.createdAt),new Date(e.updatedAt),key,normalizeRanBy(e.ranBy)] }]);
-  const result = await run([{ sql: 'SELECT "dataJson","ranBy" FROM "Experiment" WHERE "workspaceId" = ? AND "createKey" = ?', params: [e.workspaceId,key] }]);
-  const prior = hydrate(result[0]![0] as ExperimentRow);
+  await run([{ sql: 'INSERT INTO "Experiment" ("id","workspaceId","status","version","dataJson","createdAt","updatedAt","createKey","ranBy","notifyJson") VALUES (?,?,?,0,?,?,?,?,?,?) ON CONFLICT ("workspaceId","createKey") DO NOTHING RETURNING "id"',
+    params: [e.id,e.workspaceId,e.status,json,new Date(e.createdAt),new Date(e.updatedAt),key,normalizeRanBy(e.ranBy),notify ? JSON.stringify(notify) : null] }]);
+  const result = await run([{ sql: `SELECT "dataJson","ranBy"${notify ? ',"notifyJson"' : ''} FROM "Experiment" WHERE "workspaceId" = ? AND "createKey" = ?`, params: [e.workspaceId,key] }]);
+  const row = result[0]![0] as ExperimentRow;
+  const prior = hydrate(row);
   if (prior.createFingerprint !== e.createFingerprint) throw new ExperimentError(409, 'idempotency_conflict');
+  // A replay reports what the FIRST create stored (including its generated secret), not what this call asked for.
+  if (row.notifyJson) prior.notify = notifyReceipt(JSON.parse(row.notifyJson) as NotifyConfig);
   return prior;
 }
 /**
@@ -102,8 +106,14 @@ export function creditStatements(
       params: [charge,charge,billingId,...proof] },
   ];
 }
+/** Outbox INSERT for a transition into a terminal status; selects zero rows unless the stored row is still non-terminal at `e.version` and has notify config. */
+export function outboxStatement(e: Experiment, next: Experiment, gate: string, gateParams: unknown[]): RawStatement {
+  const terminal = TERMINAL_STATUSES.map(() => '?').join(',');
+  return { sql: `INSERT INTO "ExperimentWebhookOutbox" ("id","experimentId","workspaceId","status","version","idempotencyKey","notifyJson","payloadJson","state","attempts","nextAttemptAt","createdAt") SELECT ?,"id","workspaceId",?,?,?,"notifyJson",?,'pending',0,?,? FROM "Experiment" WHERE "id"=? AND "workspaceId"=? AND "version"=? AND "notifyJson" IS NOT NULL AND "status" NOT IN (${terminal})${gate} ON CONFLICT ("idempotencyKey") DO NOTHING RETURNING "id"`,
+    params: [randomUUID(),next.status,next.version,webhookIdempotencyKey(e.id,next.status,next.version),JSON.stringify(buildWebhookPayload(next)),new Date(),new Date(),e.id,e.workspaceId,e.version,...TERMINAL_STATUSES,...gateParams] };
+}
 /** Every API mutation and step acquisition uses this CAS, including cancellation. */
-export async function save(e: Experiment, charge = 0, chargeRef?: string, refunds: ReadonlyArray<{ ref: string; amount: number }> = []): Promise<boolean> {
+export async function save(e: Experiment, charge = 0, chargeRef?: string, refunds: ReadonlyArray<{ ref: string; amount: number }> = [], run: Run = batch): Promise<boolean> {
   const previous = e.version;
   const refunded = refunds.reduce((n, r) => n + r.amount, 0);
   const next = { ...e, writeToken: randomUUID(), version: previous + 1, updatedAt: new Date().toISOString(), creditsCharged: e.creditsCharged + charge - refunded };
@@ -117,6 +127,12 @@ export async function save(e: Experiment, charge = 0, chargeRef?: string, refund
     billingId = (await resolveBillingWorkspace(workspace)).id;
   }
   const gate = charge > 0 ? ' AND EXISTS (SELECT 1 FROM "Workspace" WHERE "id" = ? AND "planCredits" + "packCredits" >= ?)' : '';
+  // SLA-617: queue the completion webhook for a non-terminal -> terminal move. It runs BEFORE the UPDATE so it can
+  // read the stored (pre-transition) status, under the same id/version/credit predicate as the CAS, and the whole
+  // batch is atomic: the event exists if and only if this exact transition committed. Experiments without notify
+  // config select no row, and non-terminal saves add no statement at all.
+  const queued = (TERMINAL_STATUSES as readonly string[]).includes(next.status);
+  if (queued) statements.push(outboxStatement(e, next, gate, charge > 0 ? [billingId, charge] : []));
   statements.push({ sql: `UPDATE "Experiment" SET "dataJson"=?, "version"=?, "status"=?, "updatedAt"=? WHERE "id"=? AND "workspaceId"=? AND "version"=?${gate} RETURNING "id"`,
     params: [json,next.version,next.status,new Date(next.updatedAt),e.id,e.workspaceId,previous,...(charge > 0 ? [billingId,charge] : [])] });
   // Fresh unpredictable receipt only exists if OUR exact JSON CAS succeeded.
@@ -126,9 +142,9 @@ export async function save(e: Experiment, charge = 0, chargeRef?: string, refund
   }
   // Every additional refund rides the same batch as the experiment CAS, so terminal status and all refunds settle together or not at all.
   for (const r of refunds) statements.push(...creditStatements(e, next, billingId, -r.amount, r.ref));
-  const result = await batch(statements);
-  if (!result[0]?.length) {
-    if (charge > 0 && (await load(e.workspaceId,e.id)).version === previous) throw new InsufficientCreditsError(e.workspaceId,charge,0);
+  const result = await run(statements);
+  if (!result[queued ? 1 : 0]?.length) {
+    if (charge > 0 && (await load(e.workspaceId,e.id,run)).version === previous) throw new InsufficientCreditsError(e.workspaceId,charge,0);
     return false;
   }
   Object.assign(e,next); return true;

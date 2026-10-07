@@ -91,6 +91,31 @@ running or unknown. It is refused while `planning`/`generating`
 pre-plan `draft` (`not_editable`), for a frozen or rendered variant
 (`variant_frozen`), and for a stale revision (`revision_conflict`).
 
+### Completion notification (`notify`)
+
+Instead of polling, pass `notify:{url?, secret?, metadata?}` to
+`create_experiment` (create mode only, not `mode:"edit"`). When the experiment
+first moves from `draft`/`planning`/`generating` into `completed`, `review`,
+`failed`, `paused` or `cancelled`, slashloop POSTs one signed JSON event:
+`{type:"experiment.<status>", experimentId, status, version, summary, ...,
+metadata}`. Retries use exponential backoff for about 24 hours. A retried
+experiment that reaches a terminal status again sends a new event.
+
+- `url`: https only, port 443, a public host (private, loopback, link-local and
+  internal addresses are refused with `invalid_notify`). Headers follow
+  Standard Webhooks: `webhook-id` (also sent as `idempotency-key`, value
+  `experimentId:status:version`; dedupe on it), `webhook-timestamp`,
+  `webhook-signature` (`v1,` + base64 HMAC-SHA256 of `id.timestamp.body`).
+- `secret`: optional, 16 to 256 characters. When omitted, slashloop generates a
+  `whsec_...` secret and returns it once as `notify.signingSecret` in the create
+  response (an idempotent replay returns the same one). Store it; it is never
+  readable again.
+- `metadata`: up to 4 KB of JSON echoed back in the event body.
+- Paperclip agents: set `metadata.paperclipIssueId` to the issue UUID and
+  omit `url`. The event becomes a comment on that issue, which wakes its
+  assignee. This needs the workspace to be enabled for the Paperclip bridge by
+  the slashloop operator.
+
 ## List
 
 Call `list_experiments` with `limit<=50`; follow `nextOffset` only if asked.

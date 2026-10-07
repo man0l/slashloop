@@ -58,6 +58,7 @@ import { refundCredits } from '../lib/credits.js';
 import { initLogShipping } from './ship-logs.js';
 import { tick as experimentTick } from '../experiments/engine.js';
 import { candidates as experimentCandidates } from '../experiments/store.js';
+import { pruneSettled, runWebhookDeliveries } from '../experiments/webhook-outbox.js';
 import { createKindBreaker } from './kind-breaker.js';
 import { parseMetricsPort, recordFallbackSweep, startWorkerMetricsServer } from './metrics.js';
 import {
@@ -166,6 +167,22 @@ let lastTickSteps = -1;
 let lastGateState = '';
 let lastGateLogAt = 0;
 const GATE_REMIND_EVERY_MS = 3_600_000;
+
+// Experiment completion webhooks (SLA-617): the outbox rows are written by the
+// terminal status save; the experiment leader delivers them, single-flight and
+// detached like the tick. WEBHOOK_DELIVERY_ENABLED=0 parks delivery (rows keep
+// queueing and are delivered after re-enabling). A tick that advanced steps
+// zeroes lastWebhookSweepAt so a fresh completion goes out within one loop turn
+// instead of waiting out the interval; otherwise an empty sweep is one indexed read.
+const WEBHOOK_SWEEP_INTERVAL_MS = (() => {
+  const n = Number(process.env.WEBHOOK_DELIVERY_INTERVAL_MS ?? 30_000);
+  return Number.isFinite(n) && n >= 1_000 ? Math.floor(n) : 30_000;
+})();
+const WEBHOOK_PRUNE_INTERVAL_MS = 3_600_000;
+const doesWebhooks = doesExperiments && process.env.WEBHOOK_DELIVERY_ENABLED !== '0';
+let lastWebhookSweepAt = 0;
+let lastWebhookPruneAt = Date.now();
+let webhookSweepInFlight: Promise<unknown> | null = null;
 
 // Which MediaJob kinds this worker claims — see the KINDS block above (kept
 // before the experiments block: module-load evaluation order matters).
@@ -523,6 +540,7 @@ while (!shuttingDown) {
             console.log(`[worker] experiment tick advanced ${steps} step(s)${formatD1Usage(usage)}`);
           }
           lastTickSteps = steps;
+          if (steps > 0) lastWebhookSweepAt = 0;
           // Cadence keys off THIS tick's `steps` only. `usage` above is
           // process-wide: MediaJob work draining concurrently inflates writes
           // mid-tick, and runtimes without D1-over-HTTP keep it at 0 — so it
@@ -565,6 +583,22 @@ while (!shuttingDown) {
           );
         })
         .finally(() => { experimentTickInFlight = null; });
+    }
+
+    if (doesWebhooks && !webhookSweepInFlight && Date.now() - lastWebhookSweepAt >= WEBHOOK_SWEEP_INTERVAL_MS) {
+      lastWebhookSweepAt = Date.now();
+      webhookSweepInFlight = runWebhookDeliveries()
+        .then(async (sweep) => {
+          if (sweep.delivered || sweep.retried || sweep.dead) {
+            console.log(`[worker] webhook sweep delivered=${sweep.delivered} retried=${sweep.retried} dead=${sweep.dead}`);
+          }
+          if (Date.now() - lastWebhookPruneAt >= WEBHOOK_PRUNE_INTERVAL_MS) {
+            lastWebhookPruneAt = Date.now();
+            await pruneSettled(new Date());
+          }
+        })
+        .catch((err) => { console.warn(`[worker] webhook sweep failed: ${errorDetail(err)}`); })
+        .finally(() => { webhookSweepInFlight = null; });
     }
 
     // Claim up to CONCURRENCY jobs across ALL kinds in ONE statement, priority
