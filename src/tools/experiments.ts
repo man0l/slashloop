@@ -288,6 +288,7 @@ function listRow(e: Experiment) {
     variants: e.variants.length,
     maxCredits: e.maxCredits,
     creditsCharged: e.creditsCharged,
+    ranBy: e.ranBy ?? null,
     error: e.error,
   };
 }
@@ -365,6 +366,10 @@ const idempotencyKeyField = z.string().min(8).max(120).regex(/^[a-zA-Z0-9_.:-]+$
   'Optional idempotency key. Omit it and a stable key is derived from the request, so repeating an identical call '
   + '(e.g. after a lost response) replays the first result instead of doing the work twice.',
 );
+const ranByField = z.string().max(400).optional().describe(
+  'Who is running this: "user" when the user asked directly, or "agent:<name> on behalf of <user>" when an AI agent acts for them, '
+  + 'e.g. "agent:Leo on behalf of man0l". Free text, trimmed and capped at 120 characters. Always pass it so the owner can see who ran what.',
+);
 const approvedCreditsField = z.number().int().min(0).describe(
   'The totalCredits from estimate_experiment that the user explicitly approved. If the fresh estimate is higher, '
   + 'nothing is started and the new estimate is returned.',
@@ -420,12 +425,13 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       workspaceId: workspaceIdField,
       limit: z.number().int().min(1).max(50).default(12),
       offset: z.number().int().min(0).default(0).describe('Pass nextOffset from the previous page.'),
+      ran_by: z.string().max(400).optional().describe('Only experiments whose ranBy equals this value exactly (e.g. "agent:Leo on behalf of man0l"). Omit for all.'),
     },
     { readOnlyHint: true },
-    ({ workspaceId, limit, offset }) => guarded(async () => {
+    ({ workspaceId, limit, offset, ran_by }) => guarded(async () => {
       const workspace = await d.resolveWorkspace({ workspaceId });
       // One extra row reveals whether another page exists (same as api/experiments.ts).
-      const rows = await d.list(workspace.id, limit + 1, offset);
+      const rows = await d.list(workspace.id, limit + 1, offset, ran_by);
       const nextOffset = rows.length > limit ? offset + limit : null;
       return text({ experiments: rows.slice(0, limit).map(listRow), nextOffset });
     }));
@@ -491,9 +497,10 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         'Per-experiment credit ceiling (runaway guard). Default: the site\'s automatic cap, 2× the estimate rounded up; 100 in edit mode. An approved estimate may raise it.',
       ),
       idempotencyKey: idempotencyKeyField,
+      ran_by: ranByField,
     },
     { readOnlyHint: false },
-    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, variantCount, slideCount, maxCredits, idempotencyKey }) => guarded(async () => {
+    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, variantCount, slideCount, maxCredits, idempotencyKey, ran_by }) => guarded(async () => {
       const workspace = await d.resolveWorkspace({ workspaceId });
       if (new Set(videoIds).size !== videoIds.length) return text({ error: 'invalid_request', message: 'videoIds must be distinct.' }, true);
       if (mode === 'edit') {
@@ -528,7 +535,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
           ? (videoIds.length === 1 ? idempotencyKey : `${idempotencyKey}:${i + 1}`)
           : derivedKey('create', body);
         try {
-          const e = await d.createExperiment({ ...body, idempotencyKey: key }, undefined, mode === 'edit' ? { expandFormat: false } : undefined);
+          const e = await d.createExperiment({ ...body, idempotencyKey: key, ...(ran_by === undefined ? {} : { ran_by }) }, undefined, mode === 'edit' ? { expandFormat: false } : undefined);
           created.push({ ...listRow(e), idempotencyKey: key, planEstimate: await d.estimate(e, 'plan') });
         } catch (err) {
           const payload = JSON.parse(experimentToolError(err).content[0]!.text);

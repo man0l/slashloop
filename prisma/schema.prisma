@@ -314,10 +314,13 @@ model Experiment {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   createKey    String
+  /// Free-text runner: "user" or "agent:<name> on behalf of <user>". Null on legacy rows.
+  ranBy        String?
 
   @@unique([workspaceId, createKey])
   @@index([workspaceId, createdAt])
   @@index([status, updatedAt])
+  @@index([workspaceId, ranBy, createdAt])
 }
 
 model CanonicalScrapeLock {

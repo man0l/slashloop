@@ -13249,6 +13249,7 @@ export namespace Prisma {
     createdAt: Date | null
     updatedAt: Date | null
     createKey: string | null
+    ranBy: string | null
   }
 
   export type ExperimentMaxAggregateOutputType = {
@@ -13260,6 +13261,7 @@ export namespace Prisma {
     createdAt: Date | null
     updatedAt: Date | null
     createKey: string | null
+    ranBy: string | null
   }
 
   export type ExperimentCountAggregateOutputType = {
@@ -13271,6 +13273,7 @@ export namespace Prisma {
     createdAt: number
     updatedAt: number
     createKey: number
+    ranBy: number
     _all: number
   }
 
@@ -13292,6 +13295,7 @@ export namespace Prisma {
     createdAt?: true
     updatedAt?: true
     createKey?: true
+    ranBy?: true
   }
 
   export type ExperimentMaxAggregateInputType = {
@@ -13303,6 +13307,7 @@ export namespace Prisma {
     createdAt?: true
     updatedAt?: true
     createKey?: true
+    ranBy?: true
   }
 
   export type ExperimentCountAggregateInputType = {
@@ -13314,6 +13319,7 @@ export namespace Prisma {
     createdAt?: true
     updatedAt?: true
     createKey?: true
+    ranBy?: true
     _all?: true
   }
 
@@ -13412,6 +13418,7 @@ export namespace Prisma {
     createdAt: Date
     updatedAt: Date
     createKey: string
+    ranBy: string | null
     _count: ExperimentCountAggregateOutputType | null
     _avg: ExperimentAvgAggregateOutputType | null
     _sum: ExperimentSumAggregateOutputType | null
@@ -13442,6 +13449,7 @@ export namespace Prisma {
     createdAt?: boolean
     updatedAt?: boolean
     createKey?: boolean
+    ranBy?: boolean
   }, ExtArgs["result"]["experiment"]>
 
   export type ExperimentSelectCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
@@ -13453,6 +13461,7 @@ export namespace Prisma {
     createdAt?: boolean
     updatedAt?: boolean
     createKey?: boolean
+    ranBy?: boolean
   }, ExtArgs["result"]["experiment"]>
 
   export type ExperimentSelectUpdateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
@@ -13464,6 +13473,7 @@ export namespace Prisma {
     createdAt?: boolean
     updatedAt?: boolean
     createKey?: boolean
+    ranBy?: boolean
   }, ExtArgs["result"]["experiment"]>
 
   export type ExperimentSelectScalar = {
@@ -13475,9 +13485,10 @@ export namespace Prisma {
     createdAt?: boolean
     updatedAt?: boolean
     createKey?: boolean
+    ranBy?: boolean
   }
 
-  export type ExperimentOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "status" | "version" | "dataJson" | "createdAt" | "updatedAt" | "createKey", ExtArgs["result"]["experiment"]>
+  export type ExperimentOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "status" | "version" | "dataJson" | "createdAt" | "updatedAt" | "createKey" | "ranBy", ExtArgs["result"]["experiment"]>
 
   export type $ExperimentPayload<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
     name: "Experiment"
@@ -13491,6 +13502,10 @@ export namespace Prisma {
       createdAt: Date
       updatedAt: Date
       createKey: string
+      /**
+       * Free-text runner: "user" or "agent:<name> on behalf of <user>". Null on legacy rows.
+       */
+      ranBy: string | null
     }, ExtArgs["result"]["experiment"]>
     composites: {}
   }
@@ -13922,6 +13937,7 @@ export namespace Prisma {
     readonly createdAt: FieldRef<"Experiment", 'DateTime'>
     readonly updatedAt: FieldRef<"Experiment", 'DateTime'>
     readonly createKey: FieldRef<"Experiment", 'String'>
+    readonly ranBy: FieldRef<"Experiment", 'String'>
   }
     
 
@@ -32139,7 +32155,8 @@ export namespace Prisma {
     dataJson: 'dataJson',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
-    createKey: 'createKey'
+    createKey: 'createKey',
+    ranBy: 'ranBy'
   };
 
   export type ExperimentScalarFieldEnum = (typeof ExperimentScalarFieldEnum)[keyof typeof ExperimentScalarFieldEnum]
@@ -33218,6 +33235,7 @@ export namespace Prisma {
     createdAt?: DateTimeFilter<"Experiment"> | Date | string
     updatedAt?: DateTimeFilter<"Experiment"> | Date | string
     createKey?: StringFilter<"Experiment"> | string
+    ranBy?: StringNullableFilter<"Experiment"> | string | null
   }
 
   export type ExperimentOrderByWithRelationInput = {
@@ -33229,6 +33247,7 @@ export namespace Prisma {
     createdAt?: SortOrder
     updatedAt?: SortOrder
     createKey?: SortOrder
+    ranBy?: SortOrderInput | SortOrder
   }
 
   export type ExperimentWhereUniqueInput = Prisma.AtLeast<{
@@ -33244,6 +33263,7 @@ export namespace Prisma {
     createdAt?: DateTimeFilter<"Experiment"> | Date | string
     updatedAt?: DateTimeFilter<"Experiment"> | Date | string
     createKey?: StringFilter<"Experiment"> | string
+    ranBy?: StringNullableFilter<"Experiment"> | string | null
   }, "id" | "workspaceId_createKey">
 
   export type ExperimentOrderByWithAggregationInput = {
@@ -33255,6 +33275,7 @@ export namespace Prisma {
     createdAt?: SortOrder
     updatedAt?: SortOrder
     createKey?: SortOrder
+    ranBy?: SortOrderInput | SortOrder
     _count?: ExperimentCountOrderByAggregateInput
     _avg?: ExperimentAvgOrderByAggregateInput
     _max?: ExperimentMaxOrderByAggregateInput
@@ -33274,6 +33295,7 @@ export namespace Prisma {
     createdAt?: DateTimeWithAggregatesFilter<"Experiment"> | Date | string
     updatedAt?: DateTimeWithAggregatesFilter<"Experiment"> | Date | string
     createKey?: StringWithAggregatesFilter<"Experiment"> | string
+    ranBy?: StringNullableWithAggregatesFilter<"Experiment"> | string | null
   }
 
   export type CanonicalScrapeLockWhereInput = {
@@ -35294,6 +35316,7 @@ export namespace Prisma {
     createdAt?: Date | string
     updatedAt?: Date | string
     createKey: string
+    ranBy?: string | null
   }
 
   export type ExperimentUncheckedCreateInput = {
@@ -35305,6 +35328,7 @@ export namespace Prisma {
     createdAt?: Date | string
     updatedAt?: Date | string
     createKey: string
+    ranBy?: string | null
   }
 
   export type ExperimentUpdateInput = {
@@ -35316,6 +35340,7 @@ export namespace Prisma {
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createKey?: StringFieldUpdateOperationsInput | string
+    ranBy?: NullableStringFieldUpdateOperationsInput | string | null
   }
 
   export type ExperimentUncheckedUpdateInput = {
@@ -35327,6 +35352,7 @@ export namespace Prisma {
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createKey?: StringFieldUpdateOperationsInput | string
+    ranBy?: NullableStringFieldUpdateOperationsInput | string | null
   }
 
   export type ExperimentCreateManyInput = {
@@ -35338,6 +35364,7 @@ export namespace Prisma {
     createdAt?: Date | string
     updatedAt?: Date | string
     createKey: string
+    ranBy?: string | null
   }
 
   export type ExperimentUpdateManyMutationInput = {
@@ -35349,6 +35376,7 @@ export namespace Prisma {
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createKey?: StringFieldUpdateOperationsInput | string
+    ranBy?: NullableStringFieldUpdateOperationsInput | string | null
   }
 
   export type ExperimentUncheckedUpdateManyInput = {
@@ -35360,6 +35388,7 @@ export namespace Prisma {
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createKey?: StringFieldUpdateOperationsInput | string
+    ranBy?: NullableStringFieldUpdateOperationsInput | string | null
   }
 
   export type CanonicalScrapeLockCreateInput = {
@@ -37305,6 +37334,7 @@ export namespace Prisma {
     createdAt?: SortOrder
     updatedAt?: SortOrder
     createKey?: SortOrder
+    ranBy?: SortOrder
   }
 
   export type ExperimentAvgOrderByAggregateInput = {
@@ -37320,6 +37350,7 @@ export namespace Prisma {
     createdAt?: SortOrder
     updatedAt?: SortOrder
     createKey?: SortOrder
+    ranBy?: SortOrder
   }
 
   export type ExperimentMinOrderByAggregateInput = {
@@ -37331,6 +37362,7 @@ export namespace Prisma {
     createdAt?: SortOrder
     updatedAt?: SortOrder
     createKey?: SortOrder
+    ranBy?: SortOrder
   }
 
   export type ExperimentSumOrderByAggregateInput = {
