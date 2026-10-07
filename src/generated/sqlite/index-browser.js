@@ -251,7 +251,8 @@ exports.Prisma.ExperimentScalarFieldEnum = {
   dataJson: 'dataJson',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt',
-  createKey: 'createKey'
+  createKey: 'createKey',
+  ranBy: 'ranBy'
 };
 
 exports.Prisma.CanonicalScrapeLockScalarFieldEnum = {

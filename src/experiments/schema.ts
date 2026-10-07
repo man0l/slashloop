@@ -109,6 +109,19 @@ const noDuplicateVideoIds = (v: { videoIds: string[] }, c: z.RefinementCtx) => {
 export const Create = z.object(createShape(Instructions)).strict().superRefine(noDuplicateVideoIds);
 /** Same request with preset-fillable instructions; `Create` re-validates after expansion. */
 export const CreateRequest = z.object(createShape(InstructionsInput)).strict().superRefine(noDuplicateVideoIds);
+export const RAN_BY_MAX = 120;
+/** Free-text runner label: trimmed, capped, and blank/non-string means unknown (null). */
+export function normalizeRanBy(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const t = v.trim().slice(0, RAN_BY_MAX).trim();
+  return t || null;
+}
+/** Splits the optional runner label off a create body so it never reaches the strict schemas or the idempotency fingerprint. */
+export function takeRanBy(raw: unknown): { body: unknown; ranBy: string | null } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { body: raw, ranBy: null };
+  const { ran_by, ranBy, ...body } = raw as Record<string, unknown>;
+  return { body, ranBy: normalizeRanBy(ran_by ?? ranBy) };
+}
 export const WorkspaceBody = z.object({ workspaceId: Id }).strict();
 export const Command = WorkspaceBody.extend({ idempotencyKey: Key });
 export const Plan = Command.extend({ allowPartial: z.boolean().optional() });
@@ -508,6 +521,8 @@ export interface Variant extends Proposal { id: string; revision: number; status
     qaHistory?: SlideQaRecord[] | null }>; error: string | null; }
 export interface Experiment {
   id: string; workspaceId: string; status: string; createdAt: string; updatedAt: string; instructions: InstructionsData;
+  /** Who ran it: "user" or "agent:<name> on behalf of <user>". Mirrors the indexed `ranBy` column; absent/null on legacy rows. */
+  ranBy?: string | null;
   /** Absent on every legacy row. Set only when the caller explicitly selected the
    *  versioned exact_edit operation; this is what separates the two contracts at
    *  dispatch and keeps a legacy request off that path. */

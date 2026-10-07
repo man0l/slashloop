@@ -56,6 +56,12 @@ Build `instructions`:
 - `language`, `brand`, `audience`, `direction`, and `lockedConstraints` when
   supplied.
 
+**Always pass `ran_by`** on every `create_experiment` call so the owner can see
+who ran it: `"user"` when the user asked directly, or
+`"agent:<your name> on behalf of <user>"` when you act for them (e.g.
+`"agent:Leo on behalf of man0l"`). Free text, trimmed and capped at 120
+characters; use the same string every time so the owner can filter by it.
+
 Defaults: `variantCount=3` including baseline and `slideCount=5`, overridden by
 the source deck when known. Call `create_experiment`; the draft is free.
 Return each created experiment ID and its `planEstimate`, plus failures. Do not
@@ -89,5 +95,6 @@ pre-plan `draft` (`not_editable`), for a frozen or rendered variant
 
 Call `list_experiments` with `limit<=50`; follow `nextOffset` only if asked.
 Return ID, status, goal, source video IDs, variant/slide counts, credit ceiling,
-credits charged, and error. Use `get_experiment` only to resolve a specific
+credits charged, `ranBy`, and error. Pass `ran_by` (exact match) to list only
+the experiments run by one runner. Use `get_experiment` only to resolve a specific
 experiment ID. Do not create, spend, edit, retry, cancel, or delete in list mode.

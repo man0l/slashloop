@@ -45,7 +45,8 @@ export function isExactEditRequest(raw: unknown): boolean {
  * compiled BEFORE any row exists, so a preparation failure never leaves a
  * half-prepared experiment behind.
  */
-export async function createExactEdit(raw: unknown) {
+export async function createExactEdit(rawWithRunner: unknown) {
+  const { body: raw, ranBy } = S.takeRanBy(rawWithRunner);
   const b = S.ExactEditRequest.parse(raw);
   const now = new Date().toISOString();
   const contract = compileExactEdit(b);
@@ -53,7 +54,7 @@ export async function createExactEdit(raw: unknown) {
   if (!v) throw new S.ExperimentError(404,'video_not_found');
   if (!isPhotoPost(v) && !hasExperimentSlides(v.rawJson)) throw new S.ExperimentError(400,'video_not_slideshow','Only slideshows can be edited.');
   return store.create({
-    id: randomUUID(), workspaceId: b.workspaceId, status: 'review', createdAt: now, updatedAt: now,
+    id: randomUUID(), workspaceId: b.workspaceId, status: 'review', createdAt: now, updatedAt: now, ranBy,
     instructions: {
       goal: `exact_edit: preserve the source deck and change only the approved ${contract.openerEdit ? 'opener overlay' : 'per-slide copy'}.`,
       brand: '', audience: '', language: 'English',
@@ -100,7 +101,8 @@ export interface CreateExperimentOptions {
    *  instructions and must not pick up a source-format preset's locks. */
   expandFormat?: boolean;
 }
-export async function createExperiment(raw: unknown, deps: CreateExperimentDeps = createDeps, options: CreateExperimentOptions = {}) {
+export async function createExperiment(rawWithRunner: unknown, deps: CreateExperimentDeps = createDeps, options: CreateExperimentOptions = {}) {
+  const { body: raw, ranBy } = S.takeRanBy(rawWithRunner);
   // Legacy create: the two-variant planner path, unchanged. An exact_edit body
   // has its own entry point and must not be coerced through this schema.
   if (isExactEditRequest(raw)) throw new S.ExperimentError(409,'exact_edit_requires_exact_edit_action','Create an exact_edit deck with create_exact_edit; it does not use the legacy planner.');
@@ -177,7 +179,7 @@ export async function createExperiment(raw: unknown, deps: CreateExperimentDeps 
       fields.instructions = { ...fields.instructions, goal: `${goal}${suffix}` };
     }
   }
-  return deps.persist({ id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,
+  return deps.persist({ id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,ranBy,
     creditsCharged:0,report:null,inputs,variants:[],error:null,
     // Slideshow sources are attached as visual references during rendering; video-only stays text-directed.
     generationBasis:referenced?'source-referenced':'text-directed',

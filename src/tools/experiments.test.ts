@@ -51,7 +51,7 @@ function fakes(): ExperimentToolDeps {
       const failure = createFailures[raw.videoIds[0]];
       if (failure) throw failure;
       const id = `e-${raw.idempotencyKey.replace(/[^a-zA-Z0-9]/g, '').slice(-10)}`;
-      const e = store.get(id) ?? exp(id, { maxCredits: raw.maxCredits, inputs: [{ ...exp(id).inputs[0]!, videoId: raw.videoIds[0] }] });
+      const e = store.get(id) ?? exp(id, { maxCredits: raw.maxCredits, ranBy: typeof raw.ran_by === 'string' ? raw.ran_by.trim() || null : null, inputs: [{ ...exp(id).inputs[0]!, videoId: raw.videoIds[0] }] });
       store.set(id, e);
       return e;
     }) as ExperimentToolDeps['createExperiment'],
@@ -72,9 +72,9 @@ function fakes(): ExperimentToolDeps {
       if (!e || e.workspaceId !== ws) throw new ExperimentError(404, 'experiment_not_found');
       return e;
     },
-    list: async (ws: string, limit = 50, offset = 0) => {
-      record('list', [ws, limit, offset]);
-      return [...store.values()].slice(offset, offset + limit);
+    list: async (ws: string, limit = 50, offset = 0, ranBy?: string | null) => {
+      record('list', [ws, limit, offset, ranBy]);
+      return [...store.values()].filter(e => !ranBy || e.ranBy === ranBy).slice(offset, offset + limit);
     },
     // The real projection lives in store.ts; a marker proves the tool routes through deps.serialize.
     serialize: ((e: Experiment) => ({ ...e, projected: true })) as unknown as ExperimentToolDeps['serialize'],
@@ -124,6 +124,61 @@ describe('tool surface', () => {
     registerAllTools(server);
     const names = Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
     for (const name of TOOLS) expect(names).toContain(name);
+  });
+});
+
+describe('ran_by (SLA-615)', () => {
+  const LEO = 'agent:Leo on behalf of man0l';
+
+  test('both tools advertise ran_by in their input schema', async () => {
+    const { tools } = await (await connect()).listTools();
+    for (const name of ['create_experiment', 'list_experiments']) {
+      const props = tools.find(t => t.name === name)!.inputSchema.properties as Record<string, { description?: string }>;
+      expect(props.ran_by).toBeDefined();
+    }
+    const create = tools.find(t => t.name === 'create_experiment')!.inputSchema.properties as Record<string, { description?: string }>;
+    expect(create.ran_by!.description).toContain('agent:<name> on behalf of <user>');
+  });
+
+  test('create → list round-trips ranBy, and the filter returns only exact matches', async () => {
+    const created = await call('create_experiment', { videoIds: ['vid1'], instructions, ran_by: LEO });
+    expect(created.isError).toBe(false);
+    expect(created.body.experiments[0].ranBy).toBe(LEO);
+    expect(callsOf('createExperiment')[0]![0]).toMatchObject({ ran_by: LEO });
+    await call('create_experiment', { videoIds: ['vid2'], instructions, ran_by: 'user' });
+    await call('create_experiment', { videoIds: ['vid3'], instructions });
+
+    const all = await call('list_experiments', {});
+    expect(all.body.experiments.map((e: any) => e.ranBy)).toEqual([LEO, 'user', null]);
+
+    const filtered = await call('list_experiments', { ran_by: LEO });
+    expect(filtered.body.experiments.map((e: any) => e.ranBy)).toEqual([LEO]);
+    expect(callsOf('list').at(-1)).toEqual(['w1', 13, 0, LEO]);
+
+    expect((await call('list_experiments', { ran_by: 'agent:Leo' })).body.experiments).toEqual([]);
+  });
+
+  test('nextOffset still pages when the filter is set', async () => {
+    for (const n of [1, 2, 3]) await call('create_experiment', { videoIds: [`vid${n}`], instructions, ran_by: LEO });
+    await call('create_experiment', { videoIds: ['other'], instructions, ran_by: 'user' });
+    const page1 = await call('list_experiments', { ran_by: LEO, limit: 2 });
+    expect(page1.body.experiments).toHaveLength(2);
+    expect(page1.body.nextOffset).toBe(2);
+    const page2 = await call('list_experiments', { ran_by: LEO, limit: 2, offset: page1.body.nextOffset });
+    expect(page2.body.experiments).toHaveLength(1);
+    expect(page2.body.nextOffset).toBeNull();
+  });
+
+  test('ran_by is not part of the derived idempotency key', async () => {
+    await call('create_experiment', { videoIds: ['vid1'], instructions, ran_by: LEO });
+    await call('create_experiment', { videoIds: ['vid1'], instructions, ran_by: 'user' });
+    const keys = callsOf('createExperiment').map(a => (a[0] as { idempotencyKey: string }).idempotencyKey);
+    expect(keys[0]).toBe(keys[1]!);
+  });
+
+  test('edit mode forwards ran_by too', async () => {
+    await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], character: 'Short hair', ran_by: LEO });
+    expect(callsOf('createExperiment')[0]![0]).toMatchObject({ ran_by: LEO });
   });
 });
 

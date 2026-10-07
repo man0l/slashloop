@@ -315,10 +315,13 @@ model Experiment {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   createKey   String
+  /// Free-text runner: "user" or "agent:<name> on behalf of <user>". Null on legacy rows.
+  ranBy       String?
 
   @@unique([workspaceId, createKey])
   @@index([workspaceId, createdAt])
   @@index([status, updatedAt])
+  @@index([workspaceId, ranBy, createdAt])
 }
 
 model CanonicalScrapeLock {
@@ -490,6 +493,13 @@ model UsageLog {
   // Monthly cap checks (bandwidth.ts, spend-cap.ts) filter on all four —
   // without this they table-scanned ~650x/day (2.7M of 4.1M rows read/day).
   @@index([workspaceId, kind, provider, createdAt])
+  // get_usage's period read (src/tools/settings.ts) is
+  // WHERE workspaceId = ? AND createdAt >= ? ORDER BY createdAt DESC. Without
+  // an index leading with (workspaceId, createdAt) SQLite seeks workspaceId,
+  // filters the date range row by row and sorts in a temp B-tree: 2,480 rows
+  // read for a 10-row period on the largest workspace, and LIMIT does not help
+  // because the sort precedes it. See prisma/d1-migrations/0015_*.sql.
+  @@index([workspaceId, createdAt])
 }
 
 model RefreshRun {

@@ -15,8 +15,8 @@ mock.module('../src/experiments/store.js', () => ({
     if (!e) throw new ExperimentError(404, 'experiment_not_found');
     return structuredClone(e);
   },
-  list: async (_ws: string, limit = 50, offset = 0) => {
-    const all = [...experiments.values()].sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+  list: async (_ws: string, limit = 50, offset = 0, ranBy?: string | null) => {
+    const all = [...experiments.values()].filter(e => !ranBy || e.ranBy === ranBy).sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
     return all.slice(offset, offset + limit);
   },
   remove: async (_ws: string, id: string) => {
@@ -95,5 +95,21 @@ describe('experiments endpoint', () => {
     const page3 = await (await GET(req('GET', 'https://x.test/api/experiments?workspaceId=w&limit=2&offset=4'))).json() as any;
     expect(page3.experiments.map((e: any) => e.id)).toEqual(['e5']);
     expect(page3.nextOffset).toBeNull();
+  });
+
+  test('GET list filters by ran_by, exposes ranBy, and keeps nextOffset', async () => {
+    const LEO = 'agent:Leo on behalf of man0l';
+    for (let i = 1; i <= 3; i++) experiments.set(`l${i}`, { ...exp(`l${i}`), createdAt: `2026-09-0${i}`, ranBy: LEO });
+    experiments.set('u1', { ...exp('u1'), createdAt: '2026-09-09', ranBy: 'user' });
+    experiments.set('n1', { ...exp('n1'), createdAt: '2026-09-10', ranBy: null });
+    const url = `https://x.test/api/experiments?workspaceId=w&limit=2&ran_by=${encodeURIComponent(LEO)}`;
+    const page1 = await (await GET(req('GET', url))).json() as any;
+    expect(page1.experiments.map((e: any) => [e.id, e.ranBy])).toEqual([['l1', LEO], ['l2', LEO]]);
+    expect(page1.nextOffset).toBe(2);
+    const page2 = await (await GET(req('GET', `${url}&offset=2`))).json() as any;
+    expect(page2.experiments.map((e: any) => e.id)).toEqual(['l3']);
+    expect(page2.nextOffset).toBeNull();
+    const unfiltered = await (await GET(req('GET', 'https://x.test/api/experiments?workspaceId=w&limit=50'))).json() as any;
+    expect(unfiltered.experiments).toHaveLength(5);
   });
 });

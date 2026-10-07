@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { db, dbDialect, rawBatch, type Dialect, type RawStatement } from '../store.js';
 import { resolveBillingWorkspace, InsufficientCreditsError } from '../lib/credits.js';
-import { ExperimentError, slideTaskRequestCap, type Experiment } from './schema.js';
+import { ExperimentError, normalizeRanBy, slideTaskRequestCap, type Experiment } from './schema.js';
 import { encodeExperiment } from './document-budget.js';
 
 export async function batch(statements: RawStatement[]): Promise<unknown[][]> {
@@ -12,18 +12,31 @@ export async function batch(statements: RawStatement[]): Promise<unknown[][]> {
     return out;
   });
 }
-export async function load(workspaceId: string, id: string): Promise<Experiment> {
-  const result = await batch([{ sql: 'SELECT "dataJson" FROM "Experiment" WHERE "id" = ? AND "workspaceId" = ?', params: [id, workspaceId] }]);
-  const row = result[0]?.[0] as { dataJson: string } | undefined;
+type ExperimentRow = { dataJson: string; ranBy: string | null };
+/** The indexed column is authoritative for ranBy; legacy rows have it NULL. */
+const hydrate = (r: ExperimentRow): Experiment => ({ ...JSON.parse(r.dataJson), ranBy: r.ranBy ?? null });
+/** Store access as an injectable seam: the default is the live database; tests pass a fixed executor so they do not depend on process-global module mocks (docs/test-suite-policy.md). */
+export type Run = typeof batch;
+export async function load(workspaceId: string, id: string, run: Run = batch): Promise<Experiment> {
+  const result = await run([{ sql: 'SELECT "dataJson","ranBy" FROM "Experiment" WHERE "id" = ? AND "workspaceId" = ?', params: [id, workspaceId] }]);
+  const row = result[0]?.[0] as ExperimentRow | undefined;
   if (!row) throw new ExperimentError(404, 'experiment_not_found');
-  return JSON.parse(row.dataJson);
+  return hydrate(row);
 }
-/** Newest first. limit is capped server-side so a client can't pull unbounded. */
-export async function list(workspaceId: string, limit = 50, offset = 0): Promise<Experiment[]> {
+/**
+ * Newest first. limit is capped server-side so a client can't pull unbounded.
+ * ranBy is an exact, workspace-scoped match (served by the (workspaceId, ranBy,
+ * createdAt) index); a blank filter is treated as no filter.
+ */
+export async function list(workspaceId: string, limit = 50, offset = 0, ranBy?: string | null, run: Run = batch): Promise<Experiment[]> {
   const lim = Math.max(1, Math.min(Math.floor(Number(limit) || 50), 50));
   const off = Math.max(0, Math.floor(Number(offset) || 0));
-  const result = await batch([{ sql: 'SELECT "dataJson" FROM "Experiment" WHERE "workspaceId" = ? ORDER BY "createdAt" DESC LIMIT ? OFFSET ?', params: [workspaceId, lim, off] }]);
-  return (result[0] as Array<{ dataJson: string }>).map(r => JSON.parse(r.dataJson));
+  const runner = normalizeRanBy(ranBy);
+  const result = await run([{
+    sql: `SELECT "dataJson","ranBy" FROM "Experiment" WHERE "workspaceId" = ?${runner ? ' AND "ranBy" = ?' : ''} ORDER BY "createdAt" DESC LIMIT ? OFFSET ?`,
+    params: [workspaceId, ...(runner ? [runner] : []), lim, off],
+  }]);
+  return (result[0] as ExperimentRow[]).map(hydrate);
 }
 /** Experiment owning a task id in this workspace, or null. Tasks live inside dataJson, so this scans text then confirms in JS. */
 export async function findByTaskId(workspaceId: string, taskId: string): Promise<Experiment | null> {
@@ -39,12 +52,12 @@ export async function remove(workspaceId: string, id: string): Promise<boolean> 
   const result = await batch([{ sql: 'DELETE FROM "Experiment" WHERE "id" = ? AND "workspaceId" = ? RETURNING "id"', params: [id, workspaceId] }]);
   return ((result[0] ?? []) as unknown[]).length > 0;
 }
-export async function create(e: Experiment, key: string): Promise<Experiment> {
+export async function create(e: Experiment, key: string, run: Run = batch): Promise<Experiment> {
   const json = encodeExperiment(e);
-  await batch([{ sql: 'INSERT INTO "Experiment" ("id","workspaceId","status","version","dataJson","createdAt","updatedAt","createKey") VALUES (?,?,?,0,?,?,?,?) ON CONFLICT ("workspaceId","createKey") DO NOTHING RETURNING "id"',
-    params: [e.id,e.workspaceId,e.status,json,new Date(e.createdAt),new Date(e.updatedAt),key] }]);
-  const result = await batch([{ sql: 'SELECT "dataJson" FROM "Experiment" WHERE "workspaceId" = ? AND "createKey" = ?', params: [e.workspaceId,key] }]);
-  const prior: Experiment = JSON.parse((result[0]![0] as { dataJson: string }).dataJson);
+  await run([{ sql: 'INSERT INTO "Experiment" ("id","workspaceId","status","version","dataJson","createdAt","updatedAt","createKey","ranBy") VALUES (?,?,?,0,?,?,?,?,?) ON CONFLICT ("workspaceId","createKey") DO NOTHING RETURNING "id"',
+    params: [e.id,e.workspaceId,e.status,json,new Date(e.createdAt),new Date(e.updatedAt),key,normalizeRanBy(e.ranBy)] }]);
+  const result = await run([{ sql: 'SELECT "dataJson","ranBy" FROM "Experiment" WHERE "workspaceId" = ? AND "createKey" = ?', params: [e.workspaceId,key] }]);
+  const prior = hydrate(result[0]![0] as ExperimentRow);
   if (prior.createFingerprint !== e.createFingerprint) throw new ExperimentError(409, 'idempotency_conflict');
   return prior;
 }
