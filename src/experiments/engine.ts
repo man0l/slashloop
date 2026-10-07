@@ -81,6 +81,23 @@ export function settle(e:Experiment,t:Task,result:unknown) {
     if(isActive(e)&&e.tasks.filter(t=>t.kind==='slide').every(t=>t.status==='done'))e.status=e.variants.some(v=>v.status==='draft')?'review':'completed';
   }
 }
+/** An active experiment whose every task is terminal but not all done can never
+ *  advance: nothing is runnable, leased or backing off, and settle() only completes
+ *  when every task is done. Move it to the same posture the failure path uses
+ *  (`unknown` pauses for review, anything else fails) so it stops being a zombie
+ *  candidate. Returns true when the row was changed. */
+export function reapNoActionable(e:Experiment):boolean {
+  if(!isActive(e)||e.tasks.some(t=>t.status==='pending'||t.status==='running'))return false;
+  const dead=e.tasks.filter(t=>t.status==='failed'||t.status==='unknown');
+  if(!dead.length)return false;
+  const paused=dead.some(t=>t.status==='unknown');
+  e.status=paused?'paused':'failed';
+  e.error=dead.find(t=>t.error)?.error??'no_actionable_task';
+  for(const v of e.variants){
+    if(v.status==='generating'&&dead.some(t=>t.target===v.id)){v.status=paused?'paused':'failed';v.error=e.error;}
+  }
+  return true;
+}
 /** Advance paid steps with a durable receipt before each provider invocation.
  * CAS losers never call the provider. Failures and unknown outcomes self-heal through
  * MAX_TASK_ATTEMPTS-1 automatic retries (1 minute apart) before surfacing.
@@ -101,6 +118,8 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
     expired.status='unknown';expired.error='provider_outcome_unknown';e.status='paused';e.error='Provider outcome unknown. Retry individual jobs from the experiment page.';
     await deps.save(e);return false;
   }
+  // Nothing left that could ever run: terminate the row instead of idling forever.
+  if(reapNoActionable(e)){await deps.save(e);return false;}
   if(running.length>=PARALLEL_SLIDES)return false;
   for(let pick=0;pick<PARALLEL_SLIDES;pick++){
     if(pick>0){e=await deps.load(workspaceId,id);if(!isActive(e))return false;}
