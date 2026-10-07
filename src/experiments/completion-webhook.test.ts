@@ -320,7 +320,7 @@ describe('deliver', () => {
   });
 
   describe('Paperclip mode', () => {
-    const bridge: PaperclipBridge = { baseUrl: 'https://paperclip.example.com', apiKey: 'pcp_test_key', workspaceIds: new Set(['w1']) };
+    const bridge: PaperclipBridge = { baseUrl: 'https://paperclip.example.com', apiKey: 'pcp_test_key' };
     test('comments on the issue with the bearer key and a stable clientRequestId', async () => {
       const { seen, post } = capture(201);
       const res = await deliver(row(paperclipNotify()), { post, bridge });
@@ -336,11 +336,11 @@ describe('deliver', () => {
       expect(clientRequestId('e1:failed:4')).not.toBe(body.clientRequestId);
       expect(seen[0]!.body).not.toContain('pcp_test_key');
     });
-    test('a workspace outside the allowlist is dead, not retried, and sends nothing', async () => {
-      const { seen, post } = capture();
+    test('any workspace may target a Paperclip issue; the target comes from notify metadata', async () => {
+      const { seen, post } = capture(201);
       const res = await deliver(row(paperclipNotify(), { workspaceId: 'someone-else' }), { post, bridge });
-      expect(res).toMatchObject({ ok: false, permanent: true, error: 'paperclip_bridge_workspace_not_allowed' });
-      expect(seen).toHaveLength(0);
+      expect(res).toMatchObject({ ok: true });
+      expect(seen).toHaveLength(1);
     });
     test('no bridge configured retries instead of losing the event', async () => {
       const { seen, post } = capture();
@@ -352,11 +352,10 @@ describe('deliver', () => {
       await deliver(row({ ...urlNotify(), metadata: { paperclipIssueId: ISSUE } }), { post, bridge });
       expect(seen[0]!.url).toContain('/api/issues/');
     });
-    test('bridge env needs URL, key and an allowlist, and an https public API URL', () => {
-      const env = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com/api/', SLASHLOOP_PAPERCLIP_API_KEY: ' k ', SLASHLOOP_PAPERCLIP_WORKSPACE_IDS: 'w1, w2' };
+    test('bridge env needs a public https API URL and a key', () => {
+      const env = { SLASHLOOP_PAPERCLIP_API_URL: 'https://paperclip.example.com/api/', SLASHLOOP_PAPERCLIP_API_KEY: ' k ' };
       expect(paperclipBridgeFromEnv(env)).toMatchObject({ baseUrl: 'https://paperclip.example.com', apiKey: 'k' });
-      expect([...paperclipBridgeFromEnv(env)!.workspaceIds]).toEqual(['w1', 'w2']);
-      expect(paperclipBridgeFromEnv({ ...env, SLASHLOOP_PAPERCLIP_WORKSPACE_IDS: '' })).toBeNull();
+      expect(paperclipBridgeFromEnv({ SLASHLOOP_PAPERCLIP_API_URL: env.SLASHLOOP_PAPERCLIP_API_URL, PAPERCLIP_API_KEY_FOR_SLASHLOOP_BRIDGE_AGENT: 'bk' })).toMatchObject({ apiKey: 'bk' });
       expect(paperclipBridgeFromEnv({ ...env, SLASHLOOP_PAPERCLIP_API_KEY: '' })).toBeNull();
       expect(paperclipBridgeFromEnv({ ...env, SLASHLOOP_PAPERCLIP_API_URL: 'http://paperclip.example.com' })).toBeNull();
       expect(paperclipBridgeFromEnv({})).toBeNull();
@@ -446,7 +445,7 @@ describe('runWebhookDeliveries (end to end on SQLite)', () => {
     await queue('pc1', paperclipNotify(), 'failed');
     const calls: string[] = [];
     const post: HttpPost = async (u) => { calls.push(u.toString()); return { status: 201 }; };
-    const bridge: PaperclipBridge = { baseUrl: 'https://paperclip.example.com', apiKey: 'k', workspaceIds: new Set(['w1']) };
+    const bridge: PaperclipBridge = { baseUrl: 'https://paperclip.example.com', apiKey: 'k' };
     expect(await runWebhookDeliveries({ run, post, bridge, clock: () => T0 })).toEqual({ delivered: 1, retried: 0, dead: 0 });
     expect(calls).toEqual([`https://paperclip.example.com/api/issues/${ISSUE}/comments`]);
   });
