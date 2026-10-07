@@ -31,10 +31,20 @@ One comment per experiment: a task that opens four experiments gets four comment
 
 | Outcome | Class | `lastError` |
 | --- | --- | --- |
-| Env not configured (no URL, or no usable key map) | retry | `paperclip_not_configured` |
+| Env fault, see below | retry | `paperclip_url_missing`, `paperclip_url_not_public_https`, `paperclip_keys_missing`, `paperclip_keys_invalid_json`, `paperclip_keys_empty` |
 | No key for `agentId` / no `agentId` | permanent | `paperclip_agent_key_missing` / `paperclip_agent_id_missing` |
 | `403`, `404`, other `4xx` (400, 409, 422) | permanent | `http_<status>: <redacted snippet>` |
 | `401`, `408`, `425`, `429`, `5xx`, network error | retry (~24h backoff) | `http_<status>` / `network_error:<code>` |
+
+Env fault reasons (the URL is checked first, then the keys):
+
+| `lastError` | Meaning |
+| --- | --- |
+| `paperclip_url_missing` | `SLASHLOOP_PAPERCLIP_API_URL` unset or blank |
+| `paperclip_url_not_public_https` | URL is not https, or points at a private/loopback host |
+| `paperclip_keys_missing` | `SLASHLOOP_PAPERCLIP_AGENT_KEYS` unset or blank |
+| `paperclip_keys_invalid_json` | not parseable JSON, or not a JSON object (an array, string or `null`) |
+| `paperclip_keys_empty` | a JSON object with no entry that has a non-empty string key |
 
 Retries stop after 10 attempts and the row goes `dead`. Snippets are length-capped
 and have keys and token-shaped strings masked.
@@ -57,5 +67,9 @@ delivery; rows keep queueing and go out after re-enabling.
 - Inspect: `SELECT state, attempts, lastError FROM ExperimentWebhookOutbox` (D1).
 - A permanent row can be requeued by setting `state='pending', attempts=0` after
   the key or ids are fixed.
+- At startup each worker logs one line, e.g. `[worker] webhook delivery on; paperclip delivery config: url=set keys=2 agents=[<id>, <id>] status=ok`.
+  `status` is `ok` or the first reason above; key values and the URL are never logged.
+  `docker compose restart` does **not** reload `env_file` changes; recreate the service with
+  `docker compose -f docker-compose.prod.yml up -d <service>` and check the line again.
 - After changing the key map, restart only the worker service that runs experiments; a restart is safe
   because claims are leased and the marker check makes a re-delivery a no-op.
