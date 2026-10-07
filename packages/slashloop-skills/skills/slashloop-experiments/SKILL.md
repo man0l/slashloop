@@ -113,8 +113,8 @@ experiment that reaches a terminal status again sends a new event.
 - `metadata`: up to 4 KB of JSON echoed back in the event body.
 - Paperclip agents: set `metadata.paperclipIssueId` to the issue UUID and
   omit `url`. The event becomes a comment on that issue, which wakes its
-  assignee. This needs the workspace to be enabled for the Paperclip bridge by
-  the slashloop operator.
+  assignee. The target issue is taken from this metadata; no per-workspace
+  setup is needed.
 
 ## List
 

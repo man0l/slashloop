@@ -76,18 +76,15 @@ export const guardedPost: HttpPost = (url, headers, body) => new Promise((resolv
 export interface PaperclipBridge {
   baseUrl: string;
   apiKey: string;
-  /** Workspaces allowed to wake Paperclip issues with the shared key. */
-  workspaceIds: ReadonlySet<string>;
 }
 
-/** Reads the bridge from env; null unless URL, key and at least one workspace are set. */
+/** Reads the bridge from env; null unless a public https URL and a key are set. */
 export function paperclipBridgeFromEnv(env: Record<string, string | undefined> = process.env): PaperclipBridge | null {
   const baseUrl = env.SLASHLOOP_PAPERCLIP_API_URL?.trim().replace(/\/+$/, '').replace(/\/api$/, '');
-  const apiKey = env.SLASHLOOP_PAPERCLIP_API_KEY?.trim();
-  const workspaceIds = new Set((env.SLASHLOOP_PAPERCLIP_WORKSPACE_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
-  if (!baseUrl || !apiKey || !workspaceIds.size) return null;
+  const apiKey = (env.SLASHLOOP_PAPERCLIP_API_KEY || env.PAPERCLIP_API_KEY_FOR_SLASHLOOP_BRIDGE_AGENT)?.trim();
+  if (!baseUrl || !apiKey) return null;
   try { assertPublicHttpsUrl(baseUrl); } catch { return null; }
-  return { baseUrl, apiKey, workspaceIds };
+  return { baseUrl, apiKey };
 }
 
 /** Deterministic UUID so a retried comment is the same Paperclip client request. */
@@ -136,7 +133,6 @@ export async function deliver(
     if (issueId) {
       const bridge = deps.bridge === undefined ? paperclipBridgeFromEnv() : deps.bridge;
       if (!bridge) return fail('paperclip_bridge_not_configured', null, false);
-      if (!bridge.workspaceIds.has(row.workspaceId)) return fail('paperclip_bridge_workspace_not_allowed', null, true);
       const body = JSON.stringify({ body: paperclipCommentBody(payload), clientRequestId: clientRequestId(row.idempotencyKey) });
       const res = await post(new URL(`${bridge.baseUrl}/api/issues/${issueId}/comments`), {
         'content-type': 'application/json', authorization: `Bearer ${bridge.apiKey}`, 'idempotency-key': row.idempotencyKey,
