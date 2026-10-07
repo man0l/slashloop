@@ -377,6 +377,13 @@ const ranByField = z.string().max(400).optional().describe(
   'Who is running this: "user" when the user asked directly, or "agent:<name> on behalf of <user>" when an AI agent acts for them, '
   + 'e.g. "agent:Leo on behalf of man0l". Free text, trimmed and capped at 120 characters. Always pass it so the owner can see who ran what.',
 );
+// Responses expose the value as `ranBy`, so agents echo that spelling back; without
+// this alias zod strips the unknown key and the experiment is stored with ranBy null.
+const ranByAliasField = z.string().max(400).optional().describe('Alias of ran_by (the name responses use). If both are given, ran_by wins.');
+const tagGoalField = z.boolean().default(false).describe(
+  'Append "— @handle · source caption snippet (views)" to the stored goal so the title names the source. Default false: '
+  + 'the source caption can name a competitor or creator and must not leak into the goal. Source videos are listed on every experiment anyway.',
+);
 const notifyField = z.object({
   url: z.string().max(2048).optional().describe('https URL (port 443, public host) that receives a signed POST when the experiment reaches completed, review, failed, paused or cancelled.'),
   secret: z.string().min(16).max(256).optional().describe('Signing secret for the Standard Webhooks HMAC-SHA256 headers (webhook-id, webhook-timestamp, webhook-signature). Omit it and one is generated and returned once as notify.signingSecret.'),
@@ -386,8 +393,9 @@ const notifyField = z.object({
   + 'Needs a url, or metadata.paperclipIssueId for Paperclip delivery. Applies to every experiment this call creates.',
 );
 const approvedCreditsField = z.number().int().min(0).describe(
-  'The totalCredits from estimate_experiment that the user explicitly approved. If the fresh estimate is higher, '
-  + 'nothing is started and the new estimate is returned.',
+  'The credit amount the user has approved for this step: either the totalCredits from estimate_experiment that they confirmed, '
+  + 'or, under a standing budget (a per-experiment or per-batch credit cap granted in the task), the remaining cap. '
+  + 'The step runs only when the fresh estimate is <= this number; if it is higher, nothing is started and the new estimate is returned.',
 );
 const VARIABLE_INPUT = z.enum([...VARIABLE_FIELDS, 'angle']);
 const instructionsInput = z.object({
@@ -429,24 +437,31 @@ const LIFECYCLE =
   'Experiment lifecycle: create_experiment (draft, free) → estimate_experiment stage=plan → user approves → plan_experiment '
   + '(background: source analysis, pattern report, variant briefs) → status "review" → optionally update_experiment_variant → '
   + 'estimate_experiment stage=generate → user approves → generate_experiment (background slide rendering) → "completed". '
-  + 'Each spending step needs the user\'s explicit OK on the estimate; pass that number as approvedCredits.';
+  + 'Approval: a spending step needs the user\'s OK, and a standing budget IS that OK. If the task or user granted a credit cap '
+  + '(per experiment or per batch), any estimate within the remaining cap is already approved: pass the remaining cap (or the estimate) as '
+  + 'approvedCredits and run plan → generate without asking again. Without a cap, ask ONCE for all experiments and both stages together, '
+  + 'not per experiment or per stage. Ask again only when an estimate exceeds what was approved. '
+  + 'To change a brief, use update_experiment_variant (free) rather than cancel_experiment.';
 
 export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps = defaultExperimentToolDeps) {
   // ---- list_experiments ----
   server.tool('list_experiments',
     'List slideshow experiments in this workspace, newest first (paginated). Free. Each row shows status, goal, source '
-    + `videos and credits charged. Use get_experiment for briefs, jobs and images. ${LIFECYCLE}`,
+    + 'videos, credits charged and ranBy; filter to one runner with ran_by. Use it to find experiments parked in "review" '
+    + '(briefs ready, generation not started) or "paused"/"failed" (retry_experiment) and move them forward instead of '
+    + `creating duplicates. Use get_experiment for briefs, jobs and images. ${LIFECYCLE}`,
     {
       workspaceId: workspaceIdField,
       limit: z.number().int().min(1).max(50).default(12),
       offset: z.number().int().min(0).default(0).describe('Pass nextOffset from the previous page.'),
       ran_by: z.string().max(400).optional().describe('Only experiments whose ranBy equals this value exactly (e.g. "agent:Leo on behalf of man0l"). Omit for all.'),
+      ranBy: ranByAliasField,
     },
     { readOnlyHint: true },
-    ({ workspaceId, limit, offset, ran_by }) => guarded(async () => {
+    ({ workspaceId, limit, offset, ran_by, ranBy }) => guarded(async () => {
       const workspace = await d.resolveWorkspace({ workspaceId });
       // One extra row reveals whether another page exists (same as api/experiments.ts).
-      const rows = await d.list(workspace.id, limit + 1, offset, ran_by);
+      const rows = await d.list(workspace.id, limit + 1, offset, ran_by ?? ranBy);
       const nextOffset = rows.length > limit ? offset + limit : null;
       return text({ experiments: rows.slice(0, limit).map(listRow), nextOffset });
     }));
@@ -515,10 +530,13 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       ),
       idempotencyKey: idempotencyKeyField,
       ran_by: ranByField,
+      ranBy: ranByAliasField,
+      tagGoalWithSource: tagGoalField,
       notify: notifyField,
     },
     { readOnlyHint: false },
-    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, variantCount, slideCount, maxCredits, idempotencyKey, ran_by, notify }) => guarded(async () => {
+    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, variantCount, slideCount, maxCredits, idempotencyKey, ran_by: ranByRaw, ranBy: ranByCamel, tagGoalWithSource, notify }) => guarded(async () => {
+      const ran_by = ranByRaw ?? ranByCamel;
       const workspace = await d.resolveWorkspace({ workspaceId });
       if (new Set(videoIds).size !== videoIds.length) return text({ error: 'invalid_request', message: 'videoIds must be distinct.' }, true);
       if (mode === 'edit') {
@@ -553,7 +571,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
           ? (videoIds.length === 1 ? idempotencyKey : `${idempotencyKey}:${i + 1}`)
           : derivedKey('create', body);
         try {
-          const e = await d.createExperiment({ ...body, idempotencyKey: key, ...(ran_by === undefined ? {} : { ran_by }), ...(notify === undefined ? {} : { notify }) }, undefined, mode === 'edit' ? { expandFormat: false } : undefined);
+          const e = await d.createExperiment({ ...body, idempotencyKey: key, ...(ran_by === undefined ? {} : { ran_by }), ...(notify === undefined ? {} : { notify }) }, undefined, { ...(mode === 'edit' ? { expandFormat: false } : {}), tagGoal: tagGoalWithSource });
           created.push({ ...listRow(e), ...(e.notify ? { notify: e.notify } : {}), idempotencyKey: key, planEstimate: await d.estimate(e, 'plan') });
         } catch (err) {
           const payload = JSON.parse(experimentToolError(err).content[0]!.text);
@@ -582,8 +600,9 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     'Price the next step of an experiment before spending. Free. stage="plan" prices source analysis + planning (draft '
     + 'experiments); stage="generate" prices slide rendering for variantIds (default: all variants). Pass taskIds (from '
     + 'get_experiment progress.retryableJobs) to price retrying exactly those jobs. Returns totalCredits, the workspace '
-    + 'wallet (workspaceCredits) and the experiment cap. Show totalCredits to the user and get an explicit yes; then pass '
-    + 'it as approvedCredits to plan_experiment / generate_experiment / retry_experiment.',
+    + 'wallet (workspaceCredits) and the experiment cap. If totalCredits is within a standing credit cap the user granted, it is '
+    + 'already approved: pass the cap (or totalCredits) as approvedCredits to plan_experiment / generate_experiment / retry_experiment. '
+    + 'Otherwise show totalCredits to the user and get a yes first (one request covering all experiments and both stages).',
     {
       workspaceId: workspaceIdField,
       experimentId: experimentIdField,
@@ -601,7 +620,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         estimate: est,
         affordable,
         note: affordable
-          ? 'Ask the user to approve totalCredits before starting this step.'
+          ? 'Within a standing credit cap this is already approved; otherwise ask the user to approve totalCredits before starting this step.'
           : 'Not enough credits in the workspace wallet for this step. The user needs to add credits first.',
       });
     }));
@@ -609,7 +628,9 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
   // ---- plan_experiment ----
   server.tool('plan_experiment',
     'Start planning a DRAFT experiment: source analysis, pattern report, then variant briefs, all in the background. '
-    + 'SPENDS CREDITS — call estimate_experiment(stage="plan") first and pass the approved totalCredits as approvedCredits. '
+    + 'SPENDS CREDITS — call estimate_experiment(stage="plan") first. Pass as approvedCredits the amount already approved: '
+    + 'the confirmed totalCredits, or under a standing credit cap (per experiment or per batch) the remaining cap, which counts as approval '
+    + 'when the estimate is within it, so no extra confirmation is needed. Ask the user only when the estimate exceeds the approval. '
     + 'Afterwards status is "planning"; check with get_experiment until it reaches "review". The job ids it returns '
     + '(experiment.jobs[].id) are NOT for await_job / get_job_status; track them with get_experiment.',
     {
@@ -659,7 +680,9 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
   server.tool('generate_experiment',
     'Render slide images for reviewed variants (status "review", or "completed" with draft variants left). SPENDS CREDITS — '
     + `${CREDIT_COSTS.experimentSlide} per slide × ${slideFanout()} candidates. Call estimate_experiment(stage="generate", variantIds) `
-    + 'first and pass the approved totalCredits. Pass each variant with its CURRENT revision (get_experiment); the brief '
+    + 'first. approvedCredits is the amount already approved: the confirmed totalCredits, or under a standing credit cap '
+    + '(per experiment or per batch) the remaining cap, which counts as approval when the estimate is within it. Ask the user only when '
+    + 'the estimate exceeds it. Pass each variant with its CURRENT revision (get_experiment); the brief '
     + 'is frozen at that revision. Rendering runs in the background; check with get_experiment.',
     {
       workspaceId: workspaceIdField,
@@ -684,7 +707,9 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     'Retry a failed or paused experiment. SPENDS CREDITS (retried jobs are charged again). Scope it with taskIds (from '
     + 'get_experiment progress.retryableJobs) or variantIds (failed slides of those variants); with neither, every failed '
     + 'job is retried and `stage` says how to price it (plan while no briefs exist yet, else generate). Call '
-    + 'estimate_experiment with the same scope first and pass the approved totalCredits. Completed images are kept.',
+    + 'estimate_experiment with the same scope first. approvedCredits is the amount already approved: the confirmed totalCredits, or under '
+    + 'a standing credit cap the remaining cap, which counts as approval when the estimate is within it. Ask the user only when it exceeds '
+    + 'the approval. Prefer retry over cancel+recreate; completed images are kept.',
     {
       workspaceId: workspaceIdField,
       experimentId: experimentIdField,
@@ -719,7 +744,8 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
   // ---- cancel_experiment ----
   server.tool('cancel_experiment',
     'Cancel an experiment. Free; stops further background work (in-flight provider calls may still settle). Cancelled '
-    + 'is terminal — it cannot be resumed. Cancel a planning/generating experiment before deleting it.',
+    + 'is terminal — it cannot be resumed. Do NOT cancel to change a brief (use update_experiment_variant) or to retry '
+    + '(use retry_experiment); cancel only when the source itself is unusable. Cancel a planning/generating experiment before deleting it.',
     { workspaceId: workspaceIdField, experimentId: experimentIdField, idempotencyKey: idempotencyKeyField },
     { readOnlyHint: false, destructiveHint: true },
     ({ workspaceId, experimentId, idempotencyKey }) => guarded(async () => {

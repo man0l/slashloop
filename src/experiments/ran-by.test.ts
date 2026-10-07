@@ -135,4 +135,12 @@ describe('createExperiment', () => {
     expect(persisted.map(e => e.ranBy)).toEqual([LEO, 'user', null, null]);
     expect(new Set(persisted.map(e => e.createFingerprint)).size).toBe(1);
   });
+
+  test('the source tag is appended to the goal by default and left out with tagGoal:false (SLA-671)', async () => {
+    persisted.length = 0;
+    await createExperiment(body, deps);
+    await createExperiment({ ...body, idempotencyKey: 'key-87654321' }, deps, { tagGoal: false });
+    expect(persisted[0]!.instructions.goal).toBe('Find a hook — @@x · c (1)');
+    expect(persisted[1]!.instructions.goal).toBe('Find a hook');
+  });
 });

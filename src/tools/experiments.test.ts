@@ -46,8 +46,8 @@ function fakes(): ExperimentToolDeps {
       if (workspaceId && workspaceId !== 'w1') throw new Error('Workspace not found.');
       return { id: 'w1' };
     },
-    createExperiment: (async (raw: any) => {
-      record('createExperiment', [raw]);
+    createExperiment: (async (raw: any, _deps?: unknown, options?: unknown) => {
+      record('createExperiment', [raw, options]);
       const failure = createFailures[raw.videoIds[0]];
       if (failure) throw failure;
       const id = `e-${raw.idempotencyKey.replace(/[^a-zA-Z0-9]/g, '').slice(-10)}`;
@@ -179,6 +179,67 @@ describe('ran_by (SLA-615)', () => {
   test('edit mode forwards ran_by too', async () => {
     await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], character: 'Short hair', ran_by: LEO });
     expect(callsOf('createExperiment')[0]![0]).toMatchObject({ ran_by: LEO });
+  });
+
+  // SLA-671: responses say `ranBy`, agents echo that spelling, and zod used to strip it.
+  test('the camelCase ranBy alias is persisted exactly like ran_by', async () => {
+    const created = await call('create_experiment', { videoIds: ['vid1'], instructions, ranBy: LEO });
+    expect(created.isError).toBe(false);
+    expect(created.body.experiments[0].ranBy).toBe(LEO);
+    expect(callsOf('createExperiment')[0]![0]).toMatchObject({ ran_by: LEO });
+    await call('create_experiment', { mode: 'edit', videoIds: ['vid2'], character: 'Short hair', ranBy: LEO });
+    expect(callsOf('createExperiment')[1]![0]).toMatchObject({ ran_by: LEO });
+    expect((await call('list_experiments', { ranBy: LEO })).body.experiments).toHaveLength(2);
+    expect(callsOf('list').at(-1)).toEqual(['w1', 13, 0, LEO]);
+  });
+
+  test('ran_by wins when both spellings are sent', async () => {
+    await call('create_experiment', { videoIds: ['vid1'], instructions, ran_by: LEO, ranBy: 'user' });
+    expect(callsOf('createExperiment')[0]![0]).toMatchObject({ ran_by: LEO });
+  });
+
+  test('both tools advertise the ranBy alias', async () => {
+    const { tools } = await (await connect()).listTools();
+    for (const name of ['create_experiment', 'list_experiments']) {
+      expect((tools.find(t => t.name === name)!.inputSchema.properties as Record<string, unknown>).ranBy).toBeDefined();
+    }
+  });
+});
+
+describe('goal source tag (SLA-671)', () => {
+  test('create does not append the source caption to the goal unless asked', async () => {
+    await call('create_experiment', { videoIds: ['vid1'], instructions });
+    await call('create_experiment', { videoIds: ['vid2'], instructions, tagGoalWithSource: true });
+    await call('create_experiment', { mode: 'edit', videoIds: ['vid3'], character: 'Short hair' });
+    const opts = callsOf('createExperiment').map(a => a[1]);
+    expect(opts[0]).toMatchObject({ tagGoal: false });
+    expect(opts[1]).toMatchObject({ tagGoal: true });
+    expect(opts[2]).toMatchObject({ expandFormat: false, tagGoal: false });
+  });
+});
+
+describe('standing budget counts as approval (SLA-671)', () => {
+  test('lifecycle and spending tools say a credit cap is approval; cancel is not for editing', async () => {
+    const { tools } = await (await connect()).listTools();
+    const desc = (n: string) => tools.find(t => t.name === n)!.description!;
+    for (const n of ['list_experiments', 'create_experiment']) {
+      expect(desc(n)).toContain('a standing budget IS that OK');
+      expect(desc(n)).not.toContain('explicit OK on the estimate');
+    }
+    for (const n of ['plan_experiment', 'generate_experiment', 'retry_experiment', 'estimate_experiment']) expect(desc(n)).toContain('standing credit cap');
+    expect(desc('cancel_experiment')).toContain('Do NOT cancel to change a brief');
+  });
+
+  test('the remaining cap works as approvedCredits while the estimate fits, and is refused above it', async () => {
+    estimateTotal = 40;
+    store.set('e1', exp('e1', { status: 'review' }));
+    expect((await call('plan_experiment', { experimentId: 'e1', approvedCredits: 200 })).isError).toBe(false);
+    expect((await call('generate_experiment', { experimentId: 'e1', variants: [{ id: 'v1', revision: 1 }], approvedCredits: 200 })).isError).toBe(false);
+    expect((await call('retry_experiment', { experimentId: 'e1', approvedCredits: 200, stage: 'generate' })).isError).toBe(false);
+    estimateTotal = 250;
+    const over = await call('plan_experiment', { experimentId: 'e1', approvedCredits: 200 });
+    expect(over.isError).toBe(true);
+    expect(over.body.error).toBe('estimate_exceeds_approval');
   });
 });
 
