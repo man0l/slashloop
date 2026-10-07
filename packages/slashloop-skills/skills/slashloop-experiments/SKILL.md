@@ -113,19 +113,18 @@ experiment that reaches a terminal status again sends a new event.
 - `metadata`: up to 4 KB of JSON echoed back in the event body.
 - Paperclip agents: set `metadata` to `{paperclipIssueId: <the current task's
   UUID>, agentId: <your own agent ID>}` and omit `url`. When the experiment
-  reaches a terminal status slashloop posts one comment on that task, authored
-  by you (the key is picked by `agentId`), and wakes you. A task that opens four
-  experiments gets four comments; no new issue is created. The comment names the
-  experiment, its status, variants and credits, and ends with a hidden marker
-  `<!-- slashloop-experiment:<experimentId>:<status>:<version> -->`. It reopens
-  the task if it was already `done`. Both ids are required: with no key for
-  `agentId` (or no `agentId`) the delivery fails permanently and nothing is posted.
+  reaches a terminal status slashloop creates one child task of that task,
+  assigned to you (the key is picked by `agentId`), which wakes you. A task that
+  opens four experiments gets four child tasks. The description names the
+  experiment, its status, variants and credits. Both ids are required: with no
+  key for `agentId` (or no `agentId`) the delivery fails permanently and nothing
+  is created.
 
 **Paperclip agents: notify, never poll.** Do not loop on `get_experiment`.
 After `plan_experiment` or `generate_experiment` starts a run, end the heartbeat
-and let the comment wake you (`issue_commented`). Create every experiment with
+and let the child task wake you (`issue_assigned`). Create every experiment with
 `notify:{metadata:{paperclipIssueId:<this task's UUID>, agentId:<your agent ID>}}`
-(omit `url` and `secret`). When woken, a comment carrying the marker is the
+(omit `url` and `secret`). When woken, the child task whose title starts `Slashloop experiment <id> <status>` is the
 result: run `get_experiment` once for that `experimentId` and act on it. The
 webhook can be lost or its keys can be unconfigured, so also set a monitor on the
 same issue as a safety net. It needs no slashloop change:

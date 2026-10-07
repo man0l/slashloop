@@ -81,7 +81,7 @@ export interface PostTransport {
 const GUARDED_HTTPS: PostTransport = { request: https.request, protocol: 'https:', port: 443, resolve: h => resolvePublic(h) };
 
 const RESPONSE_SNIPPET_BYTES = 1024;
-/** A comment listing is searched for the delivery marker, so it keeps far more than a diagnostic snippet. */
+/** The origin issue is parsed as JSON, so it keeps far more than a diagnostic snippet. */
 const LISTING_BYTES = 1024 * 1024;
 
 function createGuardedRequest(method: 'POST' | 'GET', keepBytes: number, deadlineMs: number, transport: PostTransport) {
@@ -134,7 +134,7 @@ export const guardedGet: HttpGet = createGuardedGet();
 
 export interface PaperclipConfig {
   baseUrl: string;
-  /** Agent id -> that agent's own Paperclip API key. The comment is authored by whichever agent asked. */
+  /** Agent id -> that agent's own Paperclip API key. The child task is authored by, and assigned to, whichever agent asked. */
   keys: Record<string, string>;
 }
 
@@ -199,31 +199,44 @@ export function describePaperclipEnv(env: Record<string, string | undefined> = p
   return `paperclip delivery config: url=${s.urlSet ? 'set' : 'unset'} keys=${s.keyCount} agents=[${s.agentIds.join(', ')}] status=${s.reason ?? 'ok'}`;
 }
 
-/** Hidden line that makes a delivery recognisable in the issue thread: one per (experiment, terminal status, version). */
-export function paperclipMarker(deliveryKey: string): string {
-  return `<!-- slashloop-experiment:${deliveryKey} -->`;
+/** Stable per (experiment, terminal status, version): a retry or replay is the same Paperclip issue. */
+export function paperclipIdempotencyKey(deliveryKey: string): string {
+  return `slashloop-experiment:${deliveryKey}`.slice(0, 240);
 }
 
-export function paperclipCommentBody(payload: Record<string, unknown>, marker: string): string {
+export function paperclipIssueTitle(payload: Record<string, unknown>): string {
+  return `Slashloop experiment ${String(payload.experimentId).slice(0, 8)} ${payload.status}`;
+}
+
+export function paperclipIssueDescription(payload: Record<string, unknown>, originIdentifier: string | null): string {
   const summary = (payload.summary ?? {}) as { variants?: number; spentCredits?: number };
-  const error = typeof payload.error === 'string' ? payload.error.replace(/<!--|-->/g, '').replace(/\s+/g, ' ').trim() : '';
+  const error = typeof payload.error === 'string' ? payload.error.replace(/\s+/g, ' ').trim() : '';
   return [
     `Slashloop experiment \`${payload.experimentId}\` reached **${payload.status}**.`,
     '',
     `Variants: ${summary.variants ?? 0} · credits spent: ${summary.spentCredits ?? 0}`,
     ...(error ? [`Error: ${error}`] : []),
+    ...(originIdentifier ? ['', `Requested for ${originIdentifier}.`] : []),
     '',
     `Call \`get_experiment\` with experimentId \`${payload.experimentId}\` to review the result.`,
-    '',
-    marker,
   ].join('\n');
 }
 
-/** 2xx delivered; 401 and 408/425/429/5xx retry (a key can be fixed, a server can recover); 403, 404 and every other status are final. */
-export function classifyCommentStatus(status: number, detail = ''): DeliveryResult {
+/** Paperclip refuses an agent-key write that has no live heartbeat run behind it. No retry changes that, so it is a config fault to surface, not a delivery to repeat. */
+export const RUN_CONTEXT_REQUIRED = 'cross_issue_influence_run_context_required';
+
+/** 2xx delivered (a deduplicated create is also 2xx); 401 and 408/425/429/5xx retry; 403, 404 and every other status are final. */
+export function classifyPaperclipStatus(status: number, rawBody: string | undefined = '', secrets: string[] = []): DeliveryResult {
   if (status >= 200 && status < 300) return ok(status);
+  const detail = redactedSnippet(rawBody, secrets);
+  if (status === 403 && (rawBody ?? '').includes(RUN_CONTEXT_REQUIRED)) return fail(`paperclip_run_context_required: ${detail}`, status, true);
   const retryable = status >= 500 || [401, 408, 425, 429].includes(status);
   return fail(detail ? `http_${status}: ${detail}` : `http_${status}`, status, !retryable);
+}
+
+/** Errors in this set mean the delivery path itself is misconfigured or refused; the sweep logs them at error level. */
+export function isPaperclipConfigError(error: string | null): boolean {
+  return Boolean(error && (error.startsWith('paperclip_run_context_required') || error.startsWith('paperclip_agent_key_missing') || error.startsWith('paperclip_agent_id_missing')));
 }
 
 export interface DeliverDeps {
@@ -235,8 +248,8 @@ export interface DeliverDeps {
   now?: () => number;
 }
 
-/** Posts one comment on the originating issue as the requesting agent; a marker already in the thread means a previous attempt landed. */
-async function deliverPaperclipComment(
+/** Creates one child task under the originating issue, assigned to the requesting agent, authored with that agent's key. Child creation is the one write an agent key may make without a heartbeat run; it also wakes the assignee, so the agent reads the result inside its own run. */
+async function deliverPaperclipIssue(
   deliveryKey: string, issueId: string, notify: NotifyConfig, payload: Record<string, unknown>, deps: DeliverDeps,
 ): Promise<DeliveryResult> {
   const post = deps.post ?? guardedPost;
@@ -248,18 +261,24 @@ async function deliverPaperclipComment(
   const apiKey = agentId && Object.hasOwn(config.keys, agentId) ? config.keys[agentId] : undefined;
   if (!apiKey) return fail(agentId ? 'paperclip_agent_key_missing' : 'paperclip_agent_id_missing', null, true);
   const headers = { authorization: `Bearer ${apiKey}`, 'user-agent': 'slashloop-webhooks/1' };
-  const commentsUrl = `${config.baseUrl}/api/issues/${encodeURIComponent(issueId)}/comments`;
-  const marker = paperclipMarker(deliveryKey);
 
-  // Server-side clientRequestId dedupe covers user actors only, so the thread itself is the idempotency record.
-  const listing = await get(new URL(`${commentsUrl}?order=desc&limit=100`), headers);
-  if (listing.status < 200 || listing.status >= 300) return classifyCommentStatus(listing.status, redactedSnippet(listing.body, [apiKey]));
-  if ((listing.body ?? '').includes(marker)) return ok(listing.status);
+  const origin = await get(new URL(`${config.baseUrl}/api/issues/${encodeURIComponent(issueId)}`), headers);
+  if (origin.status < 200 || origin.status >= 300) return classifyPaperclipStatus(origin.status, origin.body, [apiKey]);
+  let issue: { companyId?: unknown; projectId?: unknown; identifier?: unknown };
+  try { issue = JSON.parse(origin.body ?? ''); } catch { return fail('paperclip_origin_unreadable', origin.status, false); }
+  if (typeof issue.companyId !== 'string' || !issue.companyId) return fail('paperclip_origin_unreadable', origin.status, false);
 
-  // `resume` is what wakes the assignee on its own comment; the worker sends no run id, so it is never "the current run".
-  const body = JSON.stringify({ body: paperclipCommentBody(payload, marker), resume: true });
-  const res = await post(new URL(commentsUrl), { ...headers, 'content-type': 'application/json' }, body);
-  return classifyCommentStatus(res.status, redactedSnippet(res.body, [apiKey]));
+  const body = JSON.stringify({
+    title: paperclipIssueTitle(payload),
+    description: paperclipIssueDescription(payload, typeof issue.identifier === 'string' ? issue.identifier : null),
+    parentId: issueId,
+    assigneeAgentId: agentId,
+    status: 'todo',
+    ...(typeof issue.projectId === 'string' && issue.projectId ? { projectId: issue.projectId } : {}),
+    idempotencyKey: paperclipIdempotencyKey(deliveryKey),
+  });
+  const res = await post(new URL(`${config.baseUrl}/api/companies/${encodeURIComponent(issue.companyId)}/issues`), { ...headers, 'content-type': 'application/json' }, body);
+  return classifyPaperclipStatus(res.status, res.body, [apiKey]);
 }
 
 /** Delivers one outbox event to its configured target. Never throws. */
@@ -277,7 +296,7 @@ export async function deliver(
   } catch { return fail('corrupt_outbox_row', null, true); }
   try {
     const issueId = paperclipIssueIdOf(notify.metadata);
-    if (issueId) return await deliverPaperclipComment(row.idempotencyKey, issueId, notify, payload, deps);
+    if (issueId) return await deliverPaperclipIssue(row.idempotencyKey, issueId, notify, payload, deps);
     if (!notify.url) return fail('no_target', null, true);
     const url = assertPublicHttpsUrl(notify.url);
     const body = JSON.stringify({ ...payload, ...(notify.metadata ? { metadata: notify.metadata } : {}) });
