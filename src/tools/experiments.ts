@@ -223,11 +223,14 @@ const STATUS_HINTS: Record<string, string> = {
 };
 
 type JobCounts = Record<string, number>;
+/** A pending task that already failed an attempt and is waiting out its backoff is retrying, not stuck. */
+const isRetrying = (t: Experiment['tasks'][number]) => t.status === 'pending' && Boolean(t.error || t.nextAttemptAt);
 function countJobs(e: Experiment): Record<string, JobCounts> {
   const out: Record<string, JobCounts> = {};
   for (const t of e.tasks) {
     const row = (out[t.kind] ??= {});
-    row[t.status] = (row[t.status] ?? 0) + 1;
+    const key = isRetrying(t) ? 'retrying' : t.status;
+    row[key] = (row[key] ?? 0) + 1;
   }
   return out;
 }
@@ -250,6 +253,10 @@ export function experimentProgress(e: Experiment) {
     sources: { total: e.inputs.length, ready: e.inputs.filter(i => i.status === 'ready').length },
     reportReady: Boolean(e.report),
     jobs: countJobs(e),
+    retryingJobs: e.tasks.filter(isRetrying).map(({ id, kind, target, index, attempts, error, nextAttemptAt }) => ({
+      id, kind, target, index, attempts, error: error ?? null,
+      nextAttemptAt: nextAttemptAt ? new Date(nextAttemptAt).toISOString() : null,
+    })),
     retryableJobs: e.tasks
       .filter(t => (t.status === 'failed' || t.status === 'unknown') && t.attempts < MAX_MANUAL_ATTEMPTS)
       .map(({ id, kind, target, index, status, error, attempts }) => {
@@ -435,7 +442,9 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     'Get one experiment: the full record (instructions, pattern report, variant briefs, slides, jobs) plus a compact '
     + '`progress` block — status with what to do next, job counts per stage, retryable jobs, and per-variant '
     + 'revision / slides done / image URLs. Free. Planning and generation run in the background; call this again '
-    + 'after a minute or two rather than polling rapidly.',
+    + 'after a minute or two rather than polling rapidly. Jobs that failed an attempt and wait out a backoff show as '
+    + '`retrying` (progress.retryingJobs: error + nextAttemptAt). The job ids in `experiment.jobs[].id` are NOT for '
+    + 'await_job / get_job_status — this tool is how experiment jobs are tracked.',
     { workspaceId: workspaceIdField, experimentId: experimentIdField },
     { readOnlyHint: true },
     ({ workspaceId, experimentId }) => guarded(async () => {
@@ -585,7 +594,8 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
   server.tool('plan_experiment',
     'Start planning a DRAFT experiment: source analysis, pattern report, then variant briefs, all in the background. '
     + 'SPENDS CREDITS — call estimate_experiment(stage="plan") first and pass the approved totalCredits as approvedCredits. '
-    + 'Afterwards status is "planning"; check with get_experiment until it reaches "review".',
+    + 'Afterwards status is "planning"; check with get_experiment until it reaches "review". The job ids it returns '
+    + '(experiment.jobs[].id) are NOT for await_job / get_job_status; track them with get_experiment.',
     {
       workspaceId: workspaceIdField,
       experimentId: experimentIdField,
