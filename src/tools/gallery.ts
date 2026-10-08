@@ -341,7 +341,7 @@ async function buildCardsUncached(
   // run them concurrently instead.
   const media = await Promise.all(ranked.map(v => signedMediaUrl(v)));
   // One batched query: newest failed-fetch reason per video, so cards that
-  // couldn't be scraped show the specific Apify issue instead of a silent
+  // couldn't be scraped show the specific scraper issue instead of a silent
   // blank thumbnail.
   const fetchErrors = await latestFetchErrors(ranked.map(v => v.id));
 
@@ -620,7 +620,7 @@ export function registerGalleryApp(server: McpServer) {
           candidates.length === 0 ? {
             label: 'Pull fresh videos for these sources',
             tool: 'refresh_source',
-            cost: 'live Apify scrape — quote the source before running',
+            cost: 'live scrape — quote the source before running',
             spendsMoney: true,
             why: 'Every scored outlier here is already analyzed, or none has a creator-relative score yet. More history per creator turns estimated scores into actual ones.',
           } : null,

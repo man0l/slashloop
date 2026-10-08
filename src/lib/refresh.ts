@@ -1025,7 +1025,7 @@ export async function runBatchedRefresh(
 
   // A shared scrape is a shared purchase: the cap check and the recorded
   // Apify spend are split pro-rata across everyone in the batch (see
-  // splitSpend in apify.ts). Charging the whole run to `ready[0]` let one
+  // splitSpend in spend-split.ts). Charging the whole run to `ready[0]` let one
   // arbitrary tenant's cap pay for nine others and breach on their behalf,
   // aborting the batch (G1/G3). No platform/system workspace is needed —
   // the cost genuinely belongs to these tenants, in Nths.

@@ -8,7 +8,8 @@ import { db } from '../db.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { loadAnalysisConfig, updateAnalysisConfig, DEFAULT_CONFIG, COST_ESTIMATES, BATCH_COST_ESTIMATES } from '../analysis/index.js';
 import { analyzeVideoWithDownload } from '../analysis/index.js';
-import { getApifyCapStatus, getApifySpendBreakdown, decodeApifyRefId } from '../lib/spend-cap.js';
+import { getApifyCapStatus, decodeApifyRefId } from '../lib/spend-cap.js';
+import { getScraperCapStatus, getScraperSpendBreakdown } from '../lib/scraper-spend.js';
 import { activeProviderFor, formatProxyCheap, listScrapers, proxyCheapBandwidth, scrapeCapKind, trafficStatus } from '../lib/scrapers/index.js';
 import { proxyConfig } from '../lib/scrapers/proxy-http.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits, creditBalance, resolveBillingWorkspace } from '../lib/credits.js';
@@ -646,14 +647,16 @@ export function registerSettingsTools(server: McpServer) {
       };
     });
 
-  // ---- get_apify_spend_status ----
-  // Testing guardrail: shows current Apify spend vs cap, breach state, and
-  // recent cap_breach events. Use this before/after refresh_source to
-  // confirm you're still under the $5 testing cap.
-  server.tool('get_apify_spend_status',
-    'Check scraper spend against the active provider cap (Apify dollars by default, or proxy GB when SCRAPER_PROVIDER=proxy), plus this workspace\'s credit balance. Shows current monthly spend, cap, percent used, breach state, and recent cap_breach audit events.',
-    { workspaceId: workspaceIdField },
-    async ({ workspaceId }) => {
+  // ---- get_scraper_spend_status (alias: get_apify_spend_status) ----
+  // Spend guardrail: current scraper spend vs the ACTIVE provider's cap
+  // (Apify cents, or proxy gigabytes), breach state, and recent cap_breach
+  // events. Past Apify rows (UsageLog.provider='apify') are always reported,
+  // so the history survives the move to the proxy. The old tool name stays
+  // registered so existing clients and skills keep working.
+  const spendStatusDescription =
+    'Check scraper spend against the active provider cap (Apify dollars by default, or proxy GB when SCRAPER_PROVIDER=proxy), plus this workspace\'s credit balance. Shows current monthly spend, cap, percent used, breach state, recent cap_breach audit events, and historical Apify spend. get_apify_spend_status is the legacy name of this tool.';
+
+  const spendStatusHandler = async ({ workspaceId }: { workspaceId?: string }) => {
       const workspace = await resolveToolWorkspace({ workspaceId });
       const billingWorkspace = await resolveBillingWorkspace(workspace);
 
@@ -671,14 +674,14 @@ export function registerSettingsTools(server: McpServer) {
         ? await proxyCheapBandwidth().catch(() => null)
         : null;
 
+      // capStatus follows the active provider. `status` keeps its legacy
+      // Apify shape for existing clients; once the proxy is active it
+      // describes the Apify ledger only.
+      const capStatus = await getScraperCapStatus(workspace.id);
       const status = await getApifyCapStatus(workspace.id);
-      // Split the same cap money by what it bought. A single "scrape" total
-      // blends source refreshes with the per-video MP4 downloads that
-      // gemini-native analysis pays Apify for. Measured on live data, 46% of
-      // the Apify ledger could not be traced to any RefreshRun at all — the
-      // point of this split is that the next person can tell WHICH activity
-      // that untraceable money belonged to instead of guessing.
-      const breakdown = await getApifySpendBreakdown(workspace.id);
+      // Split Apify money by what it bought (source refresh vs per-video MP4
+      // download vs untagged legacy rows), and report proxy traffic beside it.
+      const { apify: breakdown, proxy: proxyTotals } = await getScraperSpendBreakdown(workspace.id);
       const credits = { planCredits: billingWorkspace.planCredits, packCredits: billingWorkspace.packCredits, total: billingWorkspace.planCredits + billingWorkspace.packCredits, planKey: billingWorkspace.planKey };
 
       // Recent cap_breach events (last 30 days)
@@ -689,9 +692,9 @@ export function registerSettingsTools(server: McpServer) {
         take: 10,
       });
 
-      // Recent apify scrape events
+      // Recent scrape events from either provider — Apify history stays visible.
       const scrapeLogs = await db.usageLog.findMany({
-        where: { workspaceId: workspace.id, kind: 'scrape', provider: 'apify' },
+        where: { workspaceId: workspace.id, kind: 'scrape', provider: { in: ['apify', 'proxy'] } },
         orderBy: { createdAt: 'desc' },
         take: 10,
       });
@@ -699,19 +702,17 @@ export function registerSettingsTools(server: McpServer) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           scraper,
+          capStatus,
           proxyTraffic,
           vendorBandwidth,
           vendorBandwidthDisplay: formatProxyCheap(vendorBandwidth),
           status,
           credits,
-          message: status.breached
-            ? '⚠️  CAP BREACHED — refresh_source will refuse new Apify calls. Raise APIFY_SPEND_CAP_CENTS in .env to continue.'
-            : status.warning
-              ? `⚠️  Approaching cap (${status.percentUsed}% used). ${status.remainingDisplay} remaining.`
-              : `OK — ${status.remainingDisplay} remaining of ${status.capDisplay} cap.`,
+          message: capStatus.message,
           creditsMessage: `${credits.total} credits remaining (${credits.planCredits} plan + ${credits.packCredits} pack) on the ${credits.planKey} plan.`,
           recentCapBreaches: breaches.map(b => ({
             at: b.createdAt.toISOString(),
+            provider: b.provider,
             attemptedCostCents: b.costCents,
           })),
           spendBreakdown: {
@@ -719,12 +720,28 @@ export function registerSettingsTools(server: McpServer) {
             sourceScrapeCents: breakdown.byActivity.source_scrape.cents,
             videoDownloadCents: breakdown.byActivity.video_download.cents,
             unattributedLegacyCents: breakdown.byActivity.legacy.cents,
-            note: 'source_scrape = source refreshes; video_download = per-video MP4 pulls for gemini-native analysis; legacy = charges recorded before spend was tagged.',
+            note: 'Apify spend this month. source_scrape = source refreshes; video_download = per-video MP4 pulls for gemini-native analysis; legacy = charges recorded before spend was tagged. Includes rows recorded before the move to the proxy.',
+          },
+          proxySpend: {
+            totalCents: proxyTotals.totalCents,
+            trafficKb: proxyTotals.totalKb,
+            charges: proxyTotals.charges,
+            note: 'Proxy traffic this month (modelled cost from PROXY_COST_CENTS_PER_GB).',
           },
           recentScrapeEvents: scrapeLogs.map(l => {
+            if (l.provider !== 'apify') {
+              return {
+                at: l.createdAt.toISOString(),
+                provider: l.provider,
+                costCents: l.costCents,
+                trafficKb: l.units,
+                ref: l.refId,
+              };
+            }
             const { activity, ref } = decodeApifyRefId(l.refId);
             return {
               at: l.createdAt.toISOString(),
+              provider: l.provider,
               costCents: l.costCents,
               activity,
               ref,
@@ -732,5 +749,8 @@ export function registerSettingsTools(server: McpServer) {
           }),
         }, null, 2) }],
       };
-    });
+  };
+
+  server.tool('get_scraper_spend_status', spendStatusDescription, { workspaceId: workspaceIdField }, spendStatusHandler);
+  server.tool('get_apify_spend_status', spendStatusDescription, { workspaceId: workspaceIdField }, spendStatusHandler);
 }

@@ -16,7 +16,7 @@
 // ---------------------------------------------------------------------------
 
 import { CREDIT_COSTS } from './credits.js';
-import { estimateScrapeBytes, scrapeCapKind } from './scrapers/index.js';
+import { ESTIMATED_LOOKUP_BYTES, estimateScrapeBytes, maxVideoBytes, scrapeCapKind, selectDownloadAdapter } from './scrapers/index.js';
 import { bytesToCents, fmtBytes } from './scrapers/bandwidth.js';
 
 /** Apify cost constants mirrored from src/lib/apify.ts for estimation only. */
@@ -82,6 +82,27 @@ export function scraperCostLabel(results: number): string {
     return `~${fmtBytes(estimateScrapeBytes(results, true))} proxy traffic`;
   }
   return apifyCostLabel(results);
+}
+
+/** Apify's per-video MP4 download ceiling — mirrors ESTIMATED_DOWNLOAD_COST_CENTS in apify.ts. */
+const APIFY_DOWNLOAD_CENTS = 1;
+
+/**
+ * Pre-auth ceiling for downloading ONE video, in bytes, or null when the
+ * download adapter is Apify (billed per run, not per byte). Downloads go
+ * through the proxy whenever SCRAPER_PROXY_URL is set, whatever
+ * SCRAPER_PROVIDER says, so this follows selectDownloadAdapter.
+ */
+export function downloadCeilingBytes(): number | null {
+  let viaProxy = false;
+  try { viaProxy = selectDownloadAdapter('tiktok').name !== 'apify'; } catch { /* unconfigured — quote the Apify ceiling */ }
+  return viaProxy ? maxVideoBytes() + ESTIMATED_LOOKUP_BYTES : null;
+}
+
+/** Worst-case scraper spend, in cents, to download one video. */
+export function downloadCostCents(): number {
+  const bytes = downloadCeilingBytes();
+  return bytes == null ? APIFY_DOWNLOAD_CENTS : bytesToCents(bytes);
 }
 
 /** Estimated credit spend for analysing `n` videos, as user-facing text. */

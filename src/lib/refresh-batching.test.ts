@@ -6,7 +6,7 @@ import {
   refreshCoalesceMs,
 } from './jobs.js';
 import { canonicalKey, normalizeQuery } from './canonical-query.js';
-import { splitSpend } from './apify.js';
+import { splitSpend } from './spend-split.js';
 
 const ENV_KEYS = ['REFRESH_BATCH_PEER_CAP', 'REFRESH_BATCHING_ENABLED', 'REFRESH_COALESCE_MS'] as const;
 

@@ -76,7 +76,7 @@ export interface GalleryCard {
    * selectable even though it is not a photo post.
    */
   experimentEligible: boolean;
-  /** Why this video couldn't be scraped by the fetch worker (Apify etc.), when
+  /** Why this video couldn't be scraped by the fetch worker (scraper provider), when
    *  it has no stored video — lets the card show an error icon + tooltip. */
   fetchError: { code: string; message: string } | null;
   /** True when this post is from the workspace's own TikTok (Source.isSelf
