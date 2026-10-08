@@ -128,7 +128,7 @@ describe('tool surface', () => {
 });
 
 describe('ran_by (SLA-615)', () => {
-  const LEO = 'agent:Leo on behalf of man0l';
+  const LEO = 'agent:Leo';
 
   test('both tools advertise ran_by in their input schema', async () => {
     const { tools } = await (await connect()).listTools();
@@ -137,7 +137,7 @@ describe('ran_by (SLA-615)', () => {
       expect(props.ran_by).toBeDefined();
     }
     const create = tools.find(t => t.name === 'create_experiment')!.inputSchema.properties as Record<string, { description?: string }>;
-    expect(create.ran_by!.description).toContain('agent:<name> on behalf of <user>');
+    expect(create.ran_by!.description).toContain('agent:<name>');
   });
 
   test('create → list round-trips ranBy, and the filter returns only exact matches', async () => {
@@ -155,7 +155,7 @@ describe('ran_by (SLA-615)', () => {
     expect(filtered.body.experiments.map((e: any) => e.ranBy)).toEqual([LEO]);
     expect(callsOf('list').at(-1)).toEqual(['w1', 13, 0, LEO]);
 
-    expect((await call('list_experiments', { ran_by: 'agent:Leo' })).body.experiments).toEqual([]);
+    expect((await call('list_experiments', { ran_by: 'agent:Le' })).body.experiments).toEqual([]);
   });
 
   test('nextOffset still pages when the filter is set', async () => {
