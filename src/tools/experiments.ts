@@ -374,8 +374,8 @@ const idempotencyKeyField = z.string().min(8).max(120).regex(/^[a-zA-Z0-9_.:-]+$
   + '(e.g. after a lost response) replays the first result instead of doing the work twice.',
 );
 const ranByField = z.string().max(400).optional().describe(
-  'Who is running this: "user" when the user asked directly, or "agent:<name> on behalf of <user>" when an AI agent acts for them, '
-  + 'e.g. "agent:Leo on behalf of man0l". Free text, trimmed and capped at 120 characters. Always pass it so the owner can see who ran what.',
+  'Who is running this: "user" when the user asked directly, or "agent:<name>" when an AI agent acts for them, '
+  + 'e.g. "agent:Leo". Pass only the agent name; an "on behalf of <user>" suffix is dropped. Free text, trimmed and capped at 120 characters. Always pass it so the owner can see who ran what.',
 );
 // Responses expose the value as `ranBy`, so agents echo that spelling back; without
 // this alias zod strips the unknown key and the experiment is stored with ranBy null.
@@ -454,7 +454,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       workspaceId: workspaceIdField,
       limit: z.number().int().min(1).max(50).default(12),
       offset: z.number().int().min(0).default(0).describe('Pass nextOffset from the previous page.'),
-      ran_by: z.string().max(400).optional().describe('Only experiments whose ranBy equals this value exactly (e.g. "agent:Leo on behalf of man0l"). Omit for all.'),
+      ran_by: z.string().max(400).optional().describe('Only experiments whose ranBy equals this value exactly (e.g. "agent:Leo"). Omit for all.'),
       ranBy: ranByAliasField,
     },
     { readOnlyHint: true },

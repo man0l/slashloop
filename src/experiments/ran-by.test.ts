@@ -1,5 +1,5 @@
 // SLA-615: Experiment.ranBy — who ran an experiment ("user" or
-// "agent:<name> on behalf of <user>"). A real indexed column so "everything this
+// "agent:<name>"). A real indexed column so "everything this
 // runner ran" is a seek. These tests run the real store against a bun:sqlite
 // database built from the real D1 migrations, so the migration, the column, the
 // filter and the index are all exercised together.
@@ -40,7 +40,7 @@ function exp(id: string, createdAt: string, over: Partial<Experiment> = {}): Exp
   };
 }
 const ids = (rows: Experiment[]) => rows.map(r => r.id);
-const LEO = 'agent:Leo on behalf of man0l';
+const LEO = 'agent:Leo';
 
 describe('normalizeRanBy / takeRanBy', () => {
   test('trims, caps, and maps blank or non-string to null', () => {
@@ -50,6 +50,16 @@ describe('normalizeRanBy / takeRanBy', () => {
     expect(normalizeRanBy(undefined)).toBeNull();
     expect(normalizeRanBy(42)).toBeNull();
     expect(normalizeRanBy('x'.repeat(500))).toBe('x'.repeat(RAN_BY_MAX));
+  });
+
+  test('keeps only the agent name, dropping "on behalf of <user>"', () => {
+    expect(normalizeRanBy('agent:Marketing Ops on behalf of man0l')).toBe('agent:Marketing Ops');
+    expect(normalizeRanBy('  agent:Leo  ON  BEHALF  OF  man0l  ')).toBe('agent:Leo');
+    expect(normalizeRanBy('agent:Leo')).toBe('agent:Leo');
+    expect(normalizeRanBy('agent:Behalf Bot on behalf of a on behalf of b')).toBe('agent:Behalf Bot');
+    expect(normalizeRanBy('user')).toBe('user');
+    expect(normalizeRanBy('someone on behalf of x')).toBe('someone on behalf of x');
+    expect(takeRanBy({ a: 1, ran_by: 'agent:Marketing Ops on behalf of man0l' })).toEqual({ body: { a: 1 }, ranBy: 'agent:Marketing Ops' });
   });
 
   test('takeRanBy accepts ran_by or ranBy and strips both from the body', () => {
@@ -85,11 +95,25 @@ describe('store', () => {
     await create(exp('other-ws', '2026-10-05T00:00:00Z', { workspaceId: 'w2', ranBy: LEO }), 'ke');
     expect(ids(await list('w1', 50, 0, LEO))).toEqual(['c', 'a']);
     expect(ids(await list('w1', 50, 0, 'user'))).toEqual(['b']);
-    expect(ids(await list('w1', 50, 0, 'agent:Leo'))).toEqual([]);
+    expect(ids(await list('w1', 50, 0, 'agent:Leo on behalf of man0l'))).toEqual(['c', 'a']);
+    expect(ids(await list('w1', 50, 0, 'agent:Le'))).toEqual([]);
     expect(ids(await list('w1', 50, 0, 'USER'))).toEqual([]);
     expect(ids(await list('w1', 50, 0, `  ${LEO}  `))).toEqual(['c', 'a']);
     expect(ids(await list('w1', 50, 0, ''))).toEqual(['d', 'c', 'b', 'a']);
     expect(ids(await list('w1'))).toEqual(['d', 'c', 'b', 'a']);
+  });
+
+  test('migration 0018 rewrites legacy "on behalf of" rows to the bare agent name', () => {
+    const insert = (id: string, ranBy: string | null) => db.run(
+      `INSERT INTO "Experiment" ("id","workspaceId","status","version","dataJson","createdAt","updatedAt","createKey","ranBy") VALUES (?, 'w1','draft',0,'{}','2026-09-01T00:00:00Z','2026-09-01T00:00:00Z',?,?)`, [id, `k-${id}`, ranBy]);
+    insert('a', 'agent:Marketing Ops on behalf of man0l');
+    insert('b', 'agent:Leo');
+    insert('c', 'user');
+    insert('d', null);
+    insert('e', 'agent:Ops On Behalf Of x');
+    db.exec(migration('0018_experiment_ran_by_agent_name.sql'));
+    const rows = db.query(`SELECT "id","ranBy" FROM "Experiment" ORDER BY "id"`).all() as Array<{ id: string; ranBy: string | null }>;
+    expect(rows.map(r => r.ranBy)).toEqual(['agent:Marketing Ops', 'agent:Leo', 'user', null, 'agent:Ops']);
   });
 
   test('pagination keeps working under the filter (limit+1 reveals the next page)', async () => {

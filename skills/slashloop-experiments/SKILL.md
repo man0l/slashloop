@@ -66,9 +66,9 @@ competitor names. The server no longer appends the source caption to `goal`
 
 **Always pass `ran_by`** (the alias `ranBy` is accepted too) on every
 `create_experiment` call so the owner can see who ran it: `"user"` when the user asked directly, or
-`"agent:<your name> on behalf of <user>"` when you act for them (e.g.
-`"agent:Leo on behalf of man0l"`). Free text, trimmed and capped at 120
-characters; use the same string every time so the owner can filter by it. An
+`"agent:<your name>"` when you act for them (e.g. `"agent:Leo"`). Pass only
+your agent name, not who you act for; any `on behalf of ...` suffix is dropped.
+Free text, trimmed and capped at 120 characters; use the same string every time so the owner can filter by it. An
 experiment created without it keeps `ranBy: null` and cannot be attributed.
 
 Defaults: `variantCount=3` including baseline and `slideCount=5`, overridden by

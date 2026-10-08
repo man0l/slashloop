@@ -110,10 +110,11 @@ export const Create = z.object(createShape(Instructions)).strict().superRefine(n
 /** Same request with preset-fillable instructions; `Create` re-validates after expansion. */
 export const CreateRequest = z.object(createShape(InstructionsInput)).strict().superRefine(noDuplicateVideoIds);
 export const RAN_BY_MAX = 120;
-/** Free-text runner label: trimmed, capped, and blank/non-string means unknown (null). */
+const ON_BEHALF_OF = /^(agent:[\s\S]*?)\s+on\s+behalf\s+of\b[\s\S]*$/i;
+/** Runner label: trimmed, capped, and reduced to the bare agent name ("agent:X on behalf of Y" becomes "agent:X"). Blank/non-string means unknown (null). */
 export function normalizeRanBy(v: unknown): string | null {
   if (typeof v !== 'string') return null;
-  const t = v.trim().slice(0, RAN_BY_MAX).trim();
+  const t = v.trim().replace(ON_BEHALF_OF, '$1').slice(0, RAN_BY_MAX).trim();
   return t || null;
 }
 /** Splits the optional runner label off a create body so it never reaches the strict schemas or the idempotency fingerprint. */
@@ -569,7 +570,7 @@ export interface Variant extends Proposal { id: string; revision: number; status
     qaHistory?: SlideQaRecord[] | null }>; error: string | null; }
 export interface Experiment {
   id: string; workspaceId: string; status: string; createdAt: string; updatedAt: string; instructions: InstructionsData;
-  /** Who ran it: "user" or "agent:<name> on behalf of <user>". Mirrors the indexed `ranBy` column; absent/null on legacy rows. */
+  /** Who ran it: "user" or "agent:<name>" (any "on behalf of <user>" suffix is dropped). Mirrors the indexed `ranBy` column; absent/null on legacy rows. */
   ranBy?: string | null;
   /** Create response only: where completion is delivered. Never persisted in dataJson. */
   notify?: NotifyReceipt;

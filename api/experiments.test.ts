@@ -98,7 +98,7 @@ describe('experiments endpoint', () => {
   });
 
   test('GET list filters by ran_by, exposes ranBy, and keeps nextOffset', async () => {
-    const LEO = 'agent:Leo on behalf of man0l';
+    const LEO = 'agent:Leo';
     for (let i = 1; i <= 3; i++) experiments.set(`l${i}`, { ...exp(`l${i}`), createdAt: `2026-09-0${i}`, ranBy: LEO });
     experiments.set('u1', { ...exp('u1'), createdAt: '2026-09-09', ranBy: 'user' });
     experiments.set('n1', { ...exp('n1'), createdAt: '2026-09-10', ranBy: null });

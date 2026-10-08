@@ -314,7 +314,7 @@ model Experiment {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   createKey    String
-  /// Free-text runner: "user" or "agent:<name> on behalf of <user>". Null on legacy rows.
+  /// Free-text runner: "user" or "agent:<name>". Null on legacy rows.
   ranBy        String?
   /// SLA-617: JSON {url, secret, secretGenerated, metadata} for the completion webhook. A column, not dataJson, so the secret never rides serialize(). Null = no webhook.
   notifyJson   String?
