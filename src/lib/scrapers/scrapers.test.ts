@@ -15,6 +15,7 @@ import {
   getScraper,
   listScrapers,
   resolveProviderName,
+  scrapeSource,
   scrapeCapKind,
   selectDownloadAdapter,
   ScraperUnavailableError,
@@ -81,10 +82,29 @@ afterEach(() => {
 });
 
 describe('resolveProviderName', () => {
-  test('defaults to apify when unset', () => {
-    expect(resolveProviderName()).toBe(DEFAULT_PROVIDER);
-    expect(resolveProviderName('')).toBe('apify');
-    expect(resolveProviderName('default')).toBe('apify');
+  test('defaults to proxy when unset, empty, or "default"', () => {
+    expect(DEFAULT_PROVIDER).toBe('proxy');
+    expect(resolveProviderName()).toBe('proxy');
+    expect(resolveProviderName('')).toBe('proxy');
+    expect(resolveProviderName('default')).toBe('proxy');
+    process.env.SCRAPER_PROVIDER = '   ';
+    expect(resolveProviderName()).toBe('proxy');
+  });
+
+  test('apify is only selected when asked for by name', () => {
+    expect(resolveProviderName('apify')).toBe('apify');
+    process.env.SCRAPER_PROVIDER = 'apify';
+    expect(resolveProviderName()).toBe('apify');
+  });
+
+  test('unset provider fails closed when the proxy URL is missing, never calling apify', async () => {
+    process.env.APIFY_API_KEY = 'test-key';
+    delete process.env.SCRAPER_PROVIDER;
+    delete process.env.SCRAPER_PROXY_URL;
+    expect(getScraper().name).toBe('proxy');
+    await expect(scrapeSource({
+      workspaceId: 'ws', platform: 'tiktok', sourceType: 'hashtag', query: 'cats', maxResults: 1,
+    } as never)).rejects.toThrow(/SCRAPER_PROXY_URL/);
   });
 
   test('reads SCRAPER_PROVIDER and accepts aliases', () => {
@@ -101,8 +121,10 @@ describe('resolveProviderName', () => {
   });
 
   test('scrapeCapKind follows the selected adapter', () => {
+    process.env.SCRAPER_PROVIDER = 'apify';
+    process.env.APIFY_API_KEY = 'test-key';
     expect(scrapeCapKind('tiktok')).toBe('apify');
-    process.env.SCRAPER_PROVIDER = 'proxy';
+    delete process.env.SCRAPER_PROVIDER;
     process.env.SCRAPER_PROXY_URL = 'user:pass@gateway.example.com:8080';
     expect(scrapeCapKind('tiktok')).toBe('proxy');
   });

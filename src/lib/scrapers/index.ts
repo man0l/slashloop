@@ -1,8 +1,12 @@
 // ---------------------------------------------------------------------------
 // Scraper registry — the one place that decides WHO scrapes.
 //
-//   SCRAPER_PROVIDER=apify   (default) — Apify actors, billed per result
-//   SCRAPER_PROVIDER=proxy             — direct TikTok, billed per gigabyte
+//   SCRAPER_PROVIDER=proxy   (default) — direct TikTok, billed per gigabyte
+//   SCRAPER_PROVIDER=apify             — Apify actors, billed per result
+//
+// Unset (or empty, or "default") resolves to proxy. If SCRAPER_PROXY_URL is
+// missing the scrape fails closed with ScraperUnavailableError; it never
+// falls through to Apify. Apify must be asked for by name.
 //
 // Exclusive. There is no fallback from one provider to the other: a proxy
 // miss that silently bills Apify is a surprise invoice, and the reverse
@@ -11,7 +15,7 @@
 // Single-video MP4s (fetch / analyze) are the case the residential proxy
 // exists for — TikTok's CDN 403s datacenter IPs, so Apify was only buying
 // a KV-stored binary at ~1c/video. When SCRAPER_PROXY_URL is set, downloads
-// go through proxy and only proxy. List scrapes still follow SCRAPER_PROVIDER.
+// go through proxy and only proxy. List scrapes follow SCRAPER_PROVIDER (proxy when unset).
 // ---------------------------------------------------------------------------
 
 import { apifyAdapter, APIFY_PROVIDER } from './apify-adapter.js';
@@ -34,7 +38,7 @@ export { remainingBudgetBytes, vendorRemainingBytes, assertProxyBudget } from '.
 // bundles dynamic-import chunks too. It stays importable directly from
 // './warm-signer.js' for the VPS worker (Bun runs TS without a bundler).
 
-export const DEFAULT_PROVIDER = APIFY_PROVIDER;
+export const DEFAULT_PROVIDER = PROXY_PROVIDER_NAME;
 
 const REGISTRY = new Map<string, ScraperAdapter>([
   [APIFY_PROVIDER, apifyAdapter],
@@ -52,8 +56,8 @@ export function listScrapers(): string[] {
 
 /** Alias table so a provider can be named the way people actually write it. */
 const ALIASES: Record<string, string> = {
-  '': APIFY_PROVIDER,
-  default: APIFY_PROVIDER,
+  '': DEFAULT_PROVIDER,
+  default: DEFAULT_PROVIDER,
   residential: PROXY_PROVIDER_NAME,
   'proxy-cheap': PROXY_PROVIDER_NAME,
   proxycheap: PROXY_PROVIDER_NAME,
