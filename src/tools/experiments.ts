@@ -252,7 +252,7 @@ export function experimentProgress(e: Experiment) {
     error: e.error,
     credits: { charged: e.creditsCharged, max: e.maxCredits },
     sources: { total: e.inputs.length, ready: e.inputs.filter(i => i.status === 'ready').length },
-    reportReady: Boolean(e.report),
+    reportReady: Boolean(e.report) || (e.pipeline === 'contract' && Boolean(e.contract)),
     jobs: countJobs(e),
     retryingJobs: e.tasks.filter(isRetrying).map(({ id, kind, target, index, attempts, error, nextAttemptAt }) => ({
       id, kind, target, index, attempts, error: error ?? null,
@@ -324,7 +324,7 @@ function lifecycleSteps(e: Experiment): NextStep[] {
       if (all.length && !jobs.length) {
         return [{ label: 'Do not retry: every failed slide is a terminal QA verdict', tool: 'get_experiment', args: { experimentId: id }, why: TERMINAL_QA_ADVICE }];
       }
-      return [{ label: 'Price a retry of the failed jobs', tool: 'estimate_experiment', args: jobs.length ? { experimentId: id, stage: 'generate', taskIds: jobs } : { experimentId: id, stage: e.report && e.variants.length ? 'generate' : 'plan' }, why: all.length > jobs.length ? 'Free. Retries re-charge the retried jobs. Slides marked terminalQa are left out: they cannot pass without a contract or brief change.' : 'Free. Retries re-charge the retried jobs.' }];
+      return [{ label: 'Price a retry of the failed jobs', tool: 'estimate_experiment', args: jobs.length ? { experimentId: id, stage: 'generate', taskIds: jobs } : { experimentId: id, stage: (e.report || e.pipeline === 'contract') && e.variants.length ? 'generate' : 'plan' }, why: all.length > jobs.length ? 'Free. Retries re-charge the retried jobs. Slides marked terminalQa are left out: they cannot pass without a contract or brief change.' : 'Free. Retries re-charge the retried jobs.' }];
     }
     case 'cancelled':
       return [{ label: 'Delete the cancelled experiment', tool: 'delete_experiment', args: { experimentId: id }, why: 'Free. Removes the record and its retained images.' }];
@@ -740,7 +740,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         ? await approvalGate(d, e, 'generate', approvedCredits, undefined, taskIds)
         : variantIds
           ? await approvalGate(d, e, 'generate', approvedCredits, variantIds)
-          : await approvalGate(d, e, stage ?? (e.report && e.variants.length ? 'generate' : 'plan'), approvedCredits);
+          : await approvalGate(d, e, stage ?? ((e.report || e.pipeline === 'contract') && e.variants.length ? 'generate' : 'plan'), approvedCredits);
       if (gate.refusal) return gate.refusal;
       // Attempts only move when a job actually ran again, so an identical call
       // after a lost response replays; a genuine second retry gets a new key.

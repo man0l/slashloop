@@ -11,6 +11,8 @@ import { persistedOverlayText } from './render-prompt.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { applyApprovedEstimate } from './budget.js';
 import { compileExactEdit } from './exact-edit.js';
+import { briefToArm, generationTasks, isContractPipeline } from './contract-flow.js';
+import { slideWork } from './resolved-contract.js';
 import { postKey } from '../lib/post-key.js';
 import { expandPreset, inferSharedFormat } from './source-format.js';
 import { assertPublicHttpsUrl } from '../lib/webhook-url.js';
@@ -237,9 +239,40 @@ function selected(e: S.Experiment, ids?: string[]) {
   return variants;
 }
 export function taskCost(t: Pick<S.Task,'kind'>) { return t.kind==='analysis' ? CREDIT_COSTS.analyzeVideo : t.kind==='slide' ? CREDIT_COSTS.experimentSlide : CREDIT_COSTS.experimentPlanningCall; }
+/** Slides of `v` that need an image-model call. A B arm that shares slides with a baseline generated alongside it reuses them for free. */
+function contractRenderCount(e: S.Experiment, v: S.Experiment['variants'][number], generating: readonly S.Experiment['variants'][number][]): number {
+  const base = v.baselineId ? e.variants.find(x => x.id === v.baselineId) : undefined;
+  const shared = base && (generating.some(x => x.id === base.id) || base.slides.some(s => s.status === 'done'));
+  if (!shared) return v.brief.slides.length;
+  const a = briefToArm(base.brief), b = briefToArm(v.brief);
+  return v.brief.slides.filter((_, i) => slideWork(a, b, i) !== 'reuse').length;
+}
+async function contractEstimate(e: S.Experiment, stage: 'plan'|'generate', variants: S.Experiment['variants'], taskIds?: string[]) {
+  const AN = CREDIT_COSTS.analyzeVideo, PL = CREDIT_COSTS.experimentPlanningCall, SL = CREDIT_COSTS.experimentSlide;
+  let analyses = 0, planningCalls = 0, renders = 0, qas = 0;
+  if (taskIds) {
+    const jobs = e.tasks.filter(t => new Set(taskIds).has(t.id) && t.status !== 'done');
+    analyses = jobs.filter(t => t.kind === 'analysis').length; planningCalls = jobs.filter(t => t.kind === 'briefs').length;
+    renders = jobs.filter(t => t.kind === 'slide').length; qas = jobs.filter(t => t.kind === 'qa').length;
+  } else if (stage === 'plan') {
+    analyses = e.inputs.filter(x => x.status !== 'ready').length; planningCalls = e.variants.length ? 0 : 1;
+  } else {
+    for (const v of variants) { renders += v.slides.length ? v.slides.filter(s => s.status !== 'done').length : contractRenderCount(e, v, variants); qas++; }
+  }
+  const analysisCredits = analyses * AN, planningCredits = planningCalls * PL, generationCredits = renders * SL + qas * PL;
+  // One repair round can re-render every slide of an arm and re-check it; those are new tasks, charged like any other.
+  const correctionCredits = stage === 'generate' || taskIds ? generationCredits : 0;
+  return { analysisCredits, planningCredits, generationCredits, totalCredits: analysisCredits + planningCredits + generationCredits,
+    correctionCredits, maxTotalCredits: analysisCredits + planningCredits + generationCredits + correctionCredits,
+    remainingCredits: e.maxCredits - e.creditsCharged, workspaceCredits: (await creditBalance(e.workspaceId)).total,
+    maxCredits: e.maxCredits, generationBasis: e.generationBasis, exactProviderUsdCap: false,
+    maxProviderRequests: analyses + planningCalls + (renders + qas) * (correctionCredits ? 2 : 1),
+    pricing: { analysis: AN, planningCall: PL, slide: SL } };
+}
 export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: string[], taskIds?: string[]) {
   if (stage === 'plan' && ids) throw new S.ExperimentError(400,'variantIds_only_for_generation');
   const variants = selected(e,ids);
+  if (isContractPipeline(e)) return contractEstimate(e, stage, variants, taskIds);
   if (taskIds) {
     // Per-job retry estimate: price exactly the named jobs that still need provider work.
     const wanted = new Set(taskIds);
@@ -346,6 +379,8 @@ export function assertVariantEditable(e:S.Experiment,variantId:string|undefined,
  */
 export function applyVariantEdit(e:S.Experiment,variantId:string|undefined,edit:z.infer<typeof S.EditBrief>) {
   const v=assertVariantEditable(e,variantId,edit.revision);
+  // One text field: on the contract pipeline the hook is the first slide's caption, never a second copy.
+  if(isContractPipeline(e)&&edit.brief.slides[0]?.overlayText)edit={...edit,brief:{...edit.brief,hook:edit.brief.slides[0].overlayText}};
   S.assertBrief(e,edit.brief);
   const mirroredTo=new Set<string>();
   const proposals=e.variants.map(p=>p.id===v.id?{...p,brief:edit.brief}:{...p});
@@ -418,7 +453,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     applyApprovedEstimate(e, est);
     e.allowPartial=S.Plan.parse(b).allowPartial??false;
     e.status='planning';
-    e.tasks=[...e.inputs.filter(i=>i.status!=='ready').map(i=>task('analysis',i.videoId)),task('report'),task('briefs')];
+    e.tasks=[...e.inputs.filter(i=>i.status!=='ready').map(i=>task('analysis',i.videoId)),...(isContractPipeline(e)?[]:[task('report')]),task('briefs')];
   } else if (action==='edit') {
     applyVariantEdit(e,variantId,S.EditBrief.parse(b));
   } else if(action==='generate') {
@@ -428,11 +463,13 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     for(const v of vs) if(v.status!=='draft' || choices.find(x=>x.id===v.id)!.revision!==v.revision) throw new S.ExperimentError(409,'revision_conflict');
     S.validateVariants(e,e.variants);
     const est=await estimate(e,'generate',vs.map(x=>x.id));
-    applyApprovedEstimate(e, est);
+    // Repair rounds are new paid tasks. Raise the cap to cover them when the wallet can, so a QA retry does not pause the run.
+    applyApprovedEstimate(e, isContractPipeline(e) ? {...est,totalCredits:Math.max(est.totalCredits,Math.min(est.maxTotalCredits,est.workspaceCredits))} : est);
     for(const v of vs) {
       v.frozenBrief=structuredClone(v.brief);v.status='generating';
       v.slides=v.brief.slides.map((_s,index)=>({index,status:'pending',url:null,path:null,error:null,overlayText:persistedOverlayText(v.brief,index)}));
-      e.tasks.push(...v.slides.map(s=>task('slide',v.id,s.index)));
+      if(isContractPipeline(e))e.tasks.push(...generationTasks(v));
+      else e.tasks.push(...v.slides.map(s=>task('slide',v.id,s.index)));
     }
     e.status='generating';
   } else if(action==='retry') {
@@ -454,7 +491,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     }
     if(retryTasks.some(t=>t.attempts>=S.MAX_MANUAL_ATTEMPTS)) throw new S.ExperimentError(409,'retry_limit');
     applyRetry(e,retryTasks);
-    e.error=null;e.status=e.report&&e.variants.length?'generating':'planning';
+    e.error=null;e.status=(isContractPipeline(e)||e.report)&&e.variants.length?'generating':'planning';
   } else throw new S.ExperimentError(404,'action_not_found');
   if(key)e.commands[key]=hash;
   if(!await store.save(e)) throw new S.ExperimentError(409,'concurrent_update');

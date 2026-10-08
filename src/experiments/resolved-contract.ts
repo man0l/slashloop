@@ -393,7 +393,7 @@ export function buildArmB(a: ArmBrief, b: VariantB): ArmBrief {
     case 'character': next.character = b.value; break;
     case 'visualStyle': next.visualStyle = b.value; break;
     case 'concept': case 'slides':
-      next.slides = b.slides.map((s, i) => ({ ...s, role: a.slides[i]?.role ?? s.role })); break;
+      next.slides = b.slides.map((s, i) => ({ ...s, ...(a.slides[i]?.role ? { role: a.slides[i]!.role } : {}) })); break;
     default: throw new ContractError('contract_variable', `Unsupported variable "${b.variable}".`);
   }
   return next;

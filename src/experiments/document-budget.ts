@@ -3,7 +3,7 @@ import { ExperimentError, type Experiment } from './schema.js';
 export const DOCUMENT_BYTES = 1_800_000;
 export const HISTORY_BYTES = 128_000;
 export const HISTORY_ENTRIES = 16;
-const resultReserve = { analysis: 210_000, report: 1_200_000, briefs: 1_200_000, slide: 16_000 };
+const resultReserve = { analysis: 210_000, report: 1_200_000, briefs: 1_200_000, slide: 16_000, qa: 16_000 };
 
 export function encodeExperiment(e: Experiment): string {
   let count = 0;
