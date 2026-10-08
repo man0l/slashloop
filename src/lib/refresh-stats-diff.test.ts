@@ -14,7 +14,7 @@ function stored(over: Partial<StoredVideoStats> = {}): StoredVideoStats {
 function scraped(): NormalizedVideo {
   return {
     platform: 'tiktok', externalId: 'v1', url: 'https://x', thumbnailUrl: 'https://t',
-    coverDownloadUrl: null, creatorHandle: 'c', creatorFollowers: 5000, caption: '',
+    creatorHandle: 'c', creatorFollowers: 5000, caption: '',
     postedAt: new Date().toISOString(), views: 1000, likes: 100, comments: 10,
     shares: 5, saves: 2, durationSec: 10, transcript: null, transcriptSource: 'none',
     sound: { id: 's1', title: 't', author: 'a' }, raw: {},

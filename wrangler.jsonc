@@ -99,6 +99,6 @@
     "CLOUDFLARE_ACCOUNT_ID": "efaa72fe64b9d2798df1388b15c7674a"
   }
   // Secrets (SUPABASE_URL, CRON_SECRET, STRIPE_*, RESEND_API_KEY, GEMINI_API_KEY,
-  // APIFY_*, R2_* S3 keys for the VPS path, etc.) are set with
+  // R2_* S3 keys for the VPS path, etc.) are set with
   // `wrangler secret put <NAME>` — same names as .env.example.
 }

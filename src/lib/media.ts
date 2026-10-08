@@ -19,18 +19,13 @@ import { slideshowImagesFromNormalizedRaw, slideshowImagesFromRaw, slideshowKeys
 import { isTikTokCdnUrl } from './tiktok-cdn.js';
 
 /**
- * Only needed for the SOURCE-CDN fallback. TikTok's CDN 403s bare requests, so
- * these mirror what the video download already sends. Apify's key-value store
- * is public and needs no headers — and is the path we want to be on.
+ * TikTok's CDN 403s bare requests, so these mirror what the video download
+ * already sends.
  */
 const TIKTOK_FETCH_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   Referer: 'https://www.tiktok.com/',
 };
-
-function isApifyHosted(url: string): boolean {
-  return /^https?:\/\/[^/]*\bapify\.com\//i.test(url);
-}
 
 /** The image types the `thumbs` bucket is provisioned to allow (see the buckets migration). */
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
@@ -38,9 +33,9 @@ const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/hei
 /**
  * Coerce an upstream Content-Type into a real image type.
  *
- * Apify's key-value store commonly serves stored records as
- * application/octet-stream, and whatever we pass here is what Supabase stores
- * and later serves the object with. Two reasons that matters:
+ * Upstream hosts can serve images as application/octet-stream, and whatever we
+ * pass here is what Supabase stores and later serves the object with. Two
+ * reasons that matters:
  *
  *   - The stored Content-Type is what the public thumb URL returns. Serving a
  *     cover as application/octet-stream invites a download rather than a render.
@@ -84,44 +79,31 @@ const THUMB_CONCURRENCY = 10;
 export interface ThumbIngestTarget {
   videoId: string;
   platform: string;
-  /** Source-CDN URL. Fallback only — signed and short-lived on TikTok. */
+  /** Source-CDN URL — signed and short-lived on TikTok. */
   thumbnailUrl: string;
-  /** Apify key-value-store URL. Preferred: public, unsigned, no referer gate. */
-  coverDownloadUrl?: string | null;
 }
 
 /**
  * Fetch one cover image and store it. Returns the object key on success, null
  * on any failure — callers record 'failed' and move on. A thumbnail is never
  * worth failing a scrape over; the scrape is the expensive thing.
- *
- * Source preference: Apify's key-value store first (that's why the scrape sets
- * `shouldDownloadCovers`), the platform CDN only as a fallback for when the
- * actor returns no KV URL.
  */
 async function ingestOneThumb(
   workspaceId: string,
   target: ThumbIngestTarget,
 ): Promise<string | null> {
-  const source = target.coverDownloadUrl || target.thumbnailUrl;
+  const source = target.thumbnailUrl;
   if (!source) return null;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), THUMB_FETCH_TIMEOUT_MS);
 
   try {
-    // Report the host actually being fetched, not just which field was empty.
-    // Logged at info, after the fetch succeeds: pickApifyCoverUrl returning
-    // null is the by-design fallback, so warn on every run was pure noise.
-    // The ingest-failure warn below still fires when the fallback fails.
-    const fallbackHost = !target.coverDownloadUrl ? (isApifyHosted(source) ? 'apify' : 'source cdn') : null;
-
     const res = await fetch(source, {
-      // Apify KV is public; the spoofed headers are only for the CDN fallback.
-      headers: isApifyHosted(source) ? {} : TIKTOK_FETCH_HEADERS,
+      headers: TIKTOK_FETCH_HEADERS,
       signal: controller.signal,
     });
-    if (!res.ok) throw new Error(`cover fetch ${res.status} from ${isApifyHosted(source) ? 'apify' : 'source cdn'}`);
+    if (!res.ok) throw new Error(`cover fetch ${res.status} from source cdn`);
 
     const buf = new Uint8Array(await res.arrayBuffer());
     if (buf.byteLength < 512) throw new Error(`cover too small (${buf.byteLength}b) — likely an error page`);
@@ -134,7 +116,6 @@ async function ingestOneThumb(
       body: buf,
       contentType: imageContentType(res.headers.get('content-type'), source),
     });
-    if (fallbackHost) console.info(`[media] ${target.videoId}: no coverDownloadUrl, fetched cover from ${fallbackHost}`);
     return path;
   } catch (err) {
     console.warn(`[media] thumbnail ingest failed for ${target.videoId}: ${(err as Error).message}`);
@@ -273,7 +254,7 @@ export async function backfillThumbsViaOembed(
 /**
  * Store an already-downloaded MP4 and record the key.
  *
- * Called from the analyze path once Apify has produced the file. Failure is
+ * Called from the analyze path once the scraper has produced the file. Failure is
  * logged and swallowed: by the time this runs the expensive work (scrape +
  * download) is done and the analysis is about to succeed, so losing the cache
  * copy must not lose the analysis.
@@ -475,7 +456,7 @@ async function fetchImageBuffer(url: string): Promise<{ body: Uint8Array; conten
   const timer = setTimeout(() => controller.abort(), THUMB_FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
-      headers: isApifyHosted(url) ? {} : TIKTOK_FETCH_HEADERS,
+      headers: TIKTOK_FETCH_HEADERS,
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`image fetch ${res.status}`);
@@ -613,22 +594,21 @@ export async function persistSlideshow(
 }
 
 /**
- * Download a video's MP4 via Apify and store it — WITHOUT running Gemini.
+ * Download a video's MP4 via the residential proxy and store it — WITHOUT running Gemini.
  *
  * This is the "fetch video" path: it makes a TikTok playable in the gallery
  * (mediaKey / mediaStatus='stored') so the inline <video> and key-moment
  * seeking work, independent of an analysis run. Reuses the exact download +
  * ingest legs as the analyze path (analyzeVideoWithDownload), minus Gemini.
  *
- * TikTok only — downloadVideo uses the residential proxy when
- * SCRAPER_PROXY_URL is set, otherwise Apify. Exclusive, no fallback. Spend is
- * asserted + recorded inside the adapter, so the fetch flow is governed by
+ * TikTok only — downloadVideo goes through the residential proxy
+ * (SCRAPER_PROXY_URL). Spend is asserted + recorded inside the adapter, so the fetch flow is governed by
  * that provider's cap, not AI credits. On ANY failure
  * the video is marked mediaStatus='failed' and the REAL error is rethrown —
  * the worker's failJob persists it as the job's lastError, which is what the
  * gallery's ⛔ fetch-error surface (src/lib/fetch-errors.ts) reads. Swallowing
  * the reason here used to turn every failure into a generic "download/store
- * returned no result" and hid whether it was a spend cap, an Apify actor
+ * returned no result" and hid whether it was a spend cap, a proxy
  * failure, a TikTok CDN refusal, or a deleted video.
  */
 export async function downloadAndStoreVideo(
@@ -675,11 +655,11 @@ export async function downloadAndStoreVideo(
  * Pull a previously stored MP4 back down to a local path.
  *
  * The read side of ingestVideoFile, and the mechanism behind Phase 2.1: a
- * re-analysis inside the retention window needs the bytes, not a fresh Apify
- * run. Uses a short-lived signed URL because `media` is private.
+ * re-analysis inside the retention window needs the bytes, not a fresh proxy
+ * download. Uses a short-lived signed URL because `media` is private.
  *
  * Returns null rather than throwing on any failure. The caller's fallback is to
- * pay Apify, which is worse but correct — a stale key, an object swept by
+ * re-download, which is worse but correct — a stale key, an object swept by
  * retention between the DB read and this fetch, or storage being disabled must
  * degrade to the slow path, not lose the analysis.
  */
@@ -712,7 +692,7 @@ export async function fetchStoredVideo(
   try {
     const url = await signUrl(mediaBucket(), mediaKey, signedUrlTtlSeconds());
     // Bounded: multi-MB MP4 on a constrained link, but a true stall must
-    // fall back to paying Apify (the caller's path) rather than hang.
+    // fall back to re-downloading (the caller's path) rather than hang.
     const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
     if (!res.ok) throw new Error(`signed GET ${res.status}`);
 

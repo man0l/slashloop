@@ -50,7 +50,6 @@ const ENV_KEYS = [
   'SCRAPER_PROVIDER',
   'SCRAPER_FALLBACK_PROVIDER',
   'SCRAPER_PROXY_URL',
-  'APIFY_API_KEY',
   'PROXY_TRAFFIC_CAP_GB',
   'PROXY_COST_CENTS_PER_GB',
   'SCRAPER_PROXY_COUNTRY',
@@ -91,14 +90,17 @@ describe('resolveProviderName', () => {
     expect(resolveProviderName()).toBe('proxy');
   });
 
-  test('apify is only selected when asked for by name', () => {
-    expect(resolveProviderName('apify')).toBe('apify');
+  test('the retired apify provider is unknown and fails closed', async () => {
+    expect(listScrapers()).not.toContain('apify');
+    expect(() => getScraper('apify')).toThrow(ScraperUnavailableError);
     process.env.SCRAPER_PROVIDER = 'apify';
-    expect(resolveProviderName()).toBe('apify');
+    await expect(scrapeSource({
+      workspaceId: 'ws', platform: 'tiktok', sourceType: 'hashtag', query: 'cats', maxResults: 1,
+    } as never)).rejects.toThrow(/unknown provider/);
+    expect(() => selectDownloadAdapter('tiktok')).toThrow(ScraperUnavailableError);
   });
 
-  test('unset provider fails closed when the proxy URL is missing, never calling apify', async () => {
-    process.env.APIFY_API_KEY = 'test-key';
+  test('unset provider fails closed when the proxy URL is missing', async () => {
     delete process.env.SCRAPER_PROVIDER;
     delete process.env.SCRAPER_PROXY_URL;
     expect(getScraper().name).toBe('proxy');
@@ -115,48 +117,35 @@ describe('resolveProviderName', () => {
     expect(resolveProviderName('tiktok-web')).toBe('proxy');
   });
 
-  test('unknown names stay unknown so a typo cannot silently bill Apify', () => {
+  test('unknown names stay unknown so a typo cannot silently pick another provider', () => {
     expect(resolveProviderName('clockworks')).toBe('clockworks');
     expect(() => getScraper('clockworks')).toThrow(ScraperUnavailableError);
   });
 
-  test('scrapeCapKind follows the selected adapter', () => {
-    process.env.SCRAPER_PROVIDER = 'apify';
-    process.env.APIFY_API_KEY = 'test-key';
-    expect(scrapeCapKind('tiktok')).toBe('apify');
-    delete process.env.SCRAPER_PROVIDER;
+  test('scrapeCapKind is proxy for the selected adapter', () => {
     process.env.SCRAPER_PROXY_URL = 'user:pass@gateway.example.com:8080';
     expect(scrapeCapKind('tiktok')).toBe('proxy');
   });
 
-  test('listScrapers includes both built-in adapters', () => {
-    expect(listScrapers()).toEqual(expect.arrayContaining(['apify', 'proxy']));
+  test('listScrapers is the proxy adapter only', () => {
+    expect(listScrapers()).toEqual(['proxy']);
   });
 });
 
 describe('selectDownloadAdapter (exclusive — no fallback)', () => {
-  test('uses proxy for TikTok when SCRAPER_PROXY_URL is set, even if SCRAPER_PROVIDER=apify', () => {
-    process.env.SCRAPER_PROVIDER = 'apify';
-    process.env.APIFY_API_KEY = 'test-key';
+  test('uses proxy for TikTok when SCRAPER_PROXY_URL is set', () => {
     process.env.SCRAPER_PROXY_URL = 'user:pass@gateway.example.com:8080';
     expect(selectDownloadAdapter('tiktok').name).toBe('proxy');
   });
 
-  test('uses apify when the proxy is not configured', () => {
-    process.env.SCRAPER_PROVIDER = 'apify';
-    process.env.APIFY_API_KEY = 'test-key';
-    expect(selectDownloadAdapter('tiktok').name).toBe('apify');
-  });
-
-  test('an explicit provider wins and does not fall back', () => {
+  test('an explicit provider name does not fall back', () => {
     process.env.SCRAPER_PROXY_URL = 'user:pass@gateway.example.com:8080';
-    process.env.APIFY_API_KEY = 'test-key';
-    expect(selectDownloadAdapter('tiktok', 'apify').name).toBe('apify');
+    expect(selectDownloadAdapter('tiktok', 'proxy').name).toBe('proxy');
+    expect(() => selectDownloadAdapter('tiktok', 'apify')).toThrow(ScraperUnavailableError);
   });
 
-  test('does not substitute apify when proxy is named but unconfigured', () => {
+  test('fails closed when proxy is named but unconfigured', () => {
     process.env.SCRAPER_PROVIDER = 'proxy';
-    process.env.APIFY_API_KEY = 'test-key';
     expect(() => selectDownloadAdapter('tiktok', 'proxy')).toThrow(ScraperUnavailableError);
     expect(() => selectDownloadAdapter('tiktok', 'proxy')).toThrow(/SCRAPER_PROXY_URL/);
   });
@@ -223,7 +212,6 @@ describe('tiktok-web helpers', () => {
       videoMeta: { originalCoverUrl: 'https://cdn.example/cover.jpg', duration: 12 },
     });
     expect(shaped.videoMeta.playAddr).toBeUndefined();
-    expect(shaped.coverDownloadUrl).toBeUndefined();
     expect(shaped.slideshowImages).toBeUndefined();
     expect(shaped.musicMeta).toEqual({ musicId: '', musicName: '', musicAuthor: '' });
   });
@@ -903,7 +891,6 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
       externalId: '7178571592316783915',
       url: 'https://www.tiktok.com/@jawhacks/video/7178571592316783915',
       thumbnailUrl: 'https://cdn.example/cover.jpg',
-      coverDownloadUrl: null,
       creatorHandle: 'jawhacks',
       creatorFollowers: 12345,
       caption: 'from receipt',

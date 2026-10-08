@@ -31,7 +31,6 @@ export interface ContainerEnv {
   R2_MEDIA_BUCKET: string;
   R2_THUMB_BUCKET: string;
   /** Scraper + AI keys: identical names to worker/.env.example. */
-  APIFY_API_KEY: string;
   SCRAPER_PROVIDER?: string;
   SCRAPER_PROXY_URL?: string;
   OPENROUTER_API_KEY?: string;
