@@ -177,7 +177,7 @@ export const Plan = Command.extend({ allowPartial: z.boolean().optional() });
 export const Retry = Command.extend({ variantIds: z.array(Id).min(1).max(12).optional(), taskIds: z.array(z.string().min(1)).min(1).max(150).optional() });
 export const Generate = Command.extend({ variants: z.array(z.object({ id: Id, revision: z.number().int().positive() }).strict()).min(1).max(12) });
 export const Estimate = WorkspaceBody.extend({ stage: z.enum(['plan', 'generate']), variantIds: z.array(Id).min(1).max(12).optional(), taskIds: z.array(z.string().min(1)).min(1).max(150).optional() });
-export const EditBrief = WorkspaceBody.extend({ revision: z.number().int().positive(), brief: Brief });
+export const EditBrief = WorkspaceBody.extend({ revision: z.number().int().positive(), brief: Brief, title: z.string().trim().min(1).max(160).optional(), hypothesis: text.min(1).optional() });
 
 /* ------------------------------------------------------------------------- *
  * SLA-451: `exact_edit` — an explicitly selected, versioned, one-deck edit.
@@ -606,6 +606,20 @@ export function assertBrief(e: Experiment, b: BriefData) {
   if (b.slides.length !== e.slideCount || !same(b.lockedConstraints, e.instructions.lockedConstraints))
     throw new ExperimentError(422, 'locked_constraints', 'Slide count and lockedConstraints must match the experiment.');
 }
+/** Brief fields every variant must share: the ones the experiment did not approve as variables. `slides` is shared only when neither it nor `concept` (which retells the storyboard) is a variable. */
+export function sharedBriefFields(e: Experiment): Array<typeof VARIABLE_FIELDS[number]> {
+  const vars = e.instructions.variables;
+  return VARIABLE_FIELDS.filter(k => !vars.includes(k) && (k !== 'slides' || !vars.includes('concept')));
+}
+/** The variables a brief really changes against the baseline: a concept change (or a hook test with varySupportingOverlays and identical scenes) retells the storyboard, so its slides diff belongs to that one variable and is not counted separately. */
+export function effectiveChangedFields(e: Experiment, baseline: BriefData, brief: BriefData) {
+  const changed = VARIABLE_FIELDS.filter(k => !same(brief[k], baseline[k]));
+  const scenesSame = brief.slides.length === baseline.slides.length
+    && brief.slides.every((s, n) => s.role === baseline.slides[n]!.role && s.scene === baseline.slides[n]!.scene);
+  const supportRetell = !!e.instructions.varySupportingOverlays && changed.includes('hook')
+    && changed.every(k => k === 'hook' || k === 'slides') && scenesSame;
+  return changed.includes('concept') || supportRetell ? changed.filter(k => k !== 'slides') : changed;
+}
 export function validateVariants(e: Experiment, proposals: Proposal[]) {
   // Fewer than requested is a degraded success (the fan-out cannot always
   // produce enough distinct survivors) â€” never a reason to fail the plan.
@@ -613,19 +627,12 @@ export function validateVariants(e: Experiment, proposals: Proposal[]) {
   const baseline = proposals[0]!;
   for (let i = 0; i < proposals.length; i++) {
     const p = proposals[i]!; assertBrief(e, p.brief);
-    const changed = VARIABLE_FIELDS.filter(k => !same(p.brief[k], baseline.brief[k]));
-    // A concept change retells the storyboard by definition — the slides diff
-    // is part of that one variable, not a second unapproved one.
-    // Same for a hook test with varySupportingOverlays: overlay-only retells
-    // (scenes identical) belong to the hook variable, not to `slides`.
-    const scenesSame = p.brief.slides.length === baseline.brief.slides.length
-      && p.brief.slides.every((s, n) => s.role === baseline.brief.slides[n]!.role && s.scene === baseline.brief.slides[n]!.scene);
-    const supportRetell = !!e.instructions.varySupportingOverlays && changed.includes('hook')
-      && changed.every(k => k === 'hook' || k === 'slides') && scenesSame;
-    const effective = changed.includes('concept') ? changed.filter(k => k !== 'slides') : supportRetell ? changed.filter(k => k !== 'slides') : changed;
+    const effective = effectiveChangedFields(e, baseline.brief, p.brief);
     if (i === 0 && p.changedVariables.length) throw new ExperimentError(422, 'baseline_has_changes');
     if (i === 0) continue;
-    if (!effective.length || effective.some(k => !e.instructions.variables.includes(k))) throw new ExperimentError(422, 'unapproved_variable');
+    if (!effective.length) throw new ExperimentError(422, 'unapproved_variable', `unapproved_variable: variant "${p.title}" is identical to the baseline in every approved variable (${e.instructions.variables.join(', ')}); it must change at least one of them.`);
+    const unapproved = effective.filter(k => !e.instructions.variables.includes(k));
+    if (unapproved.length) throw new ExperimentError(422, 'unapproved_variable', `unapproved_variable: variant "${p.title}" differs from the baseline in ${unapproved.join(', ')}, which this experiment did not approve. Only ${e.instructions.variables.join(', ')} may differ between variants; every other brief field must be identical across them.`);
     if (e.instructions.mode === 'controlled' && effective.length !== 1) throw new ExperimentError(422, 'not_one_variable');
     if (!same([...effective].sort(), p.changedVariables.map(c => c.name).sort())) throw new ExperimentError(422, 'incorrect_changed_variables');
     if ((effective.includes('concept') || effective.includes('slides')) && same(p.brief.slides, baseline.brief.slides))

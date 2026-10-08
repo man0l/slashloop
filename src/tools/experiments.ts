@@ -176,6 +176,7 @@ const ERROR_HINTS: Record<string, string> = {
   video_not_slideshow: 'Only slideshows (or videos with a finished Recreate deck) can be experiment sources. show_gallery marks eligible cards.',
   video_not_found: 'That video is not in this workspace.',
   experiment_not_found: 'No experiment with that id in this workspace. list_experiments shows the ids.',
+  unapproved_variable: 'Variants may differ only in the experiment\'s chosen variables (instructions.variables on get_experiment). Shared fields you change are applied to the other draft variants automatically; this fires when a sibling is frozen or rendered, or when the variants would no longer differ in a chosen variable. The message names the fields.',
   locked_constraints: 'A brief must keep the experiment slide count and lockedConstraints exactly.',
 };
 
@@ -658,22 +659,33 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     + 'provider job is running or unknown. Refused while "planning" or "generating" (experiment_active), when "cancelled" '
     + '(experiment_cancelled), and in "draft" before planning has produced briefs (not_editable). A frozen or rendered variant is '
     + 'refused (variant_frozen). Pass the variant\'s current revision (get_experiment) — a stale revision is refused '
-    + '(revision_conflict), never overwritten. The brief must keep the experiment\'s slide count and lockedConstraints, and '
-    + 'must still differ from the baseline only in the experiment\'s chosen variables. Returns the variant\'s new revision; '
-    + 'use it when calling generate_experiment.',
+    + '(revision_conflict), never overwritten. The brief must keep the experiment\'s slide count and lockedConstraints. Variants '
+    + 'may differ only in the experiment\'s chosen variables (instructions.variables on get_experiment); every other brief field '
+    + '(e.g. cta, caption, character, visualStyle, concept, slides when not chosen) is shared. Edit a shared field on any ONE draft '
+    + 'variant and the same change is applied to the other draft variants automatically, so retargeting the whole experiment '
+    + '(new topic, new copy) works one variant at a time; a chosen variable is edited per variant. If a shared field cannot be '
+    + 'mirrored (another variant is frozen/rendered) or a variant would stop differing in a chosen variable, the edit is refused '
+    + '(422 unapproved_variable) and the message names the fields. Optional title and hypothesis rename the variant (not part '
+    + 'of the brief). Returns the edited variant\'s new revision; any other variant that was updated gets a new revision too, so '
+    + 'use the revisions in the result when calling generate_experiment.',
     {
       workspaceId: workspaceIdField,
       experimentId: experimentIdField,
       variantId: Id.describe('Variant id from get_experiment.'),
       revision: z.number().int().positive().describe('The variant\'s current revision.'),
       brief: briefInput.describe('The complete edited brief (all fields, not a patch).'),
+      title: z.string().min(1).max(160).optional().describe('New variant title (1–160 characters). Omit to keep the current one.'),
+      hypothesis: z.string().min(1).max(2000).optional().describe('New variant hypothesis. Omit to keep the current one.'),
     },
     { readOnlyHint: false },
-    ({ workspaceId, experimentId, variantId, revision, brief }) => guarded(async () => {
+    ({ workspaceId, experimentId, variantId, revision, brief, title, hypothesis }) => guarded(async () => {
       const workspace = await d.resolveWorkspace({ workspaceId });
-      const next = await d.mutate(workspace.id, experimentId, 'edit', { workspaceId: workspace.id, revision, brief }, variantId);
+      const before = await d.load(workspace.id, experimentId);
+      const next = await d.mutate(workspace.id, experimentId, 'edit', { workspaceId: workspace.id, revision, brief, ...(title === undefined ? {} : { title }), ...(hypothesis === undefined ? {} : { hypothesis }) }, variantId);
       const v = next.variants.find(x => x.id === variantId);
-      return mutationResult(d, next, `Brief saved. Variant is now at revision ${v?.revision ?? '?'}.`);
+      const synced = next.variants.filter(x => x.id !== variantId && x.revision !== before.variants.find(y => y.id === x.id)?.revision);
+      const note = synced.length ? ` Shared fields were also applied to: ${synced.map(x => `${x.id} (revision ${x.revision})`).join(', ')}.` : '';
+      return mutationResult(d, next, `Brief saved. Variant is now at revision ${v?.revision ?? '?'}.${note}`);
     }));
 
   // ---- generate_experiment ----

@@ -334,6 +334,40 @@ export function assertVariantEditable(e:S.Experiment,variantId:string|undefined,
     throw new S.ExperimentError(409,'variant_in_flight');
   return v;
 }
+/**
+ * Apply an `update_experiment_variant` edit. Fields the experiment did not approve as
+ * variables must be identical across variants, so a change to one is mirrored onto the other
+ * draft variants (their revision advances); otherwise a coordinated rewrite (new topic, CTA,
+ * caption) could never pass validation one variant at a time. Throws before mutating anything
+ * when the result would break the one-variable contract.
+ */
+export function applyVariantEdit(e:S.Experiment,variantId:string|undefined,edit:z.infer<typeof S.EditBrief>) {
+  const v=assertVariantEditable(e,variantId,edit.revision);
+  S.assertBrief(e,edit.brief);
+  const mirroredTo=new Set<string>();
+  const proposals=e.variants.map(p=>p.id===v.id?{...p,brief:edit.brief}:{...p});
+  for(const k of S.sharedBriefFields(e)) {
+    if(S.same(v.brief[k],edit.brief[k])) continue;
+    for(const p of proposals) {
+      if(p.id===v.id || p.status!=='draft' || p.frozenBrief) continue;
+      p.brief={...p.brief,[k]:structuredClone(edit.brief[k])}; mirroredTo.add(p.id);
+    }
+  }
+  // Derive factual delta labels rather than accepting stale model labels after editing.
+  for(let i=1;i<proposals.length;i++) {
+    const p=proposals[i]!;
+    p.changedVariables=S.effectiveChangedFields(e,proposals[0]!.brief,p.brief).map(name=>({name,value:typeof p.brief[name]==='string'?p.brief[name] as string:JSON.stringify(p.brief[name])}));
+  }
+  S.validateVariants(e,proposals);
+  const before=new Map(e.variants.map(x=>[x.id,x]));
+  e.variants=proposals.map(p=>{
+    const prior=before.get(p.id)!;
+    if(p.id===v.id) return {...p,history:[...prior.history,{revision:prior.revision,brief:prior.brief}],revision:prior.revision+1,
+      ...(edit.title===undefined?{}:{title:edit.title}),...(edit.hypothesis===undefined?{}:{hypothesis:edit.hypothesis})};
+    if(mirroredTo.has(p.id)) return {...p,history:[...prior.history,{revision:prior.revision,brief:prior.brief}],revision:prior.revision+1};
+    return p;
+  });
+}
 export async function mutate(workspaceId:string,id:string,action:string,raw:unknown,variantId?:string) {
   // SLA-451: exact_edit is a separately selected operation. Its actions are
   // refused on a legacy experiment and legacy actions are refused on it, so a
@@ -383,18 +417,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     e.status='planning';
     e.tasks=[...e.inputs.filter(i=>i.status!=='ready').map(i=>task('analysis',i.videoId)),task('report'),task('briefs')];
   } else if (action==='edit') {
-    const edit=S.EditBrief.parse(b);
-    const v=assertVariantEditable(e,variantId,edit.revision);
-    S.assertBrief(e,edit.brief);
-    const proposals=e.variants.map(p=>p.id===v.id?{...p,brief:edit.brief}:p);
-    // Derive factual delta labels rather than accepting stale model labels after editing.
-    for(let i=1;i<proposals.length;i++) {
-      const p=proposals[i]!;
-      p.changedVariables=S.VARIABLE_FIELDS.filter(k=>!S.same(p.brief[k],proposals[0]!.brief[k])).map(name=>({name,value:typeof p.brief[name]==='string'?p.brief[name] as string:JSON.stringify(p.brief[name])}));
-    }
-    S.validateVariants(e,proposals);
-    e.variants=proposals; const changed=e.variants.find(x=>x.id===v.id)!;
-    changed.history.push({revision:changed.revision,brief:v.brief}); changed.brief=edit.brief; changed.revision++;
+    applyVariantEdit(e,variantId,S.EditBrief.parse(b));
   } else if(action==='generate') {
     if(e.status!=='review' && e.status!=='completed') throw new S.ExperimentError(409,'not_reviewable');
     const choices=S.Generate.parse(b).variants;
