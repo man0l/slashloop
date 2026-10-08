@@ -33,7 +33,10 @@
 //       DB_CONNECTION_LIMIT with it (Postgres mode only; D1 serializes).
 //       WORKER_RECLAIM_INTERVAL_MS (default 300000) throttles BOTH whole-queue
 //       sweeps (stuck-claim reclaim + never-claimed fail) on the maintenance
-//       worker. WORKER_INTERNAL_URL + CRON_SECRET route rawBatch through the
+//       worker. WORKER_METRICS_PORT (unset = off) serves GET /metrics with the
+//       fallback-backlog gauges (src/worker/metrics.ts); internal network only,
+//       and only the maintenance worker's listener carries series.
+//       WORKER_INTERNAL_URL + CRON_SECRET route rawBatch through the
 //       Worker's atomic /internal/raw-batch; without them multi-statement
 //       batches run WITHOUT atomicity (dev only).
 // ---------------------------------------------------------------------------
@@ -54,11 +57,15 @@ import { withMeterScope } from '../lib/scrapers/bandwidth.js';
 import { refundCredits } from '../lib/credits.js';
 import { initLogShipping } from './ship-logs.js';
 import { tick as experimentTick } from '../experiments/engine.js';
+import { candidates as experimentCandidates } from '../experiments/store.js';
+import { pruneSettled, runWebhookDeliveries } from '../experiments/webhook-outbox.js';
+import { describePaperclipEnv } from '../experiments/webhook-delivery.js';
 import { createKindBreaker } from './kind-breaker.js';
+import { parseMetricsPort, recordFallbackSweep, startWorkerMetricsServer } from './metrics.js';
 import {
   describeExperimentTickGate, experimentTickFailureDetail, nextExperimentCadence,
   experimentTickIntervalMs, EXPERIMENT_TICK_MIN_INTERVAL_MS, EXPERIMENT_TICK_SLOW_INTERVAL_MS,
-  IDLE_TICK_STREAK_MAX,
+  IDLE_TICK_STREAK_MAX, nextStallLog, type StallLogState,
 } from './experiment-tick.js';
 import { controlEnabled, filterKindsByControl } from '../lib/worker-control.js';
 import { snapshotD1Usage, deltaD1Usage, formatD1Usage, totalD1Usage } from '../lib/d1-usage.js';
@@ -149,6 +156,9 @@ let experimentTickInFlight: Promise<unknown> | null = null;
 // loop drops back to the 120s cadence even while an experiment reports
 // active; a later tick that runs a step re-arms fast cadence automatically.
 let idleTickStreak = 0;
+// STALLED log cooldown (SLA-548): one warn per stall episode, hourly info
+// reminder after it; reset by any progress tick. Cadence parking is unaffected.
+let stallLog: StallLogState = { idleSince: null, lastLoggedAt: null };
 // Last logged step count — the per-tick line is logged only when the count
 // changes or the tick wrote rows, so a steady 5s cadence doesn't crowd real
 // errors out of the 400-entry log shipper.
@@ -158,6 +168,22 @@ let lastTickSteps = -1;
 let lastGateState = '';
 let lastGateLogAt = 0;
 const GATE_REMIND_EVERY_MS = 3_600_000;
+
+// Experiment completion webhooks (SLA-617): the outbox rows are written by the
+// terminal status save; the experiment leader delivers them, single-flight and
+// detached like the tick. WEBHOOK_DELIVERY_ENABLED=0 parks delivery (rows keep
+// queueing and are delivered after re-enabling). A tick that advanced steps
+// zeroes lastWebhookSweepAt so a fresh completion goes out within one loop turn
+// instead of waiting out the interval; otherwise an empty sweep is one indexed read.
+const WEBHOOK_SWEEP_INTERVAL_MS = (() => {
+  const n = Number(process.env.WEBHOOK_DELIVERY_INTERVAL_MS ?? 30_000);
+  return Number.isFinite(n) && n >= 1_000 ? Math.floor(n) : 30_000;
+})();
+const WEBHOOK_PRUNE_INTERVAL_MS = 3_600_000;
+const doesWebhooks = doesExperiments && process.env.WEBHOOK_DELIVERY_ENABLED !== '0';
+let lastWebhookSweepAt = 0;
+let lastWebhookPruneAt = Date.now();
+let webhookSweepInFlight: Promise<unknown> | null = null;
 
 // Which MediaJob kinds this worker claims — see the KINDS block above (kept
 // before the experiments block: module-load evaluation order matters).
@@ -247,6 +273,18 @@ try {
   pgQueue = null;
 }
 
+// Opt-in Prometheus listener (SLA-359). Internal network only; a bind failure
+// must never stop the worker from draining jobs.
+const metricsPort = parseMetricsPort(process.env.WORKER_METRICS_PORT);
+if (metricsPort) {
+  try {
+    await startWorkerMetricsServer(metricsPort);
+    console.log(`[worker] metrics listening on :${metricsPort}/metrics`);
+  } catch (err) {
+    console.warn(`[worker] metrics listener failed to start: ${(err as Error).message}`);
+  }
+}
+
 let shuttingDown = false;
 let sigName = '';
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
@@ -261,6 +299,7 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 console.log(`[worker] started — dialect=${isD1Mode ? 'sqlite(D1)' : 'postgres'} kinds=[${KINDS.join(', ')}] idle ${IDLE_MS}ms → max ${MAX_IDLE_MS}ms, concurrency ${CONCURRENCY}, rescore every ${Math.round(RESCORE_INTERVAL_MS / 1000)}s, experiments ${doesExperiments ? 'on' : 'off'} (${experimentGate.reason})`);
+console.log(`[worker] webhook delivery ${doesWebhooks ? 'on' : 'off'}; ${describePaperclipEnv()}`);
 // Startup stagger so sibling containers (same image, restarted together by a
 // deploy) don't walk the claim/experiment cadence in phase: each container
 // offsets its first loop iteration by a random 0–5s before the while loop.
@@ -365,10 +404,14 @@ while (!shuttingDown) {
       } else if (runD1Recovery) {
         d1RecoverySkippedLogged = false;
       }
+      let fallbackSweepOk = true;
       const fallback = await reconcileFallbackJobs().catch((err) => {
+        fallbackSweepOk = false;
         console.warn(`[worker] fallback reconcile sweep failed: ${(err as Error).message}`);
         return { reconciled: 0, failed: 0, more: false, backlog: 0, oldestAt: null };
       });
+      // A failed sweep records nothing: its zeroed result is not a measurement.
+      if (fallbackSweepOk) recordFallbackSweep(fallback);
       if (fallback.reconciled || fallback.failed) {
         console.log(
           `[worker] fallback reconcile reconciled=${fallback.reconciled} failed=${fallback.failed}`
@@ -380,7 +423,8 @@ while (!shuttingDown) {
       // metrics cannot see it (it lives in D1 MediaJob). While a backlog
       // exists, one line per maintenance sweep reports its size and the
       // reconcile lag (age of the oldest parked row, the sweep-start
-      // snapshot) — silent parking now has a metric in the shipped logs.
+      // snapshot). The same sample feeds the alertable gauges in
+      // ./metrics.ts (SLA-359); this line stays as the human-readable trail.
       if (fallback.backlog > 0) {
         const oldestSec = fallback.oldestAt
           ? Math.max(0, Math.round((Date.now() - fallback.oldestAt.getTime()) / 1000))
@@ -492,12 +536,13 @@ while (!shuttingDown) {
       lastExperimentTickAt = Date.now();
       const tickSnap = snapshotD1Usage();
       experimentTickInFlight = experimentTick(120_000)
-        .then(({ steps, active }) => {
+        .then(async ({ steps, active }) => {
           const usage = deltaD1Usage(tickSnap);
           if (steps > 0 && (steps !== lastTickSteps || usage.writes > 0)) {
             console.log(`[worker] experiment tick advanced ${steps} step(s)${formatD1Usage(usage)}`);
           }
           lastTickSteps = steps;
+          if (steps > 0) lastWebhookSweepAt = 0;
           // Cadence keys off THIS tick's `steps` only. `usage` above is
           // process-wide: MediaJob work draining concurrently inflates writes
           // mid-tick, and runtimes without D1-over-HTTP keep it at 0 — so it
@@ -509,10 +554,23 @@ while (!shuttingDown) {
           );
           experimentsActiveUntil = cadence.activeUntil;
           idleTickStreak = cadence.idleTickStreak;
-          if (cadence.parkedStreak !== null) {
-            console.warn(
-              `[worker] experiment STALLED? still active after ${cadence.parkedStreak}/${IDLE_TICK_STREAK_MAX} consecutive no-progress ticks (0 steps) — parked to ${Math.round(EXPERIMENT_TICK_SLOW_INTERVAL_MS / 1000)}s cadence. Check EXPERIMENT_TICK_ENABLED / experiments.enabled and stuck experiment rows.`,
-            );
+          const stall = nextStallLog(stallLog, { steps, active }, cadence.parkedStreak !== null, Date.now());
+          stallLog = { idleSince: stall.idleSince, lastLoggedAt: stall.lastLoggedAt };
+          if (stall.level !== null) {
+            const level = stall.level;
+            const idleMin = Math.round(stall.idleMs / 60_000);
+            // Ids are looked up only when a line is actually emitted (once per
+            // episode + hourly), so the cooldown never adds a steady D1 read.
+            const ids = await experimentCandidates()
+              .then((rows) => rows.map((r) => r.id).join(',') || 'none')
+              .catch(() => 'unavailable');
+            const msg =
+              `[worker] experiment STALLED? still active after ${cadence.parkedStreak}/${IDLE_TICK_STREAK_MAX} consecutive no-progress ticks (0 steps), idle ~${idleMin}m — parked to ${Math.round(EXPERIMENT_TICK_SLOW_INTERVAL_MS / 1000)}s cadence; oldest active experiment(s): ${ids}. `
+              + (level === 'warn'
+                ? 'Logged once per stall; reminders hourly at info level. Check EXPERIMENT_TICK_ENABLED / experiments.enabled and stuck experiment rows.'
+                : 'Still stalled (hourly reminder).');
+            if (level === 'warn') console.warn(msg);
+            else console.log(msg);
           }
           experimentTickErrorRounds = 0;
           experimentTickBackoffUntil = 0;
@@ -527,6 +585,22 @@ while (!shuttingDown) {
           );
         })
         .finally(() => { experimentTickInFlight = null; });
+    }
+
+    if (doesWebhooks && !webhookSweepInFlight && Date.now() - lastWebhookSweepAt >= WEBHOOK_SWEEP_INTERVAL_MS) {
+      lastWebhookSweepAt = Date.now();
+      webhookSweepInFlight = runWebhookDeliveries()
+        .then(async (sweep) => {
+          if (sweep.delivered || sweep.retried || sweep.dead) {
+            console.log(`[worker] webhook sweep delivered=${sweep.delivered} retried=${sweep.retried} dead=${sweep.dead}`);
+          }
+          if (Date.now() - lastWebhookPruneAt >= WEBHOOK_PRUNE_INTERVAL_MS) {
+            lastWebhookPruneAt = Date.now();
+            await pruneSettled(new Date());
+          }
+        })
+        .catch((err) => { console.warn(`[worker] webhook sweep failed: ${errorDetail(err)}`); })
+        .finally(() => { webhookSweepInFlight = null; });
     }
 
     // Claim up to CONCURRENCY jobs across ALL kinds in ONE statement, priority

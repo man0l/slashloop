@@ -24,7 +24,7 @@
 // directory), not a code rewrite.
 
 import { keepAlive } from './cf/wait-until.js';
-import { CircuitBreaker } from './lib/circuit-breaker.js';
+import { CircuitBreaker, isInfraFailure } from './lib/circuit-breaker.js';
 import { recordD1Usage } from './lib/d1-usage.js';
 
 /** Which SQL dialect the raw queries must speak. Set DB_DIALECT=sqlite on Workers. */
@@ -375,6 +375,45 @@ function d1HttpParam(value: unknown): unknown {
   return d1BindParam(value);
 }
 
+/** Backoff before the single retry of a transient Worker 500 (jittered up to 2x). */
+const RAW_BATCH_RETRY_BASE_MS = 250;
+const RAW_BATCH_BODY_EXCERPT_CHARS = 500;
+// Deterministic D1 failures: the batch rolled back for a reason a retry cannot change.
+const DETERMINISTIC_D1_ERROR = /constraint failed|syntax error|no such (table|column)|datatype mismatch|too many (sql )?variables/i;
+
+/** Non-2xx reply from the Worker's /internal/raw-batch, carrying the (truncated) body cause. */
+export class RawBatchHttpError extends Error {
+  constructor(readonly status: number, readonly detail: string) {
+    super(`D1 batch via worker failed: HTTP ${status}${detail ? `: ${detail}` : ''}`);
+    this.name = 'RawBatchHttpError';
+  }
+}
+
+async function readRawBatchFailure(res: Response): Promise<RawBatchHttpError> {
+  let detail = '';
+  try {
+    const text = await res.text();
+    try {
+      const parsed = JSON.parse(text) as { error?: unknown };
+      detail = typeof parsed?.error === 'string' ? parsed.error : text;
+    } catch {
+      detail = text;
+    }
+  } catch {
+    // Body is diagnostic only; the status alone still names the failure.
+  }
+  detail = detail.replace(/\s+/g, ' ').trim().slice(0, RAW_BATCH_BODY_EXCERPT_CHARS);
+  return new RawBatchHttpError(res.status, detail);
+}
+
+// Only a bare 500 is retried: 409/429 are application answers, 503 means the
+// Worker's breaker is open (retrying would defeat it), and a deterministic D1
+// error would fail identically. D1 batch() is one transaction, so a failed
+// attempt rolled back; the credit ledger's unique refId keeps replays safe.
+function isRetryableRawBatchFailure(err: RawBatchHttpError): boolean {
+  return err.status === 500 && !DETERMINISTIC_D1_ERROR.test(err.detail);
+}
+
 /**
  * rawBatch executor over the D1 REST API.
  *
@@ -389,14 +428,22 @@ function d1HttpParam(value: unknown): unknown {
  * NOTE: /raw returns rows POSITIONALLY ({columns, rows}), unlike the binding's
  * object rows — zip them back.
  */
-function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
+/** @internal — exported for unit tests; production goes through initStoreD1Http. */
+export function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
   // Per-executor (per-process) circuit breaker: VPS-only — this executor is
   // constructed in initStoreD1Http, which never runs on the Worker (the
   // Worker's rawBatch below goes straight to the binding). After 3
   // consecutive D1 infra failures the container stops sending requests for
   // 60s instead of re-ticking into the outage every few seconds; the 2026-09-22
   // burst was that exact pattern. Application errors (4xx, bad SQL) never trip it.
-  const breaker = new CircuitBreaker({ name: 'd1-batch', threshold: 3, cooldownMs: 60_000 });
+  const breaker = new CircuitBreaker({
+    name: 'd1-batch',
+    threshold: 3,
+    cooldownMs: 60_000,
+    // A 409 replay or 429 budget answer now carries its D1_ERROR text; that is
+    // an application reply, not an infra failure.
+    isInfraError: (err) => (err instanceof RawBatchHttpError && err.status < 500 ? false : isInfraFailure(err)),
+  });
   const d1Url = `https://api.cloudflare.com/client/v4/accounts/${params.accountId}/d1/database/${params.databaseId}/raw`;
 
   async function single(sql: string, sqlParams: unknown[]): Promise<Array<Record<string, unknown>>> {
@@ -438,17 +485,24 @@ function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
       // boundary below, so JSON survives the round trip losslessly.
       // Bounded at 25s to fail fast under D1's 30s per-query ceiling — don't
       // hold dbTurn + worker slot another 30s after D1 already killed it.
-      const res = await fetch(`${workerBase}/internal/raw-batch`, {
+      const payload = JSON.stringify({
+        statements: statements.map((s) => ({ sql: s.sql, params: (s.params ?? []).map(d1HttpParam) })),
+      });
+      const post = () => fetch(`${workerBase}/internal/raw-batch`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${process.env.CRON_SECRET}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          statements: statements.map((s) => ({ sql: s.sql, params: (s.params ?? []).map(d1HttpParam) })),
-        }),
+        body: payload,
         signal: AbortSignal.timeout(25_000),
       });
-      const body = res.ok
-        ? (await res.json()) as { success?: boolean; error?: string; results?: Array<Array<Record<string, unknown>>>; rowsRead?: number; rowsWritten?: number }
-        : { success: false as const, error: `HTTP ${res.status}` };
+      let res = await post();
+      let failure = res.ok ? null : await readRawBatchFailure(res);
+      if (failure && isRetryableRawBatchFailure(failure)) {
+        await new Promise((r) => setTimeout(r, RAW_BATCH_RETRY_BASE_MS + Math.random() * RAW_BATCH_RETRY_BASE_MS));
+        res = await post();
+        failure = res.ok ? null : await readRawBatchFailure(res);
+      }
+      if (failure) throw failure;
+      const body = (await res.json()) as { success?: boolean; error?: string; results?: Array<Array<Record<string, unknown>>>; rowsRead?: number; rowsWritten?: number };
       if (body.success === false) throw new Error(`D1 batch via worker failed: ${body.error ?? res.status}`);
       // Binding-side meta reported back by /internal/raw-batch (see
       // src/cf/internal.ts) — attribute the whole batch at once.
@@ -577,7 +631,13 @@ export function initStoreD1Http(params: D1HttpParams): AppPrismaClient {
  */
 export function isUniqueViolation(err: unknown): boolean {
   const e = err as { code?: unknown; name?: unknown };
-  return e?.code === 'P2002' && typeof e.name === 'string' && e.name.includes('PrismaClient');
+  if (e?.code === 'P2002' && typeof e.name === 'string' && e.name.includes('PrismaClient')) return true;
+
+  // D1 reports raw SQL conflicts as plain Errors, not PrismaClientKnownRequestError.
+  // Match only the credit idempotency key so unrelated UNIQUE constraints still
+  // surface as genuine failures to their callers.
+  const message = e instanceof Error ? e.message : String(e);
+  return message.includes('UNIQUE constraint failed: CreditLedger.workspaceId, CreditLedger.refId');
 }
 
 /**

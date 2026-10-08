@@ -124,7 +124,8 @@ describe('QA judges composition against the variant visualStyle', () => {
     const plain = compile(undefined);
     expect(compile(null).contractHash).toBe(plain.contractHash);
     expect(plain.variantVisualStyle).toBeUndefined();
-    expect(contractChecks(plain)).toContain('the medium is photograph and the story beat for role "hook" is visible');
+    expect(contractChecks(plain)).toContain('the medium is photograph');
+    expect(contractChecks(plain)).toContain('the story beat for role "hook" is visible');
     expect(contractQaBlock(plain)).not.toHaveProperty('variantVisualStyle');
     expect(compile(VARIANT_STYLE).contractHash).not.toBe(plain.contractHash);
   });

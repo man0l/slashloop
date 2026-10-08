@@ -137,15 +137,25 @@ export const DEFAULT_RATE_LIMIT_WAIT_BUDGET_MS = 65_000;
 /**
  * Random spread added to each `429 retry-after` wait (SLA-354), in ms.
  *
- * queue-api's limiter is a fixed 60s window, so every publisher that tripped
- * it at the same moment asks for the same retry-after and retries at the same
- * window edge. With WORKER_CONCURRENCY > 1 and one worker container per kind,
- * two refreshes of one workspace re-burst into the next window's budget
- * together and the overflow parks. A small spread de-aligns the retries.
+ * queue-api's limiter (api.ts memoryRateLimiter) is a SLIDING window: capacity
+ * frees continuously as each recorded hit ages out, and retry-after is the time
+ * until the oldest hit expires. Publishers that tripped it at the same moment
+ * therefore all get the same retry-after and retry at the same instant, where
+ * only the slots expiring right then are free — the rest re-429 or park. With
+ * WORKER_CONCURRENCY > 1 and one worker container per kind, two refreshes of
+ * one workspace re-burst together. A small spread de-aligns the retries so each
+ * lands on a different slice of freed capacity.
  *
  * Bounded well under the budget slack: the server's longest sane retry-after
  * is one window (60s), 60s + 3s still fits inside the default 65s budget, so
  * the jitter never turns a wait that would have fit into a park.
+ *
+ * Operators: the jitter counts against QUEUE_API_RATE_LIMIT_WAIT_BUDGET_MS, so
+ * that budget needs window + this max (3s) of headroom to honour a legal
+ * full-window retry-after. Set to 60000 it would turn almost every full-window
+ * wait into a park (retry-after 60s + any jitter > 0 exceeds it) — strictly
+ * worse than before the jitter existed. Likewise two 30s waits in one publish
+ * only fit when their jitters sum to <= 5s of the 65s default.
  */
 export const DEFAULT_RATE_LIMIT_WAIT_JITTER_MAX_MS = 3_000;
 

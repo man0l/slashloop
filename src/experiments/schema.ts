@@ -1,4 +1,5 @@
 ﻿import { z } from 'zod/v4';
+import { SOURCE_FORMATS } from './source-format.js';
 
 export class ExperimentError extends Error {
   constructor(public statusCode: number, public code: string, message = code) { super(message); }
@@ -20,10 +21,14 @@ const constraints = z.union([z.array(text.min(1)).max(20), text]).transform(v =>
  *  where an oversized value would blow the prompt budget and fail a paid task. */
 export const CopyOverrides = z.record(z.string().regex(/^(?:0|[1-9]\d*)$/), z.string().max(2000))
   .refine(v => Object.keys(v).length <= 8, { message: 'At most 8 per-slide copy overrides: one per slide.' });
-export const Instructions = z.object({
+const instructionsShape = {
   goal: text.min(1), brand: text, audience: text, language: z.string().trim().min(1).max(80),
   direction: text, lockedConstraints: constraints,
   variables: z.array(z.union([z.enum(VARIABLE_FIELDS), z.literal('angle')]).transform(v => v === 'angle' ? 'concept' as const : v)).min(1).max(7), mode: z.enum(['controlled', 'exploration']),
+  // SLA-555: which kind of source this is. Expands to default variables, mode,
+  // direction and locks (source-format.ts); stored resolved so a later reader
+  // sees which preset shaped the locks. Optional: older experiments have none.
+  sourceFormat: z.enum(SOURCE_FORMATS).optional(),
   // Hook-test scope: when true, hook candidates may also retell the supporting
   // overlay copy (slides 2..N) while scenes stay locked to the baseline.
   // Optional so older experiments (stored without the key) keep working —
@@ -41,7 +46,8 @@ export const Instructions = z.object({
   // and the planning boundary. True keeps every source slide (still clamped to
   // 3-8). Optional so experiments stored before it resolve exactly as before.
   preserveSourceCtaSlide: z.boolean().optional(),
-}).strict().superRefine((v, ctx) => {
+};
+export const Instructions = z.object(instructionsShape).strict().superRefine((v, ctx) => {
   if (new Set(v.variables).size !== v.variables.length) ctx.addIssue({ code: 'custom', message: 'Duplicate variables' });
   if (v.mode === 'controlled' && v.variables.some(x => x === 'concept' || x === 'slides')) {
     ctx.addIssue({ code: 'custom', message: 'Controlled variables: hook, character, visualStyle, caption, cta. Concept/slides require exploration.' });
@@ -58,6 +64,15 @@ export const Instructions = z.object({
     }
   }
 });
+/** Create-time shape: with a source format, variables/mode/direction/lockedConstraints may be omitted
+ *  and are filled from the preset before the strict `Instructions` parse. */
+export const InstructionsInput = z.object({
+  ...instructionsShape,
+  direction: instructionsShape.direction.optional(),
+  lockedConstraints: instructionsShape.lockedConstraints.optional(),
+  variables: instructionsShape.variables.optional(),
+  mode: instructionsShape.mode.optional(),
+}).strict();
 export const BriefSlide = z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text.default('') });
 export const Brief = z.object({
   concept: text.min(1), hook: text.min(1), character: text, visualStyle: text.min(1), caption: text,
@@ -86,10 +101,75 @@ export const BriefDelta = z.object({
   slides: z.array(BriefSlide).min(3).max(8).optional(),
   overlayTexts: z.array(text.default('')).min(3).max(8).optional(),
 });
-export const Create = z.object({ workspaceId: Id, videoIds: z.array(Id).min(1).max(20), instructions: Instructions,
+const createShape = <I extends z.ZodType>(instructions: I) => ({ workspaceId: Id, videoIds: z.array(Id).min(1).max(20), instructions,
   variantCount: z.number().int().min(1).max(12), slideCount: z.number().int().min(3).max(8),
   maxCredits: z.number().int().min(1).max(10000), idempotencyKey: Key,
-}).strict().superRefine((v, c) => { if (new Set(v.videoIds).size !== v.videoIds.length) c.addIssue({ code: 'custom', message: 'Duplicate videoIds' }); });
+});
+const noDuplicateVideoIds = (v: { videoIds: string[] }, c: z.RefinementCtx) => { if (new Set(v.videoIds).size !== v.videoIds.length) c.addIssue({ code: 'custom', message: 'Duplicate videoIds' }); };
+export const Create = z.object(createShape(Instructions)).strict().superRefine(noDuplicateVideoIds);
+/** Same request with preset-fillable instructions; `Create` re-validates after expansion. */
+export const CreateRequest = z.object(createShape(InstructionsInput)).strict().superRefine(noDuplicateVideoIds);
+export const RAN_BY_MAX = 120;
+/** Free-text runner label: trimmed, capped, and blank/non-string means unknown (null). */
+export function normalizeRanBy(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const t = v.trim().slice(0, RAN_BY_MAX).trim();
+  return t || null;
+}
+/** Splits the optional runner label off a create body so it never reaches the strict schemas or the idempotency fingerprint. */
+export function takeRanBy(raw: unknown): { body: unknown; ranBy: string | null } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { body: raw, ranBy: null };
+  const { ran_by, ranBy, ...body } = raw as Record<string, unknown>;
+  return { body, ranBy: normalizeRanBy(ran_by ?? ranBy) };
+}
+/** Statuses an experiment can rest in until a human or agent acts. Entering one from outside this set is the completion event. */
+export const TERMINAL_STATUSES = ['completed', 'review', 'failed', 'paused', 'cancelled'] as const;
+export const NOTIFY_METADATA_MAX_BYTES = 4096;
+const NotifyInput = z.object({
+  url: z.string().trim().max(2048).optional(),
+  secret: z.string().min(16).max(256).optional(),
+  metadata: z.record(z.string().max(80), z.unknown()).optional(),
+}).strict();
+/** What is stored on the Experiment row (never in dataJson, so the secret cannot leak through serialize()). */
+export interface NotifyConfig { url: string | null; secret: string | null; secretGenerated: boolean; metadata: Record<string, unknown> | null }
+/** What the caller sees after create: the stored target, plus the signing secret only when we generated it. */
+export interface NotifyReceipt { url: string | null; paperclipIssueId: string | null; signingSecret?: string }
+export const paperclipIssueIdOf = (metadata: Record<string, unknown> | null | undefined): string | null => {
+  const v = metadata?.paperclipIssueId;
+  return typeof v === 'string' && z.uuid().safeParse(v).success ? v : null;
+};
+/** Splits the optional notify object off a create body so it never reaches the strict schemas or the idempotency fingerprint. */
+export function takeNotify(raw: unknown): { body: unknown; notify: unknown } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !('notify' in raw)) return { body: raw, notify: undefined };
+  const { notify, ...body } = raw as Record<string, unknown>;
+  return { body, notify };
+}
+/**
+ * Validates `notify` ({url, secret?, metadata?}). A target is either an https URL
+ * or a metadata.paperclipIssueId (Paperclip delivery mode, which needs no URL).
+ * A URL target with no secret gets a generated whsec_ one so every delivery is signed.
+ */
+export function parseNotify(raw: unknown, assertUrl: (u: string) => void): NotifyConfig | null {
+  if (raw === undefined || raw === null) return null;
+  const parsed = NotifyInput.safeParse(raw);
+  if (!parsed.success) throw new ExperimentError(400, 'invalid_notify', `notify: ${parsed.error.issues[0]?.message ?? 'invalid'}`);
+  const { url, secret, metadata } = parsed.data;
+  if (metadata && JSON.stringify(metadata).length > NOTIFY_METADATA_MAX_BYTES) {
+    throw new ExperimentError(400, 'invalid_notify', `notify.metadata must serialize to at most ${NOTIFY_METADATA_MAX_BYTES} bytes.`);
+  }
+  if (metadata && 'paperclipIssueId' in metadata && !paperclipIssueIdOf(metadata)) {
+    throw new ExperimentError(400, 'invalid_notify', 'notify.metadata.paperclipIssueId must be an issue UUID.');
+  }
+  const paperclip = paperclipIssueIdOf(metadata);
+  if (!url && !paperclip) throw new ExperimentError(400, 'invalid_notify', 'notify needs a url, or metadata.paperclipIssueId.');
+  if (url) {
+    try { assertUrl(url); } catch (err) { throw new ExperimentError(400, 'invalid_notify', err instanceof Error ? err.message : 'invalid url'); }
+  }
+  if (paperclip || !url) return { url: url ?? null, secret: null, secretGenerated: false, metadata: metadata ?? null };
+  if (secret) return { url, secret, secretGenerated: false, metadata: metadata ?? null };
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return { url, secret: `whsec_${btoa(String.fromCharCode(...bytes))}`, secretGenerated: true, metadata: metadata ?? null };
+}
 export const WorkspaceBody = z.object({ workspaceId: Id }).strict();
 export const Command = WorkspaceBody.extend({ idempotencyKey: Key });
 export const Plan = Command.extend({ allowPartial: z.boolean().optional() });
@@ -352,10 +432,38 @@ export const MAX_MANUAL_ATTEMPTS = 6;
 export const QA_HISTORY_LIMIT = 3;
 /** Up to this many slide renders may run concurrently within one experiment. */
 export const PARALLEL_SLIDES = 48;
-/** Candidates rendered per slide; Jev (TypeSafe) picks the most viral one. */
-export const SLIDE_FANOUT = 3;
-/** Parameter deltas generated at the briefs stage; Jev ranks them, top variantCount-1 win. */
-export const BRIEF_CANDIDATES = 8;
+/** Default candidates rendered per slide (SLA-546: 3 → 2). Tune with EXPERIMENT_SLIDE_FANOUT. */
+export const SLIDE_FANOUT = 2;
+const MAX_SLIDE_FANOUT = 4;
+/** Candidates rendered per slide; Jev (TypeSafe) picks the most viral one.
+ *  Read lazily so a Worker env change takes effect without a module reload. */
+export function slideFanout(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.EXPERIMENT_SLIDE_FANOUT?.trim());
+  return Number.isInteger(raw) && raw >= 1 ? Math.min(raw, MAX_SLIDE_FANOUT) : SLIDE_FANOUT;
+}
+/** Total render waves per slide (the first plus QA corrections); the env knob is capped at 5. */
+export function qaMaxAttempts(env:NodeJS.ProcessEnv=process.env):number{
+  const n=Number.parseInt(env.EXPERIMENT_QA_MAX_ATTEMPTS??'',10);
+  return Number.isFinite(n)&&n>=1?Math.min(n,5):3;
+}
+/** Worst-case provider requests one slide task attempt can start: every render wave at full fan-out. */
+export const slideRequestAllowance=(fanout:number=slideFanout(),env:NodeJS.ProcessEnv=process.env)=>fanout*qaMaxAttempts(env);
+/** Authorized image requests for one slide task across ALL its engine attempts (the advertised 2x-per-job
+ *  headroom over one full render-and-correct pass). Persisted on the task at first claim; admission,
+ *  estimate and providerBudget all read this one figure. */
+export const SLIDE_REQUEST_HEADROOM = 2;
+export const slideTaskRequestCap=(fanout:number=slideFanout(),env:NodeJS.ProcessEnv=process.env)=>SLIDE_REQUEST_HEADROOM*slideRequestAllowance(fanout,env);
+/** Floor for the briefs-stage candidate pool (SLA-546: was a flat 8). */
+export const BRIEF_CANDIDATES = 3;
+const MAX_BRIEF_CANDIDATES = 12;
+/** Parameter deltas generated at the briefs stage; Jev ranks them, top variantCount-1 win.
+ *  Never fewer than variantCount-1, or variant_count validation could not be met. */
+export function briefCandidateCount(variantCount: number, env: NodeJS.ProcessEnv = process.env): number {
+  const needed = Math.max(variantCount - 1, 1);
+  const raw = Number(env.EXPERIMENT_BRIEF_CANDIDATES?.trim());
+  const pool = Number.isInteger(raw) && raw >= 1 ? Math.min(raw, MAX_BRIEF_CANDIDATES) : BRIEF_CANDIDATES;
+  return Math.max(needed, pool);
+}
 export const RETRY_BACKOFF_MS = 60_000;
 export function retryBackoffMs(_attempts = 1): number {
   return RETRY_BACKOFF_MS;
@@ -379,7 +487,7 @@ export type CopyState = 'observed_text' | 'observed_empty' | 'unknown';
 export interface ObservedCopy { state: CopyState; text: string | null }
 /** Per-check QA outcome. A composite pass requires every check to pass; `unknown`
  *  is unverified, never a pass (SLA-430 D8). */
-export interface QaCheck { check: string; status: 'pass' | 'fail' | 'unknown'; reason?: string }
+export interface QaCheck { check: string; status: 'pass' | 'fail' | 'unknown'; reason?: string; severity?: 'hard' | 'soft' }
 /** Sanitized record of HOW the checker was called and how it ended (SLA-511).
  *  Model, deadline, elapsed time, bounded output budget, an error category and
  *  the upstream request id. Never the image, the prompt, the payload or a key:
@@ -394,7 +502,7 @@ export interface QaDiagnostics {
   checksRequested: number;
   elapsedMs: number;
   outcome: 'ok' | 'error';
-  errorCategory?: 'timeout' | 'rate_limit' | 'quota' | 'auth' | 'invalid_request' | 'server' | 'invalid_response' | 'unknown';
+  errorCategory?: 'timeout' | 'rate_limit' | 'quota' | 'auth' | 'invalid_request' | 'server' | 'invalid_response' | 'baseline_missing' | 'unknown';
   requestId?: string;
 }
 export interface SlideVerification {
@@ -406,6 +514,12 @@ export interface SlideVerification {
   attempts: number;
   /** Request-level diagnostics for the checker's last call (SLA-511). */
   diagnostics?: QaDiagnostics;
+  /** Soft-check findings that did not block the slide (SLA-545). */
+  warnings?: string[];
+  /** Every non-pass check is soft: a corrective render may fix it, and `warn` mode may ship it. */
+  softOnly?: boolean;
+  /** The verdict rests on real per-check answers, so a fresh render can change it. */
+  rerenderable?: boolean;
 }
 /** Auditable QA record persisted even when the slide does not complete. */
 export interface SlideQaRecord {
@@ -417,9 +531,23 @@ export interface SlideQaRecord {
   checks: QaCheck[];
   prompt?: string;
   diagnostics?: QaDiagnostics;
+  warnings?: string[];
+  /** SLA-522: the mapped source frame this slide's comparison was made against.
+   *  `attached:false` means the frame could not be read and the slide stayed
+   *  unverified — the record says so instead of passing an unmade comparison. */
+  qaBaseline?: { referenceKind: string; path: string | null; attached: boolean };
+  /** The contract's own source mapping, kept beside the hash so a failed slide
+   *  says which frame it claims to preserve. */
+  sourceMap?: { videoId: string | null; analysisId: string | null; sourceIndex: number | null; referenceKind: string; path: string | null; observation?: 'observed' | 'missing' };
 }
 export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide'; target?: string; index?: number;
-  status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number; }
+  status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number;
+  /** Provider requests started, internal QA correction waves included. Absent on tasks that predate it (then `attempts`). */
+  requests?: number;
+  /** Authorized total image requests for this task across every attempt, frozen at first claim. Absent before then. */
+  requestCap?: number;
+  /** Durable debits for paid QA corrections, one ledger ref each, so every one is refundable by its own receipt. */
+  corrections?: Array<{ ref: string; attempt: number; charged: number }>; }
 export interface Input { videoId: string; status: string; analysisId: string | null; jobId: string | null; error: string | null;
   coverage: { basis: string; observed: number; total: number | null; complete: boolean } | null; evidence: Array<{ location: string; observation: string }>;
   /** Recorded source copy state per slide, kept outside the truncated prose so a
@@ -441,6 +569,10 @@ export interface Variant extends Proposal { id: string; revision: number; status
     qaHistory?: SlideQaRecord[] | null }>; error: string | null; }
 export interface Experiment {
   id: string; workspaceId: string; status: string; createdAt: string; updatedAt: string; instructions: InstructionsData;
+  /** Who ran it: "user" or "agent:<name> on behalf of <user>". Mirrors the indexed `ranBy` column; absent/null on legacy rows. */
+  ranBy?: string | null;
+  /** Create response only: where completion is delivered. Never persisted in dataJson. */
+  notify?: NotifyReceipt;
   /** Absent on every legacy row. Set only when the caller explicitly selected the
    *  versioned exact_edit operation; this is what separates the two contracts at
    *  dispatch and keeps a legacy request off that path. */

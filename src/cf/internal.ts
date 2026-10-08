@@ -100,6 +100,15 @@ export async function POST(request: Request): Promise<Response> {
     // best-effort and can hand back an interleaved batch's rows; for a ceiling
     // that direction of error is the safe one.
     keepAlive(recordDailyReads(takeBatchUsage().reads));
+    // Credit retries intentionally collide on CreditLedger[workspaceId, refId];
+    // debit/refund callers turn that collision into an idempotent replay. Keep
+    // the expected replay visible at warn without polluting error telemetry.
+    if (e.message?.includes('UNIQUE constraint failed: CreditLedger.workspaceId, CreditLedger.refId')) {
+      console.warn(
+        `[internal/raw-batch] idempotent credit retry (${statements.length} statements, ${totalParams} params): ${e.message}`.slice(0, 2000),
+      );
+      return json(409, { success: false, error: e.message });
+    }
     if (e instanceof CircuitOpenError) {
       // D1 is known-down: fail fast without touching the binding. The VPS
       // side reads this as an HTTP-5xx infra failure and trips its own

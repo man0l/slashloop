@@ -35,7 +35,7 @@ async function handle(request:Request):Promise<Response> {
         // without a separate count query. limit is re-capped inside list().
         const limit=Math.min(Math.max(Number(url.searchParams.get('limit'))||50,1),50);
         const offset=Math.max(Number(url.searchParams.get('offset'))||0,0);
-        const rows=await list(workspaceId,limit+1,offset);
+        const rows=await list(workspaceId,limit+1,offset,url.searchParams.get('ran_by'));
         const nextOffset=rows.length>limit?offset+limit:null;
         response={experiments:rows.slice(0,limit).map(serialize),nextOffset};
       }

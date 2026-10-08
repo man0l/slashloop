@@ -1,6 +1,8 @@
 import { expect, test } from 'bun:test';
 import { normalizeBriefCandidates, prepare } from './providers.js';
-import { BRIEF_CANDIDATES, validateVariants } from './schema.js';
+import { validateVariants } from './schema.js';
+
+const BRIEF_CANDIDATES = 8; // pool size is arbitrary here; the production default is tested in cost-controls.test.ts
 import type { Experiment, Task, Proposal } from './schema.js';
 
 const baseBrief = { concept: 'Guide', hook: 'Start here', character: 'An artist', visualStyle: 'Editorial', caption: '', cta: '', lockedConstraints: [], slides: [

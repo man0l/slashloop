@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { Command, Create, EditBrief, Generate, Plan, Retry, ExperimentError, Key, validateVariants, type Experiment } from '../experiments/schema.js';
+import { Command, Create, CreateRequest, EditBrief, Generate, Plan, Retry, ExperimentError, Key, validateVariants, type Experiment } from '../experiments/schema.js';
 import { normalizeBriefCandidates } from '../experiments/providers.js';
 import { renderContract } from '../experiments/render-prompt.js';
 import {
@@ -46,12 +46,12 @@ function fakes(): ExperimentToolDeps {
       if (workspaceId && workspaceId !== 'w1') throw new Error('Workspace not found.');
       return { id: 'w1' };
     },
-    createExperiment: (async (raw: any) => {
-      record('createExperiment', [raw]);
+    createExperiment: (async (raw: any, _deps?: unknown, options?: unknown) => {
+      record('createExperiment', [raw, options]);
       const failure = createFailures[raw.videoIds[0]];
       if (failure) throw failure;
       const id = `e-${raw.idempotencyKey.replace(/[^a-zA-Z0-9]/g, '').slice(-10)}`;
-      const e = store.get(id) ?? exp(id, { maxCredits: raw.maxCredits, inputs: [{ ...exp(id).inputs[0]!, videoId: raw.videoIds[0] }] });
+      const e = store.get(id) ?? exp(id, { maxCredits: raw.maxCredits, ranBy: typeof raw.ran_by === 'string' ? raw.ran_by.trim() || null : null, inputs: [{ ...exp(id).inputs[0]!, videoId: raw.videoIds[0] }] });
       store.set(id, e);
       return e;
     }) as ExperimentToolDeps['createExperiment'],
@@ -72,9 +72,9 @@ function fakes(): ExperimentToolDeps {
       if (!e || e.workspaceId !== ws) throw new ExperimentError(404, 'experiment_not_found');
       return e;
     },
-    list: async (ws: string, limit = 50, offset = 0) => {
-      record('list', [ws, limit, offset]);
-      return [...store.values()].slice(offset, offset + limit);
+    list: async (ws: string, limit = 50, offset = 0, ranBy?: string | null) => {
+      record('list', [ws, limit, offset, ranBy]);
+      return [...store.values()].filter(e => !ranBy || e.ranBy === ranBy).slice(offset, offset + limit);
     },
     // The real projection lives in store.ts; a marker proves the tool routes through deps.serialize.
     serialize: ((e: Experiment) => ({ ...e, projected: true })) as unknown as ExperimentToolDeps['serialize'],
@@ -127,6 +127,122 @@ describe('tool surface', () => {
   });
 });
 
+describe('ran_by (SLA-615)', () => {
+  const LEO = 'agent:Leo on behalf of man0l';
+
+  test('both tools advertise ran_by in their input schema', async () => {
+    const { tools } = await (await connect()).listTools();
+    for (const name of ['create_experiment', 'list_experiments']) {
+      const props = tools.find(t => t.name === name)!.inputSchema.properties as Record<string, { description?: string }>;
+      expect(props.ran_by).toBeDefined();
+    }
+    const create = tools.find(t => t.name === 'create_experiment')!.inputSchema.properties as Record<string, { description?: string }>;
+    expect(create.ran_by!.description).toContain('agent:<name> on behalf of <user>');
+  });
+
+  test('create → list round-trips ranBy, and the filter returns only exact matches', async () => {
+    const created = await call('create_experiment', { videoIds: ['vid1'], instructions, ran_by: LEO });
+    expect(created.isError).toBe(false);
+    expect(created.body.experiments[0].ranBy).toBe(LEO);
+    expect(callsOf('createExperiment')[0]![0]).toMatchObject({ ran_by: LEO });
+    await call('create_experiment', { videoIds: ['vid2'], instructions, ran_by: 'user' });
+    await call('create_experiment', { videoIds: ['vid3'], instructions });
+
+    const all = await call('list_experiments', {});
+    expect(all.body.experiments.map((e: any) => e.ranBy)).toEqual([LEO, 'user', null]);
+
+    const filtered = await call('list_experiments', { ran_by: LEO });
+    expect(filtered.body.experiments.map((e: any) => e.ranBy)).toEqual([LEO]);
+    expect(callsOf('list').at(-1)).toEqual(['w1', 13, 0, LEO]);
+
+    expect((await call('list_experiments', { ran_by: 'agent:Leo' })).body.experiments).toEqual([]);
+  });
+
+  test('nextOffset still pages when the filter is set', async () => {
+    for (const n of [1, 2, 3]) await call('create_experiment', { videoIds: [`vid${n}`], instructions, ran_by: LEO });
+    await call('create_experiment', { videoIds: ['other'], instructions, ran_by: 'user' });
+    const page1 = await call('list_experiments', { ran_by: LEO, limit: 2 });
+    expect(page1.body.experiments).toHaveLength(2);
+    expect(page1.body.nextOffset).toBe(2);
+    const page2 = await call('list_experiments', { ran_by: LEO, limit: 2, offset: page1.body.nextOffset });
+    expect(page2.body.experiments).toHaveLength(1);
+    expect(page2.body.nextOffset).toBeNull();
+  });
+
+  test('ran_by is not part of the derived idempotency key', async () => {
+    await call('create_experiment', { videoIds: ['vid1'], instructions, ran_by: LEO });
+    await call('create_experiment', { videoIds: ['vid1'], instructions, ran_by: 'user' });
+    const keys = callsOf('createExperiment').map(a => (a[0] as { idempotencyKey: string }).idempotencyKey);
+    expect(keys[0]).toBe(keys[1]!);
+  });
+
+  test('edit mode forwards ran_by too', async () => {
+    await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], character: 'Short hair', ran_by: LEO });
+    expect(callsOf('createExperiment')[0]![0]).toMatchObject({ ran_by: LEO });
+  });
+
+  // SLA-671: responses say `ranBy`, agents echo that spelling, and zod used to strip it.
+  test('the camelCase ranBy alias is persisted exactly like ran_by', async () => {
+    const created = await call('create_experiment', { videoIds: ['vid1'], instructions, ranBy: LEO });
+    expect(created.isError).toBe(false);
+    expect(created.body.experiments[0].ranBy).toBe(LEO);
+    expect(callsOf('createExperiment')[0]![0]).toMatchObject({ ran_by: LEO });
+    await call('create_experiment', { mode: 'edit', videoIds: ['vid2'], character: 'Short hair', ranBy: LEO });
+    expect(callsOf('createExperiment')[1]![0]).toMatchObject({ ran_by: LEO });
+    expect((await call('list_experiments', { ranBy: LEO })).body.experiments).toHaveLength(2);
+    expect(callsOf('list').at(-1)).toEqual(['w1', 13, 0, LEO]);
+  });
+
+  test('ran_by wins when both spellings are sent', async () => {
+    await call('create_experiment', { videoIds: ['vid1'], instructions, ran_by: LEO, ranBy: 'user' });
+    expect(callsOf('createExperiment')[0]![0]).toMatchObject({ ran_by: LEO });
+  });
+
+  test('both tools advertise the ranBy alias', async () => {
+    const { tools } = await (await connect()).listTools();
+    for (const name of ['create_experiment', 'list_experiments']) {
+      expect((tools.find(t => t.name === name)!.inputSchema.properties as Record<string, unknown>).ranBy).toBeDefined();
+    }
+  });
+});
+
+describe('goal source tag (SLA-671)', () => {
+  test('create does not append the source caption to the goal unless asked', async () => {
+    await call('create_experiment', { videoIds: ['vid1'], instructions });
+    await call('create_experiment', { videoIds: ['vid2'], instructions, tagGoalWithSource: true });
+    await call('create_experiment', { mode: 'edit', videoIds: ['vid3'], character: 'Short hair' });
+    const opts = callsOf('createExperiment').map(a => a[1]);
+    expect(opts[0]).toMatchObject({ tagGoal: false });
+    expect(opts[1]).toMatchObject({ tagGoal: true });
+    expect(opts[2]).toMatchObject({ expandFormat: false, tagGoal: false });
+  });
+});
+
+describe('standing budget counts as approval (SLA-671)', () => {
+  test('lifecycle and spending tools say a credit cap is approval; cancel is not for editing', async () => {
+    const { tools } = await (await connect()).listTools();
+    const desc = (n: string) => tools.find(t => t.name === n)!.description!;
+    for (const n of ['list_experiments', 'create_experiment']) {
+      expect(desc(n)).toContain('a standing budget IS that OK');
+      expect(desc(n)).not.toContain('explicit OK on the estimate');
+    }
+    for (const n of ['plan_experiment', 'generate_experiment', 'retry_experiment', 'estimate_experiment']) expect(desc(n)).toContain('standing credit cap');
+    expect(desc('cancel_experiment')).toContain('Do NOT cancel to change a brief');
+  });
+
+  test('the remaining cap works as approvedCredits while the estimate fits, and is refused above it', async () => {
+    estimateTotal = 40;
+    store.set('e1', exp('e1', { status: 'review' }));
+    expect((await call('plan_experiment', { experimentId: 'e1', approvedCredits: 200 })).isError).toBe(false);
+    expect((await call('generate_experiment', { experimentId: 'e1', variants: [{ id: 'v1', revision: 1 }], approvedCredits: 200 })).isError).toBe(false);
+    expect((await call('retry_experiment', { experimentId: 'e1', approvedCredits: 200, stage: 'generate' })).isError).toBe(false);
+    estimateTotal = 250;
+    const over = await call('plan_experiment', { experimentId: 'e1', approvedCredits: 200 });
+    expect(over.isError).toBe(true);
+    expect(over.body.error).toBe('estimate_exceeds_approval');
+  });
+});
+
 describe('create_experiment', () => {
   test('one isolated experiment per source video, scoped to the resolved workspace', async () => {
     const { isError, body } = await call('create_experiment', { videoIds: ['vid1', 'vid2'], instructions });
@@ -136,10 +252,13 @@ describe('create_experiment', () => {
     for (const c of creates) {
       expect(c.workspaceId).toBe('w1');
       expect(c.maxCredits).toBe(defaultExperimentCap(3, 5));
-      expect(c.instructions).toMatchObject({ language: 'English', mode: 'controlled', lockedConstraints: [], brand: '' });
+      expect(c.instructions).toMatchObject({ language: 'English', brand: '', variables: ['hook'] });
+      // Unset means unset: the service fills mode/direction/locks (from a source format when there is one).
+      expect(c.instructions.mode).toBeUndefined();
+      expect(c.instructions.lockedConstraints).toBeUndefined();
       expect(Key.safeParse(c.idempotencyKey).success).toBe(true);
-      // What reaches the service must satisfy its canonical (strict) schema.
-      expect(Create.safeParse(c).success).toBe(true);
+      // What reaches the service must satisfy the create request schema.
+      expect(CreateRequest.safeParse(c).success).toBe(true);
     }
     expect(creates[0].idempotencyKey).not.toBe(creates[1].idempotencyKey);
     expect(body.experiments).toHaveLength(2);
@@ -190,7 +309,8 @@ describe('create_experiment', () => {
     const request = { mode: 'create', videoIds: ['vid1'], instructions: requested, variantCount: 2, slideCount: 3 };
     expect((await call('create_experiment', request)).isError).toBe(false);
     const body = callsOf('createExperiment')[0]![0] as any;
-    expect(Create.safeParse(body).success).toBe(true);
+    expect(CreateRequest.safeParse(body).success).toBe(true);
+    expect(Create.safeParse({ ...body, instructions: { ...body.instructions, lockedConstraints: [] } }).success).toBe(true);
     expect(body.instructions).toMatchObject(requested);
     const baseline = { title: 'Source', hypothesis: 'Control', concept: 'Tea', hook: 'Try tea', character: 'Original adult', visualStyle: 'Cool photograph', caption: 'Tea guide', cta: '', lockedConstraints: [], slides: [
       { role: 'hook', scene: 'Kitchen', overlayText: 'Try tea' },
@@ -202,7 +322,7 @@ describe('create_experiment', () => {
       { name: 'character' as const, value: 'Adult with short blond hair' },
       { name: 'visualStyle' as const, value: 'Warm photograph' },
     ];
-    const e = exp('combo', { instructions: body.instructions, variantCount: 2 });
+    const e = exp('combo', { instructions: { ...body.instructions, lockedConstraints: [] }, variantCount: 2 });
     const normalized = normalizeBriefCandidates({ baseline, candidates: [{ title: 'Combined', hypothesis: 'Combined changes improve swipes', changedVariables }] }, 3, e);
     const proposals = [normalized.baseline, ...normalized.candidates];
     expect(() => validateVariants(e, proposals)).not.toThrow();
@@ -316,6 +436,13 @@ describe('create_experiment', () => {
     const omitted = editInstructions(undefined, ['New support'], 'English').copyOverrides!;
     expect(Object.keys(omitted)).toEqual(['1']);
     expect(omitted).not.toHaveProperty('0');
+    // A null entry is an omitted slide (SLA-458): no key, and the prose says
+    // "unchanged", never "strip", while '' still strips.
+    const gap = editInstructions('H', ['Two', null, ''], 'English');
+    expect(Object.keys(gap.copyOverrides!)).toEqual(['0', '1', '3']);
+    expect(gap.copyOverrides!['3']).toBe('');
+    expect(gap.direction).toContain('Slide 3: unchanged');
+    expect(gap.direction).toContain('Slide 4: "" (strip — no text)');
     // Prose is still emitted for the model's benefit; the structured values are
     // what the effective brief and render request are built from.
     const both = editInstructions('H', ['S'], 'Danish');
@@ -631,6 +758,20 @@ describe('edits, cancel and delete', () => {
     expect(body.hint).toContain('latest revision');
   });
 
+  test('update_experiment_variant gives an actionable hint for each edit refusal', async () => {
+    for (const [code, fragment] of [
+      ['experiment_active', 'planning or generating'], ['experiment_cancelled', 'cancelled'], ['not_editable', 'plan_experiment'],
+      ['variant_frozen', 'frozen'], ['variant_in_flight', 'running or unresolved'],
+    ] as const) {
+      store.set('e1', exp('e1', { status: 'review' }));
+      mutateError = new ExperimentError(409, code);
+      const { isError, body } = await call('update_experiment_variant', { experimentId: 'e1', variantId: 'v1', revision: 1, brief });
+      expect(isError).toBe(true);
+      expect(body.error).toBe(code);
+      expect(body.hint).toContain(fragment);
+    }
+  });
+
   test('cancel_experiment uses the cancel action', async () => {
     store.set('e1', exp('e1', { status: 'planning' }));
     await call('cancel_experiment', { experimentId: 'e1' });
@@ -682,6 +823,31 @@ describe('reads', () => {
     expect(body.nextSteps[0]).toMatchObject({ tool: 'estimate_experiment', args: { taskIds: ['t1'] } });
   });
 
+  test('progress shows a pending task that is backing off as retrying, with its error and next attempt', async () => {
+    const next = Date.parse('2026-10-07T12:30:00Z');
+    store.set('e1', exp('e1', {
+      status: 'planning',
+      tasks: [
+        { id: 't1', kind: 'analysis', status: 'pending', attempts: 2, charged: 5, error: 'provider_outcome_unknown', nextAttemptAt: next },
+        { id: 't2', kind: 'report', status: 'pending', attempts: 0, charged: 0 },
+      ],
+    }));
+    const { body } = await call('get_experiment', { experimentId: 'e1' });
+    expect(body.progress.jobs.analysis).toEqual({ retrying: 1 });
+    expect(body.progress.jobs.report).toEqual({ pending: 1 });
+    expect(body.progress.retryingJobs).toEqual([
+      { id: 't1', kind: 'analysis', attempts: 2, error: 'provider_outcome_unknown', nextAttemptAt: '2026-10-07T12:30:00.000Z' },
+    ]);
+  });
+
+  test('plan_experiment and get_experiment say experiment job ids are not for await_job', async () => {
+    const client = await connect();
+    const { tools } = await client.listTools();
+    for (const name of ['plan_experiment', 'get_experiment']) {
+      expect(tools.find(t => t.name === name)!.description).toContain('NOT for await_job');
+    }
+  });
+
   test('an unowned workspace is refused', async () => {
     const { isError, body } = await call('get_experiment', { workspaceId: 'someone-else', experimentId: 'e1' });
     expect(isError).toBe(true);
@@ -690,14 +856,32 @@ describe('reads', () => {
 });
 
 describe('helpers', () => {
-  test('default cap matches the site auto-cap (2x estimate, rounded up to 10, min 30)', () => {
-    // site: estimateExperimentCredits(1, 3, 5).total = 9 + 450 = 459 → 920
-    expect(defaultExperimentCap(3, 5)).toBe(920);
-    expect(defaultExperimentCap(1, 3)).toBe(200);
+  test('default cap is 2x the estimate, rounded up to 10, min 30 (priced at the current fan-out)', () => {
+    // 9 + 3 variants x 5 slides x 10 credits x fan-out 2 = 309 → 620
+    expect(defaultExperimentCap(3, 5)).toBe(620);
+    expect(defaultExperimentCap(1, 3)).toBe(140);
   });
   test('derived keys are deterministic and valid Keys', () => {
     const k = derivedKey('plan', { experimentId: 'e1' });
     expect(k).toBe(derivedKey('plan', { experimentId: 'e1' }));
     expect(Key.safeParse(k).success).toBe(true);
+  });
+});
+
+describe('notify (SLA-617)', () => {
+  test('create_experiment advertises notify and forwards it to createExperiment', async () => {
+    const { tools } = await (await connect()).listTools();
+    const props = tools.find(t => t.name === 'create_experiment')!.inputSchema.properties as Record<string, unknown>;
+    expect(props.notify).toBeDefined();
+    const notify = { url: 'https://hooks.example.com/x', metadata: { paperclipIssueId: '3b3b7ddf-0e2d-4c1a-9a6f-1d2e3f4a5b6c' } };
+    const created = await call('create_experiment', { videoIds: ['vid1'], instructions, notify });
+    expect(created.isError).toBe(false);
+    expect(callsOf('createExperiment')[0]![0]).toMatchObject({ notify });
+  });
+
+  test('without notify nothing is forwarded and the response has no notify key', async () => {
+    const created = await call('create_experiment', { videoIds: ['vid1'], instructions });
+    expect('notify' in (callsOf('createExperiment')[0]![0] as object)).toBe(false);
+    expect('notify' in created.body.experiments[0]).toBe(false);
   });
 });

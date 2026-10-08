@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { db, dbDialect, rawBatch, type Dialect, type RawStatement } from '../store.js';
 import { resolveBillingWorkspace, InsufficientCreditsError } from '../lib/credits.js';
-import { ExperimentError, type Experiment } from './schema.js';
+import { ExperimentError, normalizeRanBy, slideTaskRequestCap, TERMINAL_STATUSES, type Experiment, type NotifyConfig } from './schema.js';
+import { buildWebhookPayload, notifyReceipt, webhookIdempotencyKey } from './webhook-payload.js';
 import { encodeExperiment } from './document-budget.js';
 
 export async function batch(statements: RawStatement[]): Promise<unknown[][]> {
@@ -12,30 +13,56 @@ export async function batch(statements: RawStatement[]): Promise<unknown[][]> {
     return out;
   });
 }
-export async function load(workspaceId: string, id: string): Promise<Experiment> {
-  const result = await batch([{ sql: 'SELECT "dataJson" FROM "Experiment" WHERE "id" = ? AND "workspaceId" = ?', params: [id, workspaceId] }]);
-  const row = result[0]?.[0] as { dataJson: string } | undefined;
+type ExperimentRow = { dataJson: string; ranBy: string | null; notifyJson?: string | null };
+/** The indexed column is authoritative for ranBy; legacy rows have it NULL. */
+const hydrate = (r: ExperimentRow): Experiment => ({ ...JSON.parse(r.dataJson), ranBy: r.ranBy ?? null });
+/** Store access as an injectable seam: the default is the live database; tests pass a fixed executor so they do not depend on process-global module mocks (docs/test-suite-policy.md). */
+export type Run = typeof batch;
+export async function load(workspaceId: string, id: string, run: Run = batch): Promise<Experiment> {
+  const result = await run([{ sql: 'SELECT "dataJson","ranBy" FROM "Experiment" WHERE "id" = ? AND "workspaceId" = ?', params: [id, workspaceId] }]);
+  const row = result[0]?.[0] as ExperimentRow | undefined;
   if (!row) throw new ExperimentError(404, 'experiment_not_found');
-  return JSON.parse(row.dataJson);
+  return hydrate(row);
 }
-/** Newest first. limit is capped server-side so a client can't pull unbounded. */
-export async function list(workspaceId: string, limit = 50, offset = 0): Promise<Experiment[]> {
+/**
+ * Newest first. limit is capped server-side so a client can't pull unbounded.
+ * ranBy is an exact, workspace-scoped match (served by the (workspaceId, ranBy,
+ * createdAt) index); a blank filter is treated as no filter.
+ */
+export async function list(workspaceId: string, limit = 50, offset = 0, ranBy?: string | null, run: Run = batch): Promise<Experiment[]> {
   const lim = Math.max(1, Math.min(Math.floor(Number(limit) || 50), 50));
   const off = Math.max(0, Math.floor(Number(offset) || 0));
-  const result = await batch([{ sql: 'SELECT "dataJson" FROM "Experiment" WHERE "workspaceId" = ? ORDER BY "createdAt" DESC LIMIT ? OFFSET ?', params: [workspaceId, lim, off] }]);
-  return (result[0] as Array<{ dataJson: string }>).map(r => JSON.parse(r.dataJson));
+  const runner = normalizeRanBy(ranBy);
+  const result = await run([{
+    sql: `SELECT "dataJson","ranBy" FROM "Experiment" WHERE "workspaceId" = ?${runner ? ' AND "ranBy" = ?' : ''} ORDER BY "createdAt" DESC LIMIT ? OFFSET ?`,
+    params: [workspaceId, ...(runner ? [runner] : []), lim, off],
+  }]);
+  return (result[0] as ExperimentRow[]).map(hydrate);
+}
+/** Experiment owning a task id in this workspace, or null. Tasks live inside dataJson, so this scans text then confirms in JS. */
+export async function findByTaskId(workspaceId: string, taskId: string): Promise<Experiment | null> {
+  if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(taskId)) return null;
+  const result = await batch([{ sql: 'SELECT "dataJson" FROM "Experiment" WHERE "workspaceId" = ? AND "dataJson" LIKE ? LIMIT 20', params: [workspaceId, `%"${taskId}"%`] }]);
+  for (const row of result[0] as Array<{ dataJson: string }>) {
+    const e: Experiment = JSON.parse(row.dataJson);
+    if (e.tasks.some(t => t.id === taskId)) return e;
+  }
+  return null;
 }
 export async function remove(workspaceId: string, id: string): Promise<boolean> {
   const result = await batch([{ sql: 'DELETE FROM "Experiment" WHERE "id" = ? AND "workspaceId" = ? RETURNING "id"', params: [id, workspaceId] }]);
   return ((result[0] ?? []) as unknown[]).length > 0;
 }
-export async function create(e: Experiment, key: string): Promise<Experiment> {
+export async function create(e: Experiment, key: string, run: Run = batch, notify: NotifyConfig | null = null): Promise<Experiment> {
   const json = encodeExperiment(e);
-  await batch([{ sql: 'INSERT INTO "Experiment" ("id","workspaceId","status","version","dataJson","createdAt","updatedAt","createKey") VALUES (?,?,?,0,?,?,?,?) ON CONFLICT ("workspaceId","createKey") DO NOTHING RETURNING "id"',
-    params: [e.id,e.workspaceId,e.status,json,new Date(e.createdAt),new Date(e.updatedAt),key] }]);
-  const result = await batch([{ sql: 'SELECT "dataJson" FROM "Experiment" WHERE "workspaceId" = ? AND "createKey" = ?', params: [e.workspaceId,key] }]);
-  const prior: Experiment = JSON.parse((result[0]![0] as { dataJson: string }).dataJson);
+  await run([{ sql: 'INSERT INTO "Experiment" ("id","workspaceId","status","version","dataJson","createdAt","updatedAt","createKey","ranBy","notifyJson") VALUES (?,?,?,0,?,?,?,?,?,?) ON CONFLICT ("workspaceId","createKey") DO NOTHING RETURNING "id"',
+    params: [e.id,e.workspaceId,e.status,json,new Date(e.createdAt),new Date(e.updatedAt),key,normalizeRanBy(e.ranBy),notify ? JSON.stringify(notify) : null] }]);
+  const result = await run([{ sql: `SELECT "dataJson","ranBy"${notify ? ',"notifyJson"' : ''} FROM "Experiment" WHERE "workspaceId" = ? AND "createKey" = ?`, params: [e.workspaceId,key] }]);
+  const row = result[0]![0] as ExperimentRow;
+  const prior = hydrate(row);
   if (prior.createFingerprint !== e.createFingerprint) throw new ExperimentError(409, 'idempotency_conflict');
+  // A replay reports what the FIRST create stored (including its generated secret), not what this call asked for.
+  if (row.notifyJson) prior.notify = notifyReceipt(JSON.parse(row.notifyJson) as NotifyConfig);
   return prior;
 }
 /**
@@ -79,20 +106,33 @@ export function creditStatements(
       params: [charge,charge,billingId,...proof] },
   ];
 }
+/** Outbox INSERT for a transition into a terminal status; selects zero rows unless the stored row is still non-terminal at `e.version` and has notify config. */
+export function outboxStatement(e: Experiment, next: Experiment, gate: string, gateParams: unknown[]): RawStatement {
+  const terminal = TERMINAL_STATUSES.map(() => '?').join(',');
+  return { sql: `INSERT INTO "ExperimentWebhookOutbox" ("id","experimentId","workspaceId","status","version","idempotencyKey","notifyJson","payloadJson","state","attempts","nextAttemptAt","createdAt") SELECT ?,"id","workspaceId",?,?,?,"notifyJson",?,'pending',0,?,? FROM "Experiment" WHERE "id"=? AND "workspaceId"=? AND "version"=? AND "notifyJson" IS NOT NULL AND "status" NOT IN (${terminal})${gate} ON CONFLICT ("idempotencyKey") DO NOTHING RETURNING "id"`,
+    params: [randomUUID(),next.status,next.version,webhookIdempotencyKey(e.id,next.status,next.version),JSON.stringify(buildWebhookPayload(next)),new Date(),new Date(),e.id,e.workspaceId,e.version,...TERMINAL_STATUSES,...gateParams] };
+}
 /** Every API mutation and step acquisition uses this CAS, including cancellation. */
-export async function save(e: Experiment, charge = 0, chargeRef?: string): Promise<boolean> {
+export async function save(e: Experiment, charge = 0, chargeRef?: string, refunds: ReadonlyArray<{ ref: string; amount: number }> = [], run: Run = batch): Promise<boolean> {
   const previous = e.version;
-  const next = { ...e, writeToken: randomUUID(), version: previous + 1, updatedAt: new Date().toISOString(), creditsCharged: e.creditsCharged + charge };
+  const refunded = refunds.reduce((n, r) => n + r.amount, 0);
+  const next = { ...e, writeToken: randomUUID(), version: previous + 1, updatedAt: new Date().toISOString(), creditsCharged: e.creditsCharged + charge - refunded };
   if (next.creditsCharged > e.maxCredits) throw new ExperimentError(402, 'experiment_budget_exceeded');
   if (charge < 0 && !chargeRef) throw new ExperimentError(500, 'refund_requires_charge_ref');
   const json = encodeExperiment(next);
   const statements: RawStatement[] = [];
   let billingId = '';
-  if (charge !== 0) {
+  if (charge !== 0 || refunds.length) {
     const workspace = await db.workspace.findUniqueOrThrow({ where: { id: e.workspaceId } });
     billingId = (await resolveBillingWorkspace(workspace)).id;
   }
   const gate = charge > 0 ? ' AND EXISTS (SELECT 1 FROM "Workspace" WHERE "id" = ? AND "planCredits" + "packCredits" >= ?)' : '';
+  // SLA-617: queue the completion webhook for a non-terminal -> terminal move. It runs BEFORE the UPDATE so it can
+  // read the stored (pre-transition) status, under the same id/version/credit predicate as the CAS, and the whole
+  // batch is atomic: the event exists if and only if this exact transition committed. Experiments without notify
+  // config select no row, and non-terminal saves add no statement at all.
+  const queued = (TERMINAL_STATUSES as readonly string[]).includes(next.status);
+  if (queued) statements.push(outboxStatement(e, next, gate, charge > 0 ? [billingId, charge] : []));
   statements.push({ sql: `UPDATE "Experiment" SET "dataJson"=?, "version"=?, "status"=?, "updatedAt"=? WHERE "id"=? AND "workspaceId"=? AND "version"=?${gate} RETURNING "id"`,
     params: [json,next.version,next.status,new Date(next.updatedAt),e.id,e.workspaceId,previous,...(charge > 0 ? [billingId,charge] : [])] });
   // Fresh unpredictable receipt only exists if OUR exact JSON CAS succeeded.
@@ -100,9 +140,11 @@ export async function save(e: Experiment, charge = 0, chargeRef?: string): Promi
   if (charge !== 0) {
     statements.push(...creditStatements(e, next, billingId, charge, chargeRef ?? `experiment:${e.id}:${randomUUID()}`));
   }
-  const result = await batch(statements);
-  if (!result[0]?.length) {
-    if (charge > 0 && (await load(e.workspaceId,e.id)).version === previous) throw new InsufficientCreditsError(e.workspaceId,charge,0);
+  // Every additional refund rides the same batch as the experiment CAS, so terminal status and all refunds settle together or not at all.
+  for (const r of refunds) statements.push(...creditStatements(e, next, billingId, -r.amount, r.ref));
+  const result = await run(statements);
+  if (!result[queued ? 1 : 0]?.length) {
+    if (charge > 0 && (await load(e.workspaceId,e.id,run)).version === previous) throw new InsufficientCreditsError(e.workspaceId,charge,0);
     return false;
   }
   Object.assign(e,next); return true;
@@ -111,10 +153,16 @@ export async function candidates(): Promise<Array<{ id: string; workspaceId: str
   const result = await batch([{ sql: 'SELECT "id","workspaceId" FROM "Experiment" WHERE "status" IN (\'planning\',\'generating\') ORDER BY "updatedAt" ASC LIMIT 3' }]);
   return result[0] as Array<{ id: string; workspaceId: string }>;
 }
+/** Authorized total: the planning jobs' 2x allowance plus each slide task's frozen cap (explicit retry grants included). */
+export function maxProviderRequests(e: Experiment): number {
+  const planned = e.variantCount * e.slideCount * slideTaskRequestCap();
+  const frozen = e.tasks.filter(t => t.kind === 'slide').reduce((n, t) => n + (t.requestCap ?? slideTaskRequestCap()), 0);
+  return 2 * (e.inputs.length + 2) + Math.max(planned, frozen);
+}
 export function serialize(e: Experiment) {
   const { tasks, commands, createFingerprint, version, allowPartial, ...publicData } = e;
   // Compact per-job projection so the UI can offer manual retry on a single failed job.
   const jobs = tasks.map(({ id, kind, target, index, status, error, attempts, nextAttemptAt, startedAt }) => ({ id, kind, target, index, status, error, attempts, nextAttemptAt, startedAt }));
   return { ...publicData, jobs, inputs: e.inputs.map(({ evidence, ...input }) => input), variants: e.variants.map(({ history, frozenBrief, ...v }) => v),
-    providerBudget: { maxRequests: 2 * (e.inputs.length + 2 + e.variantCount * e.slideCount), requestsStarted: tasks.reduce((n,t) => n+t.attempts,0), exactUsdCap: false } };
+    providerBudget: { maxRequests: maxProviderRequests(e), requestsStarted: tasks.reduce((n,t) => n+(t.requests ?? t.attempts),0), exactUsdCap: false } };
 }

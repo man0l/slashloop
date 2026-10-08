@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, expect, test } from 'bun:test';
+import { isUniqueViolation } from '../store.js';
 const originalDialect = process.env.DB_DIALECT;
 afterEach(() => { if (originalDialect === undefined) delete process.env.DB_DIALECT; else process.env.DB_DIALECT = originalDialect; });
 import { creditStatements } from './store.js';
@@ -37,6 +38,41 @@ test.each([2, 0, 5])('SQLite refunds restore original buckets with %i plan credi
   expect(() => apply(-5)).toThrow();
   expect(db.query('SELECT planCredits,packCredits FROM Workspace').get()).toEqual({planCredits,packCredits:10});
   db.close();
+});
+
+test('a first-wave refund and its correction refunds restore the exact buckets in one writeToken batch, each once', () => {
+  process.env.DB_DIALECT = 'sqlite';
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE Workspace(id TEXT PRIMARY KEY, planCredits INTEGER, packCredits INTEGER);
+    CREATE TABLE Experiment(id TEXT PRIMARY KEY, dataJson TEXT);
+    CREATE TABLE CreditLedger(id TEXT PRIMARY KEY, workspaceId TEXT, delta INTEGER, bucket TEXT, reason TEXT, tool TEXT, balanceAfter INTEGER NOT NULL, refId TEXT, createdAt TEXT);
+    CREATE UNIQUE INDEX "CreditLedger_workspaceId_refId_key" ON "CreditLedger"("workspaceId", "refId");
+    INSERT INTO Workspace VALUES ('w',7,10);`);
+  const e = { id: 'e' } as Experiment;
+  const next = { id: 'e', version: 1, writeToken: 'receipt-1' } as Experiment & { writeToken: string };
+  db.run('INSERT INTO Experiment VALUES (?,?)', ['e', JSON.stringify(next)]);
+  const run = (statements: ReturnType<typeof creditStatements>) => { for (const s of statements) db.query(s.sql).all(...(s.params ?? []).map((v) => (v instanceof Date ? v.toISOString() : v)) as any[]); };
+  const balances = () => db.query('SELECT planCredits,packCredits FROM Workspace').get();
+  run(creditStatements(e, next, 'w', 6, 'r:1', 'sqlite'));
+  run(creditStatements(e, next, 'w', 6, 'r:1:qa1', 'sqlite'));
+  run(creditStatements(e, next, 'w', 3, 'r:1:qa2', 'sqlite'));
+  expect(balances()).toEqual({ planCredits: 0, packCredits: 10 - (15 - 7) });
+  const batch = [-6, -6, -3].map((c, i) => creditStatements(e, next, 'w', c, ['r:1', 'r:1:qa1', 'r:1:qa2'][i]!, 'sqlite')).flat();
+  run(batch);
+  expect(balances()).toEqual({ planCredits: 7, packCredits: 10 });
+  expect(() => run(batch)).toThrow();
+  expect(balances()).toEqual({ planCredits: 7, packCredits: 10 });
+  db.close();
+});
+
+test('the raw-batch idempotency conflict is recognizable without misreading other UNIQUE keys', () => {
+  expect(
+    isUniqueViolation(new Error(
+      'D1 batch via worker failed: D1_ERROR: UNIQUE constraint failed: '
+      + 'CreditLedger.workspaceId, CreditLedger.refId',
+    )),
+  ).toBe(true);
+  expect(isUniqueViolation(new Error('UNIQUE constraint failed: Workspace.id'))).toBe(false);
 });
 
 test('engine rejection atomically restores SQL balances while unknown outcomes retain them', async () => {

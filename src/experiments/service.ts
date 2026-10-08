@@ -11,6 +11,9 @@ import { persistedOverlayText } from './render-prompt.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { applyApprovedEstimate } from './budget.js';
 import { compileExactEdit } from './exact-edit.js';
+import { postKey } from '../lib/post-key.js';
+import { expandPreset, inferSharedFormat } from './source-format.js';
+import { assertPublicHttpsUrl } from '../lib/webhook-url.js';
 
 export const fingerprint = (v: unknown): string => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 /** Compact view count for experiment title differentiators: 8200000 -> 8.2M, 75600 -> 75.6k. */
@@ -43,7 +46,8 @@ export function isExactEditRequest(raw: unknown): boolean {
  * compiled BEFORE any row exists, so a preparation failure never leaves a
  * half-prepared experiment behind.
  */
-export async function createExactEdit(raw: unknown) {
+export async function createExactEdit(rawWithRunner: unknown) {
+  const { body: raw, ranBy } = S.takeRanBy(rawWithRunner);
   const b = S.ExactEditRequest.parse(raw);
   const now = new Date().toISOString();
   const contract = compileExactEdit(b);
@@ -51,7 +55,7 @@ export async function createExactEdit(raw: unknown) {
   if (!v) throw new S.ExperimentError(404,'video_not_found');
   if (!isPhotoPost(v) && !hasExperimentSlides(v.rawJson)) throw new S.ExperimentError(400,'video_not_slideshow','Only slideshows can be edited.');
   return store.create({
-    id: randomUUID(), workspaceId: b.workspaceId, status: 'review', createdAt: now, updatedAt: now,
+    id: randomUUID(), workspaceId: b.workspaceId, status: 'review', createdAt: now, updatedAt: now, ranBy,
     instructions: {
       goal: `exact_edit: preserve the source deck and change only the approved ${contract.openerEdit ? 'opener overlay' : 'per-slide copy'}.`,
       brand: '', audience: '', language: 'English',
@@ -85,7 +89,7 @@ export type CreateExperimentDeps = {
   findSource: (workspaceId: string, videoId: string) => Promise<Video | null>;
   findLatestAnalysis: (videoId: string) => Promise<{ analysisJson: string } | null>;
   buildInput: (video: Video) => Promise<S.Input>;
-  persist: (experiment: S.Experiment, idempotencyKey: string) => Promise<S.Experiment>;
+  persist: (experiment: S.Experiment, idempotencyKey: string, run?: store.Run, notify?: S.NotifyConfig | null) => Promise<S.Experiment>;
 };
 export const createDeps: CreateExperimentDeps = {
   findSource: (workspaceId, videoId) => db.video.findFirst({ where: { id: videoId, source: { workspaceId } } }),
@@ -93,19 +97,44 @@ export const createDeps: CreateExperimentDeps = {
   buildInput: compatibleInput,
   persist: store.create,
 };
-export async function createExperiment(raw: unknown, deps: CreateExperimentDeps = createDeps) {
+export interface CreateExperimentOptions {
+  /** False for source-preserving copy/character edits: they carry their own complete
+   *  instructions and must not pick up a source-format preset's locks. */
+  expandFormat?: boolean;
+  /** Append the source tag (handle, caption snippet, views) to the stored goal. Default true: the site's list titles rely on it; the MCP tool turns it off. */
+  tagGoal?: boolean;
+}
+export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: CreateExperimentDeps = createDeps, options: CreateExperimentOptions = {}) {
+  const { body: rawWithRunner, notify: notifyRaw } = S.takeNotify(rawWithRunnerAndNotify);
+  const { body: raw, ranBy } = S.takeRanBy(rawWithRunner);
+  // Completion webhook target: refused before any source lookup or write so a bad URL never costs a row.
+  const notify = S.parseNotify(notifyRaw, assertPublicHttpsUrl);
   // Legacy create: the two-variant planner path, unchanged. An exact_edit body
   // has its own entry point and must not be coerced through this schema.
   if (isExactEditRequest(raw)) throw new S.ExperimentError(409,'exact_edit_requires_exact_edit_action','Create an exact_edit deck with create_exact_edit; it does not use the legacy planner.');
-  const b = S.Create.parse(raw);
+  // SLA-555: instructions may omit variables/mode/direction/locks when a source
+  // format fills them, and the format can be inferred from the sources' analysis,
+  // so the strict instructions parse runs after the sources load. The idempotency
+  // fingerprint is taken from the request as sent: an analysis that lands between
+  // two identical calls must not turn the retry into an idempotency conflict.
+  const expandFormat = options.expandFormat !== false;
+  const requested = expandFormat ? S.CreateRequest.parse(raw) : null;
+  const strict = requested ? null : S.Create.parse(raw);
+  const head = requested ?? strict!;
+  const requestFingerprint = fingerprint(head);
   const now = new Date().toISOString();
   const inputs: S.Input[] = [];
   let referenced = false;
-  const slideSources: Array<{ originalCount: number | null; analysis?: unknown }> = [];
+  const slideSources: Array<{ originalCount: number | null; analysis?: unknown; caption?: string | null }> = [];
   const tags: string[] = [];
-  for (const videoId of b.videoIds) {
-    const v = await deps.findSource(b.workspaceId, videoId);
+  const posts = new Set<string>();
+  for (const videoId of head.videoIds) {
+    const v = await deps.findSource(head.workspaceId, videoId);
     if (!v) throw new S.ExperimentError(404,'video_not_found');
+    // The same TikTok post is stored once per source, so two video ids can be one post.
+    const post = postKey(v);
+    if (posts.has(post)) throw new S.ExperimentError(400,'duplicate_source_post','Two of the videoIds are the same post; pass it once.');
+    posts.add(post);
     tags.push(sourceTag(v as { creatorHandle?: string | null; caption?: string | null; views?: number | null }));
     // Slideshows only: plain video posts are disabled for selection — the
     // analysis and render pipeline is carousel-based (slideshow+caption
@@ -120,8 +149,20 @@ export async function createExperiment(raw: unknown, deps: CreateExperimentDeps 
       const row = await deps.findLatestAnalysis(v.id);
       if (row?.analysisJson) try { analysis = JSON.parse(row.analysisJson); } catch { /* ignore broken analysis JSON */ }
     }
-    slideSources.push({ originalCount: originalCount || null, analysis });
+    slideSources.push({ originalCount: originalCount || null, analysis, caption: (v as { caption?: string | null }).caption });
     inputs.push(await deps.buildInput(v));
+  }
+  let b = strict!;
+  if (requested) {
+    const ri = requested.instructions;
+    const signal = inferSharedFormat(slideSources);
+    const format = ri.sourceFormat ?? signal?.format ?? null;
+    const expanded = expandPreset(format, {
+      variables: ri.variables, mode: ri.mode, direction: ri.direction, lockedConstraints: ri.lockedConstraints,
+    }, signal?.observedHuman ?? false);
+    b = S.Create.parse({ ...requested, instructions: {
+      ...ri, ...expanded, ...(format ? { sourceFormat: format } : {}),
+    } });
   }
   const { idempotencyKey, videoIds, workspaceId, slideCount: requestedSlideCount, ...fields } = b;
   // Persisted count: SLA-476 — the source deck keeps its own closing CTA slide
@@ -131,7 +172,7 @@ export async function createExperiment(raw: unknown, deps: CreateExperimentDeps 
   // Each experiment is isolated per slideshow but the goal doubles as the list
   // title — identical goals are indistinguishable. Suffix a quick source
   // summary unless the caller already named the source (e.g. re-duplicates).
-  if (tags.length) {
+  if (tags.length && options.tagGoal !== false) {
     const suffix = tags.length === 1
       ? ` — ${tags[0]}`
       : ` — ${tags.slice(0, 2).join(' + ')}${tags.length > 2 ? ` +${tags.length - 2} more` : ''}`;
@@ -144,12 +185,48 @@ export async function createExperiment(raw: unknown, deps: CreateExperimentDeps 
       fields.instructions = { ...fields.instructions, goal: `${goal}${suffix}` };
     }
   }
-  return deps.persist({ id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,
+  const draft: S.Experiment = { id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,ranBy,
     creditsCharged:0,report:null,inputs,variants:[],error:null,
     // Slideshow sources are attached as visual references during rendering; video-only stays text-directed.
     generationBasis:referenced?'source-referenced':'text-directed',
     assetPolicy:'Generated outputs retained until explicit deletion; never swept with source media. No Stream copies. Gemini uploads named experiment-temp expire at provider in approximately 48h; reusable handles expire locally at 40h.',
-    version:0,tasks:[],commands:{},allowPartial:false,createFingerprint:fingerprint(b) },idempotencyKey);
+    version:0,tasks:[],commands:{},allowPartial:false,createFingerprint:requestFingerprint };
+  return notify ? deps.persist(draft,idempotencyKey,undefined,notify) : deps.persist(draft,idempotencyKey);
+}
+export interface DedupedVideoIds { videoIds: string[]; duplicates: Array<{ videoId: string; duplicateOf: string }> }
+/**
+ * SLA-555: collapse video ids that are the same post (platform + externalId). The
+ * same post lands under a second id when two tracked sources both surface it, and
+ * each id would otherwise get its own experiment (and its own paid analysis).
+ * Within a group the already-analyzed id wins, then the first one listed. Ids that
+ * are not in the workspace are left in place so the create call reports them.
+ */
+export async function dedupeSourcePosts(
+  workspaceId: string, videoIds: string[],
+  find: (workspaceId: string, ids: string[]) => Promise<Array<{ id: string; platform: string; externalId: string; analyzed: boolean }>> = findPostKeys,
+): Promise<DedupedVideoIds> {
+  const rows = new Map((await find(workspaceId, videoIds)).map(r => [r.id, r]));
+  const winner = new Map<string, string>();
+  for (const id of videoIds) {
+    const r = rows.get(id);
+    if (!r) continue;
+    const key = postKey(r);
+    const current = winner.get(key);
+    if (!current || (r.analyzed && !rows.get(current)!.analyzed)) winner.set(key, id);
+  }
+  const kept: string[] = [];
+  const duplicates: DedupedVideoIds['duplicates'] = [];
+  for (const id of videoIds) {
+    const r = rows.get(id);
+    const owner = r ? winner.get(postKey(r))! : id;
+    if (owner === id) kept.push(id); else duplicates.push({ videoId: id, duplicateOf: owner });
+  }
+  return { videoIds: kept, duplicates };
+}
+async function findPostKeys(workspaceId: string, ids: string[]) {
+  const videos = await db.video.findMany({ where: { id: { in: ids }, source: { workspaceId } }, select: { id: true, platform: true, externalId: true } });
+  const analyzed = new Set((await db.analysis.findMany({ where: { videoId: { in: ids } }, select: { videoId: true }, distinct: ['videoId'] })).map(a => a.videoId));
+  return videos.map(v => ({ ...v, analyzed: analyzed.has(v.id) }));
 }
 function selected(e: S.Experiment, ids?: string[]) {
   if (ids && new Set(ids).size !== ids.length) throw new S.ExperimentError(400,'duplicate_variant');
@@ -164,23 +241,30 @@ export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: 
     // Per-job retry estimate: price exactly the named jobs that still need provider work.
     const wanted = new Set(taskIds);
     const jobs = e.tasks.filter(t=>wanted.has(t.id)&&t.status!=='done');
-    const priceOf = (t:S.Task)=>t.kind==='slide' ? CREDIT_COSTS.experimentSlide*S.SLIDE_FANOUT : taskCost(t);
+    const priceOf = (t:S.Task)=>t.kind==='slide' ? CREDIT_COSTS.experimentSlide*S.slideFanout() : taskCost(t);
     const analysisCredits = jobs.filter(t=>t.kind==='analysis').reduce((n,t)=>n+priceOf(t),0);
     const planningCredits = jobs.filter(t=>t.kind==='report'||t.kind==='briefs').reduce((n,t)=>n+priceOf(t),0);
     const generationCredits = jobs.filter(t=>t.kind==='slide').reduce((n,t)=>n+priceOf(t),0);
+    const correctionCredits = jobs.filter(t=>t.kind==='slide').length*CREDIT_COSTS.experimentSlide*S.slideFanout()*(S.qaMaxAttempts()-1);
     return { analysisCredits,planningCredits,generationCredits,totalCredits:analysisCredits+planningCredits+generationCredits,
+      correctionCredits,maxTotalCredits:analysisCredits+planningCredits+generationCredits+correctionCredits,
       remainingCredits:e.maxCredits-e.creditsCharged, workspaceCredits:(await creditBalance(e.workspaceId)).total,
       maxCredits:e.maxCredits,generationBasis:e.generationBasis,exactProviderUsdCap:false,
-      maxProviderRequests:jobs.reduce((n,t)=>n+(t.kind==='slide'?S.SLIDE_FANOUT:1),0),
+      maxProviderRequests:jobs.reduce((n,t)=>n+(t.kind==='slide'?S.slideTaskRequestCap():1),0),
       pricing:{analysis:CREDIT_COSTS.analyzeVideo,planningCall:CREDIT_COSTS.experimentPlanningCall,slide:CREDIT_COSTS.experimentSlide} };
   }
   const analysisCredits = stage === 'plan' ? e.inputs.filter(x=>x.status!=='ready').length*CREDIT_COSTS.analyzeVideo : 0;
   const planningCredits = stage === 'plan' ? (e.report ? 0 : CREDIT_COSTS.experimentPlanningCall) + (e.variants.length ? 0 : CREDIT_COSTS.experimentPlanningCall) : 0;
-  const generationCredits = stage === 'generate' ? variants.reduce((n,v)=>n+(v.slides.length ? v.slides.filter(s=>s.status!=='done').length : e.slideCount)*CREDIT_COSTS.experimentSlide,0)*S.SLIDE_FANOUT : 0;
+  const generationCredits = stage === 'generate' ? variants.reduce((n,v)=>n+(v.slides.length ? v.slides.filter(s=>s.status!=='done').length : e.slideCount)*CREDIT_COSTS.experimentSlide,0)*S.slideFanout() : 0;
+  // Every slide can buy up to qaMaxAttempts-1 more full fan-out waves; each is admitted against the
+  // remaining experiment credit and the wallet before its provider calls, so this is a ceiling on
+  // requests, never an amount charged up front.
+  const correctionCredits = generationCredits*(S.qaMaxAttempts()-1);
   return { analysisCredits,planningCredits,generationCredits,totalCredits:analysisCredits+planningCredits+generationCredits,
+    correctionCredits,maxTotalCredits:analysisCredits+planningCredits+generationCredits+correctionCredits,
     remainingCredits:e.maxCredits-e.creditsCharged, workspaceCredits:(await creditBalance(e.workspaceId)).total,
     maxCredits:e.maxCredits,generationBasis:e.generationBasis,exactProviderUsdCap:false,
-    maxProviderRequests: (stage==='plan' ? analysisCredits/CREDIT_COSTS.analyzeVideo+planningCredits/CREDIT_COSTS.experimentPlanningCall : generationCredits/CREDIT_COSTS.experimentSlide),
+    maxProviderRequests: (stage==='plan' ? analysisCredits/CREDIT_COSTS.analyzeVideo+planningCredits/CREDIT_COSTS.experimentPlanningCall : generationCredits/CREDIT_COSTS.experimentSlide/S.slideFanout()*S.slideTaskRequestCap()),
     pricing:{analysis:CREDIT_COSTS.analyzeVideo,planningCall:CREDIT_COSTS.experimentPlanningCall,slide:CREDIT_COSTS.experimentSlide} };
 }
 const task = (kind:S.Task['kind'], target?:string,index?:number):S.Task => ({id:randomUUID(),kind,target,index,status:'pending',attempts:0,charged:0});
@@ -202,7 +286,12 @@ const task = (kind:S.Task['kind'], target?:string,index?:number):S.Task => ({id:
  * counting so the manual-retry ceiling still holds.
  */
 export function applyRetry(e:S.Experiment,retryTasks:readonly S.Task[]):void{
-  for(const t of retryTasks){t.status='pending';t.error=undefined;t.nextAttemptAt=undefined;}
+  // An explicit retry of a failed/unknown slide is priced by the per-job estimate and authorizes one more allowance;
+  // a merely paused (pending) task keeps what it has left.
+  for(const t of retryTasks){
+    if(t.kind==='slide'&&t.status!=='pending')t.requestCap=(t.requests??0)+S.slideTaskRequestCap();
+    t.status='pending';t.error=undefined;t.nextAttemptAt=undefined;
+  }
   for(const v of e.variants){
     const vt=retryTasks.filter(t=>t.target===v.id);
     if(!vt.length) continue;
@@ -218,6 +307,32 @@ export function applyRetry(e:S.Experiment,retryTasks:readonly S.Task[]):void{
       }
     }
   }
+}
+/**
+ * Brief-edit matrix for `update_experiment_variant`. Throws unless the variant's brief may be rewritten.
+ *   review            draft variant        edit
+ *   completed         draft variant        edit (a rendered/frozen variant never)
+ *   failed | paused   draft variant        edit only while no in-flight/unknown provider job could resume from it
+ *   draft             no variants yet      refused: not_editable (plan first)
+ *   planning | generating                  refused: experiment_active
+ *   cancelled                              refused: experiment_cancelled
+ * A frozen or non-draft variant is variant_frozen; a stale revision is revision_conflict.
+ */
+export function assertVariantEditable(e:S.Experiment,variantId:string|undefined,revision:number):S.Experiment['variants'][number] {
+  if (!variantId) throw new S.ExperimentError(400,'variant_required','Name the variant to edit.');
+  switch (e.status) {
+    case 'planning': case 'generating': throw new S.ExperimentError(409,'experiment_active');
+    case 'cancelled': throw new S.ExperimentError(409,'experiment_cancelled');
+    case 'draft': throw new S.ExperimentError(409,'not_editable');
+    case 'review': case 'completed': case 'failed': case 'paused': break;
+    default: throw new S.ExperimentError(409,'not_editable');
+  }
+  const v=selected(e,[variantId])[0]!;
+  if (v.status!=='draft' || v.frozenBrief) throw new S.ExperimentError(409,'variant_frozen');
+  if (v.revision!==revision) throw new S.ExperimentError(409,'revision_conflict');
+  if ((e.status==='failed' || e.status==='paused') && e.tasks.some(t=>(t.status==='running'||t.status==='unknown') && (t.kind!=='slide' || t.target===v.id)))
+    throw new S.ExperimentError(409,'variant_in_flight');
+  return v;
 }
 export async function mutate(workspaceId:string,id:string,action:string,raw:unknown,variantId?:string) {
   // SLA-451: exact_edit is a separately selected operation. Its actions are
@@ -268,9 +383,8 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     e.status='planning';
     e.tasks=[...e.inputs.filter(i=>i.status!=='ready').map(i=>task('analysis',i.videoId)),task('report'),task('briefs')];
   } else if (action==='edit') {
-    if (e.status!=='review' || !variantId) throw new S.ExperimentError(409,'not_idle');
-    const v=selected(e,[variantId])[0]!; const edit=S.EditBrief.parse(b);
-    if(v.status!=='draft' || v.revision!==edit.revision || v.frozenBrief) throw new S.ExperimentError(409,'revision_conflict');
+    const edit=S.EditBrief.parse(b);
+    const v=assertVariantEditable(e,variantId,edit.revision);
     S.assertBrief(e,edit.brief);
     const proposals=e.variants.map(p=>p.id===v.id?{...p,brief:edit.brief}:p);
     // Derive factual delta labels rather than accepting stale model labels after editing.

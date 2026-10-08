@@ -28,12 +28,13 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { withNextSteps, type NextStep } from '../lib/next-steps.js';
 import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload } from '../lib/credits.js';
-import { createExperiment, estimate, mutate, fingerprint } from '../experiments/service.js';
+import { createExperiment, dedupeSourcePosts, estimate, mutate, fingerprint } from '../experiments/service.js';
+import { SOURCE_FORMATS } from '../experiments/source-format.js';
 import { load, list, serialize } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
 import {
-  CopyOverrides, ExperimentError, Id, Instructions, MAX_MANUAL_ATTEMPTS, SLIDE_FANOUT, VARIABLE_FIELDS, type Experiment, type InstructionsData,
+  CopyOverrides, ExperimentError, Id, Instructions, MAX_MANUAL_ATTEMPTS, slideFanout, VARIABLE_FIELDS, type Experiment, type InstructionsData,
 } from '../experiments/schema.js';
 
 // ---- dependencies ----------------------------------------------------------
@@ -50,9 +51,11 @@ export interface ExperimentToolDeps {
   serialize: typeof serialize;
   deleteExperiment: typeof deleteExperiment;
   deleteExperiments: typeof deleteExperiments;
+  /** Optional so a caller that supplies its own deps keeps the old pass-through. */
+  dedupeSourcePosts?: typeof dedupeSourcePosts;
 }
 export const defaultExperimentToolDeps: ExperimentToolDeps = {
-  resolveWorkspace: resolveToolWorkspace, createExperiment, estimate, mutate, load, list, serialize, deleteExperiment, deleteExperiments,
+  resolveWorkspace: resolveToolWorkspace, createExperiment, dedupeSourcePosts, estimate, mutate, load, list, serialize, deleteExperiment, deleteExperiments,
 };
 
 // ---- helpers ---------------------------------------------------------------
@@ -98,7 +101,7 @@ export const EDIT_MAX_CREDITS = 100;
  * inside the sentence, so leading or trailing whitespace would be rendered as
  * part of the overlay text instead of being a typo in the request.
  */
-export function editSlideDirection(hook: string | undefined, overlayTexts: string[]): string {
+export function editSlideDirection(hook: string | undefined, overlayTexts: Array<string | null>): string {
   // An omitted hook must not be described as a cleared slide: the structured
   // carrier treats an omitted index as "unchanged", and prose that says the
   // opposite would instruct the planner to blank a slide the user never touched.
@@ -106,6 +109,8 @@ export function editSlideDirection(hook: string | undefined, overlayTexts: strin
     ? 'Slide 1 (hook): unchanged — no new hook was requested'
     : `Slide 1 (hook): "${hook.trim()}" (empty clears it too)`];
   overlayTexts.forEach((text, index) => {
+    // null is an omitted slide: it is described as unchanged, never as cleared.
+    if (text === null) { lines.push(`Slide ${index + 2}: unchanged — no new text was requested`); return; }
     const trimmed = text.trim();
     lines.push(`Slide ${index + 2}: "${trimmed}"${trimmed ? '' : ' (strip — no text)'}`);
   });
@@ -113,13 +118,13 @@ export function editSlideDirection(hook: string | undefined, overlayTexts: strin
 }
 
 /** Edit mode is a single deck, so the "one experiment per source" loop is length 1 by definition. */
-export function editInstructions(hook: string | undefined, overlayTexts: string[], language: string,
+export function editInstructions(hook: string | undefined, overlayTexts: Array<string | null>, language: string,
   options: { variables?: Array<'hook' | 'character'>; character?: string } = {}): InstructionsData {
   const variables = options.variables ?? [options.character !== undefined ? 'character' : 'hook'];
   if (variables.length !== 1) throw new ExperimentError(400, 'invalid_request', 'Edit mode tests exactly one variable: hook or character. Use create mode for several variables.');
   if (variables[0] === 'character') {
     if (!options.character?.trim()) throw new ExperimentError(400, 'invalid_request', 'Character edits need a non-empty character casting direction.');
-    if (hook !== undefined || overlayTexts.length) throw new ExperimentError(400, 'invalid_request', 'Character-only edits keep source copy. Omit hook and overlayTexts, or use create mode.');
+    if (hook !== undefined || overlayTexts.some(t => t !== null)) throw new ExperimentError(400, 'invalid_request', 'Character-only edits keep source copy. Omit hook and overlayTexts, or use create mode.');
     return Instructions.parse({
       goal: EDIT_CHARACTER_GOAL, brand: '', audience: '', language: language.trim() || 'English',
       direction: editCharacterDirection(options.character), lockedConstraints: [], variables, mode: 'controlled',
@@ -133,7 +138,7 @@ export function editInstructions(hook: string | undefined, overlayTexts: string[
   // two cases and silently re-injects stripped source words.
   const copyOverrides: Record<string, string> = {};
   if (hook !== undefined) copyOverrides['0'] = hook.trim();
-  overlayTexts.forEach((value, index) => { copyOverrides[String(index + 1)] = value.trim(); });
+  overlayTexts.forEach((value, index) => { if (value !== null) copyOverrides[String(index + 1)] = value.trim(); });
   return {
     goal: EDIT_GOAL, brand: '', audience: '', language: language.trim() || 'English',
     direction: editSlideDirection(hook, overlayTexts),
@@ -151,7 +156,12 @@ const text = (payload: unknown, isError = false): ToolResult => ({
 /** What an agent should do about the common refusal codes. */
 const ERROR_HINTS: Record<string, string> = {
   not_draft: 'Planning already started (or finished). Call get_experiment to see the current state.',
-  not_idle: 'Briefs can only be edited while the experiment is in review.',
+  experiment_active: 'The experiment is planning or generating; briefs cannot be edited until it stops. Call get_experiment.',
+  experiment_cancelled: 'A cancelled experiment cannot be edited. Create a new experiment.',
+  not_editable: 'A draft experiment has no variant briefs yet. Run plan_experiment first, then edit at review.',
+  variant_frozen: 'That variant was already sent to generation (or rendered), so its brief is frozen. Only draft variants can be edited.',
+  variant_in_flight: 'A provider job for this experiment is still running or unresolved. Retry or wait, then edit the draft variant.',
+  variant_required: 'Pass the variantId to edit.',
   not_reviewable: 'Generation needs the experiment in review (or completed with draft variants left). Call get_experiment.',
   revision_conflict: 'The variant changed or is no longer a draft. Call get_experiment and use the latest revision.',
   idempotency_conflict: 'This idempotencyKey was already used for a different request. Use a new key for a different request.',
@@ -192,12 +202,12 @@ export function derivedKey(scope: string, parts: unknown): string {
 /**
  * Default per-experiment credit ceiling — the site's automatic cap
  * (ExperimentCreate.jsx): twice the one-source estimate, rounded up to 10,
- * at least 30. Priced from the server's CREDIT_COSTS / SLIDE_FANOUT. It is a
+ * at least 30. Priced from the server's CREDIT_COSTS / slideFanout(). It is a
  * runaway guard only: an approved estimate may raise it (applyApprovedEstimate).
  */
 export function defaultExperimentCap(variantCount: number, slideCount: number): number {
   const total = CREDIT_COSTS.analyzeVideo + 2 * CREDIT_COSTS.experimentPlanningCall
-    + variantCount * slideCount * CREDIT_COSTS.experimentSlide * SLIDE_FANOUT;
+    + variantCount * slideCount * CREDIT_COSTS.experimentSlide * slideFanout();
   return Math.min(MAX_EXPERIMENT_CREDITS, Math.max(30, Math.ceil((total * 2) / 10) * 10));
 }
 
@@ -207,20 +217,31 @@ const STATUS_HINTS: Record<string, string> = {
   review: 'Variant briefs are ready. Review them (optionally edit with update_experiment_variant), then estimate_experiment(stage="generate", variantIds) and generate_experiment for the chosen variants.',
   generating: 'Rendering slide images in the background. Check back with get_experiment in a few minutes — do not poll rapidly.',
   completed: 'All selected variants are rendered. Image URLs are in progress.variants[].imageUrls.',
-  failed: 'A step failed. See error / progress.retryableJobs, then estimate and retry_experiment.',
+  failed: 'A step failed. See error / progress.retryableJobs, then estimate and retry_experiment. Jobs marked terminalQa are verdicts on the slide contract: do not retry them until the brief or contract changes.',
   paused: 'Paused (budget guard or provider outcome unknown). See error; retry_experiment resumes named jobs.',
   cancelled: 'Cancelled — terminal. delete_experiment removes it and its images.',
 };
 
 type JobCounts = Record<string, number>;
+/** A pending task that already failed an attempt and is waiting out its backoff is retrying, not stuck. */
+const isRetrying = (t: Experiment['tasks'][number]) => t.status === 'pending' && Boolean(t.error || t.nextAttemptAt);
 function countJobs(e: Experiment): Record<string, JobCounts> {
   const out: Record<string, JobCounts> = {};
   for (const t of e.tasks) {
     const row = (out[t.kind] ??= {});
-    row[t.status] = (row[t.status] ?? 0) + 1;
+    const key = isRetrying(t) ? 'retrying' : t.status;
+    row[key] = (row[key] ?? 0) + 1;
   }
   return out;
 }
+
+/** A terminal QA verdict (SLA-528) is a finding about the slide's compiled
+ *  contract, not about one render: a retry re-asks the identical questions and
+ *  pays for the render fan-out and QA calls again. A checker that failed to
+ *  answer (`story_check_error`) is infrastructure and stays an ordinary retry. */
+const TERMINAL_QA_ERROR = /(?:^|:)story_(?:check_failed|unverified):(?!story_check_error)/;
+export const isTerminalQaError = (error: string | undefined | null): boolean => TERMINAL_QA_ERROR.test(error ?? '');
+const TERMINAL_QA_ADVICE = 'Terminal QA verdict on this slide\'s contract. Not retryable as-is: a retry re-asks the same checks and pays again. Read the failing checks in the error, change the brief or fix the contract first.';
 
 /** Agent-sized view of where an experiment is. Reads only. */
 export function experimentProgress(e: Experiment) {
@@ -232,9 +253,16 @@ export function experimentProgress(e: Experiment) {
     sources: { total: e.inputs.length, ready: e.inputs.filter(i => i.status === 'ready').length },
     reportReady: Boolean(e.report),
     jobs: countJobs(e),
+    retryingJobs: e.tasks.filter(isRetrying).map(({ id, kind, target, index, attempts, error, nextAttemptAt }) => ({
+      id, kind, target, index, attempts, error: error ?? null,
+      nextAttemptAt: nextAttemptAt ? new Date(nextAttemptAt).toISOString() : null,
+    })),
     retryableJobs: e.tasks
       .filter(t => (t.status === 'failed' || t.status === 'unknown') && t.attempts < MAX_MANUAL_ATTEMPTS)
-      .map(({ id, kind, target, index, status, error, attempts }) => ({ id, kind, target, index, status, error, attempts })),
+      .map(({ id, kind, target, index, status, error, attempts }) => {
+        const terminalQa = isTerminalQaError(error);
+        return { id, kind, target, index, status, error, attempts, terminalQa, ...(terminalQa ? { advice: TERMINAL_QA_ADVICE } : {}) };
+      }),
     variants: e.variants.map((v, i) => {
       const done = v.slides.filter(s => s.status === 'done' && s.url);
       return {
@@ -267,6 +295,7 @@ function listRow(e: Experiment) {
     variants: e.variants.length,
     maxCredits: e.maxCredits,
     creditsCharged: e.creditsCharged,
+    ranBy: e.ranBy ?? null,
     error: e.error,
   };
 }
@@ -289,8 +318,12 @@ function lifecycleSteps(e: Experiment): NextStep[] {
         : [];
     case 'failed':
     case 'paused': {
-      const jobs = experimentProgress(e).retryableJobs.map(j => j.id);
-      return [{ label: 'Price a retry of the failed jobs', tool: 'estimate_experiment', args: jobs.length ? { experimentId: id, stage: 'generate', taskIds: jobs } : { experimentId: id, stage: e.report && e.variants.length ? 'generate' : 'plan' }, why: 'Free. Retries re-charge the retried jobs.' }];
+      const all = experimentProgress(e).retryableJobs;
+      const jobs = all.filter(j => !j.terminalQa).map(j => j.id);
+      if (all.length && !jobs.length) {
+        return [{ label: 'Do not retry: every failed slide is a terminal QA verdict', tool: 'get_experiment', args: { experimentId: id }, why: TERMINAL_QA_ADVICE }];
+      }
+      return [{ label: 'Price a retry of the failed jobs', tool: 'estimate_experiment', args: jobs.length ? { experimentId: id, stage: 'generate', taskIds: jobs } : { experimentId: id, stage: e.report && e.variants.length ? 'generate' : 'plan' }, why: all.length > jobs.length ? 'Free. Retries re-charge the retried jobs. Slides marked terminalQa are left out: they cannot pass without a contract or brief change.' : 'Free. Retries re-charge the retried jobs.' }];
     }
     case 'cancelled':
       return [{ label: 'Delete the cancelled experiment', tool: 'delete_experiment', args: { experimentId: id }, why: 'Free. Removes the record and its retained images.' }];
@@ -340,9 +373,29 @@ const idempotencyKeyField = z.string().min(8).max(120).regex(/^[a-zA-Z0-9_.:-]+$
   'Optional idempotency key. Omit it and a stable key is derived from the request, so repeating an identical call '
   + '(e.g. after a lost response) replays the first result instead of doing the work twice.',
 );
+const ranByField = z.string().max(400).optional().describe(
+  'Who is running this: "user" when the user asked directly, or "agent:<name> on behalf of <user>" when an AI agent acts for them, '
+  + 'e.g. "agent:Leo on behalf of man0l". Free text, trimmed and capped at 120 characters. Always pass it so the owner can see who ran what.',
+);
+// Responses expose the value as `ranBy`, so agents echo that spelling back; without
+// this alias zod strips the unknown key and the experiment is stored with ranBy null.
+const ranByAliasField = z.string().max(400).optional().describe('Alias of ran_by (the name responses use). If both are given, ran_by wins.');
+const tagGoalField = z.boolean().default(false).describe(
+  'Append "— @handle · source caption snippet (views)" to the stored goal so the title names the source. Default false: '
+  + 'the source caption can name a competitor or creator and must not leak into the goal. Source videos are listed on every experiment anyway.',
+);
+const notifyField = z.object({
+  url: z.string().max(2048).optional().describe('https URL (port 443, public host) that receives a signed POST when the experiment reaches completed, review, failed, paused or cancelled.'),
+  secret: z.string().min(16).max(256).optional().describe('Signing secret for the Standard Webhooks HMAC-SHA256 headers (webhook-id, webhook-timestamp, webhook-signature). Omit it and one is generated and returned once as notify.signingSecret.'),
+  metadata: z.record(z.string(), z.unknown()).optional().describe('Opaque JSON (up to 4 KB) echoed back unchanged in every delivery. Paperclip agents: set { paperclipIssueId: <the current task UUID>, agentId: <your own agent UUID> } instead of a url to be woken by a child task of that task, assigned to you.'),
+}).optional().describe(
+  'Optional completion webhook. Instead of polling get_experiment, get one POST per terminal transition (idempotency key experimentId:status:version, retried with backoff for ~24h). '
+  + 'Needs a url, or metadata.paperclipIssueId for Paperclip delivery. Applies to every experiment this call creates.',
+);
 const approvedCreditsField = z.number().int().min(0).describe(
-  'The totalCredits from estimate_experiment that the user explicitly approved. If the fresh estimate is higher, '
-  + 'nothing is started and the new estimate is returned.',
+  'The credit amount the user has approved for this step: either the totalCredits from estimate_experiment that they confirmed, '
+  + 'or, under a standing budget (a per-experiment or per-batch credit cap granted in the task), the remaining cap. '
+  + 'The step runs only when the fresh estimate is <= this number; if it is higher, nothing is started and the new estimate is returned.',
 );
 const VARIABLE_INPUT = z.enum([...VARIABLE_FIELDS, 'angle']);
 const instructionsInput = z.object({
@@ -350,13 +403,19 @@ const instructionsInput = z.object({
   brand: z.string().max(2000).default(''),
   audience: z.string().max(2000).default(''),
   language: z.string().min(1).max(80).default('English'),
-  direction: z.string().max(2000).default('').describe('Creative direction; add desired variable values here, e.g. "Desired variable values: a question versus a statement".'),
-  lockedConstraints: z.array(z.string().min(1).max(2000)).max(20).default([]).describe('Rules every variant must keep, one per entry.'),
-  variables: z.array(VARIABLE_INPUT).min(1).max(7).describe(
-    'What to vary: hook, character, visualStyle, caption, cta (controlled mode), plus concept/"angle" and slides (exploration mode only).',
+  direction: z.string().max(2000).optional().describe('Creative direction; add desired variable values here, e.g. "Desired variable values: a question versus a statement". Omit it to use the sourceFormat preset\'s direction.'),
+  lockedConstraints: z.array(z.string().min(1).max(2000)).max(20).optional().describe('Rules every variant must keep, one per entry. Added to the always-on and sourceFormat locks, never replacing them.'),
+  sourceFormat: z.enum(SOURCE_FORMATS).optional().describe(
+    'What kind of source this is: statue-collage, sprite-vs-real, annotated-face, ai-render, sketch, portrait-collage or photo-person. '
+    + 'Expands to default variables, mode, direction and locks, and emits person-appearance locks (hair, eyes, wardrobe...) only where the source shows a photographic person. '
+    + 'Always locks: no source watermarks/handles/competitor brands, our app on the CTA slide, no real or celebrity likeness, adults only. '
+    + 'Inferred from the source analysis when omitted; your own variables/mode/direction win over the preset.',
   ),
-  mode: z.enum(['controlled', 'exploration']).default('controlled').describe(
-    'controlled: each alternate changes one of the selected variables vs the baseline. exploration (SaaS Explore combinations): an alternate may change several selected variables together, including hook + character + visualStyle; concept/slides are allowed.',
+  variables: z.array(VARIABLE_INPUT).min(1).max(7).optional().describe(
+    'What to vary: hook, character, visualStyle, caption, cta (controlled mode), plus concept/"angle" and slides (exploration mode only). Required unless sourceFormat is given or can be inferred.',
+  ),
+  mode: z.enum(['controlled', 'exploration']).optional().describe(
+    'controlled (default without a preset): each alternate changes one of the selected variables vs the baseline. exploration (SaaS Explore combinations): an alternate may change several selected variables together, including hook + character + visualStyle; concept/slides are allowed.',
   ),
   varySupportingOverlays: z.boolean().optional().describe('Hook tests only (controlled, variables=["hook"]): variants may also retell slide 2+ overlay text while scenes stay identical.'),
   preserveSourceCtaSlide: z.boolean().optional().describe('Keep the source deck\'s own closing call-to-action slide in the deck instead of subtracting it from the slide count (default false, which drops a detected final CTA slide).'),
@@ -378,23 +437,31 @@ const LIFECYCLE =
   'Experiment lifecycle: create_experiment (draft, free) → estimate_experiment stage=plan → user approves → plan_experiment '
   + '(background: source analysis, pattern report, variant briefs) → status "review" → optionally update_experiment_variant → '
   + 'estimate_experiment stage=generate → user approves → generate_experiment (background slide rendering) → "completed". '
-  + 'Each spending step needs the user\'s explicit OK on the estimate; pass that number as approvedCredits.';
+  + 'Approval: a spending step needs the user\'s OK, and a standing budget IS that OK. If the task or user granted a credit cap '
+  + '(per experiment or per batch), any estimate within the remaining cap is already approved: pass the remaining cap (or the estimate) as '
+  + 'approvedCredits and run plan → generate without asking again. Without a cap, ask ONCE for all experiments and both stages together, '
+  + 'not per experiment or per stage. Ask again only when an estimate exceeds what was approved. '
+  + 'To change a brief, use update_experiment_variant (free) rather than cancel_experiment.';
 
 export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps = defaultExperimentToolDeps) {
   // ---- list_experiments ----
   server.tool('list_experiments',
     'List slideshow experiments in this workspace, newest first (paginated). Free. Each row shows status, goal, source '
-    + `videos and credits charged. Use get_experiment for briefs, jobs and images. ${LIFECYCLE}`,
+    + 'videos, credits charged and ranBy; filter to one runner with ran_by. Use it to find experiments parked in "review" '
+    + '(briefs ready, generation not started) or "paused"/"failed" (retry_experiment) and move them forward instead of '
+    + `creating duplicates. Use get_experiment for briefs, jobs and images. ${LIFECYCLE}`,
     {
       workspaceId: workspaceIdField,
       limit: z.number().int().min(1).max(50).default(12),
       offset: z.number().int().min(0).default(0).describe('Pass nextOffset from the previous page.'),
+      ran_by: z.string().max(400).optional().describe('Only experiments whose ranBy equals this value exactly (e.g. "agent:Leo on behalf of man0l"). Omit for all.'),
+      ranBy: ranByAliasField,
     },
     { readOnlyHint: true },
-    ({ workspaceId, limit, offset }) => guarded(async () => {
+    ({ workspaceId, limit, offset, ran_by, ranBy }) => guarded(async () => {
       const workspace = await d.resolveWorkspace({ workspaceId });
       // One extra row reveals whether another page exists (same as api/experiments.ts).
-      const rows = await d.list(workspace.id, limit + 1, offset);
+      const rows = await d.list(workspace.id, limit + 1, offset, ran_by ?? ranBy);
       const nextOffset = rows.length > limit ? offset + limit : null;
       return text({ experiments: rows.slice(0, limit).map(listRow), nextOffset });
     }));
@@ -404,7 +471,9 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     'Get one experiment: the full record (instructions, pattern report, variant briefs, slides, jobs) plus a compact '
     + '`progress` block — status with what to do next, job counts per stage, retryable jobs, and per-variant '
     + 'revision / slides done / image URLs. Free. Planning and generation run in the background; call this again '
-    + 'after a minute or two rather than polling rapidly.',
+    + 'after a minute or two rather than polling rapidly. Jobs that failed an attempt and wait out a backoff show as '
+    + '`retrying` (progress.retryingJobs: error + nextAttemptAt). The job ids in `experiment.jobs[].id` are NOT for '
+    + 'await_job / get_job_status — this tool is how experiment jobs are tracked.',
     { workspaceId: workspaceIdField, experimentId: experimentIdField },
     { readOnlyHint: true },
     ({ workspaceId, experimentId }) => guarded(async () => {
@@ -423,13 +492,13 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     + '• mode "edit" — exactly ONE deck. For a character-only edit pass variables:["character"] and `character` '
     + '(visible casting direction); omit hook/overlayTexts to keep all source copy, style, setting and story locked. '
     + 'For a copy edit (variables:["hook"], default), keep the same images and pass `hook` '
-    + '(slide 1) and `overlayTexts` (slides 2, 3, … in order; an empty string strips that slide\'s text) instead of '
+    + '(slide 1) and `overlayTexts` (slides 2, 3, … in order; an empty string strips that slide\'s text, null leaves it unchanged) instead of '
     + '`instructions`; the tool assembles the same brief the site sends — fixed goal, one selected variable, '
     + 'controlled mode, 2 variants, a 100-credit cap — with the copy quoted per slide in the site\'s wording. '
     + 'The source deck\'s own slide count wins when it is known; pass slideCount only if you do not have it.\n'
     + 'Sources must be slideshows or videos with a finished Recreate deck (show_gallery marks them). '
     + `Credits: analysis ${CREDIT_COSTS.analyzeVideo}/source + ${CREDIT_COSTS.experimentPlanningCall} per planning call at plan time; `
-    + `${CREDIT_COSTS.experimentSlide} per slide × ${SLIDE_FANOUT} candidates at generation. ${LIFECYCLE}`,
+    + `${CREDIT_COSTS.experimentSlide} per slide × ${slideFanout()} candidates at generation. ${LIFECYCLE}`,
     {
       workspaceId: workspaceIdField,
       mode: z.enum(['edit', 'create']).default('create').describe(
@@ -450,8 +519,8 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       hook: z.string().max(EDIT_COPY_MAX).optional().describe(
         'EDIT mode: the exact words for slide 1. OMIT this field to leave slide 1 unchanged; send an empty string only to strip slide 1\'s text.',
       ),
-      overlayTexts: z.array(z.string().max(EDIT_COPY_MAX)).max(7).optional().describe(
-        'EDIT mode: overlay text for slides 2, 3, … in order. Empty string = render no text on that slide.',
+      overlayTexts: z.array(z.string().max(EDIT_COPY_MAX).nullable()).max(7).optional().describe(
+        'EDIT mode: overlay text for slides 2, 3, … in order. Empty string = render no text on that slide. null = leave that slide\'s original text unchanged (use it to skip a slide between two you are editing).',
       ),
       language: z.string().trim().min(1).max(80).optional().describe('EDIT mode: output language for the copy (default English).'),
       variantCount: z.number().int().min(1).max(12).default(3).describe('CREATE mode: variants per experiment, including the baseline (1–12). Edit mode is always 2.'),
@@ -460,9 +529,14 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         'Per-experiment credit ceiling (runaway guard). Default: the site\'s automatic cap, 2× the estimate rounded up; 100 in edit mode. An approved estimate may raise it.',
       ),
       idempotencyKey: idempotencyKeyField,
+      ran_by: ranByField,
+      ranBy: ranByAliasField,
+      tagGoalWithSource: tagGoalField,
+      notify: notifyField,
     },
     { readOnlyHint: false },
-    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, variantCount, slideCount, maxCredits, idempotencyKey }) => guarded(async () => {
+    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, variantCount, slideCount, maxCredits, idempotencyKey, ran_by: ranByRaw, ranBy: ranByCamel, tagGoalWithSource, notify }) => guarded(async () => {
+      const ran_by = ranByRaw ?? ranByCamel;
       const workspace = await d.resolveWorkspace({ workspaceId });
       if (new Set(videoIds).size !== videoIds.length) return text({ error: 'invalid_request', message: 'videoIds must be distinct.' }, true);
       if (mode === 'edit') {
@@ -472,7 +546,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         if (videoIds.length !== 1) {
           return text({ error: 'invalid_request', message: 'mode "edit" works on exactly one slideshow — pass a single videoId, or use mode "create".' }, true);
         }
-        if (!character && variables?.[0] !== 'character' && !hook?.trim() && !(overlayTexts ?? []).some(t => t.trim())) {
+        if (!character && variables?.[0] !== 'character' && !hook?.trim() && !(overlayTexts ?? []).some(t => t?.trim())) {
           return text({ error: 'invalid_request', message: 'mode "edit" needs new copy: a hook for slide 1, or overlay text for a later slide.' }, true);
         }
       } else if (variables || character !== undefined) {
@@ -489,23 +563,26 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         : { instructions: instructions!, variantCount, maxCredits: maxCredits ?? defaultExperimentCap(variantCount, slideCount) };
       const created: Array<Record<string, unknown>> = [];
       const failed: Array<Record<string, unknown>> = [];
-      for (const [i, videoId] of videoIds.entries()) {
+      const deduped = d.dedupeSourcePosts ? await d.dedupeSourcePosts(workspace.id, videoIds) : { videoIds, duplicates: [] };
+      for (const videoId of deduped.videoIds) {
+        const i = videoIds.indexOf(videoId);
         const body = { workspaceId: workspace.id, videoIds: [videoId], ...edit, slideCount, maxCredits: edit.maxCredits };
         const key = idempotencyKey
           ? (videoIds.length === 1 ? idempotencyKey : `${idempotencyKey}:${i + 1}`)
           : derivedKey('create', body);
         try {
-          const e = await d.createExperiment({ ...body, idempotencyKey: key });
-          created.push({ ...listRow(e), idempotencyKey: key, planEstimate: await d.estimate(e, 'plan') });
+          const e = await d.createExperiment({ ...body, idempotencyKey: key, ...(ran_by === undefined ? {} : { ran_by }), ...(notify === undefined ? {} : { notify }) }, undefined, { ...(mode === 'edit' ? { expandFormat: false } : {}), tagGoal: tagGoalWithSource });
+          created.push({ ...listRow(e), ...(e.notify ? { notify: e.notify } : {}), idempotencyKey: key, planEstimate: await d.estimate(e, 'plan') });
         } catch (err) {
           const payload = JSON.parse(experimentToolError(err).content[0]!.text);
           failed.push({ videoId, ...payload });
         }
       }
       const payload = {
-        message: `Created ${created.length} of ${videoIds.length} draft experiment${videoIds.length === 1 ? '' : 's'}. Nothing was charged.`,
+        message: `Created ${created.length} of ${deduped.videoIds.length} draft experiment${deduped.videoIds.length === 1 ? '' : 's'}. Nothing was charged.`,
         experiments: created,
         failed,
+        ...(deduped.duplicates.length ? { skippedDuplicates: deduped.duplicates, duplicateNote: 'These videoIds are the same post as another id in this call (same platform and externalId), so no second experiment was created.' } : {}),
         note: 'Repeating this exact call returns the same drafts. To deliberately create a duplicate, pass a new idempotencyKey.',
       };
       return text(withNextSteps(payload, created.map(c => ({
@@ -523,8 +600,9 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     'Price the next step of an experiment before spending. Free. stage="plan" prices source analysis + planning (draft '
     + 'experiments); stage="generate" prices slide rendering for variantIds (default: all variants). Pass taskIds (from '
     + 'get_experiment progress.retryableJobs) to price retrying exactly those jobs. Returns totalCredits, the workspace '
-    + 'wallet (workspaceCredits) and the experiment cap. Show totalCredits to the user and get an explicit yes; then pass '
-    + 'it as approvedCredits to plan_experiment / generate_experiment / retry_experiment.',
+    + 'wallet (workspaceCredits) and the experiment cap. If totalCredits is within a standing credit cap the user granted, it is '
+    + 'already approved: pass the cap (or totalCredits) as approvedCredits to plan_experiment / generate_experiment / retry_experiment. '
+    + 'Otherwise show totalCredits to the user and get a yes first (one request covering all experiments and both stages).',
     {
       workspaceId: workspaceIdField,
       experimentId: experimentIdField,
@@ -542,7 +620,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         estimate: est,
         affordable,
         note: affordable
-          ? 'Ask the user to approve totalCredits before starting this step.'
+          ? 'Within a standing credit cap this is already approved; otherwise ask the user to approve totalCredits before starting this step.'
           : 'Not enough credits in the workspace wallet for this step. The user needs to add credits first.',
       });
     }));
@@ -550,8 +628,11 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
   // ---- plan_experiment ----
   server.tool('plan_experiment',
     'Start planning a DRAFT experiment: source analysis, pattern report, then variant briefs, all in the background. '
-    + 'SPENDS CREDITS — call estimate_experiment(stage="plan") first and pass the approved totalCredits as approvedCredits. '
-    + 'Afterwards status is "planning"; check with get_experiment until it reaches "review".',
+    + 'SPENDS CREDITS — call estimate_experiment(stage="plan") first. Pass as approvedCredits the amount already approved: '
+    + 'the confirmed totalCredits, or under a standing credit cap (per experiment or per batch) the remaining cap, which counts as approval '
+    + 'when the estimate is within it, so no extra confirmation is needed. Ask the user only when the estimate exceeds the approval. '
+    + 'Afterwards status is "planning"; check with get_experiment until it reaches "review". The job ids it returns '
+    + '(experiment.jobs[].id) are NOT for await_job / get_job_status; track them with get_experiment.',
     {
       workspaceId: workspaceIdField,
       experimentId: experimentIdField,
@@ -572,10 +653,14 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
 
   // ---- update_experiment_variant ----
   server.tool('update_experiment_variant',
-    'Edit one variant\'s brief while the experiment is in "review" and the variant is still a draft. Free. Pass the '
-    + 'variant\'s current revision (get_experiment) — a stale revision is refused, never overwritten. The brief must '
-    + 'keep the experiment\'s slide count and lockedConstraints, and must still differ from the baseline only in the '
-    + 'experiment\'s chosen variables. Returns the variant\'s new revision; use it when calling generate_experiment.',
+    'Edit one variant\'s brief. Free. Allowed only when the variant is a draft (never sent to generation, no frozen brief) '
+    + 'and the experiment is: "review"; "completed" (for a draft variant that was not generated); or "failed"/"paused" while no '
+    + 'provider job is running or unknown. Refused while "planning" or "generating" (experiment_active), when "cancelled" '
+    + '(experiment_cancelled), and in "draft" before planning has produced briefs (not_editable). A frozen or rendered variant is '
+    + 'refused (variant_frozen). Pass the variant\'s current revision (get_experiment) — a stale revision is refused '
+    + '(revision_conflict), never overwritten. The brief must keep the experiment\'s slide count and lockedConstraints, and '
+    + 'must still differ from the baseline only in the experiment\'s chosen variables. Returns the variant\'s new revision; '
+    + 'use it when calling generate_experiment.',
     {
       workspaceId: workspaceIdField,
       experimentId: experimentIdField,
@@ -594,8 +679,10 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
   // ---- generate_experiment ----
   server.tool('generate_experiment',
     'Render slide images for reviewed variants (status "review", or "completed" with draft variants left). SPENDS CREDITS — '
-    + `${CREDIT_COSTS.experimentSlide} per slide × ${SLIDE_FANOUT} candidates. Call estimate_experiment(stage="generate", variantIds) `
-    + 'first and pass the approved totalCredits. Pass each variant with its CURRENT revision (get_experiment); the brief '
+    + `${CREDIT_COSTS.experimentSlide} per slide × ${slideFanout()} candidates. Call estimate_experiment(stage="generate", variantIds) `
+    + 'first. approvedCredits is the amount already approved: the confirmed totalCredits, or under a standing credit cap '
+    + '(per experiment or per batch) the remaining cap, which counts as approval when the estimate is within it. Ask the user only when '
+    + 'the estimate exceeds it. Pass each variant with its CURRENT revision (get_experiment); the brief '
     + 'is frozen at that revision. Rendering runs in the background; check with get_experiment.',
     {
       workspaceId: workspaceIdField,
@@ -620,7 +707,9 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     'Retry a failed or paused experiment. SPENDS CREDITS (retried jobs are charged again). Scope it with taskIds (from '
     + 'get_experiment progress.retryableJobs) or variantIds (failed slides of those variants); with neither, every failed '
     + 'job is retried and `stage` says how to price it (plan while no briefs exist yet, else generate). Call '
-    + 'estimate_experiment with the same scope first and pass the approved totalCredits. Completed images are kept.',
+    + 'estimate_experiment with the same scope first. approvedCredits is the amount already approved: the confirmed totalCredits, or under '
+    + 'a standing credit cap the remaining cap, which counts as approval when the estimate is within it. Ask the user only when it exceeds '
+    + 'the approval. Prefer retry over cancel+recreate; completed images are kept.',
     {
       workspaceId: workspaceIdField,
       experimentId: experimentIdField,
@@ -655,7 +744,8 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
   // ---- cancel_experiment ----
   server.tool('cancel_experiment',
     'Cancel an experiment. Free; stops further background work (in-flight provider calls may still settle). Cancelled '
-    + 'is terminal — it cannot be resumed. Cancel a planning/generating experiment before deleting it.',
+    + 'is terminal — it cannot be resumed. Do NOT cancel to change a brief (use update_experiment_variant) or to retry '
+    + '(use retry_experiment); cancel only when the source itself is unusable. Cancel a planning/generating experiment before deleting it.',
     { workspaceId: workspaceIdField, experimentId: experimentIdField, idempotencyKey: idempotencyKeyField },
     { readOnlyHint: false, destructiveHint: true },
     ({ workspaceId, experimentId, idempotencyKey }) => guarded(async () => {

@@ -487,7 +487,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
        <div id="edit-copy-fields">
        <div class="field-row"><span>Hook (slide 1 text)</span>
          <input type="text" id="edit-hook" maxlength="200" placeholder="e.g. Stop eating blind"/>
-         <span class="hint">The exact words on slide 1. Empty clears slide 1 too.</span></div>
+         <span class="hint">The exact words on slide 1. Leave it alone to keep the original; type, then clear it, to strip the text.</span></div>
        <div id="edit-overlays"></div>
        </div>
        <div class="field-row"><span>Language</span>
@@ -782,6 +782,9 @@ ${cards.length ? toolbarHtml(filters) : ''}
     function buildEditOverlays() {
       var wrap = document.getElementById('edit-overlays');
       wrap.innerHTML = '';
+      var hookBox = document.getElementById('edit-hook');
+      hookBox.value = '';
+      delete hookBox.dataset.touched;
       var cards = selCards();
       var n = cards.length
         ? Math.max.apply(null, cards.map(function (c) { return parseInt(c.getAttribute('data-slide-count'), 10) || 1; }))
@@ -793,10 +796,11 @@ ${cards.length ? toolbarHtml(filters) : ''}
         label.textContent = 'Slide ' + i + ' text';
         var input = document.createElement('input');
         input.type = 'text'; input.id = 'edit-ov-' + i; input.maxLength = 200;
-        input.placeholder = 'Empty = no text on this slide';
+        input.placeholder = 'Untouched = keeps the original text';
+        input.addEventListener('input', markTouched);
         var hint = document.createElement('span');
         hint.className = 'hint';
-        hint.textContent = 'Exact words, or empty to strip the original text.';
+        hint.textContent = 'Exact words to replace the original. Leave it alone to keep it; type, then clear it, to strip the text.';
         row.appendChild(label); row.appendChild(input); row.appendChild(hint);
         wrap.appendChild(row);
       }
@@ -812,6 +816,20 @@ ${cards.length ? toolbarHtml(filters) : ''}
       return Math.min(max, Math.max(min, v));
     }
     function str(id) { return ((document.getElementById(id) || {}).value || '').trim(); }
+    // A box the user never typed in means "omitted": no override is emitted, so
+    // the slide keeps its original text. A touched-then-emptied box is an
+    // explicit blank and still strips. The two must never share a wire value.
+    function markTouched(ev) { ev.target.dataset.touched = '1'; }
+    function touched(id) {
+      var el = document.getElementById(id);
+      return !!(el && el.dataset && el.dataset.touched === '1');
+    }
+    function anyCopyTouched() {
+      var n = parseInt(document.getElementById('edit-overlays').dataset.slides || '1', 10);
+      if (touched('edit-hook')) return true;
+      for (var i = 2; i <= n; i++) if (touched('edit-ov-' + i)) return true;
+      return false;
+    }
 
     function buildPayload() {
       var cards = selCards();
@@ -834,17 +852,23 @@ ${cards.length ? toolbarHtml(filters) : ''}
         }
         var n = parseInt(document.getElementById('edit-overlays').dataset.slides || '1', 10);
         var overlays = [];
-        for (var i = 2; i <= n; i++) overlays.push(str('edit-ov-' + i));
-        var hook = str('edit-hook');
+        for (var i = 2; i <= n; i++) overlays.push(touched('edit-ov-' + i) ? str('edit-ov-' + i) : null);
+        var hook = touched('edit-hook') ? str('edit-hook') : null;
         // Slice ONCE, here, before either carrier is built. The direction field
         // is a capped field (2000 chars) of the same validated object, so an
         // unbounded prose makes a long deck uncreatable — the same refusal as an
         // unbounded key set, one field over. Slicing first keeps the prose and
         // copyOverrides describing the same slides, so the two carriers agree.
         overlays = overlays.slice(0, Math.min(overlays.length, Math.max(0, slideCount - 1)));
-        var lines = ['Slide 1 (hook): "' + hook + '" (empty clears it too)'];
+        // null is an omitted slide and is described as unchanged, never as
+        // cleared; the wording matches the MCP tool's editSlideDirection.
+        var lines = [hook === null
+          ? 'Slide 1 (hook): unchanged — no new hook was requested'
+          : 'Slide 1 (hook): "' + hook + '" (empty clears it too)'];
         overlays.forEach(function (t, k) {
-          lines.push('Slide ' + (k + 2) + ': "' + t + '"' + (t ? '' : ' (strip — no text)'));
+          lines.push(t === null
+            ? 'Slide ' + (k + 2) + ': unchanged — no new text was requested'
+            : 'Slide ' + (k + 2) + ': "' + t + '"' + (t ? '' : ' (strip — no text)'));
         });
         // The exact requested copy also travels as structured values. The prose
         // above is only the planner's hint; without these the requested words
@@ -856,8 +880,11 @@ ${cards.length ? toolbarHtml(filters) : ''}
         // experiment can hold and be refused at create time. The server-side
         // clamp still covers whatever the derived count drops below this one,
         // and reports it as a notice.
-        var copyOverrides = { '0': hook };
-        overlays.forEach(function (t, k) { copyOverrides[String(k + 1)] = t; });
+        // Only touched slides get a key: property presence is the whole signal,
+        // so an untouched slide is absent here, not "".
+        var copyOverrides = {};
+        if (hook !== null) copyOverrides['0'] = hook;
+        overlays.forEach(function (t, k) { if (t !== null) copyOverrides[String(k + 1)] = t; });
         return {
           videoIds: selected.slice(0, 1),
           surveyMode: 'edit',
@@ -907,6 +934,18 @@ ${cards.length ? toolbarHtml(filters) : ''}
         rows.push(['Goal', p.instructions.goal || '—']);
       } else {
         rows.push(['Direction', p.instructions.direction]);
+        var ovr = p.instructions.copyOverrides;
+        if (ovr) {
+          var upTo = sourceSlides ? Math.min(p.slideCount, sourceSlides) : p.slideCount;
+          var kept = [], stripped = [];
+          for (var s = 0; s < upTo; s++) {
+            if (ovr[String(s)] === undefined) kept.push(s + 1);
+            else if (ovr[String(s)] === '') stripped.push(s + 1);
+          }
+          var slidesOf = function (a) { return (a.length === 1 ? 'Slide ' : 'Slides ') + a.join(', '); };
+          rows.push(['Original text kept', kept.length ? slidesOf(kept) + ' — not edited, so the original text stays.' : 'None — every slide has new text.']);
+          if (stripped.length) rows.push(['Text removed', slidesOf(stripped) + ' — you cleared ' + (stripped.length === 1 ? 'it' : 'them') + ', so no text is rendered.']);
+        }
         // This row only knows the wizard's own clamp, which runs client-side. The
         // server derives the effective count separately and can come back lower
         // (a deck whose last slide reads like a call to action is planned one
@@ -930,8 +969,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
       if (mode === 'edit') {
         if (selected.length !== 1) return 'Edit mode works on exactly one slideshow — deselect down to one, or switch to Create.';
         if (str('edit-variable') === 'character') return str('edit-character') ? '' : 'Describe the character casting change.';
-        if (!str('edit-hook') && !(document.getElementById('edit-overlays').dataset.slides > 1))
-          return 'Write at least a hook — otherwise there is nothing to change.';
+        if (!anyCopyTouched()) return 'Edit the text of at least one slide — slides you leave alone keep their original text.';
       } else {
         if (!str('create-goal')) return 'Describe the goal — what should the variations try to beat?';
         if (!checkedVars().length) return 'Pick at least one variable to test.';
@@ -940,6 +978,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
     }
 
     document.getElementById('exp-start').addEventListener('click', openModal);
+    document.getElementById('edit-hook').addEventListener('input', markTouched);
     document.getElementById('edit-variable').addEventListener('change', function () {
       var characterEdit = str('edit-variable') === 'character';
       document.getElementById('edit-copy-fields').hidden = characterEdit;
@@ -985,19 +1024,19 @@ ${cards.length ? toolbarHtml(filters) : ''}
             // An edit must be pasted as mode:"edit" with hook/overlayTexts.
             // Dropping surveyMode alone left the call with no mode at all, so it
             // fell through to create mode and became a prose-only experiment.
-            var ov = p.instructions.copyOverrides || { '0': '' };
-            // overlayTexts is POSITIONAL, so a gap in the keys cannot be
-            // represented. buildPayload only ever emits dense keys, so this is
-            // unreachable; truncating is the safer failure if it ever happens,
-            // because a slide with no entry keeps its resolved copy instead of
-            // silently receiving another slide's words.
+            var ov = p.instructions.copyOverrides || {};
+            // overlayTexts is POSITIONAL, so an untouched slide between two
+            // edited ones is a null entry ("leave unchanged"), never "".
+            var last = 0;
+            Object.keys(ov).forEach(function (key) { if (Number(key) > last) last = Number(key); });
             var ovs = [];
-            for (var k = 1; ov[String(k)] !== undefined; k++) ovs.push(ov[String(k)]);
-            chatPayload = {
-              mode: 'edit', videoIds: p.videoIds,
-              hook: ov['0'], overlayTexts: ovs, language: p.instructions.language,
-              slideCount: p.slideCount, maxCredits: p.maxCredits,
-            };
+            for (var k = 1; k <= last; k++) ovs.push(ov[String(k)] !== undefined ? ov[String(k)] : null);
+            chatPayload = { mode: 'edit', videoIds: p.videoIds };
+            if (ov['0'] !== undefined) chatPayload.hook = ov['0'];
+            chatPayload.overlayTexts = ovs;
+            chatPayload.language = p.instructions.language;
+            chatPayload.slideCount = p.slideCount;
+            chatPayload.maxCredits = p.maxCredits;
           } else {
             chatPayload = Object.assign({}, p);
             delete chatPayload.surveyMode;
