@@ -101,6 +101,8 @@ export interface CreateExperimentOptions {
   /** False for source-preserving copy/character edits: they carry their own complete
    *  instructions and must not pick up a source-format preset's locks. */
   expandFormat?: boolean;
+  /** Append the source tag (handle, caption snippet, views) to the stored goal. Default true: the site's list titles rely on it; the MCP tool turns it off. */
+  tagGoal?: boolean;
 }
 export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: CreateExperimentDeps = createDeps, options: CreateExperimentOptions = {}) {
   const { body: rawWithRunner, notify: notifyRaw } = S.takeNotify(rawWithRunnerAndNotify);
@@ -170,7 +172,7 @@ export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: Cr
   // Each experiment is isolated per slideshow but the goal doubles as the list
   // title — identical goals are indistinguishable. Suffix a quick source
   // summary unless the caller already named the source (e.g. re-duplicates).
-  if (tags.length) {
+  if (tags.length && options.tagGoal !== false) {
     const suffix = tags.length === 1
       ? ` — ${tags[0]}`
       : ` — ${tags.slice(0, 2).join(' + ')}${tags.length > 2 ? ` +${tags.length - 2} more` : ''}`;
