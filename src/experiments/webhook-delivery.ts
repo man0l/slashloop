@@ -259,12 +259,15 @@ export function classifyPaperclipStatus(status: number, rawBody: string | undefi
   return fail(detail ? `http_${status}: ${detail}` : `http_${status}`, status, !retryable);
 }
 
-/** Board-key delivery: 2xx delivered; 401/403 mean the key is expired or lacks access, which only a new key fixes, so they are named and retried (a rotated key lands within the backoff window); 408/425/429/5xx retry; every other status is final. */
+/** Paperclip refuses a follow-up comment that carries resume intent on an issue still held by unresolved blockers. The blockers clear on their own, so this one 409 retries. */
+export const BLOCKED_FOLLOWUP = 'Issue follow-up blocked by unresolved blockers';
+
+/** Board-key delivery: 2xx delivered; 401/403 mean the key is expired or lacks access, which only a new key fixes, so they are named and retried (a rotated key lands within the backoff window); 408/425/429/5xx and the blocked-follow-up 409 retry; every other status is final. */
 export function classifyBoardStatus(status: number, rawBody: string | undefined = '', secrets: string[] = []): DeliveryResult {
   if (status >= 200 && status < 300) return ok(status);
   const detail = redactedSnippet(rawBody, secrets);
   if (status === 401 || status === 403) return fail(`paperclip_board_key_rejected: http_${status}${detail ? ` ${detail}` : ''}`, status, false);
-  const retryable = status >= 500 || [408, 425, 429].includes(status);
+  const retryable = status >= 500 || [408, 425, 429].includes(status) || (status === 409 && (rawBody ?? '').includes(BLOCKED_FOLLOWUP));
   return fail(detail ? `http_${status}: ${detail}` : `http_${status}`, status, !retryable);
 }
 
@@ -296,8 +299,12 @@ async function deliverPaperclipBoardComment(
   if (listing.status < 200 || listing.status >= 300) return classifyBoardStatus(listing.status, listing.body, [boardKey]);
   if ((listing.body ?? '').includes(marker)) return ok(listing.status);
 
-  // `resume` reopens a done task so the assignee wakes; no run header, a board actor needs none.
-  const body = JSON.stringify({ body: paperclipCommentBody(payload, marker), resume: true });
+  // `resume` reopens a done task so the assignee wakes, and Paperclip refuses it on a blocked issue, so it is sent only when the origin is done. No run header, a board actor needs none.
+  const origin = await get(new URL(`${baseUrl}/api/issues/${encodeURIComponent(issueId)}`), headers);
+  if (origin.status < 200 || origin.status >= 300) return classifyBoardStatus(origin.status, origin.body, [boardKey]);
+  let status: unknown;
+  try { status = (JSON.parse(origin.body ?? '') as { status?: unknown }).status; } catch { return fail('paperclip_origin_unreadable', origin.status, false); }
+  const body = JSON.stringify({ body: paperclipCommentBody(payload, marker), ...(status === 'done' ? { resume: true } : {}) });
   const res = await post(new URL(commentsUrl), { ...headers, 'content-type': 'application/json' }, body);
   return classifyBoardStatus(res.status, res.body, [boardKey]);
 }

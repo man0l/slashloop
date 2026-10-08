@@ -407,13 +407,19 @@ describe('deliver', () => {
 
     describe('board key', () => {
       const boardCfg: PaperclipConfig = { baseUrl: 'https://paperclip.example.com', keys: {}, boardKey: 'board_secret_key_value' };
-      /** A fake thread: GET lists comments, POST appends one. */
-      const thread = (over: { listing?: number; create?: number; createBody?: string } = {}) => {
+      const BLOCKED_409 = '{"error":"Issue follow-up blocked by unresolved blockers","details":{"unresolvedBlockerIssueIds":["b1"]}}';
+      /** A fake thread: GET lists comments or returns the origin issue, POST appends one. Like the server, it refuses resume intent on a blocked issue. */
+      const thread = (over: { listing?: number; create?: number; createBody?: string; issueStatus?: string; issue?: number; issueBody?: string } = {}) => {
         const comments: string[] = [];
         const calls: Array<{ method: 'GET' | 'POST'; url: string; headers: Record<string, string>; body?: string }> = [];
-        const get: HttpGet = async (url, headers) => { calls.push({ method: 'GET', url: url.toString(), headers }); return { status: over.listing ?? 200, body: JSON.stringify(comments) }; };
+        const get: HttpGet = async (url, headers) => {
+          calls.push({ method: 'GET', url: url.toString(), headers });
+          if (!url.pathname.endsWith('/comments')) return { status: over.issue ?? 200, body: over.issueBody ?? JSON.stringify({ id: ISSUE, status: over.issueStatus ?? 'done' }) };
+          return { status: over.listing ?? 200, body: JSON.stringify(comments) };
+        };
         const post: HttpPost = async (url, headers, body) => {
           calls.push({ method: 'POST', url: url.toString(), headers, body });
+          if (over.issueStatus === 'blocked' && JSON.parse(body).resume) return { status: 409, body: BLOCKED_409 };
           const status = over.create ?? 201;
           if (status < 300) comments.push(JSON.parse(body).body);
           return { status, body: over.createBody };
@@ -431,6 +437,33 @@ describe('deliver', () => {
         expect(j.resume).toBe(true);
         expect(j.body).toContain('<!-- slashloop-experiment:');
         expect(j.body).toContain('reached **review**');
+      });
+      test('a blocked target with unresolved blockers gets a plain comment, not a refused resume', async () => {
+        const t = thread({ issueStatus: 'blocked' });
+        expect(await deliver(row(paperclipNotify(null)), { ...t, paperclip: boardCfg })).toMatchObject({ ok: true, status: 201 });
+        const j = JSON.parse(t.calls.find(c => c.method === 'POST')!.body!);
+        expect(j).not.toHaveProperty('resume');
+        expect(j.body).toContain('<!-- slashloop-experiment:');
+        expect(t.comments).toHaveLength(1);
+      });
+      test('resume is sent only for a done target', async () => {
+        for (const issueStatus of ['todo', 'in_progress', 'in_review', 'blocked', 'cancelled']) {
+          const t = thread({ issueStatus });
+          expect(await deliver(row(paperclipNotify(null)), { ...t, paperclip: boardCfg })).toMatchObject({ ok: true });
+          expect(JSON.parse(t.calls.find(c => c.method === 'POST')!.body!)).not.toHaveProperty('resume');
+        }
+      });
+      test('a blocked-follow-up 409 (target blocked after the status read) retries instead of going dead', async () => {
+        const t = thread({ create: 409, createBody: BLOCKED_409 });
+        expect(await deliver(row(paperclipNotify(null)), { ...t, paperclip: boardCfg })).toMatchObject({ ok: false, permanent: false, status: 409 });
+        expect(await deliver(row(paperclipNotify(null)), { ...thread({ create: 409, createBody: '{"error":"other conflict"}' }), paperclip: boardCfg })).toMatchObject({ ok: false, permanent: true, status: 409 });
+      });
+      test('an unreadable or failing origin read does not post', async () => {
+        const bad = thread({ issueBody: 'nope' });
+        expect(await deliver(row(paperclipNotify(null)), { ...bad, paperclip: boardCfg })).toMatchObject({ ok: false, error: 'paperclip_origin_unreadable' });
+        expect(bad.calls.some(c => c.method === 'POST')).toBe(false);
+        const down = thread({ issue: 503 });
+        expect(await deliver(row(paperclipNotify(null)), { ...down, paperclip: boardCfg })).toMatchObject({ ok: false, permanent: false, status: 503 });
       });
       test('works for any assignee: the same comment path whichever agent asked', async () => {
         for (const agentId of [MARKETING_OPS, '02d158ba-5a8e-40ce-9cb0-46f65154a684', null]) {

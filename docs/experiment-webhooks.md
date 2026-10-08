@@ -23,14 +23,19 @@ actor is exempt from that rule, and a board comment wakes the issue's assignee w
 1. `GET {api}/api/issues/{paperclipIssueId}/comments?order=desc&limit=100`. A comment
    already carrying the hidden marker `<!-- slashloop-experiment:<experimentId>:<status>:<version> -->`
    means an earlier attempt landed: delivered, nothing posted.
-2. `POST {api}/api/issues/{paperclipIssueId}/comments` with `{body, resume: true}`
-   (`resume` reopens a `done` task) and no `X-Paperclip-Run-Id`. `agentId` is not needed.
+2. `GET {api}/api/issues/{paperclipIssueId}` for the origin status.
+3. `POST {api}/api/issues/{paperclipIssueId}/comments` with `{body}` and no `X-Paperclip-Run-Id`.
+   `resume: true` is added only when the origin is `done` (it reopens the task so the
+   assignee wakes). Paperclip refuses resume intent on an issue held by unresolved
+   blockers (`409`), so every other status gets a plain comment, which still wakes the
+   assignee. `agentId` is not needed.
 
 | Outcome | Class | `lastError` |
 | --- | --- | --- |
 | `401` / `403` | retry on the normal backoff, **config error**: logged as `[webhook] CONFIG ERROR ...` on every attempt | `paperclip_board_key_rejected: http_<status> <redacted snippet>` |
 | `408`, `425`, `429`, `5xx`, network error | retry | `http_<status>` / `network_error:<code>` |
-| other `4xx` (404, 400, 409, 422) | permanent | `http_<status>: <redacted snippet>` |
+| `409` `Issue follow-up blocked by unresolved blockers` (SLA-672; only if the target becomes blocked between the status read and the post) | retry; the row survives until the blockers clear, and the marker check keeps the re-delivery a no-op | `http_409: <redacted snippet>` |
+| other `4xx` (404, 400, other 409, 422) | permanent | `http_<status>: <redacted snippet>` |
 
 **Rotation:** board keys expire after 30 days, so the expected failure is an expired key.
 Create a new board key, update `SLASHLOOP_BOARD_API_KEY` in the host `.env`, and recreate
