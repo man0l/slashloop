@@ -160,8 +160,9 @@ export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: Cr
     const expanded = expandPreset(format, {
       variables: ri.variables, mode: ri.mode, direction: ri.direction, lockedConstraints: ri.lockedConstraints,
     }, signal?.observedHuman ?? false);
+    const sourceDefaults = [...new Set([...(ri.sourceDefaults ?? []), ...expanded.sourceDefaults])].slice(0, 20);
     b = S.Create.parse({ ...requested, instructions: {
-      ...ri, ...expanded, ...(format ? { sourceFormat: format } : {}),
+      ...ri, ...expanded, sourceDefaults, ...(format ? { sourceFormat: format } : {}),
     } });
   }
   const { idempotencyKey, videoIds, workspaceId, slideCount: requestedSlideCount, ...fields } = b;
@@ -190,6 +191,8 @@ export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: Cr
     // Slideshow sources are attached as visual references during rendering; video-only stays text-directed.
     generationBasis:referenced?'source-referenced':'text-directed',
     assetPolicy:'Generated outputs retained until explicit deletion; never swept with source media. No Stream copies. Gemini uploads named experiment-temp expire at provider in approximately 48h; reusable handles expire locally at 40h.',
+    // SLA-700: every new experiment runs on the resolved-contract pipeline; rows without the marker keep the legacy one.
+    pipeline:'contract',
     version:0,tasks:[],commands:{},allowPartial:false,createFingerprint:requestFingerprint };
   return notify ? deps.persist(draft,idempotencyKey,undefined,notify) : deps.persist(draft,idempotencyKey);
 }

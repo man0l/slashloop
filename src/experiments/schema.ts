@@ -1,5 +1,6 @@
 ﻿import { z } from 'zod/v4';
 import { SOURCE_FORMATS } from './source-format.js';
+import { ARC_LEVELS, type ResolvedContract } from './resolved-contract.js';
 
 export class ExperimentError extends Error {
   constructor(public statusCode: number, public code: string, message = code) { super(message); }
@@ -24,6 +25,8 @@ export const CopyOverrides = z.record(z.string().regex(/^(?:0|[1-9]\d*)$/), z.st
 const instructionsShape = {
   goal: text.min(1), brand: text, audience: text, language: z.string().trim().min(1).max(80),
   direction: text, lockedConstraints: constraints,
+  // SLA-700: traits the source format suggests. Soft preferences that yield to the direction and to every lock; never hard rules.
+  sourceDefaults: z.array(text.min(1)).max(20).optional(),
   variables: z.array(z.union([z.enum(VARIABLE_FIELDS), z.literal('angle')]).transform(v => v === 'angle' ? 'concept' as const : v)).min(1).max(7), mode: z.enum(['controlled', 'exploration']),
   // SLA-555: which kind of source this is. Expands to default variables, mode,
   // direction and locks (source-format.ts); stored resolved so a later reader
@@ -73,7 +76,9 @@ export const InstructionsInput = z.object({
   variables: instructionsShape.variables.optional(),
   mode: instructionsShape.mode.optional(),
 }).strict();
-export const BriefSlide = z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text.default('') });
+export const BriefSlide = z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text.default(''),
+  // SLA-700: resolved slide contract fields. Absent on briefs from before the contract pipeline.
+  composition: text.optional(), visibleChange: text.optional(), arcLevel: z.enum(ARC_LEVELS).optional() });
 export const Brief = z.object({
   concept: text.min(1), hook: text.min(1), character: text, visualStyle: text.min(1), caption: text,
   cta: text, lockedConstraints: z.array(text.min(1)).max(20),
@@ -541,7 +546,9 @@ export interface SlideQaRecord {
    *  says which frame it claims to preserve. */
   sourceMap?: { videoId: string | null; analysisId: string | null; sourceIndex: number | null; referenceKind: string; path: string | null; observation?: 'observed' | 'missing' };
 }
-export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide'; target?: string; index?: number;
+/** SLA-700: one vision call per arm, compiled from the resolved contract. Hard failures are never softened. */
+export interface DeckQaRecord { verdict: 'passed' | 'failed' | 'unverified'; attempts: number; failures: Record<string, string[]>; warnings: string[]; repaired: number[]; judgedSlides: number[]; prompt?: string }
+export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide' | 'qa'; target?: string; index?: number;
   status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number;
   /** Provider requests started, internal QA correction waves included. Absent on tasks that predate it (then `attempts`). */
   requests?: number;
@@ -559,6 +566,8 @@ export interface Variant extends Proposal { id: string; revision: number; status
   generationBasis: GenerationBasis; history: Array<{ revision: number; brief: BriefData }>;
   /** Viral-potential score Jev assigned when this variant won the briefs fan-out. */
   jev?: { score: number; confidence?: number };
+  /** SLA-700: the one deck-level QA verdict for this arm (contract pipeline). */
+  qaDeck?: DeckQaRecord | null;
   frozenBrief: BriefData | null; slides: Array<{ index: number; status: string; url: string | null; path: string | null; error: string | null; overlayText: string;
     prompt?: string; fanout?: { requested: number; rendered: number; chosen: number; judge: unknown; styleViolation?: boolean }; reference?: { kind: string; videoId: string; index?: number | null; path: string } | null;
     /** QA audit for THIS attempt. Present on success AND on failure/unverified,
@@ -586,6 +595,10 @@ export interface Experiment {
   commands: Record<string, string>; allowPartial: boolean; createFingerprint: string;
   /** Classified from the source analyses during planning; constrains briefs and renders. */
   styleFormula?: { medium: string; density: string } | null;
+  /** SLA-700: set on every non-exact_edit experiment created on the resolved-contract pipeline. */
+  pipeline?: 'contract' | null;
+  /** SLA-700: the resolved slide contract (precedence applied) that renderer and QA both read. */
+  contract?: ResolvedContract | null;
   /** Plain-language adjustments planning had to make, shown on the experiment so a
    *  caller who paid for two variants, or asked for copy on a slide that will not
    *  render, is not left guessing. Never an error: the run still completes. */
@@ -618,7 +631,12 @@ export function effectiveChangedFields(e: Experiment, baseline: BriefData, brief
     && brief.slides.every((s, n) => s.role === baseline.slides[n]!.role && s.scene === baseline.slides[n]!.scene);
   const supportRetell = !!e.instructions.varySupportingOverlays && changed.includes('hook')
     && changed.every(k => k === 'hook' || k === 'slides') && scenesSame;
-  return changed.includes('concept') || supportRetell ? changed.filter(k => k !== 'slides') : changed;
+  // SLA-700: the hook IS slides[0].overlayText on the contract pipeline, so a slides diff confined to that
+  // one field belongs to the hook and is not a second variable.
+  const hookOnlyDiff = e.pipeline === 'contract' && changed.includes('hook') && changed.includes('slides')
+    && brief.slides.length === baseline.slides.length
+    && brief.slides.every((s, n) => n === 0 ? same({ ...s, overlayText: '' }, { ...baseline.slides[0]!, overlayText: '' }) : same(s, baseline.slides[n]));
+  return changed.includes('concept') || supportRetell || hookOnlyDiff ? changed.filter(k => k !== 'slides') : changed;
 }
 export function validateVariants(e: Experiment, proposals: Proposal[]) {
   // Fewer than requested is a degraded success (the fan-out cannot always
