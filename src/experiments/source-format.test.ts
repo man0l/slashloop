@@ -57,21 +57,21 @@ describe('presets', () => {
   });
 
   test('person locks: photo-person yes, annotated-face and portrait-collage keep framing only, ai-render needs an observed human', () => {
-    const photo = expandPreset('photo-person', {}).lockedConstraints.join(' ');
+    const photo = expandPreset('photo-person', {}).sourceDefaults.join(' ');
     expect(photo).toMatch(/hair/);
     expect(photo).toMatch(/wardrobe/);
     expect(emitsPersonLocks('photo-person', false)).toBe(true);
     for (const f of ['annotated-face', 'portrait-collage'] as const) {
       expect(emitsPersonLocks(f, false)).toBe(true);
-      expect(expandPreset(f, {}).lockedConstraints.join(' ')).not.toMatch(/\bhair\b|eye colour|complexion|jewelry/i);
+      expect(expandPreset(f, {}).sourceDefaults.join(' ')).not.toMatch(/\bhair\b|eye colour|complexion|jewelry/i);
     }
-    expect(expandPreset('ai-render', {}, false).lockedConstraints.join(' ')).not.toContain('visible person');
-    expect(expandPreset('ai-render', {}, true).lockedConstraints.join(' ')).toContain('visible person');
+    expect(expandPreset('ai-render', {}, false).sourceDefaults.join(' ')).not.toContain('visible person');
+    expect(expandPreset('ai-render', {}, true).sourceDefaults.join(' ')).toContain('visible person');
   });
 
   test('photo-person does not lock the face attributes the caller is casting', () => {
-    const fixed = expandPreset('photo-person', {}).lockedConstraints.join(' ');
-    const cast = expandPreset('photo-person', { variables: ['character'] }).lockedConstraints.join(' ');
+    const fixed = expandPreset('photo-person', {}).sourceDefaults.join(' ');
+    const cast = expandPreset('photo-person', { variables: ['character'] }).sourceDefaults.join(' ');
     expect(fixed).toMatch(/hair/);
     expect(cast).not.toMatch(/\bhair\b|eye colour|facial hair|complexion/i);
   });
@@ -99,7 +99,7 @@ describe('presets', () => {
 
   test('no format keeps the caller\'s instructions untouched', () => {
     const x = expandPreset(null, { variables: ['hook'], lockedConstraints: ['a'] });
-    expect(x).toEqual({ variables: ['hook'], mode: 'controlled', direction: '', lockedConstraints: ['a'] });
+    expect(x).toEqual({ variables: ['hook'], mode: 'controlled', direction: '', lockedConstraints: ['a'], sourceDefaults: [] });
   });
 
   test('preset locks do not read as the strip-all-labels policy', () => {
@@ -198,7 +198,8 @@ describe('createExperiment with a source format', () => {
     const out: Experiment[] = [];
     await createExperiment(request({}), depsFor({ v1: statueAnalysis }, { v1: videoRow('v1') }, out));
     expect(out[0]!.instructions.sourceFormat).toBe('statue-collage');
-    expect(out[0]!.instructions.lockedConstraints).toContain('The statue stays a grayscale marble or plaster sculpture with no real face');
+    expect(out[0]!.instructions.sourceDefaults).toContain('The statue stays a grayscale marble or plaster sculpture with no real face');
+    expect(out[0]!.instructions.lockedConstraints).not.toContain('The statue stays a grayscale marble or plaster sculpture with no real face');
   });
 
   test('an explicit complete instruction set keeps the caller\'s values and gains the locks', async () => {

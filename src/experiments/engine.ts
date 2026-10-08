@@ -7,6 +7,7 @@ import * as store from './store.js';
 import { prepare, SafeFailure, TerminalFailure, HydrationPending, locksToBaselineVisual, type ExecuteContext, type Prepared } from './providers.js';
 import { experimentVisualLock } from './render-prompt.js';
 import { taskCost } from './service.js';
+import { contractEligible, isContractPipeline, mergeCalls, reapContractQa, settleContractSlide, settleQa, type QaTaskResult } from './contract-flow.js';
 import { ExperimentError, MAX_TASK_ATTEMPTS, PARALLEL_SLIDES, qaMaxAttempts, retryBackoffMs, slideTaskRequestCap, type Experiment, type SlideQaRecord, type StepStatus, type Task, type Input, type ReportData, type Proposal } from './schema.js';
 export interface EngineDeps {
   load: typeof store.load; save: typeof store.save;
@@ -64,7 +65,9 @@ export function settle(e:Experiment,t:Task,result:unknown) {
     const judge=Array.isArray(payload)?undefined:(payload as {briefJudge?:{candidates:Array<{title:string;hook:string;score:number;confidence?:number}>;picked?:string[]}|null}).briefJudge;
     if(judge)e.briefJudge=judge;
     const baselineId=randomUUID();
-    const extra=Array.isArray(payload)?undefined:payload as {styleFormula?:Experiment['styleFormula'];slideCount?:number;notices?:string[]};
+    const extra=Array.isArray(payload)?undefined:payload as {styleFormula?:Experiment['styleFormula'];slideCount?:number;notices?:string[];contract?:Experiment['contract'];calls?:Record<string,number>};
+    if(extra?.contract)e.contract=extra.contract;
+    mergeCalls(e,extra?.calls);
     if(extra?.styleFormula)e.styleFormula=extra.styleFormula;
     if(typeof extra?.slideCount==='number')e.slideCount=extra.slideCount;
     // Always overwritten from this attempt, so a retry that needed no adjustment
@@ -74,6 +77,10 @@ export function settle(e:Experiment,t:Task,result:unknown) {
     e.variants=proposals.map((v,i)=>({...v,id:i===0?baselineId:randomUUID(),baselineId:i===0?null:baselineId,revision:1,status:'draft',generationBasis:e.generationBasis,history:[],frozenBrief:null,slides:[],error:null}));
     // Report (Gemini) and briefs (OpenRouter) may finish in either order.
     if(isActive(e)&&e.tasks.filter(x=>x.kind==='report').every(x=>x.status==='done'))e.status='review';
+  } else if(t.kind==='qa') {
+    settleQa(e,t,result as QaTaskResult);
+  } else if(isContractPipeline(e)) {
+    settleContractSlide(e,t,result);
   } else {
     const v=e.variants.find(v=>v.id===t.target)!;const slide=v.slides[t.index!]!;
     Object.assign(slide,result,{status:'done',error:null}); t.path=(result as {path:string}).path;
@@ -87,6 +94,7 @@ export function settle(e:Experiment,t:Task,result:unknown) {
  *  (`unknown` pauses for review, anything else fails) so it stops being a zombie
  *  candidate. Returns true when the row was changed. */
 export function reapNoActionable(e:Experiment):boolean {
+  if(isActive(e)&&isContractPipeline(e))reapContractQa(e);
   if(!isActive(e)||e.tasks.some(t=>t.status==='pending'||t.status==='running'))return false;
   const dead=e.tasks.filter(t=>t.status==='failed'||t.status==='unknown');
   if(!dead.length)return false;
@@ -130,8 +138,9 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
     // Report (Gemini) and briefs (OpenRouter) are independent after analysis.
     const eligible=(t:Task)=>{
       if(t.kind==='report'||t.kind==='briefs')return !pendingOrRunning('analysis');
-      if(t.kind!=='slide')return true;
+      if(t.kind!=='slide'&&t.kind!=='qa')return true;
       if(!phaseDone('briefs'))return false;
+      if(isContractPipeline(e))return contractEligible(e,t);
       const v=e.variants.find(x=>x.id===t.target);
       const expLock=experimentVisualLock(e.instructions.variables);
       if(v&&(t.index??0)>0&&expLock.subjectLocked){

@@ -114,18 +114,21 @@ export interface Expanded {
   variables: string[] | undefined;
   mode: 'controlled' | 'exploration';
   direction: string;
+  /** Hard rules: the always-on workspace locks plus whatever the caller locked. */
   lockedConstraints: string[];
+  /** SLA-700: what the source format suggests. Soft preferences, dropped when they conflict with the direction or a lock. */
+  sourceDefaults: string[];
 }
 
 const EXPLORATION_ONLY = new Set(['concept', 'slides', 'angle']);
 const MAX_LOCKS = 20;
 
-/** Caller values win for variables, mode and direction; locks are merged, deduped, capped. */
+/** Caller values win for variables, mode and direction. Hard locks (workspace + caller) and source defaults (format preset) are kept apart so no source trait is ever presented as a lock. */
 export function expandPreset(format: SourceFormat | null, input: ExpandInput, observedHuman = false): Expanded {
   const preset = format ? PRESETS[format] : null;
   const caller = input.lockedConstraints ?? [];
   if (!preset) {
-    return { variables: input.variables, mode: input.mode ?? 'controlled', direction: input.direction ?? '', lockedConstraints: caller };
+    return { variables: input.variables, mode: input.mode ?? 'controlled', direction: input.direction ?? '', lockedConstraints: caller, sourceDefaults: [] };
   }
   let variables = input.variables;
   if (!variables) {
@@ -137,18 +140,21 @@ export function expandPreset(format: SourceFormat | null, input: ExpandInput, ob
   }
   const mode = input.mode ?? (variables.some(v => EXPLORATION_ONLY.has(v)) ? 'exploration' : preset.mode);
   const varyCharacter = variables.includes('character');
-  const merged: string[] = [];
-  const seen = new Set<string>();
-  const push = (s: string) => {
-    const t = s.trim();
-    const k = t.toLowerCase();
-    if (t && !seen.has(k) && merged.length < MAX_LOCKS) { seen.add(k); merged.push(t); }
+  const dedupe = (items: string[]) => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const s of items) {
+      const t = s.trim();
+      const k = t.toLowerCase();
+      if (t && !seen.has(k) && out.length < MAX_LOCKS) { seen.add(k); out.push(t); }
+    }
+    return out;
   };
-  universalLocks().forEach(push);
-  preset.locks.forEach(push);
-  if (preset.person && emitsPersonLocks(format!, observedHuman)) preset.person(varyCharacter).forEach(push);
-  caller.forEach(push);
-  return { variables, mode, direction: input.direction?.trim() ? input.direction : preset.direction, lockedConstraints: merged };
+  const locks = dedupe([...universalLocks(), ...caller]);
+  const lockKeys = new Set(locks.map(l => l.toLowerCase()));
+  const defaults = dedupe([...preset.locks, ...(preset.person && emitsPersonLocks(format!, observedHuman) ? preset.person(varyCharacter) : [])])
+    .filter(d => !lockKeys.has(d.toLowerCase()));
+  return { variables, mode, direction: input.direction?.trim() ? input.direction : preset.direction, lockedConstraints: locks, sourceDefaults: defaults };
 }
 
 // ---- inference ---------------------------------------------------------------
