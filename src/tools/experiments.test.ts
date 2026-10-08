@@ -730,6 +730,18 @@ describe('edits, cancel and delete', () => {
     expect(m[4]).toBe('v1');
   });
 
+  test('update_experiment_variant forwards a title and hypothesis, and explains unapproved_variable', async () => {
+    store.set('e1', exp('e1', { status: 'review' }));
+    await call('update_experiment_variant', { experimentId: 'e1', variantId: 'v1', revision: 1, brief, title: 'Faceless', hypothesis: 'New topic' });
+    expect(callsOf('mutate')[0]![3]).toEqual({ workspaceId: 'w1', revision: 1, brief, title: 'Faceless', hypothesis: 'New topic' });
+    expect(EditBrief.safeParse(callsOf('mutate')[0]![3]).success).toBe(true);
+    mutateError = new ExperimentError(422, 'unapproved_variable', 'unapproved_variable: differs in cta');
+    const { isError, body } = await call('update_experiment_variant', { experimentId: 'e1', variantId: 'v1', revision: 1, brief });
+    expect(isError).toBe(true);
+    expect(body.message).toContain('differs in cta');
+    expect(body.hint).toContain('instructions.variables');
+  });
+
   test('update_experiment_variant keeps the pinned copy overrides on the brief', async () => {
     // M3: briefInput used to be a plain z.object, so it silently STRIPPED
     // copyOverrides. An explicitly blank slide 1 has exactly two carriers

@@ -150,6 +150,18 @@ the notification and the issue monitor below instead of a loop: end the heartbea
 after `plan_experiment` or `generate_experiment`, and continue the playbook from
 the child task that wakes you.
 
+Which fields you may edit: a variant may differ from the baseline only in the
+experiment's chosen `instructions.variables` (read them from `get_experiment`);
+every other brief field is shared. Change a shared field (topic, caption, CTA,
+character, visual style, and slides unless `slides`/`concept` is a variable) on
+any one draft variant and the same change is applied to the others, so to
+retarget a whole experiment you edit one variant and read the returned
+revisions of the rest. A chosen variable (for example `hook`) is edited per
+variant. Pass `title` (and optionally `hypothesis`) to rename a variant. A
+`422 unapproved_variable` now means a sibling is frozen/rendered, or the
+variants would stop differing in a chosen variable; its message names the
+fields.
+
 `update_experiment_variant` edits only a draft variant (never generated, no
 frozen brief) with its current revision, at `review`, at `completed` (for a
 variant not yet generated), or at `failed`/`paused` while no provider job is
