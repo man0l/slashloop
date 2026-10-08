@@ -360,13 +360,14 @@ export function qaVerdict(c: ResolvedContract, q: QaAnswer, opts: { slides?: num
   return { failures, warnings, passed: Object.keys(failures).length === 0 };
 }
 
-/** The slides one repair round re-renders: every failing slide, and when the deck failed,
- *  every later slide too (they are edits of, or must stay consistent with, the earlier ones). */
-export function repairSlides(failures: Record<string, string[]>, slideCount: number, renderable: (i: number) => boolean = () => true): number[] {
+/** The slides one repair round re-renders: every failing slide, and when the deck failed (or an invented-consistent
+ *  anchor slide was re-rendered) every later slide too, because they are edits of, or must stay consistent with, the earlier ones. */
+export function repairSlides(failures: Record<string, string[]>, slideCount: number, opts: { chainFromAnchor?: boolean } = {}): number[] {
   const out = new Set<number>();
   for (const k of Object.keys(failures)) if (k !== 'deck') out.add(Number(k));
-  if (failures.deck) for (let i = 1; i < slideCount; i++) out.add(i);
-  return [...out].filter(i => i >= 0 && i < slideCount && renderable(i)).sort((a, b) => a - b);
+  const chain = !!failures.deck || (!!opts.chainFromAnchor && out.has(0));
+  if (chain) for (let i = 1; i < slideCount; i++) out.add(i);
+  return [...out].filter(i => i >= 0 && i < slideCount).sort((a, b) => a - b);
 }
 
 export function fixText(failures: Record<string, string[]>, index: number): string {

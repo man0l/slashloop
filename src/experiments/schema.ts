@@ -547,11 +547,13 @@ export interface SlideQaRecord {
   sourceMap?: { videoId: string | null; analysisId: string | null; sourceIndex: number | null; referenceKind: string; path: string | null; observation?: 'observed' | 'missing' };
 }
 /** SLA-700: one vision call per arm, compiled from the resolved contract. Hard failures are never softened. */
-export interface DeckQaRecord { verdict: 'passed' | 'failed' | 'unverified'; attempts: number; failures: Record<string, string[]>; warnings: string[]; repaired: number[]; judgedSlides: number[]; prompt?: string }
+export interface DeckQaRecord { verdict: 'passed' | 'failed' | 'repairing' | 'unverified'; attempts: number; failures: Record<string, string[]>; warnings: string[]; repaired: number[]; judgedSlides: number[]; prompt?: string }
 export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide' | 'qa'; target?: string; index?: number;
   status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number;
   /** Provider requests started, internal QA correction waves included. Absent on tasks that predate it (then `attempts`). */
   requests?: number;
+  /** SLA-700: the arm QA's failure text this slide task re-renders against (a render-extra). */
+  fix?: string;
   /** Authorized total image requests for this task across every attempt, frozen at first claim. Absent before then. */
   requestCap?: number;
   /** Durable debits for paid QA corrections, one ledger ref each, so every one is refundable by its own receipt. */
@@ -597,6 +599,8 @@ export interface Experiment {
   styleFormula?: { medium: string; density: string } | null;
   /** SLA-700: set on every non-exact_edit experiment created on the resolved-contract pipeline. */
   pipeline?: 'contract' | null;
+  /** SLA-700: provider calls this run made, by kind (contract, render, caption-edit, qa, render-extra). */
+  providerCalls?: Record<string, number>;
   /** SLA-700: the resolved slide contract (precedence applied) that renderer and QA both read. */
   contract?: ResolvedContract | null;
   /** Plain-language adjustments planning had to make, shown on the experiment so a

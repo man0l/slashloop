@@ -24,8 +24,8 @@ export type AiMeterSink=(kind:string,usage:AiCallUsage)=>void;
 /** Best-effort real-cost ledger row for an OpenRouter call (price visibility).
  *  `usage` rides in the refId (`|calls=N|in=..|out=..`) because the ledger has no token column;
  *  sub-cent calls round up to 1¢ so a metered call is never invisible. */
-type AiCostWriter=(workspaceId:string, refId:string, costUsd:number|undefined, usage?:{calls?:number;inputTokens?:number;outputTokens?:number;costUsd?:number})=>void;
-const logAiCost:AiCostWriter=function logAiCost(workspaceId, refId, costUsd, usage) {
+export type AiCostWriter=(workspaceId:string, refId:string, costUsd:number|undefined, usage?:{calls?:number;inputTokens?:number;outputTokens?:number;costUsd?:number})=>void;
+export const logAiCost:AiCostWriter=function logAiCost(workspaceId, refId, costUsd, usage) {
   if(!costUsd||costUsd<=0)return;
   const cents=Math.max(1,Math.round(costUsd*100));
   const tagged=usage?`${refId}|calls=${usage.calls??1}|in=${usage.inputTokens??0}|out=${usage.outputTokens??0}`:refId;
@@ -192,7 +192,7 @@ export function selectSlideReference(e:Experiment,index:number,videos:Video[]) {
  *  resolves false (nothing charged, nothing started) when capacity is absent. */
 export interface ExecuteContext { admit(units:number):Promise<boolean>; }
 export interface Prepared { execute(ctx?:ExecuteContext):Promise<unknown>; free?: boolean; units?: number; }
-interface RenderDeps {
+export interface RenderDeps {
   findSources(workspaceId:string, ids:string[]):Promise<Video[]>;
   generateImage(opts:{prompt:string;referenceUrl?:string;model:string;quality:'low'|'medium'|'high';aspectRatio:string}):Promise<{buffer:Buffer;contentType:string;costUsd:number}>;
   upload(opts:{bucket:string;path:string;body:Buffer;contentType:string;upsert:boolean}):Promise<unknown>;
