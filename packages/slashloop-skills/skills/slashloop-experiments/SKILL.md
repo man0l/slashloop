@@ -1,6 +1,6 @@
 ---
 name: slashloop-experiments
-description: List Slashloop slideshow experiments or create free drafts from gallery slideshow IDs. Running a draft requires explicit plan and generation estimates.
+description: List Slashloop slideshow experiments, create free drafts from gallery slideshow IDs, and run them draft to completed. Spending needs approval; a standing credit cap in the task counts as approval.
 ---
 
 # Slashloop experiments
@@ -55,17 +55,26 @@ Build `instructions`:
   top-level edit `variables` is the bounded single-variable shortcut.
 - `language`, `brand`, `audience`, `direction`, and `lockedConstraints` when
   supplied.
+- `preserveSourceCtaSlide`: optional boolean, default `false`. A source deck
+  whose last slide is a detected call-to-action loses that slide from the count
+  by default. Pass `true` to keep the source deck's own closing CTA slide. The
+  flag is structural only: it changes the slide count, nothing else.
 
-**Always pass `ran_by`** on every `create_experiment` call so the owner can see
-who ran it: `"user"` when the user asked directly, or
+Write `goal` yourself and keep it free of source captions, creator handles and
+competitor names. The server no longer appends the source caption to `goal`
+(`tagGoalWithSource` defaults to false; leave it off).
+
+**Always pass `ran_by`** (the alias `ranBy` is accepted too) on every
+`create_experiment` call so the owner can see who ran it: `"user"` when the user asked directly, or
 `"agent:<your name> on behalf of <user>"` when you act for them (e.g.
 `"agent:Leo on behalf of man0l"`). Free text, trimmed and capped at 120
-characters; use the same string every time so the owner can filter by it.
+characters; use the same string every time so the owner can filter by it. An
+experiment created without it keeps `ranBy: null` and cannot be attributed.
 
 Defaults: `variantCount=3` including baseline and `slideCount=5`, overridden by
 the source deck when known. Call `create_experiment`; the draft is free.
 Return each created experiment ID and its `planEstimate`, plus failures. Do not
-plan or generate without the next approval gate.
+plan or generate before the spend is approved (next section).
 
 For a bounded character-only edit of one deck, call `create_experiment` with
 `mode:"edit"`, `variables:["character"]`, and `character` containing visible
@@ -76,12 +85,70 @@ Copy edits default to `variables:["hook"]`. Use create mode with
 `instructions.variables:["character"]` and `instructions.direction` when you
 need custom goals or counts. Never put create instructions into edit mode.
 
-To run a confirmed draft: call `estimate_experiment(stage="plan")`; after the
-user approves that exact `totalCredits`, pass it as `approvedCredits` to
-`plan_experiment`, then poll `get_experiment` no faster than about a minute.
-At `review`, optionally edit a variant, call
-`estimate_experiment(stage="generate", variantIds)`, get approval, and pass the
-approved total to `generate_experiment` with each variant's current revision.
+## Approval and lifecycle
+
+### Approval: a standing budget is the approval
+
+Spending steps (`plan_experiment`, `generate_experiment`, `retry_experiment`) run
+only when the fresh estimate is `<= approvedCredits`. Decide where
+`approvedCredits` comes from once, up front, for the whole batch:
+
+1. **The task or issue grants a credit cap** (per experiment, e.g. "up to 200
+   credits per experiment", or per batch). That is the approval. Price each step
+   with `estimate_experiment`; if the estimate is within the remaining cap, pass
+   the remaining cap as `approvedCredits` and run it. Do not create a
+   confirmation card, do not ask in a comment. Track the remaining cap as you
+   spend (`creditsCharged` on `get_experiment`). Ask only when an estimate
+   exceeds the remaining cap, and then ask once with the numbers.
+2. **No cap is stated.** Ask for approval ONCE with a single batched
+   `request_confirmation` covering every experiment and both stages (plan and
+   generate): list the experiments, the plan estimate for each, the expected
+   generate cost, and the total. Never one card per experiment and never one per
+   stage: Paperclip allows one active confirmation per issue, so each new card
+   supersedes the last and generation never gets approved.
+3. A cap or approval never covers more than it says. If the work needs more
+   credits than approved, stop and ask for the difference.
+
+### Lifecycle playbook
+
+Drive every experiment all the way to `completed`; do not leave drafts or
+`review` experiments parked.
+
+1. **draft** (free): from `create_experiment`. Price it with
+   `estimate_experiment(stage="plan")`, then `plan_experiment` with
+   `approvedCredits` as above.
+2. **planning**: wait. Nothing to do and nothing is editable.
+3. **review**: briefs are ready and nothing is spent on images yet. Read each
+   variant brief with `get_experiment` and check it against the task (locks,
+   brand, forbidden names, the variable under test). Fix any problem for free with
+   `update_experiment_variant` (send the complete brief and the variant's current
+   `revision`; use the returned revision afterwards). Then
+   `estimate_experiment(stage="generate", variantIds)` and
+   `generate_experiment` with each variant's current revision and
+   `approvedCredits` as above.
+4. **generating**: wait.
+5. **completed**: read the image URLs from `get_experiment`
+   (`progress`), post them (and the experiment ID, variants and credits spent) on
+   the task, and close the task. Do not re-run a completed experiment.
+6. **paused** or **failed**: get the `retryableJobs` from `get_experiment`,
+   price them with `estimate_experiment(taskIds)` (or `variantIds`/`stage`),
+   and `retry_experiment` with `approvedCredits` as above. Completed images are
+   kept.
+
+**Edit, don't cancel.** If a brief is wrong, or the task changed mid-run (new
+guardrails, a different angle), fix the briefs with `update_experiment_variant`
+at `review`. Do not cancel and recreate: cancelled is terminal and the planning
+credits are lost. Use `cancel_experiment` only when the source itself is
+unusable (not a slideshow, deleted, or wrongly chosen) and say why in the
+comment.
+
+**Tracking.** Use `get_experiment` for status, never `await_job` /
+`get_job_status`: experiment job ids are not valid there (`Job not found`). When
+you cannot use the completion notification below, check `get_experiment` about
+every 1 to 2 minutes (not faster) until the status changes. Paperclip agents use
+the notification and the issue monitor below instead of a loop: end the heartbeat
+after `plan_experiment` or `generate_experiment`, and continue the playbook from
+the child task that wakes you.
 
 `update_experiment_variant` edits only a draft variant (never generated, no
 frozen brief) with its current revision, at `review`, at `completed` (for a
