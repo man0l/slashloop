@@ -340,4 +340,20 @@ describe('edit wizard: omitted vs explicit blank (SLA-458)', () => {
     expect(payload.slideCount).toBe(8);
     expect(payload.instructions.copyOverrides).toEqual({ '0': 'H', '1': 'Two' });
   });
+
+  test('opening the modal resets the hook box and its touched flag', () => {
+    const open = script.slice(script.indexOf('function buildEditOverlays()'), script.indexOf('function checkedVars()'));
+    const hook = { value: 'stale hook', dataset: { touched: '1' } as Record<string, string> };
+    const wrap = { innerHTML: 'x', dataset: {} as Record<string, string>, appendChild: () => {} };
+    const doc = {
+      getElementById: (id: string) => (id === 'edit-hook' ? hook : wrap),
+      createElement: () => ({ addEventListener: () => {}, appendChild: () => {} }),
+    };
+    new Function('selCards', 'markTouched', 'document', open + '; buildEditOverlays();')(
+      () => [{ getAttribute: () => '3' }], () => {}, doc,
+    );
+    expect(hook.value).toBe('');
+    expect(hook.dataset.touched).toBeUndefined();
+    expect(wrap.dataset.slides).toBe('3');
+  });
 });
