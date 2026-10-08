@@ -157,11 +157,20 @@ export function settleContractCompletion(e: Experiment): void {
 
 export const QA_REPAIR_ROUNDS = 1;
 
+/** A slide copied from the baseline arm was already judged there; re-judging it here could only re-render it and break the A/B isolation. */
+function ignoreReusedSlides(v: Variant, result: QaTaskResult): QaTaskResult {
+  const reused = new Set(v.slides.filter(s => s.provider === 'reuse').map(s => String(s.index)));
+  const failures = Object.fromEntries(Object.entries(result.failures).filter(([k]) => !reused.has(k)));
+  if (Object.keys(failures).length === Object.keys(result.failures).length) return result;
+  return { ...result, failures, passed: Object.keys(failures).length === 0 };
+}
+
 /** One QA verdict per arm. A pass finishes the arm; a first hard failure buys one repair round (re-render of the
  *  failing slides carrying the QA text, then one re-QA); a failure after that is final and never downgraded. */
-export function settleQa(e: Experiment, t: Task, result: QaTaskResult): void {
-  mergeCalls(e, result.calls);
+export function settleQa(e: Experiment, t: Task, rawResult: QaTaskResult): void {
+  mergeCalls(e, rawResult.calls);
   const v = variantOf(e, t.target)!;
+  const result = ignoreReusedSlides(v, rawResult);
   const attempts = (v.qaDeck?.attempts ?? 0) + 1;
   const n = v.slides.length;
   const judgedSlides = v.slides.map((_, i) => i);

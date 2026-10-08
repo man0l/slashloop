@@ -571,7 +571,7 @@ export interface Variant extends Proposal { id: string; revision: number; status
   /** SLA-700: the one deck-level QA verdict for this arm (contract pipeline). */
   qaDeck?: DeckQaRecord | null;
   frozenBrief: BriefData | null; slides: Array<{ index: number; status: string; url: string | null; path: string | null; error: string | null; overlayText: string;
-    prompt?: string; fanout?: { requested: number; rendered: number; chosen: number; judge: unknown; styleViolation?: boolean }; reference?: { kind: string; videoId: string; index?: number | null; path: string } | null;
+    prompt?: string; provider?: string; fanout?: { requested: number; rendered: number; chosen: number; judge: unknown; styleViolation?: boolean }; reference?: { kind: string; videoId: string; index?: number | null; path: string } | null;
     /** QA audit for THIS attempt. Present on success AND on failure/unverified,
      *  cleared when a retry requeues the slide (see qaHistory). */
     qa?: SlideQaRecord | null;

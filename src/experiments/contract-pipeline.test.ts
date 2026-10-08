@@ -178,6 +178,17 @@ describe('QA: hard failures get one repair and one re-QA, never downgraded', () 
     expect(w.files.get(b!.slides[1]!.path!)).toEqual(w.files.get(a!.slides[1]!.path!));
   });
 
+  test('B QA failing a slide it reused from A is ignored: no re-render, the bytes stay identical to A', async () => {
+    const w = world({ contract: rawContract(), qa: [() => qaPass(), () => qaFailSlide(1)] });
+    await w.plan();
+    await w.generate();
+    expect(w.row.status).toBe('completed');
+    const [a, b] = w.row.variants;
+    expect(b!.qaDeck).toMatchObject({ verdict: 'passed', attempts: 1, repaired: [] });
+    expect(w.providerCalls).toEqual({ contract: 1, render: 3, 'caption-edit': 1, qa: 2 });
+    expect(w.files.get(b!.slides[1]!.path!)).toEqual(w.files.get(a!.slides[1]!.path!));
+  });
+
   test('a failure that survives the repair round fails the arm and the experiment', async () => {
     const w = world({ contract: rawContract(), qa: [() => qaFailSlide(1), () => qaFailSlide(1)] });
     await w.plan();
