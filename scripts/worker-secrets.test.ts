@@ -119,13 +119,13 @@ describe('buildPayload', () => {
     const { payload, skipped } = buildPayload({
       GEMINI_API_KEY: '   ',
       OPENROUTER_API_KEY: '[REDACTED]',
-      APIFY_API_KEY: 'changeme',
+      SUPABASE_ANON_KEY: 'changeme',
       SCRAPER_PROXY_URL: 'https://proxy.example.com',
       SUPABASE_URL: 'https://real.supabase.co',
     });
     expect(payload).toEqual({ SUPABASE_URL: 'https://real.supabase.co' });
     expect(skipped).toEqual(
-      expect.arrayContaining(['GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'APIFY_API_KEY', 'SCRAPER_PROXY_URL']),
+      expect.arrayContaining(['GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'SUPABASE_ANON_KEY', 'SCRAPER_PROXY_URL']),
     );
     expect(isPlaceholder('real-value')).toBe(false);
   });

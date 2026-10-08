@@ -1,7 +1,7 @@
 ---
 name: status
-description: Dashboard view of your slashloop account — tracked sources, Apify spend vs cap, and top outlier videos. Use when the user wants an overview, a status check, or asks "what am I tracking", "how much did I spend", "show me outliers", or "dashboard".
-allowed-tools: mcp__plugin_slashloop_slashloop__list_sources, mcp__plugin_slashloop_slashloop__get_apify_spend_status, mcp__plugin_slashloop_slashloop__get_outlier_summary, mcp__plugin_slashloop_slashloop__get_feed, mcp__plugin_slashloop_slashloop__show_gallery, mcp__plugin_slashloop_slashloop__deepen_baselines
+description: Dashboard view of your slashloop account — tracked sources, scraper spend vs cap, and top outlier videos. Use when the user wants an overview, a status check, or asks "what am I tracking", "how much did I spend", "show me outliers", or "dashboard".
+allowed-tools: mcp__plugin_slashloop_slashloop__list_sources, mcp__plugin_slashloop_slashloop__get_scraper_spend_status, mcp__plugin_slashloop_slashloop__get_outlier_summary, mcp__plugin_slashloop_slashloop__get_feed, mcp__plugin_slashloop_slashloop__show_gallery, mcp__plugin_slashloop_slashloop__deepen_baselines
 ---
 
 Render a concise, scannable dashboard by calling tools, then formatting the
@@ -15,9 +15,9 @@ Call `list_sources`. Render a table — one row per source:
   `lastRefreshedAt` is null, and flag that it has no videos yet.
 - Group or sort by most-recently-refreshed.
 
-## Apify spend
-Call `get_apify_spend_status`. Render one line:
-`$X.XX / $Y.YY used (Z%) · $W remaining` + note if the cap is breached.
+## Scraper spend
+Call `get_scraper_spend_status`. Render one line using the tool's `usedDisplay` / `capDisplay` / `remainingDisplay`
+and percent used, + note if the cap is breached.
 
 ## Top outliers
 Call `get_outlier_summary` (or `get_feed` sorted by `outlier_score`, top 10).

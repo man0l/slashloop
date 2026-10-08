@@ -56,7 +56,7 @@ describe('parseDiscoveryInput', () => {
 function video(over: Partial<NormalizedVideo> = {}): NormalizedVideo {
   return {
     platform: 'tiktok', externalId: '1', url: 'https://tiktok.com/x',
-    thumbnailUrl: '', coverDownloadUrl: null, creatorHandle: 'alice',
+    thumbnailUrl: '', creatorHandle: 'alice',
     creatorFollowers: 1000, caption: 'study #studytok #notes', postedAt: '',
     views: 1000, likes: 0, comments: 0, shares: null, saves: null,
     durationSec: 10, transcript: null, transcriptSource: 'none', sound: null, raw: {},

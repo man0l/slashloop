@@ -579,7 +579,6 @@ export async function refreshSourceForWorkspace(
         videoId: created.id,
         platform: nv.platform,
         thumbnailUrl: nv.thumbnailUrl,
-        coverDownloadUrl: nv.coverDownloadUrl,
       });
       const slides = slideshowTargetFromNormalized(created.id, nv.raw);
       if (slides) slideshowTargets.push(slides);

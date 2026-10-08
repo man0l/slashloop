@@ -20,7 +20,7 @@ catalog as its output. It may call `list_sources` solely to resolve names.
 
 ## Safety gate
 
-Before any scrape, call `get_apify_spend_status`. Present each planned source
+Before any scrape, call `get_scraper_spend_status`. Present each planned source
 and its worst-case `videoLimit * 1.5` credit estimate; note that an established
 source normally uses the smaller incremental page (often ≤5) unless the user
 sets `videoLimit`. Get an explicit user approval for the exact batch and credit
@@ -44,5 +44,5 @@ Call `list_sources` with `isActive=true`, then build a plan containing every
 active source (including already-refreshed manual sources), excluding sources
 with outstanding jobs. Show that batch plan and `maxCredits`; after approval,
 run the confirmed sources with `refresh_source` as above. Stop when the next
-source would exceed `maxCredits` or the Apify cap. Do not substitute
+source would exceed `maxCredits` or the scraper traffic cap. Do not substitute
 `refresh_due_sources`: it omits already-refreshed manual sources.

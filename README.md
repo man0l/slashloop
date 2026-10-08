@@ -8,7 +8,7 @@ winners into hooks, ideas, and creative briefs.
 Workers (D1 + R2 + KV + Cron Triggers), authenticated via Supabase OAuth2
 until the native-IdP swap. Vercel + Supabase Postgres remain as the
 legacy/rollback backend during the cutover soak (see
-`docs/cf-full-backend-plan.md`). API keys (Gemini, Apify) live server-side,
+`docs/cf-full-backend-plan.md`). API keys (Gemini, the scraper proxy) live server-side,
 so installers never handle them.
 
 | Surface | Where | Install | Client |
@@ -40,7 +40,7 @@ src/
   register-tools.ts  # 63 tools, shared with the remote host
   tools/             # sources, feed, video, hooks, creative, studio, settings, experiments
   analysis/          # Gemini native + text analyzers
-  lib/               # apify, gemini, spend-cap, storage, media, retention
+  lib/               # scrapers, gemini, spend-cap, storage, media, retention
 remote/              # OAuth + Streamable HTTP handlers
 api/                 # Legacy Vercel entrypoints, retained as the rollback path.
                      # Several URL paths were folded onto one physical function
@@ -100,7 +100,7 @@ All 63 tools (plus `whoami`) are then available; ask in plain language
 cp .env.example .env
 # DATABASE_URL + DIRECT_URL (Supabase Postgres pooler)
 # SUPABASE_URL, SUPABASE_ANON_KEY
-# GEMINI_API_KEY, APIFY_API_KEY, APIFY_SPEND_CAP_CENTS, PUBLIC_URL
+# GEMINI_API_KEY, SCRAPER_PROXY_URL, PROXY_TRAFFIC_CAP_GB, PUBLIC_URL
 ```
 
 ### 3. Run / deploy
@@ -135,7 +135,7 @@ bun run db:generate      # refresh the Prisma client
 
 TikTok cover images and MP4s are persisted to Supabase Storage so the feed
 doesn't render broken images once the source CDN's signed URLs expire, and so
-re-analysis can skip a paid Apify call. Leave `SUPABASE_SECRET_KEY` unset and
+re-analysis can skip a metered proxy download. Leave `SUPABASE_SECRET_KEY` unset and
 the entire path no-ops — everything else works as before.
 
 Setup is one step: set `SUPABASE_SECRET_KEY` and `CRON_SECRET` in Vercel. Two
@@ -246,8 +246,8 @@ from a browser.
 | `SUPABASE_URL` | yes (remote) | `https://YOUR-PROJECT.supabase.co` |
 | `SUPABASE_ANON_KEY` | yes (remote) | Supabase publishable key |
 | `GEMINI_API_KEY` | **yes** | Powers gemini-native (primary) + gemini-text (fallback) analysis, hook variations, briefs |
-| `APIFY_API_KEY` | for live TikTok | clockworks/tiktok-scraper + single-video download |
-| `APIFY_SPEND_CAP_CENTS` | optional | Monthly Apify cap in cents (default 500 = $5) |
+| `SCRAPER_PROXY_URL` | for live TikTok | Residential proxy for list scrapes + single-video download |
+| `PROXY_TRAFFIC_CAP_GB` | optional | Monthly proxy traffic cap in gigabytes |
 | `PUBLIC_URL` | yes (prod) | Public origin Claude reaches |
 | `SITE_URL` | yes (billing) | Origin of slashloop-site — Checkout/Portal redirects + CORS |
 | `STRIPE_MODE` | no (default `live`) | `live` or `test` — which key set the app uses |
@@ -309,10 +309,11 @@ evidence → pick from verified suggestions to track. The site's Discover screen
 
 ## Spend cap behavior
 
-- **Default:** $5/month (500 cents)
-- **Enforced at:** every `refresh_source` (and single-video download) before the Apify request fires
+- **Cap:** `PROXY_TRAFFIC_CAP_GB` per calendar month
+- **Enforced at:** every `refresh_source` (and single-video download) before proxy traffic is spent
 - **On breach:** the call is refused, a `cap_breach` event is persisted to `UsageLog`, and the optional `APIFY_CAP_NOTIFICATION_HOOK` fires
-- **To check:** call `get_apify_spend_status`
+- **To check:** call `get_scraper_spend_status` (`get_apify_spend_status` is the legacy name of the same tool)
+- Historical Apify spend rows stay in `UsageLog` and are still reported
 - Resets on the first of each calendar month.
 
 ---

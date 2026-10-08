@@ -400,7 +400,6 @@ export async function applyScrapeItems(opts: {
         videoId: created.id,
         platform: nv.platform,
         thumbnailUrl: nv.thumbnailUrl,
-        coverDownloadUrl: nv.coverDownloadUrl,
       });
       const slides = slideshowTargetFromNormalized(created.id, nv.raw);
       if (slides) slideshowTargets.push(slides);
@@ -484,7 +483,7 @@ export async function applyScrapeItems(opts: {
         await enqueueThumbJob({
           workspaceId,
           videoId: t.videoId,
-          payload: { thumbnailUrl: t.thumbnailUrl, coverDownloadUrl: t.coverDownloadUrl ?? null },
+          payload: { thumbnailUrl: t.thumbnailUrl },
         });
         enqueued++;
       } catch (err) {

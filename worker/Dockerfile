@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # VPS worker image — the long-running queue drainer (src/worker/index.ts).
 #
-# Same queue + codebase as the Vercel worker, but NO 60s ceiling: Apify
+# Same queue + codebase as the Vercel worker, but NO 60s ceiling: proxy
 # downloads and OpenRouter video analysis (Qwen on full-length clips) can take
 # 60s+, which the Vercel Hobby plan kills. This container runs the identical
 # claim->process->complete/fail cycle against the same MediaJob table.

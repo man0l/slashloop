@@ -330,7 +330,7 @@ async function scrape(job) {
         `TikTok ${job.sourceType} "${job.query}" returned no videos `
         + `(title=${diag?.title ?? ''} hydrated=${diag?.hasUniversal} xhrEmpty=true). `
         + 'This exit is bot-walled: profile SSR has no itemList and /api/post/item_list is a 0-byte JSON. '
-        + 'Keep SCRAPER_PROVIDER=apify, or set SCRAPER_FALLBACK_PROVIDER=apify, or use a cleaner residential pool.',
+        + 'Use a cleaner residential pool.',
       );
     }
     return { items, notices, bytesUsed: bytes, diag };
