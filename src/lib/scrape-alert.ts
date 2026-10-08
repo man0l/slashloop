@@ -44,6 +44,7 @@ const PER_CONTENT_NOISE: ReadonlySet<FetchErrorCode> = new Set([
   'video_not_found',
   'video_unavailable',
   'apify_not_stored',
+  'video_too_large',
   'download_failed',
   'openrouter_balance',
 ]);

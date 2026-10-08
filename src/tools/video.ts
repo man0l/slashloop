@@ -165,7 +165,7 @@ export function registerVideoTools(server: McpServer) {
 
   // ---- analyze_video ----
   server.tool('analyze_video',
-    'Run AI analysis on a video. Uses the configured backend (default: gemini-native, fallback: gemini-text). gemini-native downloads the video via Apify then uploads it for native understanding (shots, audio, on-screen text); gemini-text does a text-only call on transcript + caption + metadata. Costs 5 credits. gemini-native is QUEUED rather than run inline — it cannot finish inside one request — so the response is a jobId and status, not an analysis. Wait for it with await_job (blocks server-side and returns the moment it finishes) rather than polling get_video in a loop; the analysisJob field on get_video still reports progress for a one-off check. gemini-text returns its analysis directly.',
+    'Run AI analysis on a video. Uses the configured backend (default: gemini-native, fallback: gemini-text). gemini-native downloads the video via the active scraper (residential proxy, or Apify) then uploads it for native understanding (shots, audio, on-screen text); gemini-text does a text-only call on transcript + caption + metadata. Costs 5 credits. gemini-native is QUEUED rather than run inline — it cannot finish inside one request — so the response is a jobId and status, not an analysis. Wait for it with await_job (blocks server-side and returns the moment it finishes) rather than polling get_video in a loop; the analysisJob field on get_video still reports progress for a one-off check. gemini-text returns its analysis directly.',
     {
       workspaceId: workspaceIdField,
       videoId: z.string().describe('Video ID to analyze'),
@@ -188,7 +188,7 @@ export function registerVideoTools(server: McpServer) {
         };
       }
 
-      // gemini-native cannot finish inside this request: Apify download, Gemini
+      // gemini-native cannot finish inside this request: scraper download, Gemini
       // upload, processing wait and generate together exceed the 60s function
       // ceiling (vercel.json), which the current Vercel plan cannot raise — and
       // the MCP client imposes its own timeout regardless. Every gemini-native

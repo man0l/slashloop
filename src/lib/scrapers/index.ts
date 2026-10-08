@@ -23,7 +23,8 @@ import {
 
 export * from './types.js';
 export { apifyAdapter, proxyAdapter };
-export { estimateScrapeBytes, extractSlideshowImages, slideshowImagesFromRaw, slideshowKeysFromRaw } from './tiktok-web.js';
+export { maxVideoBytes } from './proxy-adapter.js';
+export { ESTIMATED_LOOKUP_BYTES, estimateScrapeBytes, extractSlideshowImages, slideshowImagesFromRaw, slideshowKeysFromRaw } from './tiktok-web.js';
 export { assertTrafficCap, trafficStatus, TrafficCapExceededError, wouldExceedCap } from './bandwidth.js';
 export { proxyCheapBandwidth, formatProxyCheap, parseProxiesResponse, bandwidthFromProxyRecord } from './proxy-cheap.js';
 export { remainingBudgetBytes, vendorRemainingBytes, assertProxyBudget } from './budget.js';

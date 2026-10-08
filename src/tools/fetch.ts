@@ -21,12 +21,10 @@ import { db } from '../db.js';
 import { chunked } from '../store.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { enqueueFetchJob, outstandingJobForVideo } from '../lib/jobs.js';
-import { costBlock } from '../lib/next-steps.js';
-import { selectDownloadAdapter } from '../lib/scrapers/index.js';
+import { costBlock, downloadCeilingBytes, downloadCostCents } from '../lib/next-steps.js';
+import { fmtBytes } from '../lib/scrapers/bandwidth.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-/** Mirrors ESTIMATED_DOWNLOAD_COST_CENTS in lib/apify.ts (free-tier ceiling). */
-const FETCH_COST_PER_VIDEO_CENTS = 1;
 /** Cap on videos a single threshold fetch will queue, so one call can't dump
  *  the whole workspace onto the queue at once. */
 const DEFAULT_FETCH_LIMIT = 20;
@@ -37,7 +35,7 @@ export function registerFetchTool(server: McpServer) {
     'Download and store the MP4 for selected videos so they play inline in the gallery (with key-moment seeking), '
       + 'WITHOUT running Gemini analysis. Two modes: (1) minOutlierScore — fetch every video at or above an outlier '
       + 'score that has no stored video yet (e.g. 50 for the standout winners); (2) videoIds — hand-picked videos. '
-      + 'Fetch is scraper spend (the residential-proxy worker when configured, else Apify ≈1¢/video), subject to the '
+      + 'Fetch is scraper spend (the residential-proxy worker when configured, billed per GB of proxy traffic; Apify ≈1¢/video otherwise), subject to the '
       + 'matching spend cap — not AI credits. Runs in the background; poll get_video until mediaStatus = stored. '
       + 'Use after refresh_source, when the user wants to SEE/scrub specific outliers rather than only thumbnails.',
     {
@@ -117,8 +115,8 @@ export function registerFetchTool(server: McpServer) {
       // Which ledger this spend actually lands in. Downloads prefer the own
       // proxy worker (TikTok's CDN 403s datacenter IPs); Apify is the
       // fallback when no SCRAPER_PROXY_URL is configured.
-      let viaProxy = false;
-      try { viaProxy = selectDownloadAdapter('tiktok').name !== 'apify'; } catch { /* unconfigured — quote the Apify ceiling */ }
+      const ceilingBytes = downloadCeilingBytes();
+      const perVideoCents = downloadCostCents();
 
       return {
         content: [{
@@ -129,12 +127,13 @@ export function registerFetchTool(server: McpServer) {
               : 'Nothing to fetch — all target videos are already stored, already queued, or not downloadable.',
             queued: eligible.length,
             threshold: minOutlierScore ?? null,
-            estimatedScraperCostCents: eligible.length * FETCH_COST_PER_VIDEO_CENTS,
+            estimatedScraperCostCents: eligible.length * perVideoCents,
+            ...(ceilingBytes != null ? { estimatedProxyTraffic: fmtBytes(eligible.length * ceilingBytes) } : {}),
             cost: costBlock(0, {
-              scraperCents: eligible.length * FETCH_COST_PER_VIDEO_CENTS,
+              scraperCents: eligible.length * perVideoCents,
               quoted: true,
-              note: viaProxy
-                ? 'Proxy traffic on the own worker (PROXY_TRAFFIC_CAP_GB), not AI credits. Per-video figure is the pre-auth ceiling.'
+              note: ceilingBytes != null
+                ? `Proxy traffic on the own worker (PROXY_TRAFFIC_CAP_GB), not AI credits. Per-video figure is the pre-auth ceiling (${fmtBytes(ceilingBytes)}).`
                 : 'Apify spend (APIFY_SPEND_CAP_CENTS), not AI credits.',
             }),
             skippedAlreadyStored: skippedStored,

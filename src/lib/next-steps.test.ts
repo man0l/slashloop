@@ -1,5 +1,7 @@
-import { describe, expect, test } from 'bun:test';
-import { costBlock, listScrapeCostCents } from './next-steps.js';
+import { afterEach, describe, expect, test } from 'bun:test';
+import { costBlock, downloadCeilingBytes, downloadCostCents, listScrapeCostCents, scraperCostLabel } from './next-steps.js';
+import { ESTIMATED_LOOKUP_BYTES, maxVideoBytes } from './scrapers/index.js';
+import { bytesToCents } from './scrapers/bandwidth.js';
 import { ScriptDataSchema, SCRIPT_FORMATS } from '../analysis/schema.js';
 
 describe('costBlock', () => {
@@ -26,6 +28,38 @@ describe('costBlock', () => {
     const fifty = listScrapeCostCents(50);
     expect(one).toBeGreaterThan(0);
     expect(fifty).toBeGreaterThan(one);
+  });
+});
+
+describe('proxy quotes use the existing gigabyte helpers', () => {
+  const saved = { p: process.env.SCRAPER_PROVIDER, u: process.env.SCRAPER_PROXY_URL, k: process.env.APIFY_API_KEY };
+  const restore = (k: string, v: string | undefined) => { if (v === undefined) delete process.env[k]; else process.env[k] = v; };
+  afterEach(() => {
+    restore('SCRAPER_PROVIDER', saved.p);
+    restore('SCRAPER_PROXY_URL', saved.u);
+    restore('APIFY_API_KEY', saved.k);
+  });
+
+  test('proxy active: list scrapes are quoted in traffic, not Apify dollars', () => {
+    process.env.SCRAPER_PROVIDER = 'proxy';
+    process.env.SCRAPER_PROXY_URL = 'user:pass@gw.example.com:8080';
+    expect(scraperCostLabel(20)).toContain('proxy traffic');
+    expect(scraperCostLabel(20)).not.toContain('Apify');
+  });
+
+  test('download ceiling is the proxy video ceiling plus the watch-page lookup', () => {
+    process.env.SCRAPER_PROXY_URL = 'user:pass@gw.example.com:8080';
+    const bytes = downloadCeilingBytes();
+    expect(bytes).toBe(maxVideoBytes() + ESTIMATED_LOOKUP_BYTES);
+    expect(downloadCostCents()).toBe(bytesToCents(bytes!));
+  });
+
+  test('no proxy configured: downloads fall back to the Apify per-video ceiling', () => {
+    delete process.env.SCRAPER_PROXY_URL;
+    process.env.SCRAPER_PROVIDER = 'apify';
+    process.env.APIFY_API_KEY = 'k';
+    expect(downloadCeilingBytes()).toBeNull();
+    expect(downloadCostCents()).toBe(1);
   });
 });
 

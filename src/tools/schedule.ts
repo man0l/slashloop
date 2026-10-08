@@ -26,7 +26,7 @@ import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { CREDIT_COSTS, creditBalance } from '../lib/credits.js';
 import { enqueueRefreshJob, outstandingJobForSource } from '../lib/jobs.js';
 import { resolveRefreshPlan } from '../lib/refresh-policy.js';
-import { withNextSteps, apifyCostLabel } from '../lib/next-steps.js';
+import { withNextSteps, scraperCostLabel } from '../lib/next-steps.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 /**
@@ -71,6 +71,9 @@ interface DueSource {
   hoursOverdue: number | null;
   neverRefreshed: boolean;
   estimatedCredits: number;
+  /** Worst-case scraper spend for this run: proxy traffic, or Apify dollars while that provider is active. */
+  estimatedScraper: string;
+  /** Legacy name of estimatedScraper, kept so existing clients keep working. */
   estimatedApify: string;
   hasOutstandingJob: boolean;
 }
@@ -139,7 +142,8 @@ async function collectDue(
       hoursOverdue: overdueBy != null ? Math.round(overdueBy / 3_600_000) : null,
       neverRefreshed: last === null,
       estimatedCredits: Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * plan.limit),
-      estimatedApify: apifyCostLabel(plan.limit),
+      estimatedScraper: scraperCostLabel(plan.limit),
+      estimatedApify: scraperCostLabel(plan.limit),
       hasOutstandingJob: Boolean(outstanding),
     });
   }

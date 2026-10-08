@@ -1,6 +1,6 @@
 // Unit tests for fetch-error classification (src/lib/fetch-errors.ts). Pure.
 import { describe, expect, test } from 'bun:test';
-import { classifyFetchError } from './fetch-errors.js';
+import { canonicalErrorCode, classifyFetchError, LEGACY_ERROR_CODE_ALIASES } from './fetch-errors.js';
 
 describe('classifyFetchError', () => {
   test('null/empty -> null', () => {
@@ -67,5 +67,60 @@ describe('classifyFetchError', () => {
     const info = classifyFetchError('Actor did not store the video (only a TikTok CDN URL available — cannot download from a server IP); falling back to text analysis');
     expect(info?.code).toBe('apify_not_stored');
     expect(info?.message.toLowerCase()).toContain('text fallback');
+  });
+});
+
+describe('provider-neutral codes for the proxy worker', () => {
+  test('proxy traffic cap -> scraper_spend_cap', () => {
+    const info = classifyFetchError('Proxy traffic cap exceeded: 1.000GB of 1.000GB used this month. Refusing an estimated 12.00MB more. Raise PROXY_TRAFFIC_CAP_GB in .env, or wait for the next calendar month.');
+    expect(info?.code).toBe('scraper_spend_cap');
+    expect(info?.message).toContain('PROXY_TRAFFIC_CAP_GB');
+  });
+
+  test('missing proxy URL -> scraper_not_configured', () => {
+    expect(classifyFetchError('SCRAPER_PROXY_URL is not set. Add it to .env as user:pass@host:port')?.code).toBe('scraper_not_configured');
+  });
+
+  test('CDN refusal via proxy -> scraper_cdn_failed', () => {
+    expect(classifyFetchError('TikTok CDN download failed (403) via proxy: nope')?.code).toBe('scraper_cdn_failed');
+  });
+
+  test('video over the proxy ceiling -> video_too_large (both variants)', () => {
+    expect(classifyFetchError('Video is 20.00MB, above the 12.00MB SCRAPER_PROXY_MAX_VIDEO_MB ceiling — refusing to spend the traffic')?.code).toBe('video_too_large');
+    expect(classifyFetchError('Video exceeded the 12.00MB SCRAPER_PROXY_MAX_VIDEO_MB ceiling — download stopped')?.code).toBe('video_too_large');
+  });
+
+  test('the Apify strings are untouched by the new rules', () => {
+    expect(classifyFetchError('Apify spend cap exceeded: monthly spend is $5.00')?.code).toBe('apify_spend_cap');
+    expect(classifyFetchError('APIFY_API_KEY is not set. Add it to .env.')?.code).toBe('apify_no_key');
+    expect(classifyFetchError('TikTok CDN download failed (403): nope')?.code).toBe('apify_cdn_failed');
+    expect(classifyFetchError('Actor did not store the video (only a TikTok CDN URL available)')?.code).toBe('apify_not_stored');
+    expect(classifyFetchError('Apify actor clockworks~tiktok-scraper failed (500): boom')?.code).toBe('apify_actor_error');
+  });
+});
+
+describe('LEGACY_ERROR_CODE_ALIASES', () => {
+  test('every stored apify_* fetch code and both HTTP bodies map to a neutral name', () => {
+    for (const old of [
+      'apify_spend_cap', 'apify_no_key', 'apify_cdn_failed', 'apify_not_stored', 'apify_actor_error',
+      'apify_spend_cap_breached', 'apify_spend_cap_exceeded',
+    ]) {
+      const neutral = canonicalErrorCode(old);
+      expect(neutral).not.toBe(old);
+      expect(neutral.startsWith('apify_')).toBe(false);
+    }
+    expect(Object.keys(LEGACY_ERROR_CODE_ALIASES)).toHaveLength(7);
+  });
+
+  test('neutral and unknown codes pass through unchanged', () => {
+    expect(canonicalErrorCode('scraper_spend_cap')).toBe('scraper_spend_cap');
+    expect(canonicalErrorCode('video_not_found')).toBe('video_not_found');
+    expect(canonicalErrorCode('something_else')).toBe('something_else');
+  });
+
+  test('the alias for the cap codes agrees with what the classifier emits for proxy', () => {
+    expect(canonicalErrorCode('apify_spend_cap')).toBe('scraper_spend_cap');
+    expect(canonicalErrorCode('apify_no_key')).toBe('scraper_not_configured');
+    expect(canonicalErrorCode('apify_cdn_failed')).toBe('scraper_cdn_failed');
   });
 });

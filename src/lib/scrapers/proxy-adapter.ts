@@ -43,7 +43,7 @@ import {
 } from './tiktok-web.js';
 import { infoNote } from '../refresh-notes.js';
 import type { NormalizedVideo } from '../../normalizers.js';
-import { splitSpend } from '../apify.js';
+import { splitSpend } from '../spend-split.js';
 import {
   SlideshowPostError,
   type DownloadOptions, type DownloadResult, type ScrapeOptions, type ScrapeResult, type ScraperAdapter,
@@ -60,7 +60,7 @@ export function isVideoCeilingError(message: string): boolean {
 
 /** Hard ceiling on one video download. Above this we would rather have no
  *  video than a surprise gigabyte. */
-function maxVideoBytes(): number {
+export function maxVideoBytes(): number {
   const mb = Number(process.env.SCRAPER_PROXY_MAX_VIDEO_MB ?? 12);
   return (Number.isFinite(mb) && mb > 0 ? mb : 12) * 1024 * 1024;
 }
