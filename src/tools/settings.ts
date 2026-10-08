@@ -654,7 +654,7 @@ export function registerSettingsTools(server: McpServer) {
   // so the history survives the move to the proxy. The old tool name stays
   // registered so existing clients and skills keep working.
   const spendStatusDescription =
-    'Check scraper spend against the active provider cap (Apify dollars by default, or proxy GB when SCRAPER_PROVIDER=proxy), plus this workspace\'s credit balance. Shows current monthly spend, cap, percent used, breach state, recent cap_breach audit events, and historical Apify spend. get_apify_spend_status is the legacy name of this tool.';
+    'Check scraper spend against the active provider cap (proxy GB by default, or Apify dollars when SCRAPER_PROVIDER=apify), plus this workspace\'s credit balance. Shows current monthly spend, cap, percent used, breach state, recent cap_breach audit events, and historical Apify spend. get_apify_spend_status is the legacy name of this tool.';
 
   const spendStatusHandler = async ({ workspaceId }: { workspaceId?: string }) => {
       const workspace = await resolveToolWorkspace({ workspaceId });
@@ -663,7 +663,7 @@ export function registerSettingsTools(server: McpServer) {
       const scraper = {
         provider: activeProviderFor('tiktok'),
         configured: listScrapers(),
-        env: process.env.SCRAPER_PROVIDER?.trim() || 'apify',
+        env: process.env.SCRAPER_PROVIDER?.trim() || 'proxy',
         proxyConfigured: proxyConfig() !== null,
         capKind: scrapeCapKind('tiktok'),
       };

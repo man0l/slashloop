@@ -20,14 +20,22 @@ describe('costBlock', () => {
     expect(block.remaining).toBeUndefined();
   });
 
-  test('listScrapeCostCents quotes whichever provider is active', () => {
-    // Both branches must be positive and monotonic in results — the exact
-    // number depends on SCRAPER_PROVIDER in the environment (Apify per-result
-    // vs proxy per-GB), which is the point of the helper.
-    const one = listScrapeCostCents(1);
-    const fifty = listScrapeCostCents(50);
-    expect(one).toBeGreaterThan(0);
-    expect(fifty).toBeGreaterThan(one);
+  test('listScrapeCostCents quotes the active provider', () => {
+    const saved = process.env.SCRAPER_PROVIDER;
+    try {
+      // Proxy bills per GB with a 1-cent floor, so small scrapes tie; they never go down.
+      delete process.env.SCRAPER_PROVIDER;
+      const one = listScrapeCostCents(1);
+      expect(one).toBeGreaterThan(0);
+      expect(listScrapeCostCents(50)).toBeGreaterThanOrEqual(one);
+
+      // Apify bills per result, so it is strictly monotonic.
+      process.env.SCRAPER_PROVIDER = 'apify';
+      expect(listScrapeCostCents(50)).toBeGreaterThan(listScrapeCostCents(1));
+    } finally {
+      if (saved === undefined) delete process.env.SCRAPER_PROVIDER;
+      else process.env.SCRAPER_PROVIDER = saved;
+    }
   });
 });
 
