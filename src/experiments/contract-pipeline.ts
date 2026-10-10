@@ -113,7 +113,8 @@ export async function prepareContractBriefs(e: Experiment, render: RenderDeps): 
 
 // ---- slides ------------------------------------------------------------------------
 
-const FILTERED = /moderat|content.?(polic|filter)|safety|blocked|refus/i;
+// OpenRouter words it "The response was filtered due to the prompt triggering our content management policy".
+const FILTERED = /moderat|content.?(polic|filter|manag)|\bfiltered\b|safety|blocked|refus/i;
 
 function renderFailure(err: unknown): never {
   const message = err instanceof Error ? err.message : String(err);
@@ -199,11 +200,14 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
         try { image = await once(prompt); }
         catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (!t.fix || !FILTERED.test(msg)) renderFailure(err);
-          // The repair text can trip a content filter: retry once with the plain prompt.
+          const comparative = work !== 'caption-edit' && role === 'anchor-edit' && !!view.slides[index]?.visibleChange;
+          if (!FILTERED.test(msg) || !(t.fix || comparative)) renderFailure(err);
+          // The repair text, or a visibleChange that compares a face with slide 1, can trip a content filter:
+          // retry once with the plain prompt, and an edit of slide 1 asks for the slide's own scene instead.
+          const plain = comparative ? { ...view, slides: view.slides.map((s, i) => i === index ? { ...s, visibleChange: '' } : s) } : view;
           usedPrompt = work === 'caption-edit' && base?.frozenBrief
             ? captionEditPrompt(base.frozenBrief.slides[index]?.overlayText ?? '', view.slides[index]!.overlayText)
-            : compileSlidePrompt(view, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse);
+            : compileSlidePrompt(plain, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse);
           try { image = await once(usedPrompt); } catch (err2) { renderFailure(err2); }
         }
         await upload(image!.buffer, image!.contentType);
