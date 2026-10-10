@@ -29,14 +29,15 @@ const qaPass = (n = 3) => ({
 });
 const qaFailSlide = (bad: number, n = 3) => { const q = qaPass(n); q.slides[bad]!.overlayExact = false; return q; };
 
-interface Script { contract: unknown; qa: Array<(armSlides: number) => unknown> }
+interface Script { contract: unknown; qa: Array<(armSlides: number) => unknown>; rejectImage?: (prompt: string) => boolean }
+const FILTER_400 = 'OpenRouter image error 400: {"error":{"message":"The response was filtered due to the prompt triggering our content management policy"}}';
 
 function world(script: Script, overrides: Partial<Experiment['instructions']> = {}) {
   const calls = { contract: 0, images: [] as Array<{ prompt: string; referenceUrl?: string }>, qa: [] as Array<{ images: number; user: string }> };
   const files = new Map<string, Buffer>();
   const render: RenderDeps = {
     findSources: async () => [video('src')],
-    generateImage: async o => { calls.images.push({ prompt: o.prompt, referenceUrl: o.referenceUrl }); return { buffer: Buffer.from(`img${calls.images.length}`), contentType: 'image/jpeg', costUsd: 0.01 }; },
+    generateImage: async o => { calls.images.push({ prompt: o.prompt, referenceUrl: o.referenceUrl }); if (script.rejectImage?.(o.prompt)) throw new Error(FILTER_400); return { buffer: Buffer.from(`img${calls.images.length}`), contentType: 'image/jpeg', costUsd: 0.01 }; },
     upload: async ({ path, body }) => { files.set(path, body); },
     readReference: async ({ path }) => files.get(path) ?? Buffer.from(`src:${path}`),
     describeCandidates: async () => { throw new Error('describe is removed'); },
@@ -265,6 +266,28 @@ describe('invented identity', () => {
     await w.generate([w.row.variants[0]!.id]);
     expect(w.row.variants[0]!.status).toBe('done');
     expect(w.row.variants[0]!.qaDeck).toMatchObject({ verdict: 'passed', attempts: 2, repaired: [1, 2] });
+  });
+
+  test('an edit of slide 1 rejected by the content filter is retried once with its own scene, not the comparison', async () => {
+    const w = world({ contract: invented(), qa: [() => qaPass()], rejectImage: p => p.includes('braid now reaches the knee') });
+    await w.plan();
+    await w.generate([w.row.variants[0]!.id]);
+    expect(w.row.variants[0]!.status).toBe('done');
+    const prompts = w.calls.images.map(c => c.prompt);
+    expect(prompts).toHaveLength(4);
+    expect(prompts[3]).not.toContain('braid now reaches the knee');
+    expect(prompts[3]).toContain('Change ONLY this: a scene');
+    expect(w.calls.images[3]!.referenceUrl).toBe(w.row.variants[0]!.slides[0]!.url!);
+    expect(w.providerCalls.render).toBe(4);
+  });
+
+  test('a filtered render that is not an edit of slide 1 is not retried in the same attempt', async () => {
+    const w = world({ contract: invented(), qa: [() => qaPass()], rejectImage: p => p.includes('Create one new') });
+    await w.plan();
+    await w.generate([w.row.variants[0]!.id]).catch(() => undefined);
+    expect(w.calls.images.length).toBeGreaterThan(0);
+    expect(new Set(w.calls.images.map(c => c.prompt)).size).toBe(1);
+    expect(w.row.variants[0]!.status).not.toBe('done');
   });
 });
 
