@@ -253,7 +253,8 @@ export function textLine(overlayText: string): string {
 
 export function arcLine(c: Pick<ResolvedContract, 'arcAxis'>, s: ContractSlide): string {
   return c.arcAxis && s.arcLevel !== 'none'
-    ? `STORY POSITION: on the axis "${c.arcAxis}" this image is the ${ARC_WORDS[s.arcLevel]} point; the picture itself must visibly show that state.`
+    // Image models print a quoted axis as a scale or tier label; the state must be drawn, never written.
+    ? `STORY POSITION: on the axis "${c.arcAxis}" this image is the ${ARC_WORDS[s.arcLevel]} point; the picture itself must visibly show that state. Do not write the axis, its end labels, a scale, a slider, a tier or level name, or a percentage anywhere in the image.`
     : '';
 }
 
