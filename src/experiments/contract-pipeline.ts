@@ -10,6 +10,7 @@ import {
 import { contractView, proposalsFromContract, slideWorkFor } from './contract-flow.js';
 import { validateVariants, type Experiment, type Task } from './schema.js';
 import { SafeFailure, SlideMeter, logAiCost, type ExecuteContext, type Prepared, type RenderDeps } from './providers.js';
+import { storySlideCount } from './slide-count.js';
 
 /** One source image the contract, the renderer and QA all index the same way. */
 export interface SourceFrame { index: number; videoId: string; slideIndex: number | null; path: string; url: string; kind: 'slide' | 'thumb' }
@@ -22,15 +23,23 @@ function evenlySampled<T>(xs: readonly T[], k: number): T[] {
   return Array.from({ length: k }, (_, i) => xs[Math.round((i * (xs.length - 1)) / (k - 1))]!);
 }
 
+/** True when the persisted slide count was reached by subtracting this deck's closing CTA slide.
+ *  That slide is not story: it must not be offered to the contract, the renderer or QA. */
+export function droppedSourceCta(e: Pick<Experiment, 'slideCount' | 'instructions'>, slideKeys: number): boolean {
+  if (e.instructions.preserveSourceCtaSlide === true || slideKeys < 2) return false;
+  return storySlideCount(slideKeys, true) === e.slideCount && storySlideCount(slideKeys, false) !== e.slideCount;
+}
+
 /** Ready inputs, in order, flattened to at most MAX_CONTRACT_FRAMES. Same ordering at the contract call, the render and QA. */
-export function listSourceFrames(e: Pick<Experiment, 'inputs' | 'workspaceId'>, videos: Video[]): SourceFrame[] {
+export function listSourceFrames(e: Pick<Experiment, 'inputs' | 'workspaceId' | 'slideCount' | 'instructions'>, videos: Video[]): SourceFrame[] {
   const ready = e.inputs.filter(i => i.status === 'ready');
   const perSource = Math.max(1, Math.floor(MAX_CONTRACT_FRAMES / Math.max(1, ready.length)));
   const out: Array<Omit<SourceFrame, 'index'>> = [];
   for (const input of ready) {
     const video = videos.find(v => v.id === input.videoId);
     if (!video) throw new SafeFailure('reference_source_not_found');
-    const keys = experimentSourceKeys(video.rawJson);
+    const allKeys = experimentSourceKeys(video.rawJson);
+    const keys = droppedSourceCta(e, allKeys.length) ? allKeys.slice(0, -1) : allKeys;
     if (!keys.length) {
       if (isPhotoPost(video)) throw new SafeFailure('reference_slides_unavailable');
       const path = thumbPath(e.workspaceId, video.id);

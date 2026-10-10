@@ -5,7 +5,7 @@ import type { Video } from '@prisma/client';
 import { step, type EngineDeps } from './engine.js';
 import { prepare, type RenderDeps } from './providers.js';
 import { generationTasks, reapContractQa } from './contract-flow.js';
-import { listSourceFrames } from './contract-pipeline.js';
+import { droppedSourceCta, listSourceFrames } from './contract-pipeline.js';
 import type { Experiment } from './schema.js';
 
 const originalEnv = { ...process.env };
@@ -270,11 +270,18 @@ describe('invented identity', () => {
 
 describe('source frames', () => {
   test('are indexed in input order and capped', () => {
-    const e = { workspaceId: 'w', inputs: [{ videoId: 'a', status: 'ready' }, { videoId: 'b', status: 'ready' }] } as unknown as Experiment;
+    const e = { workspaceId: 'w', slideCount: 6, instructions: {}, inputs: [{ videoId: 'a', status: 'ready' }, { videoId: 'b', status: 'ready' }] } as unknown as Experiment;
     const frames = listSourceFrames(e, [video('a', 6), video('b', 6)]);
     expect(frames.map(f => f.index)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
     expect(frames.slice(0, 4).every(f => f.videoId === 'a')).toBe(true);
     expect(frames.slice(4).every(f => f.videoId === 'b')).toBe(true);
+  });
+  test('a closing CTA slide the slide count dropped is never offered as a frame', () => {
+    const e = (slideCount: number, preserveSourceCtaSlide?: boolean) => ({ workspaceId: 'w', slideCount, instructions: { preserveSourceCtaSlide }, inputs: [{ videoId: 'a', status: 'ready' }] }) as unknown as Experiment;
+    expect(listSourceFrames(e(4), [video('a', 5)]).map(f => f.slideIndex)).toEqual([0, 1, 2, 3]);
+    expect(listSourceFrames(e(5), [video('a', 5)]).map(f => f.slideIndex)).toEqual([0, 1, 2, 3, 4]);
+    expect(listSourceFrames(e(5, true), [video('a', 5)]).map(f => f.slideIndex)).toEqual([0, 1, 2, 3, 4]);
+    expect(droppedSourceCta({ slideCount: 3, instructions: {} } as never, 3)).toBe(false);
   });
 });
 
