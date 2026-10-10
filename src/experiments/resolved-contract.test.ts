@@ -166,6 +166,11 @@ describe('invented-consistent identity chain and the single text field', () => {
     }
     expect(compileSlidePrompt(c, 1, 'anchor-edit', 'none')).toContain('Change ONLY this: neck as wide as the jaw');
   });
+  test('the story position is drawn, never printed as a scale or tier label', () => {
+    for (const [i, role] of [[0, 'fresh'], [1, 'anchor-edit']] as const) {
+      expect(compileSlidePrompt(c, i, role, 'none')).toContain('Do not write the axis, its end labels, a scale, a slider, a tier or level name');
+    }
+  });
   test('the edit template removes only overlaid captions and keeps clothing prints', () => {
     const p = compileSlidePrompt(c, 0, 'edit', 'edit');
     expect(p).toContain('INCLUDING any print or graphic on clothing');
