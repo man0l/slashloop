@@ -157,9 +157,12 @@ export function settleContractCompletion(e: Experiment): void {
 
 export const QA_REPAIR_ROUNDS = 1;
 
-/** A slide copied from the baseline arm was already judged there; re-judging it here could only re-render it and break the A/B isolation. */
-function ignoreReusedSlides(v: Variant, result: QaTaskResult): QaTaskResult {
+/** A slide copied from the baseline arm was already judged there; re-judging it here could only re-render it and break the A/B isolation.
+ *  The same holds for the deck verdict when every picture is the baseline's (reused, or a caption-only edit of it). */
+function ignoreReusedSlides(e: Experiment, v: Variant, result: QaTaskResult): QaTaskResult {
   const reused = new Set(v.slides.filter(s => s.provider === 'reuse').map(s => String(s.index)));
+  const baselinePictures = !!v.baselineId && v.slides.every(s => s.provider === 'reuse' || slideWorkFor(e, v, s.index) === 'caption-edit');
+  if (baselinePictures) reused.add('deck');
   const failures = Object.fromEntries(Object.entries(result.failures).filter(([k]) => !reused.has(k)));
   if (Object.keys(failures).length === Object.keys(result.failures).length) return result;
   return { ...result, failures, passed: Object.keys(failures).length === 0 };
@@ -170,7 +173,7 @@ function ignoreReusedSlides(v: Variant, result: QaTaskResult): QaTaskResult {
 export function settleQa(e: Experiment, t: Task, rawResult: QaTaskResult): void {
   mergeCalls(e, rawResult.calls);
   const v = variantOf(e, t.target)!;
-  const result = ignoreReusedSlides(v, rawResult);
+  const result = ignoreReusedSlides(e, v, rawResult);
   const attempts = (v.qaDeck?.attempts ?? 0) + 1;
   const n = v.slides.length;
   const judgedSlides = v.slides.map((_, i) => i);

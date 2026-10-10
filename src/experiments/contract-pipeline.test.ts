@@ -268,6 +268,25 @@ describe('invented identity', () => {
     expect(w.row.variants[0]!.qaDeck).toMatchObject({ verdict: 'passed', attempts: 2, repaired: [1, 2] });
   });
 
+  test('B QA failing the deck arc on pictures it shares with A is ignored: B slides 2..N stay A\'s bytes', async () => {
+    const arc = invented({
+      arcAxis: 'braid length',
+      slides: [slide({ overlayText: 'Hook A', arcLevel: 'low' }), slide({ overlayText: 'two', arcLevel: 'mid', visibleChange: 'braid now reaches the waist' }), slide({ overlayText: 'three', arcLevel: 'high', visibleChange: 'braid now reaches the knee' })],
+    });
+    const onArc = () => { const q = qaPass(); ['low', 'mid', 'high'].forEach((l, i) => { q.slides[i]!.stateLevel = l; }); return q; };
+    const noArc = onArc();
+    noArc.deck.arcVisibleWithoutText = false;
+    const w = world({ contract: arc, qa: [onArc, () => noArc] });
+    await w.plan();
+    await w.generate();
+    expect(w.row.status).toBe('completed');
+    const [a, b] = w.row.variants;
+    expect(b!.qaDeck).toMatchObject({ verdict: 'passed', attempts: 1, repaired: [] });
+    expect(w.providerCalls).toEqual({ contract: 1, render: 3, 'caption-edit': 1, qa: 2 });
+    expect(w.files.get(b!.slides[1]!.path!)).toEqual(w.files.get(a!.slides[1]!.path!));
+    expect(w.files.get(b!.slides[2]!.path!)).toEqual(w.files.get(a!.slides[2]!.path!));
+  });
+
   test('an edit of slide 1 rejected by the content filter is retried once with its own scene, not the comparison', async () => {
     const w = world({ contract: invented(), qa: [() => qaPass()], rejectImage: p => p.includes('braid now reaches the knee') });
     await w.plan();
