@@ -1,5 +1,7 @@
 # Multi-tenant Apify batching plan
 
+> **Historical (SLA-704).** Apify has been removed from the codebase; scraping runs through the residential proxy. This plan is kept because refresh batching, `splitSpend` (now `src/lib/spend-split.ts`) and the worker stop-grace reasoning in §13 still apply to the proxy path. Apify-specific details below describe the retired provider.
+
 **Goal:** One Apify actor run can serve many workspaces (tenants) that track the same TikTok creator/hashtag/keyword, so we pay **once per unique query**, not once per tenant.
 
 **Status:** Phase A implemented and **hardened** (see §9 and §14). Incremental "new outliers" refresh is in `src/lib/refresh-policy.ts`. An audit (§12) found 15 gaps in the first cut; **12 are now fixed**, and the remainder are Phase B/C design work tracked in §12.

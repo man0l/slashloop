@@ -156,7 +156,6 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          APIFY_API_KEY: ${{ secrets.APIFY_API_KEY }}
           SCRAPER_PROXY_URL: ${{ secrets.SCRAPER_PROXY_URL }}
           QUEUE_API_KEY_ID: ${{ secrets.QUEUE_API_KEY_ID }}
           QUEUE_API_KEY_SECRET: ${{ secrets.QUEUE_API_KEY_SECRET }}
@@ -177,7 +176,6 @@ jobs:
           STRIPE_MODE: ${{ vars.STRIPE_MODE }}
           # ── variables (repo + production environment) ──
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-          APIFY_SPEND_CAP_CENTS: ${{ vars.APIFY_SPEND_CAP_CENTS }}
           MEDIA_SIGNED_URL_TTL_SECONDS: ${{ vars.MEDIA_SIGNED_URL_TTL_SECONDS }}
           OPENROUTER_VIDEO_MODEL: ${{ vars.OPENROUTER_VIDEO_MODEL }}
           OPENROUTER_VIDEO_MODE: ${{ vars.OPENROUTER_VIDEO_MODE }}

@@ -79,8 +79,6 @@ async function main() {
       videoId: r.id,
       platform: r.platform,
       thumbnailUrl: r.thumbnailUrl,
-      // coverDownloadUrl isn't persisted on the row; ingestOneThumb falls back
-      // to thumbnailUrl (with TikTok referer headers).
     });
     byWs.set(ws, arr);
   }

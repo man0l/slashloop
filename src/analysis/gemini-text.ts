@@ -4,7 +4,7 @@
 // Same Gemini model as GeminiNativeAnalyzer, but with no `file_data` part —
 // it reads the transcript + caption + metadata + thumbnail URL as text.
 // This is the automatic fallback when native video upload fails (video too
-// large, Apify download timeout, missing APIFY_API_KEY, etc.).
+// large, proxy download timeout, etc.).
 //
 // With this backend you can run the whole slashloop pipeline using only
 // GEMINI_API_KEY — no other AI provider key is required.

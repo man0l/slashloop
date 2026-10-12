@@ -2,23 +2,15 @@
 // Scraper registry — the one place that decides WHO scrapes.
 //
 //   SCRAPER_PROVIDER=proxy   (default) — direct TikTok, billed per gigabyte
-//   SCRAPER_PROVIDER=apify             — Apify actors, billed per result
 //
 // Unset (or empty, or "default") resolves to proxy. If SCRAPER_PROXY_URL is
-// missing the scrape fails closed with ScraperUnavailableError; it never
-// falls through to Apify. Apify must be asked for by name.
-//
-// Exclusive. There is no fallback from one provider to the other: a proxy
-// miss that silently bills Apify is a surprise invoice, and the reverse
-// hides a misconfigured SCRAPER_PROXY_URL for months.
+// missing the scrape fails closed with ScraperUnavailableError. An unknown
+// provider name (including the retired "apify") fails the same way.
 //
 // Single-video MP4s (fetch / analyze) are the case the residential proxy
-// exists for — TikTok's CDN 403s datacenter IPs, so Apify was only buying
-// a KV-stored binary at ~1c/video. When SCRAPER_PROXY_URL is set, downloads
-// go through proxy and only proxy. List scrapes follow SCRAPER_PROVIDER (proxy when unset).
+// exists for — TikTok's CDN 403s datacenter IPs.
 // ---------------------------------------------------------------------------
 
-import { apifyAdapter, APIFY_PROVIDER } from './apify-adapter.js';
 import { proxyAdapter, PROXY_PROVIDER_NAME } from './proxy-adapter.js';
 import {
   ScraperUnavailableError,
@@ -26,7 +18,7 @@ import {
 } from './types.js';
 
 export * from './types.js';
-export { apifyAdapter, proxyAdapter };
+export { proxyAdapter };
 export { maxVideoBytes } from './proxy-adapter.js';
 export { ESTIMATED_LOOKUP_BYTES, estimateScrapeBytes, extractSlideshowImages, slideshowImagesFromRaw, slideshowKeysFromRaw } from './tiktok-web.js';
 export { assertTrafficCap, trafficStatus, TrafficCapExceededError, wouldExceedCap } from './bandwidth.js';
@@ -41,7 +33,6 @@ export { remainingBudgetBytes, vendorRemainingBytes, assertProxyBudget } from '.
 export const DEFAULT_PROVIDER = PROXY_PROVIDER_NAME;
 
 const REGISTRY = new Map<string, ScraperAdapter>([
-  [APIFY_PROVIDER, apifyAdapter],
   [PROXY_PROVIDER_NAME, proxyAdapter],
 ]);
 
@@ -72,8 +63,8 @@ export function resolveProviderName(raw?: string): string {
 
 /**
  * The adapter to use. Unknown names FAIL rather than falling back to the
- * default: a typo'd SCRAPER_PROVIDER that silently keeps billing Apify is a
- * config bug that hides for months.
+ * default: a typo'd SCRAPER_PROVIDER that silently scrapes through the
+ * wrong provider is a config bug that hides for months.
  */
 export function getScraper(name?: string): ScraperAdapter {
   const resolved = resolveProviderName(name);
@@ -103,8 +94,7 @@ function requireAdapter(platform: string, name?: string): ScraperAdapter {
  * Single-video download adapter.
  *
  * Proxy when SCRAPER_PROXY_URL is set (TikTok CDN needs a residential exit).
- * Otherwise the exclusive SCRAPER_PROVIDER. An explicit `name` wins, so
- * tests can still force Apify.
+ * Otherwise the exclusive SCRAPER_PROVIDER. An explicit `name` wins.
  */
 export function selectDownloadAdapter(platform = 'tiktok', name?: string): ScraperAdapter {
   if (name?.trim()) return requireAdapter(platform, name);

@@ -648,13 +648,13 @@ export function registerSettingsTools(server: McpServer) {
     });
 
   // ---- get_scraper_spend_status (alias: get_apify_spend_status) ----
-  // Spend guardrail: current scraper spend vs the ACTIVE provider's cap
-  // (Apify cents, or proxy gigabytes), breach state, and recent cap_breach
-  // events. Past Apify rows (UsageLog.provider='apify') are always reported,
-  // so the history survives the move to the proxy. The old tool name stays
+  // Spend guardrail: current scraper spend vs the proxy traffic cap (gigabytes),
+  // breach state, and recent cap_breach events. Past Apify rows
+  // (UsageLog.provider='apify') are always reported, so the history survives
+  // the move to the proxy. The old tool name stays
   // registered so existing clients and skills keep working.
   const spendStatusDescription =
-    'Check scraper spend against the active provider cap (proxy GB by default, or Apify dollars when SCRAPER_PROVIDER=apify), plus this workspace\'s credit balance. Shows current monthly spend, cap, percent used, breach state, recent cap_breach audit events, and historical Apify spend. get_apify_spend_status is the legacy name of this tool.';
+    'Check scraper spend against the proxy traffic cap (GB), plus this workspace\'s credit balance. Shows current monthly spend, cap, percent used, breach state, recent cap_breach audit events, and historical Apify spend. get_apify_spend_status is the legacy name of this tool.';
 
   const spendStatusHandler = async ({ workspaceId }: { workspaceId?: string }) => {
       const workspace = await resolveToolWorkspace({ workspaceId });

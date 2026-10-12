@@ -317,7 +317,7 @@ export function registerFeedTools(server: McpServer) {
 
       const hasApiKey = platform === 'shorts'
         ? !!process.env.YOUTUBE_API_KEY
-        : !!process.env.APIFY_API_KEY;
+        : !!process.env.SCRAPER_PROXY_URL;
 
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(withNextSteps({

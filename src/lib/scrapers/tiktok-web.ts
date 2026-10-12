@@ -13,12 +13,10 @@
 //   item_list JSON page of 30         ~180KB   the real cost
 //   cover images x30                  ~900KB   avoided entirely (never fetched)
 //
-// The single largest saving is refusing to download covers. The Apify path
-// asks the actor to copy covers into its key-value store because Apify's
-// egress is free to us; here every one of those images would be billed twice
-// over (once to fetch, once as part of the plan's GB). So `coverDownloadUrl`
-// is left null and the platform CDN URL is persisted instead — media ingest
-// fetches it DIRECT, off-proxy, and only for videos that are actually shown.
+// The single largest saving is refusing to download covers: every one of those
+// images would be billed twice over (once to fetch, once as part of the plan's
+// GB). The platform CDN URL is persisted instead — media ingest fetches it
+// DIRECT, off-proxy, and only for videos that are actually shown.
 //
 // The second largest is the secUid cache: a creator's secUid never changes,
 // but it only exists in the profile page's rehydration blob. Resolving it once
@@ -1152,9 +1150,7 @@ export function webItemToApifyShape(item: any): any {
       fans: typeof authorStats.followerCount === 'number' ? authorStats.followerCount : undefined,
     },
     videoMeta: {
-      // Platform CDN cover only. Nothing is downloaded through the proxy, so
-      // there is no key-value-store copy — coverDownloadUrl stays null and
-      // ingest fetches this URL direct, off-proxy, on demand.
+      // Platform CDN cover only; ingest fetches this URL direct, off-proxy, on demand.
       originalCoverUrl: cover || slides[0] || '',
       duration: video.duration,
     },

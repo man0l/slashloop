@@ -557,7 +557,6 @@ export async function processClaimedJob(
         platform: video.platform,
         // Prefer the URL captured at enqueue; fall back to the stored CDN URL.
         thumbnailUrl: payload.thumbnailUrl || video.thumbnailUrl,
-        coverDownloadUrl: payload.coverDownloadUrl ?? undefined,
       };
       const ingest = await ingestThumbnails(job.workspaceId, [target]);
       if (ingest.failed > 0) throw new Error('thumbnail fetch/store failed');

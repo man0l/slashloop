@@ -16,8 +16,8 @@
 // Run:  bun run worker        (or the Docker image in worker/)
 // Env:  Postgres mode (pre-cutover): DATABASE_URL, SUPABASE_URL +
 //       SUPABASE_SECRET_KEY, storage buckets, OPENROUTER_API_KEY +
-//       OPENROUTER_VIDEO_MODEL/MODE/TIMEOUT_MS, GEMINI_API_KEY, APIFY_API_KEY,
-//       APIFY_SPEND_CAP_CENTS. DATABASE_URL is REQUIRED there.
+//       OPENROUTER_VIDEO_MODEL/MODE/TIMEOUT_MS, GEMINI_API_KEY, SCRAPER_PROXY_URL,
+//       PROXY_TRAFFIC_CAP_GB. DATABASE_URL is REQUIRED there.
 //       D1 mode (post-cutover, retained VPS): DB_DIALECT=sqlite plus the D1
 //       HTTP credentials D1_ACCOUNT_ID / D1_DATABASE_ID / D1_API_TOKEN —
 //       DATABASE_URL is NOT required and is ignored. src/db.ts picks the D1

@@ -302,7 +302,7 @@ export const proxyAdapter: ScraperAdapter = {
     if (opts.platform !== 'tiktok') {
       throw new Error(
         `The proxy scraper only supports TikTok (asked for "${opts.platform}"). `
-        + 'Set SCRAPER_PROVIDER=apify for other platforms.',
+        + 'No other platform has a scraper provider yet.',
       );
     }
     if (!proxyAdapter.isConfigured()) throw new Error(proxyAdapter.configurationHint());

@@ -31,7 +31,6 @@ const target = {
   videoId: 'v1',
   platform: 'tiktok',
   thumbnailUrl: 'https://p19-common-sign.tiktokcdn-us.com/cover.image',
-  coverDownloadUrl: null,
 };
 
 function stubFetch(coverOk: boolean) {
@@ -43,19 +42,16 @@ function stubFetch(coverOk: boolean) {
   }) as typeof fetch;
 }
 
-test('the by-design coverDownloadUrl fallback logs at info, never warn, when the fetch succeeds', async () => {
+test('a successful cover fetch never warns', async () => {
   stubFetch(true);
   const warn = spyOn(console, 'warn').mockImplementation(() => {});
-  const info = spyOn(console, 'info').mockImplementation(() => {});
   const out = await ingestThumbnails('ws', [target]);
   expect(out.stored).toBe(1);
   expect(warn).not.toHaveBeenCalled();
-  expect(info.mock.calls.map(c => String(c[0])).join('\n')).toContain('no coverDownloadUrl');
   warn.mockRestore();
-  info.mockRestore();
 });
 
-test('a failed fallback fetch still warns', async () => {
+test('a failed cover fetch still warns', async () => {
   stubFetch(false);
   const warn = spyOn(console, 'warn').mockImplementation(() => {});
   const out = await ingestThumbnails('ws', [target]);

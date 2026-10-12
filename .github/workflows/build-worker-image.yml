@@ -46,7 +46,7 @@ jobs:
 
       # Assemble the worker .env from GitHub variables (non-secret config) and
       # secrets (keys). Any secret not yet set (DATABASE_URL, GEMINI_API_KEY,
-      # APIFY_API_KEY, DIRECT_URL) renders empty until it is added to GitHub —
+      # DIRECT_URL) renders empty until it is added to GitHub —
       # add it, then re-run this workflow. Written into the build context as
       # .worker-env (NOT a BuildKit secret — the docker-container builder runs
       # in a separate container and can't see the runner's filesystem, so
@@ -61,8 +61,6 @@ jobs:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          APIFY_API_KEY: ${{ secrets.APIFY_API_KEY }}
-          APIFY_SPEND_CAP_CENTS: ${{ vars.APIFY_SPEND_CAP_CENTS }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_VIDEO_MODEL: ${{ vars.OPENROUTER_VIDEO_MODEL }}
           OPENROUTER_VIDEO_MODE: ${{ vars.OPENROUTER_VIDEO_MODE }}
@@ -110,8 +108,6 @@ jobs:
           printf 'SUPABASE_ANON_KEY=%s\n' "$SUPABASE_ANON_KEY"  >> "$out"
           printf 'SUPABASE_SECRET_KEY=%s\n' "$SUPABASE_SECRET_KEY" >> "$out"
           printf 'GEMINI_API_KEY=%s\n' "$GEMINI_API_KEY"        >> "$out"
-          printf 'APIFY_API_KEY=%s\n' "$APIFY_API_KEY"          >> "$out"
-          printf 'APIFY_SPEND_CAP_CENTS=%s\n' "$APIFY_SPEND_CAP_CENTS" >> "$out"
           printf 'OPENROUTER_API_KEY=%s\n' "$OPENROUTER_API_KEY" >> "$out"
           printf 'OPENROUTER_VIDEO_MODEL=%s\n' "$OPENROUTER_VIDEO_MODEL" >> "$out"
           printf 'OPENROUTER_VIDEO_MODE=%s\n' "$OPENROUTER_VIDEO_MODE" >> "$out"

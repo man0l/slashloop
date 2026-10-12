@@ -13,7 +13,7 @@ asking the user to do manual steps.
    `get_outlier_summary` for a cross-source digest. To *show* videos visually,
    call `show_gallery` (MCP App UI).
 2. **Track a source** — `create_source` (platform, sourceType, query), then
-   `refresh_source` to pull fresh videos (TikTok is live via Apify; Reels/Shorts
+   `refresh_source` to pull fresh videos (TikTok is live via the residential proxy scraper; Reels/Shorts
    are stubs). **After a successful refresh, always call `show_gallery` with
    that `sourceId`** so the user sees the scraped videos, not only a count.
 3. **Analyze a winner** — `analyze_video` (Gemini native video; auto-falls back
@@ -26,8 +26,8 @@ asking the user to do manual steps.
 
 ## Guardrails
 
-- Live scraping costs money. Always check `get_apify_spend_status` before/after
-  `refresh_source`. Hard monthly cap (`APIFY_SPEND_CAP_CENTS`, default $5);
+- Live scraping uses metered proxy traffic. Always check `get_scraper_spend_status`
+  before/after `refresh_source`. Hard monthly cap (`PROXY_TRAFFIC_CAP_GB`);
   breached calls are refused.
 - Batch analysis (`run_auto_analyze`) gets a 50% Gemini discount.
 - If a tool returns nulls, the backend couldn't fill that field — say so, don't

@@ -333,8 +333,6 @@ export async function enqueueSlideshowFetches(
 export interface ThumbJobPayload {
   /** Source-CDN URL captured at enqueue; the worker falls back to the Video row. */
   thumbnailUrl?: string;
-  /** Apify key-value-store URL captured at enqueue (preferred, public). Unset on backfill. */
-  coverDownloadUrl?: string | null;
 }
 
 export async function enqueueThumbJob(opts: {
