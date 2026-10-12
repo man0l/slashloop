@@ -16,3 +16,9 @@ To generate them (needs `OPENAI_API_KEY` with credits; output is 1024x1536 at hi
 cd docs/content/hook-slides
 python3 -I -c "import json,subprocess,sys; p=json.load(open('prompts.json')); [x.wait() for x in [subprocess.Popen([sys.executable,'-I','gen.py',k,v,k+'.png']) for k,v in p.items()]]"
 ```
+
+To generate them through OpenRouter's `meta/muse-image` instead (needs `OPENROUTER_API_KEY`):
+
+```bash
+python3 -I -c "import json,subprocess,sys; p=json.load(open('prompts.json')); [x.wait() for x in [subprocess.Popen([sys.executable,'-I','gen_muse.py',k,v,k]) for k,v in p.items()]]"
+```
