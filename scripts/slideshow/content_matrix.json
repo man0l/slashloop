@@ -188,7 +188,9 @@
   "macro": "Extreme close-up overhead photograph of {subject}. The subject completely fills the frame edge to edge, no background visible. Natural soft daylight, rich saturated colour, crisp detail, commercial product photography.",
   "casual": "Casual realistic iPhone photo of {subject}, shot in the real-life place it belongs, natural light, slightly imperfect and unstyled, Pinterest aesthetic, shallow depth of field.",
   "moody": "Moody dark aesthetic photo of {subject}, low warm light or early-morning blue light, deep shadows, subtle film grain, Pinterest 'discipline' aesthetic, realistic.",
-  "_suffix": " Vertical 2:3 composition, subject centred. No text, no labels, no logos, no watermark, no faces unless asked."
+  "_suffix": " Vertical 2:3 composition, subject centred. No text, no labels, no logos, no watermark, no faces unless asked.",
+  "cover": "Cinematic vertical photo of {subject}, dramatic directional light, rich saturated colour, shallow depth of field, editorial and aspirational, like a viral Pinterest image.",
+  "_cover_suffix": " Vertical 2:3. Main subject in the lower two-thirds of the frame, calm uncluttered upper third. No text, no logos, no watermark."
  },
  "special_tiles": {
   "@person_good": "Editorial portrait photo of a handsome young man around 20 years old with a sharp defined jawline, clear glowing skin, light eyes and thick dark hair, neutral confident expression looking at the camera, soft beige wall background, natural light, vertical 2:3. No text.",
@@ -1599,7 +1601,11 @@
    "cta": {
     "screen": "progress tracker: track the real work, not the views"
    },
-   "description": "the math isn't mathing"
+   "description": "the math isn't mathing",
+   "cover": {
+    "hook": "where my softmaxxing time actually goes",
+    "image": "a glowing ring light on a tripod in a dark messy bedroom at night, a phone clamped in the centre"
+   }
   },
   {
    "id": "CR02",
@@ -1938,7 +1944,11 @@
    "cta": {
     "screen": "skin progress timeline"
    },
-   "description": "trust the process"
+   "description": "trust the process",
+   "cover": {
+    "hook": "what 90 days of softmaxxing did to my skin",
+    "image": "@statue:young man's marble face split down the middle, left half rough and cracked, right half perfectly smooth, polished and glowing"
+   }
   },
   {
    "id": "SK10",
@@ -2103,7 +2113,11 @@
    "cta": {
     "screen": "debloat tracker"
    },
-   "description": "the 3am pizza is not your friend"
+   "description": "the 3am pizza is not your friend",
+   "cover": {
+    "hook": "why your face is puffy every morning",
+    "image": "a bowl of salty instant ramen at 3am lit only by a glowing phone screen in a dark room"
+   }
   },
   {
    "id": "FJ07",
@@ -2269,7 +2283,11 @@
    "cta": {
     "screen": "workout plan for aesthetics"
    },
-   "description": "train for the mirror AND the street"
+   "description": "train for the mirror AND the street",
+   "cover": {
+    "hook": "you're training the wrong muscles",
+    "image": "@statue:marble bust of a muscular athlete seen from behind, cropped at the mid-back, very broad shoulders and wide upper back, cloth draped over the lower back, dramatic side light"
+   }
   },
   {
    "id": "GY05",
@@ -2638,6 +2656,10 @@
    ],
    "cta": {
     "screen": "posture progress"
+   },
+   "cover": {
+    "hook": "8 hours of gaming did this to your posture",
+    "image": "@statue:classical marble statue of a young man hunched forward over a desk in a gaming chair, forward head posture, lit by RGB gaming lights, side view"
    }
   },
   {
@@ -2770,7 +2792,11 @@
    "cta": {
     "screen": "grooming checklist"
    },
-   "description": "your shelf says everything"
+   "description": "your shelf says everything",
+   "cover": {
+    "hook": "your bathroom shelf says a lot about you",
+    "image": "a cluttered bathroom shelf with a 3-in-1 shampoo, an aerosol body spray can, a cracked bar of soap and an old razor"
+   }
   },
   {
    "id": "HG05",
@@ -3040,7 +3066,11 @@
    "cta": {
     "screen": "routine planner"
    },
-   "description": "save this before your next paycheck"
+   "description": "save this before your next paycheck",
+   "cover": {
+    "hook": "free looksmaxxing nobody does",
+    "image": "golden morning sunlight streaming through a bedroom window onto a made bed and a glass of water"
+   }
   },
   {
    "id": "DH07",
@@ -3296,7 +3326,11 @@
    "cta": {
     "screen": "style checklist"
    },
-   "description": "it's not the price"
+   "description": "it's not the price",
+   "cover": {
+    "hook": "why you look cheap (it's not the price)",
+    "image": "a flat lay of a logo-heavy hoodie, dirty white sneakers and wrinkled baggy jeans on a bedroom floor"
+   }
   },
   {
    "id": "ST07",
@@ -3597,7 +3631,11 @@
    "cta": {
     "screen": "progress timeline"
    },
-   "description": "you're the sculptor"
+   "description": "you're the sculptor",
+   "cover": {
+    "hook": "you're not ugly. you're unfinished.",
+    "image": "@statue:rough unfinished marble block with a young man's face half-emerging, chisel marks, a sculptor's chisel resting beside it"
+   }
   },
   {
    "id": "PG09",
@@ -3729,7 +3767,11 @@
    "cta": {
     "screen": "daily face routine"
    },
-   "description": "it's somewhere in my room"
+   "description": "it's somewhere in my room",
+   "cover": {
+    "hook": "softmaxxers will understand this one",
+    "image": "a jade gua sha stone on a white marble counter beside lit candles and eucalyptus, golden hour light, overly perfect aesthetic setup"
+   }
   },
   {
    "id": "CR08",

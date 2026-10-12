@@ -51,11 +51,27 @@ def wrap(draw, text, font, max_w):
     return lines
 
 
-def draw_caption(canvas, caption, style="outline", font_path=None, font_scale=0.07, center_y=None):
+def balanced_wrap(draw, text, font, max_w):
+    """Wrap to the fewest lines, then narrow the width as far as possible without adding a line,
+    so lines come out even (no single orphan word on the last line)."""
+    lines = wrap(draw, text, font, max_w)
+    if len(lines) < 2:
+        return lines
+    lo, hi = 0.0, max_w
+    for _ in range(18):
+        mid = (lo + hi) / 2
+        if len(wrap(draw, text, font, mid)) == len(lines) and max(draw.textlength(l, font=font) for l in wrap(draw, text, font, mid)) <= mid:
+            hi = mid
+        else:
+            lo = mid
+    return wrap(draw, text, font, hi)
+
+
+def draw_caption(canvas, caption, style="outline", font_path=None, font_scale=0.07, center_y=None, max_w=None):
     W, H = canvas.size
     d = ImageDraw.Draw(canvas)
     font = load_font(int(W * font_scale), font_path)
-    lines = wrap(d, caption, font, W * (0.8 if style == "box" else 0.62))
+    lines = balanced_wrap(d, caption, font, W * (max_w or (0.8 if style == "box" else 0.62)))
     asc, desc = font.getmetrics()
     lh = asc + desc
     top = (H // 2 if center_y is None else center_y) - lh * len(lines) // 2

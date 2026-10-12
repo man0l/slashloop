@@ -426,6 +426,8 @@ Description: *"sorry not sorry"* · #skincareformen #softmaxxing #clearskin #glo
 
 `3:4` · Casual phone · overlay: — · CTA: Phone in dark
 
+**Slide 0 (cover):** **what 90 days of softmaxxing did to my skin**, over 🗿 *statue: young man's marble face split down the middle, left half rough and cracked, right half perfectly smooth, polished and glowing*
+
 | # | Caption | TL | TR | BL | BR | Overlay |
 |---|---|---|---|---|---|---|
 | 1 | **skin day 1** | a messy sink crowded with random products | a greasy fast-food bag | 🗿 *statue: young man's face carved from rough, cracked, pitted marble* | a phone glowing in bed at 2am | — |
@@ -549,6 +551,8 @@ Description: *"which one are you?"* · #jawline #softmaxxing #looksmaxxing #glow
 
 `3:4` · Casual phone · overlay: — · CTA: Phone in dark
 
+**Slide 0 (cover):** **why your face is puffy every morning**, over a bowl of salty instant ramen at 3am lit only by a glowing phone screen in a dark room
+
 | # | Caption | TL | TR | BL | BR | Overlay |
 |---|---|---|---|---|---|---|
 | 1 | **this is making your face puffy** | salty instant ramen | beer cans on a coffee table | a late-night pizza box | a phone glowing in bed at 3am | Statue (facepalm) |
@@ -642,6 +646,8 @@ Description: *"it's not genetics"* · #jawline #softmaxxing #looksmaxxing #glowu
 ### GY04 · Average X vs average Y: what you train vs what looks good  (priority 1)
 
 `3:4` · Casual phone · overlay: — · CTA: Store card
+
+**Slide 0 (cover):** **you're training the wrong muscles**, over 🗿 *statue: marble bust of a muscular athlete seen from behind, cropped at the mid-back, very broad shoulders and wide upper back, cloth draped over the lower back, dramatic side light*
 
 | # | Caption | TL | TR | BL | BR | Overlay |
 |---|---|---|---|---|---|---|
@@ -805,6 +811,8 @@ Description: *"save this"* · #posture #softmaxxing #looksmaxxing #selfimproveme
 
 `3:4` · Casual phone · overlay: — · CTA: Store card
 
+**Slide 0 (cover):** **8 hours of gaming did this to your posture**, over 🗿 *statue: classical marble statue of a young man hunched forward over a desk in a gaming chair, forward head posture, lit by RGB gaming lights, side view*
+
 | # | Caption | TL | TR | BL | BR | Overlay |
 |---|---|---|---|---|---|---|
 | 1 | **after 8 hours of gaming** | a gaming chair with RGB lights at night | 👤 *weak face* | empty energy drink cans | a glowing gaming mouse | — |
@@ -911,6 +919,8 @@ Description: *"it's not genetics"* · #posture #softmaxxing #looksmaxxing #selfi
 ### HG04 · Average X vs average Y: bathroom shelf identity  (priority 1)
 
 `3:4` · Casual phone · overlay: — · CTA: Store card
+
+**Slide 0 (cover):** **your bathroom shelf says a lot about you**, over a cluttered bathroom shelf with a 3-in-1 shampoo, an aerosol body spray can, a cracked bar of soap and an old razor
 
 | # | Caption | TL | TR | BL | BR | Overlay |
 |---|---|---|---|---|---|---|
@@ -1060,6 +1070,8 @@ Description: *"which one are you?"* · #softmaxxing #discipline #thatguy #selfim
 
 `9:16` · Casual phone · overlay: — · CTA: Store card
 
+**Slide 0 (cover):** **free looksmaxxing nobody does**, over golden morning sunlight streaming through a bedroom window onto a made bed and a glass of water
+
 | # | Caption | TL | TR | BL | BR | Overlay |
 |---|---|---|---|---|---|---|
 | 1 | **FREE looksmaxxing** | morning sunlight on a street | a tall glass of water | a dark bedroom at night | a walking path in a park | — |
@@ -1179,6 +1191,8 @@ Description: *"steal my routine"* · #softmaxxing #discipline #thatguy #selfimpr
 ### ST06 · This isn't X / but this is.: looks cheap vs expensive  (priority 1)
 
 `3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+**Slide 0 (cover):** **why you look cheap (it's not the price)**, over a flat lay of a logo-heavy hoodie, dirty white sneakers and wrinkled baggy jeans on a bedroom floor
 
 | # | Caption | TL | TR | BL | BR | Overlay |
 |---|---|---|---|---|---|---|
@@ -1356,6 +1370,8 @@ Description: *"nobody sees day 47"* · #softmaxxing #glowup #progress #looksmaxx
 
 `3:4` · Casual phone · overlay: — · CTA: Phone in dark
 
+**Slide 0 (cover):** **you're not ugly. you're unfinished.**, over 🗿 *statue: rough unfinished marble block with a young man's face half-emerging, chisel marks, a sculptor's chisel resting beside it*
+
 | # | Caption | TL | TR | BL | BR | Overlay |
 |---|---|---|---|---|---|---|
 | 1 | **month 1** | a dusty chisel and hammer | 🗿 *statue: rough unfinished marble block with a face barely emerging* | a fast-food bag | a messy desk | — |
@@ -1452,6 +1468,8 @@ Description: *"it's not genetics"* · #softmaxxing #glowup #progress #looksmaxxi
 
 `9:16` · Casual phone · overlay: — · CTA: Store card
 
+**Slide 0 (cover):** **where my softmaxxing time actually goes**, over a glowing ring light on a tripod in a dark messy bedroom at night, a phone clamped in the centre
+
 | # | Caption | TL | TR | BL | BR | Overlay |
 |---|---|---|---|---|---|---|
 | 1 | **FILMING: 3 hours** | a ring light glowing in a dark bedroom | a phone on a tripod facing a mirror | a bathroom mirror with a phone clamp | a small clip-on microphone on a desk | — |
@@ -1492,6 +1510,8 @@ Description: *"the setup glowed up more than me"* · #softmaxxing #jawmaxxing #c
 ### CR07 · Average X vs average Y: gua sha on camera vs off camera  (priority 2)
 
 `3:4` · Casual phone · overlay: — · CTA: Store card
+
+**Slide 0 (cover):** **softmaxxers will understand this one**, over a jade gua sha stone on a white marble counter beside lit candles and eucalyptus, golden hour light, overly perfect aesthetic setup
 
 | # | Caption | TL | TR | BL | BR | Overlay |
 |---|---|---|---|---|---|---|

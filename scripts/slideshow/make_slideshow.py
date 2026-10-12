@@ -141,6 +141,25 @@ def pillar_tags(m, post):
     return pl.get("meme_hashtags") if post["pillar"] == "food (meme)" else pl.get("hashtags")
 
 
+def cover_prompt(m, post):
+    img = post["cover"]["image"]
+    if img.startswith("@statue:"):
+        base = m["special_tiles"]["@statue"].format(pose=img[8:]).replace(", vertical 2:3. No text.", ".")
+    else:
+        base = m["looks"]["cover"].format(subject=img)
+    return base + m["looks"]["_cover_suffix"]
+
+
+def render_cover(img, hook, ratio):
+    """Slide 1: one full-bleed hero image + a big hook caption in the upper third."""
+    W, H = RATIOS[ratio]
+    canvas = ImageOps.fit(img.convert("RGB"), (W, H), Image.LANCZOS, centering=(0.5, 0.6))
+    shade = Image.linear_gradient("L").resize((W, H)).point(lambda v: int(120 * (1 - v / 255) ** 2))
+    canvas = Image.composite(Image.new("RGB", (W, H), "black"), canvas, shade)  # soft darkening at the top
+    draw_caption(canvas, hook, "outline", font_scale=0.085, center_y=int(H * 0.19), max_w=0.82)
+    return canvas
+
+
 def plan_post(m, post):
     f = m["formulas"][post["formula"]]
     d = dict(f["defaults"], **post.get("format", {}))
@@ -310,6 +329,15 @@ def build(m, post, args, cache):
     for c in cutouts - {"none"}:
         jobs.append((("cutout", c), m["cutouts"][c], True, None))
 
+    if post.get("cover"):
+        plan["cover"] = dict(post["cover"], prompt=cover_prompt(m, post))
+        jobs.append((("cover",), plan["cover"]["prompt"], False,
+                     os.path.join(cache.root, "override", f"{post['id']}-cover.jpg")))
+    if args.cover_only:
+        if not post.get("cover"):
+            print(f"[{post['id']}] has no cover in the matrix, skipped", flush=True)
+            return
+        jobs = [j for j in jobs if j[0] == ("cover",)]
     if args.dry_run:
         print(json.dumps(plan, indent=1))
         return
@@ -317,7 +345,15 @@ def build(m, post, args, cache):
     with ThreadPoolExecutor(args.workers) as ex:
         results = dict(zip([j[0] for j in jobs], ex.map(lambda j: cache.get(j[1], j[2], j[3]), jobs)))
 
+    if args.cover_only:
+        render_cover(results[("cover",)], plan["cover"]["hook"], plan["ratio"]).save(
+            os.path.join(out, "cover.jpg"), quality=92)
+        print(f"[{post['id']}] cover -> {out}/cover.jpg", flush=True)
+        return
+
     slide_imgs, tile_sets = [], []
+    if plan.get("cover"):
+        slide_imgs.append(render_cover(results[("cover",)], plan["cover"]["hook"], plan["ratio"]))
     for s in plan["slides"]:
         imgs = [results[(s["n"], t)] for t in range(4)]
         order = arrange_for_contrast(s["tiles"], imgs) if post["formula"] != "sprite" else list(range(4))
@@ -368,6 +404,7 @@ def main():
     ap.add_argument("--quality", default="medium", choices=["low", "medium", "high"])
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--cover-only", action="store_true", help="only generate slide 1 (cover) -> <out>/<id>/cover.jpg")
     args = ap.parse_args()
 
     m = json.load(open(args.matrix))
@@ -382,8 +419,15 @@ def main():
     if not args.dry_run and not os.environ.get("OPENAI_API_KEY"):
         sys.exit("OPENAI_API_KEY is not set")
     cache = ImageCache(os.path.join(args.out, "_cache"), args.model, args.quality, args.dry_run)
+    failed = []
     for i in args.ids:
-        build(m, posts[i], args, cache)
+        try:
+            build(m, posts[i], args, cache)
+        except RuntimeError as e:  # e.g. a moderation block: report it and keep going
+            print(f"[{i}] FAILED: {str(e)[:300]}", file=sys.stderr, flush=True)
+            failed.append(i)
+    if failed:
+        sys.exit(f"failed: {failed}")
 
 
 if __name__ == "__main__":
