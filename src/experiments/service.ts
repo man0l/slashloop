@@ -379,6 +379,11 @@ export function assertVariantEditable(e:S.Experiment,variantId:string|undefined,
  */
 export function applyVariantEdit(e:S.Experiment,variantId:string|undefined,edit:z.infer<typeof S.EditBrief>) {
   const v=assertVariantEditable(e,variantId,edit.revision);
+  // Slide contract fields are a partial merge: an omitted one keeps the stored slide's value.
+  edit={...edit,brief:{...edit.brief,slides:edit.brief.slides.map((s,i)=>{
+    const prior=v.brief.slides[i];
+    return prior?{...(prior.composition!==undefined?{composition:prior.composition}:{}),...(prior.visibleChange!==undefined?{visibleChange:prior.visibleChange}:{}),...(prior.arcLevel!==undefined?{arcLevel:prior.arcLevel}:{}),...s}:s;
+  })}};
   // One text field: on the contract pipeline the hook is the first slide's caption, never a second copy.
   if(isContractPipeline(e)&&edit.brief.slides[0]?.overlayText)edit={...edit,brief:{...edit.brief,hook:edit.brief.slides[0].overlayText}};
   S.assertBrief(e,edit.brief,isContractPipeline(e)?v.brief.slides.length:e.slideCount);

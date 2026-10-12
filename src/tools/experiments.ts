@@ -30,6 +30,7 @@ import { withNextSteps, type NextStep } from '../lib/next-steps.js';
 import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload } from '../lib/credits.js';
 import { createExperiment, dedupeSourcePosts, estimate, mutate, fingerprint } from '../experiments/service.js';
 import { SOURCE_FORMATS } from '../experiments/source-format.js';
+import { ARC_LEVELS } from '../experiments/resolved-contract.js';
 import { load, list, serialize } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
@@ -421,7 +422,10 @@ const instructionsInput = z.object({
   varySupportingOverlays: z.boolean().optional().describe('Hook tests only (controlled, variables=["hook"]): variants may also retell slide 2+ overlay text while scenes stay identical.'),
   preserveSourceCtaSlide: z.boolean().optional().describe('Keep the source deck\'s own closing call-to-action slide in the deck instead of subtracting it from the slide count (default false, which drops a detected final CTA slide).'),
 });
-const briefSlideInput = z.object({ role: z.string().min(1).max(80), scene: z.string().min(1).max(2000), overlayText: z.string().max(2000).default('') });
+const briefSlideInput = z.object({ role: z.string().min(1).max(80), scene: z.string().min(1).max(2000), overlayText: z.string().max(2000).default(''),
+  composition: z.string().max(2000).optional().describe('Slide contract field. Omit to keep the stored value.'),
+  visibleChange: z.string().max(2000).optional().describe('Slide contract field: what visibly changes on this slide. Omit to keep the stored value.'),
+  arcLevel: z.enum(ARC_LEVELS).optional().describe('Slide contract field: this slide\'s arc level. Omit to keep the stored value.') });
 const briefInput = z.object({
   concept: z.string().min(1).max(2000), hook: z.string().min(1).max(2000), character: z.string().max(2000),
   visualStyle: z.string().min(1).max(2000), caption: z.string().max(2000), cta: z.string().max(2000),
@@ -673,7 +677,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       experimentId: experimentIdField,
       variantId: Id.describe('Variant id from get_experiment.'),
       revision: z.number().int().positive().describe('The variant\'s current revision.'),
-      brief: briefInput.describe('The complete edited brief (all fields, not a patch).'),
+      brief: briefInput.describe('The complete edited brief (all fields, not a patch). Per-slide contract fields (composition, visibleChange, arcLevel) you omit keep their stored value, so you can reword one without resending the rest.'),
       title: z.string().min(1).max(160).optional().describe('New variant title (1–160 characters). Omit to keep the current one.'),
       hypothesis: z.string().min(1).max(2000).optional().describe('New variant hypothesis. Omit to keep the current one.'),
     },
