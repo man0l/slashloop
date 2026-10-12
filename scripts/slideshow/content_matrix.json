@@ -1735,6 +1735,2103 @@
     "screen": "screen-time vs routine-time tracker"
    },
    "description": "no idea what's going on tbh"
+  },
+  {
+   "id": "SK04",
+   "pillar": "skin",
+   "priority": 2,
+   "formula": "contrast",
+   "topic": "average guy vs softmaxxer skincare",
+   "slides": [
+    {
+     "caption": "average guy skincare",
+     "tiles": [
+      "a cracked dry bar of soap on a dirty sink",
+      "a crumpled damp towel on a bathroom floor",
+      "@person_bad",
+      "a greasy smudged phone screen"
+     ],
+     "person_at": 2
+    },
+    {
+     "caption": "softmaxxer skincare",
+     "tiles": [
+      "a minimal three-step skincare set on a white marble sink",
+      "a sunscreen tube in bright sunlight",
+      "@person_good",
+      "a fresh folded white towel"
+     ],
+     "person_at": 2
+    }
+   ],
+   "cta": {
+    "screen": "skin score / skincare routine"
+   }
+  },
+  {
+   "id": "SK05",
+   "pillar": "skin",
+   "priority": 5,
+   "formula": "question",
+   "topic": "acne & oil",
+   "slides": [
+    {
+     "caption": "Why don't I get acne?",
+     "tiles": [
+      "a fresh white pillowcase on a bed",
+      "pumpkin seeds",
+      "a glass of iced green tea",
+      "a phone screen being wiped with a cloth"
+     ]
+    },
+    {
+     "caption": "Why is my skin never oily?",
+     "tiles": [
+      "a clear gel cleanser bottle",
+      "blotting paper sheets",
+      "cucumber slices",
+      "an oil-free moisturiser jar"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "skin routine checklist"
+   }
+  },
+  {
+   "id": "SK06",
+   "pillar": "skin",
+   "priority": 3,
+   "formula": "mythbust",
+   "topic": "fake skincare hacks",
+   "slides": [
+    {
+     "caption": "this isn't skincare",
+     "tiles": [
+      "toothpaste dabbed on a fingertip",
+      "a squeezed lemon half",
+      "a jar of gritty walnut scrub",
+      "a bottle of alcohol hand sanitiser"
+     ],
+     "cutout": "statue_facepalm"
+    },
+    {
+     "caption": "this is.",
+     "tiles": [
+      "@person_good",
+      "a sunscreen tube in sunlight",
+      "a serum dropper bottle",
+      "a white moisturiser jar"
+     ],
+     "person_at": 0
+    }
+   ],
+   "cta": {
+    "screen": "skincare routine"
+   },
+   "description": "please stop"
+  },
+  {
+   "id": "SK07",
+   "pillar": "skin",
+   "priority": 6,
+   "formula": "category",
+   "topic": "morning / night / weekly skin",
+   "slides": [
+    {
+     "caption": "skin routine: MORNING",
+     "tiles": [
+      "a gel cleanser bottle",
+      "a vitamin C serum dropper",
+      "a moisturiser jar",
+      "a sunscreen tube"
+     ]
+    },
+    {
+     "caption": "skin routine: NIGHT",
+     "tiles": [
+      "a cleansing balm jar",
+      "a retinol serum bottle",
+      "a thick night cream",
+      "a white silk pillowcase"
+     ]
+    },
+    {
+     "caption": "skin routine: WEEKLY",
+     "tiles": [
+      "a green clay mask in a bowl with a brush",
+      "an exfoliating toner bottle",
+      "a fresh pillowcase being changed",
+      "a frosty ice roller"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "morning / night routine planner"
+   }
+  },
+  {
+   "id": "SK08",
+   "pillar": "skin",
+   "priority": 8,
+   "formula": "routine",
+   "topic": "6am vs 11pm skin",
+   "slides": [
+    {
+     "caption": "skin at 6am",
+     "tiles": [
+      "cold water splashing in a sink at dawn",
+      "a gel cleanser on a dark bathroom shelf",
+      "a sunscreen tube by a window at sunrise",
+      "a glass of water with lemon"
+     ]
+    },
+    {
+     "caption": "skin at 11pm",
+     "tiles": [
+      "a cleansing balm on a dark sink",
+      "a serum dropper in low warm light",
+      "a silk pillowcase in a dark bedroom",
+      "a phone face-down in a drawer"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "skin routine streak"
+   }
+  },
+  {
+   "id": "SK09",
+   "pillar": "skin",
+   "priority": 4,
+   "formula": "progress",
+   "topic": "skin day 1 to day 90",
+   "slides": [
+    {
+     "caption": "skin day 1",
+     "tiles": [
+      "a messy sink crowded with random products",
+      "a greasy fast-food bag",
+      "@statue:young man's face carved from rough, cracked, pitted marble",
+      "a phone glowing in bed at 2am"
+     ]
+    },
+    {
+     "caption": "day 30",
+     "tiles": [
+      "a minimal three-product skincare shelf",
+      "a tall glass of water",
+      "@statue:the same young man's face, marble partly smoothed, fewer cracks",
+      "a fresh pillowcase"
+     ]
+    },
+    {
+     "caption": "day 90",
+     "tiles": [
+      "a sunscreen tube in sunlight",
+      "a bowl of fresh berries",
+      "@statue:the same young man's face carved from perfectly smooth, polished, glowing white marble",
+      "a dark bedroom with blackout curtains"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "skin progress timeline"
+   },
+   "description": "trust the process"
+  },
+  {
+   "id": "SK10",
+   "pillar": "skin",
+   "priority": 9,
+   "formula": "question",
+   "topic": "skin people notice",
+   "slides": [
+    {
+     "caption": "Why does my skin glow in photos?",
+     "tiles": [
+      "a frosty ice roller",
+      "a sunscreen tube",
+      "raw salmon slices",
+      "a tall glass of ice water"
+     ]
+    },
+    {
+     "caption": "Why do people ask about my skin?",
+     "tiles": [
+      "a serum dropper bottle",
+      "a white silk pillowcase",
+      "halved kiwis",
+      "a dark quiet bedroom"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "skin score"
+   }
+  },
+  {
+   "id": "FJ03",
+   "pillar": "face",
+   "priority": 3,
+   "formula": "contrast",
+   "topic": "average vs softmaxxer jaw habits",
+   "slides": [
+    {
+     "caption": "average jaw routine",
+     "tiles": [
+      "pink bubble gum",
+      "a can of sugary soda",
+      "@person_bad",
+      "a phone glowing in bed at 2am"
+     ],
+     "person_at": 2
+    },
+    {
+     "caption": "softmaxxer jaw routine",
+     "tiles": [
+      "hard mastic gum pieces",
+      "a glass of water with lemon",
+      "@person_good",
+      "a dark bedroom with blackout curtains"
+     ],
+     "person_at": 2
+    }
+   ],
+   "cta": {
+    "screen": "jawline score"
+   }
+  },
+  {
+   "id": "FJ04",
+   "pillar": "face",
+   "priority": 2,
+   "formula": "category",
+   "topic": "jaw / debloat / lean face",
+   "slides": [
+    {
+     "caption": "for a SHARP JAW",
+     "tiles": [
+      "hard mastic gum pieces",
+      "grilled chicken breast slices",
+      "a tall glass of water",
+      "a low-salt plate of steamed fish and vegetables"
+     ]
+    },
+    {
+     "caption": "for LESS BLOAT",
+     "tiles": [
+      "a glass bowl of ice water",
+      "ripe bananas",
+      "a cup of green tea",
+      "cucumber slices"
+     ]
+    },
+    {
+     "caption": "for a LEANER FACE",
+     "tiles": [
+      "a jump rope on a gym floor",
+      "running shoes on a pavement at sunrise",
+      "a bowl of fresh berries",
+      "boiled eggs"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "face routine"
+   }
+  },
+  {
+   "id": "FJ05",
+   "pillar": "face",
+   "priority": 5,
+   "formula": "question",
+   "topic": "side profile & photos",
+   "slides": [
+    {
+     "caption": "Why is my side profile so clean?",
+     "tiles": [
+      "@statue:perfect side profile of a young man's head with a sharp jawline",
+      "a laptop raised to eye level on a stand",
+      "hard mastic gum pieces",
+      "a firm pillow on a made bed"
+     ],
+     "cutout": "none"
+    },
+    {
+     "caption": "Why do I photograph so well?",
+     "tiles": [
+      "soft window light in a bright room",
+      "a phone on a tripod at eye level",
+      "a glass bowl of ice water",
+      "a jade gua sha stone"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "jawline score"
+   }
+  },
+  {
+   "id": "FJ06",
+   "pillar": "face",
+   "priority": 4,
+   "formula": "mythbust",
+   "topic": "puffy face causes",
+   "slides": [
+    {
+     "caption": "this is making your face puffy",
+     "tiles": [
+      "salty instant ramen",
+      "beer cans on a coffee table",
+      "a late-night pizza box",
+      "a phone glowing in bed at 3am"
+     ],
+     "cutout": "statue_facepalm"
+    },
+    {
+     "caption": "this de-puffs it.",
+     "tiles": [
+      "@person_good",
+      "a glass bowl of ice water",
+      "a cup of green tea",
+      "ripe bananas"
+     ],
+     "person_at": 0
+    }
+   ],
+   "cta": {
+    "screen": "debloat tracker"
+   },
+   "description": "the 3am pizza is not your friend"
+  },
+  {
+   "id": "FJ07",
+   "pillar": "face",
+   "priority": 7,
+   "formula": "progress",
+   "topic": "jawline arc",
+   "slides": [
+    {
+     "caption": "jawline day 1",
+     "tiles": [
+      "a fast-food burger and fries",
+      "pink bubble gum",
+      "@statue:young man's head side profile with a soft rounded jaw",
+      "cans of soda"
+     ]
+    },
+    {
+     "caption": "day 60",
+     "tiles": [
+      "hard mastic gum pieces",
+      "a tall glass of water",
+      "@statue:the same young man's head side profile, jaw more defined",
+      "running shoes"
+     ]
+    },
+    {
+     "caption": "day 120",
+     "tiles": [
+      "a plate of steak and vegetables",
+      "a jump rope",
+      "@statue:the same young man's head side profile with a razor-sharp chiselled jawline",
+      "a dark bedroom at night"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "jawline progress timeline"
+   },
+   "description": "day 180 next?"
+  },
+  {
+   "id": "FJ08",
+   "pillar": "face",
+   "priority": 8,
+   "formula": "routine",
+   "topic": "10-minute face routine",
+   "slides": [
+    {
+     "caption": "my 10 min morning face routine",
+     "tiles": [
+      "a glass bowl of ice water at dawn",
+      "a jade gua sha stone on a dark counter",
+      "hard mastic gum pieces",
+      "a sunscreen tube by a window"
+     ]
+    },
+    {
+     "caption": "my 10 min night face routine",
+     "tiles": [
+      "a cleanser on a dark sink",
+      "a gua sha with face oil in warm low light",
+      "a firm pillow in a dark bedroom",
+      "a phone in a drawer"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "face routine timer"
+   }
+  },
+  {
+   "id": "FJ09",
+   "pillar": "face",
+   "priority": 6,
+   "formula": "contrast",
+   "topic": "bloated vs sharp face diet",
+   "slides": [
+    {
+     "caption": "bloated face diet",
+     "tiles": [
+      "a fast-food burger and fries",
+      "a big cola cup with ice",
+      "@person_bad",
+      "a bag of salty chips"
+     ],
+     "person_at": 2
+    },
+    {
+     "caption": "sharp face diet",
+     "tiles": [
+      "a seared steak on a board",
+      "a bowl of fresh berries",
+      "@person_good",
+      "a tall glass of water"
+     ],
+     "person_at": 2
+    }
+   ],
+   "cta": {
+    "screen": "face score"
+   }
+  },
+  {
+   "id": "FJ10",
+   "pillar": "face",
+   "priority": 10,
+   "formula": "question",
+   "topic": "cheekbones & lean face",
+   "slides": [
+    {
+     "caption": "Why do my cheekbones show?",
+     "tiles": [
+      "@statue:young man's face three-quarter view with high sharp cheekbones",
+      "grilled chicken breast slices",
+      "a tall glass of water",
+      "a rowing machine"
+     ],
+     "cutout": "none"
+    },
+    {
+     "caption": "Why is my face so lean?",
+     "tiles": [
+      "a jump rope",
+      "a bowl of fresh berries",
+      "a cup of green tea",
+      "boiled eggs cut in half"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "face score"
+   }
+  },
+  {
+   "id": "GY04",
+   "pillar": "gym",
+   "priority": 1,
+   "formula": "contrast",
+   "topic": "what you train vs what looks good",
+   "slides": [
+    {
+     "caption": "what you train",
+     "tiles": [
+      "a crowded flat bench press",
+      "dumbbells for bicep curls",
+      "@person_bad",
+      "an ab crunch machine"
+     ],
+     "person_at": 2
+    },
+    {
+     "caption": "what makes you look good",
+     "tiles": [
+      "light dumbbells for lateral raises",
+      "a pull-up bar",
+      "@person_good",
+      "a leather neck harness with a weight plate"
+     ],
+     "person_at": 2
+    }
+   ],
+   "cta": {
+    "screen": "workout plan for aesthetics"
+   },
+   "description": "train for the mirror AND the street"
+  },
+  {
+   "id": "GY05",
+   "pillar": "gym",
+   "priority": 4,
+   "formula": "mythbust",
+   "topic": "fake aesthetic shortcuts",
+   "slides": [
+    {
+     "caption": "this won't make you aesthetic",
+     "tiles": [
+      "a plastic ab roller gadget",
+      "a vibrating fat-burning belt",
+      "a sauna sweat suit",
+      "a tub of fat-burner powder"
+     ],
+     "cutout": "statue_facepalm"
+    },
+    {
+     "caption": "this will.",
+     "tiles": [
+      "@person_good",
+      "a pull-up bar",
+      "light dumbbells for lateral raises",
+      "a plate of chicken, rice and vegetables"
+     ],
+     "person_at": 0
+    }
+   ],
+   "cta": {
+    "screen": "workout plan"
+   }
+  },
+  {
+   "id": "GY06",
+   "pillar": "gym",
+   "priority": 5,
+   "formula": "category",
+   "topic": "no-gym training",
+   "slides": [
+    {
+     "caption": "no-gym SHOULDERS",
+     "tiles": [
+      "a resistance band on a door handle",
+      "two full water jugs",
+      "a backpack filled with books",
+      "a sturdy chair for dips"
+     ]
+    },
+    {
+     "caption": "no-gym BACK",
+     "tiles": [
+      "a doorframe pull-up bar",
+      "a towel looped around a door handle",
+      "a resistance band",
+      "a heavy backpack"
+     ]
+    },
+    {
+     "caption": "no-gym LEGS",
+     "tiles": [
+      "a flight of stairs",
+      "a wooden step box",
+      "a jump rope",
+      "a heavy backpack on a floor"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "home workout plan"
+   }
+  },
+  {
+   "id": "GY07",
+   "pillar": "gym",
+   "priority": 6,
+   "formula": "routine",
+   "topic": "5:45am gym routine",
+   "slides": [
+    {
+     "caption": "5:45am gym routine",
+     "tiles": [
+      "an alarm clock in a dark bedroom",
+      "a banana and a glass of water on a dark counter",
+      "an empty gym in blue morning light",
+      "a chalked barbell"
+     ]
+    },
+    {
+     "caption": "post-gym routine",
+     "tiles": [
+      "a high-protein meal of eggs and steak",
+      "a steaming shower",
+      "a foam roller on a mat",
+      "a dark bedroom at 10pm"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "workout streak"
+   }
+  },
+  {
+   "id": "GY08",
+   "pillar": "gym",
+   "priority": 3,
+   "formula": "progress",
+   "topic": "gym arc",
+   "slides": [
+    {
+     "caption": "gym day 1",
+     "tiles": [
+      "light dumbbells on an empty rack",
+      "a phone showing a workout tutorial",
+      "@statue:slim skinny young athlete torso",
+      "a tiny gym bag"
+     ]
+    },
+    {
+     "caption": "day 100",
+     "tiles": [
+      "a loaded barbell",
+      "a pull-up bar",
+      "@statue:the same young athlete torso, visibly more muscular",
+      "meal prep containers"
+     ]
+    },
+    {
+     "caption": "day 365",
+     "tiles": [
+      "a heavy loaded deadlift barbell",
+      "a leather neck harness",
+      "@statue:the same young athlete, broad heroic muscular torso, V-taper",
+      "worn-out training shoes"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "workout progress chart"
+   },
+   "description": "day 1 is the hardest"
+  },
+  {
+   "id": "GY09",
+   "pillar": "gym",
+   "priority": 2,
+   "formula": "question",
+   "topic": "t-shirt physique",
+   "slides": [
+    {
+     "caption": "Why do I look good in a t-shirt?",
+     "tiles": [
+      "@statue:broad muscular shoulders and back seen from behind",
+      "light dumbbells for lateral raises",
+      "a pull-up bar",
+      "a folded fitted white t-shirt"
+     ],
+     "cutout": "none"
+    },
+    {
+     "caption": "Why is my back so wide?",
+     "tiles": [
+      "a lat pulldown machine",
+      "a rowing machine",
+      "a pull-up bar",
+      "a plate of chicken and rice"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "workout plan"
+   }
+  },
+  {
+   "id": "GY10",
+   "pillar": "gym",
+   "priority": 7,
+   "formula": "contrast",
+   "topic": "gym at 7pm vs 6am",
+   "slides": [
+    {
+     "caption": "gym at 7pm",
+     "tiles": [
+      "a crowded gym with every bench taken",
+      "a queue for the squat rack",
+      "@person_bad",
+      "a loud speaker on a gym floor"
+     ],
+     "person_at": 2
+    },
+    {
+     "caption": "gym at 6am",
+     "tiles": [
+      "an empty gym at sunrise",
+      "a free squat rack",
+      "@person_good",
+      "a quiet gym with morning light"
+     ],
+     "person_at": 2
+    }
+   ],
+   "cta": {
+    "screen": "workout streak"
+   },
+   "description": "6am gym is a different world"
+  },
+  {
+   "id": "PO03",
+   "pillar": "posture",
+   "priority": 2,
+   "formula": "mythbust",
+   "topic": "posture-ruining habits",
+   "slides": [
+    {
+     "caption": "this is ruining your posture",
+     "tiles": [
+      "a phone held low at chest level",
+      "a laptop on a lap on a couch",
+      "a heavy bag on one shoulder",
+      "a slouched gaming chair"
+     ],
+     "cutout": "statue_facepalm"
+    },
+    {
+     "caption": "do this instead.",
+     "tiles": [
+      "@person_good",
+      "a laptop on a stand at eye level",
+      "a backpack worn on both shoulders",
+      "a standing desk"
+     ],
+     "person_at": 0
+    }
+   ],
+   "cta": {
+    "screen": "posture routine"
+   }
+  },
+  {
+   "id": "PO04",
+   "pillar": "posture",
+   "priority": 3,
+   "formula": "category",
+   "topic": "posture fixes",
+   "slides": [
+    {
+     "caption": "posture fix: DESK",
+     "tiles": [
+      "a monitor raised to eye level",
+      "an external keyboard on a clean desk",
+      "a lumbar support pillow on a chair",
+      "a small footrest under a desk"
+     ]
+    },
+    {
+     "caption": "posture fix: GYM",
+     "tiles": [
+      "a cable machine set up for face pulls",
+      "light dumbbells for rear-delt flyes",
+      "a pull-up bar for dead hangs",
+      "a foam roller"
+     ]
+    },
+    {
+     "caption": "posture fix: SLEEP",
+     "tiles": [
+      "a firm mattress",
+      "a thin pillow",
+      "a pillow between knees for side sleeping",
+      "a dark tidy bedroom"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "posture plan"
+   }
+  },
+  {
+   "id": "PO05",
+   "pillar": "posture",
+   "priority": 5,
+   "formula": "question",
+   "topic": "confidence posture",
+   "slides": [
+    {
+     "caption": "Why do I look so confident?",
+     "tiles": [
+      "@statue:upright young man, chest proud, shoulders back, side view",
+      "a pull-up bar for dead hangs",
+      "a resistance band",
+      "a laptop at eye level"
+     ],
+     "cutout": "none"
+    },
+    {
+     "caption": "Why does my neck look longer?",
+     "tiles": [
+      "a book balanced on a shelf at eye level",
+      "a doorframe for a chest stretch",
+      "a phone held up at eye level",
+      "a foam roller under a mat"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "posture score"
+   }
+  },
+  {
+   "id": "PO06",
+   "pillar": "posture",
+   "priority": 6,
+   "formula": "routine",
+   "topic": "5-minute posture routine",
+   "slides": [
+    {
+     "caption": "5 min posture routine",
+     "tiles": [
+      "a pull-up bar in a doorframe",
+      "a doorframe in morning light",
+      "a foam roller on a mat",
+      "a resistance band"
+     ]
+    },
+    {
+     "caption": "desk posture routine",
+     "tiles": [
+      "a kitchen timer on a desk",
+      "a standing desk",
+      "a water bottle on a desk",
+      "a stretching strap"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "daily stretch timer"
+   }
+  },
+  {
+   "id": "PO07",
+   "pillar": "posture",
+   "priority": 4,
+   "formula": "contrast",
+   "topic": "8h gaming vs 8 weeks training",
+   "slides": [
+    {
+     "caption": "after 8 hours of gaming",
+     "tiles": [
+      "a gaming chair with RGB lights at night",
+      "@person_bad",
+      "empty energy drink cans",
+      "a glowing gaming mouse"
+     ],
+     "person_at": 1
+    },
+    {
+     "caption": "after 8 weeks of training",
+     "tiles": [
+      "a pull-up bar",
+      "@person_good",
+      "a foam roller",
+      "a laptop on a stand at eye level"
+     ],
+     "person_at": 1
+    }
+   ],
+   "cta": {
+    "screen": "posture progress"
+   }
+  },
+  {
+   "id": "PO08",
+   "pillar": "posture",
+   "priority": 7,
+   "formula": "progress",
+   "topic": "posture arc",
+   "slides": [
+    {
+     "caption": "posture day 1",
+     "tiles": [
+      "a slouched gaming chair",
+      "@statue:young man standing hunched with forward head posture, side view",
+      "a phone held at chest level",
+      "a laptop on a bed"
+     ]
+    },
+    {
+     "caption": "day 30",
+     "tiles": [
+      "a foam roller",
+      "@statue:the same young man standing straighter, side view",
+      "a laptop stand",
+      "a resistance band"
+     ]
+    },
+    {
+     "caption": "day 90",
+     "tiles": [
+      "a pull-up bar",
+      "@statue:the same young man standing perfectly upright, chest proud, side view",
+      "a standing desk",
+      "running shoes"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "posture timeline"
+   }
+  },
+  {
+   "id": "PO09",
+   "pillar": "posture",
+   "priority": 8,
+   "formula": "mythbust",
+   "topic": "posture gadgets",
+   "slides": [
+    {
+     "caption": "this won't fix your posture",
+     "tiles": [
+      "a posture corrector brace",
+      "a vibrating posture sensor gadget",
+      "an inflatable exercise ball as a chair",
+      "a neck massager gadget"
+     ],
+     "cutout": "statue_facepalm"
+    },
+    {
+     "caption": "this will.",
+     "tiles": [
+      "@person_good",
+      "a cable machine set up for face pulls",
+      "a rowing machine",
+      "a pull-up bar"
+     ],
+     "person_at": 0
+    }
+   ],
+   "cta": {
+    "screen": "posture plan"
+   }
+  },
+  {
+   "id": "PO10",
+   "pillar": "posture",
+   "priority": 9,
+   "formula": "contrast",
+   "topic": "how you sit vs how you should",
+   "slides": [
+    {
+     "caption": "how you sit",
+     "tiles": [
+      "a slumped sofa with a laptop",
+      "a laptop on an unmade bed",
+      "a high bar stool at a kitchen counter",
+      "a reclined gaming chair"
+     ]
+    },
+    {
+     "caption": "how you should sit",
+     "tiles": [
+      "an ergonomic office chair",
+      "a standing desk",
+      "a kneeling chair",
+      "a laptop on a stand with external keyboard"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "desk setup checklist"
+   }
+  },
+  {
+   "id": "HG04",
+   "pillar": "grooming",
+   "priority": 1,
+   "formula": "contrast",
+   "topic": "bathroom shelf identity",
+   "slides": [
+    {
+     "caption": "average guy bathroom shelf",
+     "tiles": [
+      "a 3-in-1 shampoo bottle",
+      "an aerosol body spray can",
+      "a cracked bar of soap",
+      "an old rusty disposable razor"
+     ]
+    },
+    {
+     "caption": "softmaxxer bathroom shelf",
+     "tiles": [
+      "a minimal skincare set",
+      "an electric toothbrush",
+      "a beard trimmer",
+      "an unlabelled glass fragrance bottle"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "grooming checklist"
+   },
+   "description": "your shelf says everything"
+  },
+  {
+   "id": "HG05",
+   "pillar": "grooming",
+   "priority": 3,
+   "formula": "question",
+   "topic": "brows & beard",
+   "slides": [
+    {
+     "caption": "Why are my brows so clean?",
+     "tiles": [
+      "an eyebrow trimmer",
+      "slanted tweezers",
+      "an eyebrow spoolie brush",
+      "a small pair of grooming scissors"
+     ]
+    },
+    {
+     "caption": "Why is my beard line so sharp?",
+     "tiles": [
+      "a beard trimmer",
+      "white shaving foam",
+      "a safety razor",
+      "a beard oil dropper bottle"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "grooming checklist"
+   }
+  },
+  {
+   "id": "HG06",
+   "pillar": "grooming",
+   "priority": 4,
+   "formula": "mythbust",
+   "topic": "teeth staining",
+   "slides": [
+    {
+     "caption": "this is yellowing your teeth",
+     "tiles": [
+      "a black coffee",
+      "a can of energy drink",
+      "a glass of cola",
+      "a cup of strong black tea"
+     ],
+     "cutout": "statue_facepalm"
+    },
+    {
+     "caption": "do this instead.",
+     "tiles": [
+      "@person_good",
+      "an iced coffee with a metal straw",
+      "an electric toothbrush",
+      "a glass of water"
+     ],
+     "person_at": 0
+    }
+   ],
+   "cta": {
+    "screen": "grooming checklist"
+   }
+  },
+  {
+   "id": "HG07",
+   "pillar": "grooming",
+   "priority": 6,
+   "formula": "routine",
+   "topic": "hair wash / no-wash day",
+   "slides": [
+    {
+     "caption": "hair routine: wash day",
+     "tiles": [
+      "a sulfate-free shampoo bottle",
+      "a conditioner bottle",
+      "a microfibre hair towel",
+      "a sea salt spray bottle"
+     ]
+    },
+    {
+     "caption": "hair routine: no-wash day",
+     "tiles": [
+      "a water spray bottle",
+      "a wide-tooth comb",
+      "a tin of matte hair clay",
+      "a scalp massager brush"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "haircare routine"
+   }
+  },
+  {
+   "id": "HG08",
+   "pillar": "grooming",
+   "priority": 2,
+   "formula": "question",
+   "topic": "smell & hair compliments",
+   "slides": [
+    {
+     "caption": "Why do I smell so good?",
+     "tiles": [
+      "an unlabelled glass fragrance bottle",
+      "an unscented body lotion",
+      "freshly washed laundry",
+      "a stick deodorant"
+     ]
+    },
+    {
+     "caption": "Why do people compliment my hair?",
+     "tiles": [
+      "a scalp massager brush",
+      "a white silk pillowcase",
+      "a tin of matte hair clay",
+      "an empty barber chair"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "grooming checklist"
+   }
+  },
+  {
+   "id": "HG09",
+   "pillar": "grooming",
+   "priority": 5,
+   "formula": "progress",
+   "topic": "grooming arc",
+   "slides": [
+    {
+     "caption": "grooming day 1",
+     "tiles": [
+      "an old rusty razor",
+      "@statue:young man's head with messy overgrown marble hair and patchy stubble",
+      "a cracked bar of soap",
+      "a crumpled towel"
+     ]
+    },
+    {
+     "caption": "day 30",
+     "tiles": [
+      "a beard trimmer",
+      "@statue:the same young man's head with neater hair",
+      "a minimal skincare set",
+      "an electric toothbrush"
+     ]
+    },
+    {
+     "caption": "day 90",
+     "tiles": [
+      "an empty barber chair",
+      "@statue:the same young man's head with sharply sculpted short hair and a clean jawline",
+      "an unlabelled fragrance bottle",
+      "a silk pillowcase"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "grooming timeline"
+   }
+  },
+  {
+   "id": "HG10",
+   "pillar": "grooming",
+   "priority": 7,
+   "formula": "category",
+   "topic": "nails, eyes, lips",
+   "slides": [
+    {
+     "caption": "real NAIL CARE",
+     "tiles": [
+      "nail clippers",
+      "a glass nail file",
+      "a cuticle oil bottle",
+      "a hand cream tube"
+     ]
+    },
+    {
+     "caption": "real EYE CARE",
+     "tiles": [
+      "two metal spoons chilling in a freezer",
+      "a black sleep mask",
+      "an eye cream tube",
+      "classic black sunglasses"
+     ]
+    },
+    {
+     "caption": "real LIP CARE",
+     "tiles": [
+      "a lip balm",
+      "an SPF lip balm",
+      "a glass of water",
+      "a jar of honey"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "grooming checklist"
+   }
+  },
+  {
+   "id": "DH05",
+   "pillar": "habits",
+   "priority": 3,
+   "formula": "question",
+   "topic": "energy & waking",
+   "slides": [
+    {
+     "caption": "Why do I wake up before my alarm?",
+     "tiles": [
+      "sunrise through a bedroom window",
+      "a dark bedroom with blackout curtains",
+      "a phone charging outside the bedroom",
+      "a glass of water on a nightstand"
+     ]
+    },
+    {
+     "caption": "Why do I never feel tired?",
+     "tiles": [
+      "a morning walk on an empty street at sunrise",
+      "a tall glass of water",
+      "eggs and fruit for breakfast",
+      "an analog alarm clock set for 10pm"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "sleep tracker"
+   }
+  },
+  {
+   "id": "DH06",
+   "pillar": "habits",
+   "priority": 1,
+   "formula": "category",
+   "topic": "free / cheap / worth paying",
+   "slides": [
+    {
+     "caption": "FREE looksmaxxing",
+     "tiles": [
+      "morning sunlight on a street",
+      "a tall glass of water",
+      "a dark bedroom at night",
+      "a walking path in a park"
+     ]
+    },
+    {
+     "caption": "CHEAP looksmaxxing",
+     "tiles": [
+      "a sunscreen tube",
+      "hard mastic gum pieces",
+      "a resistance band",
+      "a carton of eggs"
+     ]
+    },
+    {
+     "caption": "worth PAYING for",
+     "tiles": [
+      "an empty barber chair",
+      "an electric toothbrush",
+      "a gym entrance at sunrise",
+      "a good firm mattress"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "routine planner"
+   },
+   "description": "save this before your next paycheck"
+  },
+  {
+   "id": "DH07",
+   "pillar": "habits",
+   "priority": 4,
+   "formula": "contrast",
+   "topic": "weekend average vs softmaxxer",
+   "slides": [
+    {
+     "caption": "average weekend",
+     "tiles": [
+      "an alarm clock showing 2pm in a messy room",
+      "beer cans on a table",
+      "@person_bad",
+      "a gaming setup at 4am"
+     ],
+     "person_at": 2
+    },
+    {
+     "caption": "softmaxxer weekend",
+     "tiles": [
+      "a sunrise hike trail",
+      "a farmers market stall with vegetables",
+      "@person_good",
+      "fresh sheets on a made bed"
+     ],
+     "person_at": 2
+    }
+   ],
+   "cta": {
+    "screen": "weekly planner"
+   }
+  },
+  {
+   "id": "DH08",
+   "pillar": "habits",
+   "priority": 5,
+   "formula": "mythbust",
+   "topic": "fake rest",
+   "slides": [
+    {
+     "caption": "this isn't rest",
+     "tiles": [
+      "doomscrolling a phone in bed at night",
+      "a TV glowing at 3am",
+      "energy drink cans",
+      "a 4-hour afternoon nap in a messy bed"
+     ],
+     "cutout": "statue_facepalm"
+    },
+    {
+     "caption": "this is.",
+     "tiles": [
+      "@person_good",
+      "a walk in a green park",
+      "a dark bedroom at 10pm",
+      "an open book on a nightstand"
+     ],
+     "person_at": 0
+    }
+   ],
+   "cta": {
+    "screen": "sleep tracker"
+   }
+  },
+  {
+   "id": "DH09",
+   "pillar": "habits",
+   "priority": 6,
+   "formula": "routine",
+   "topic": "9pm shutdown & 6am start",
+   "slides": [
+    {
+     "caption": "softmaxxer 9pm shutdown",
+     "tiles": [
+      "a phone placed in a drawer",
+      "a skincare routine on a dark sink",
+      "an open book under a warm lamp",
+      "blackout curtains being closed"
+     ]
+    },
+    {
+     "caption": "softmaxxer 6am start",
+     "tiles": [
+      "sunrise through a window",
+      "a glass of water with lemon",
+      "a cold shower head running",
+      "a packed gym bag by the door"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "routine planner"
+   }
+  },
+  {
+   "id": "DH10",
+   "pillar": "habits",
+   "priority": 2,
+   "formula": "question",
+   "topic": "discipline",
+   "slides": [
+    {
+     "caption": "Why am I so disciplined?",
+     "tiles": [
+      "a neatly made bed",
+      "gym clothes laid out the night before",
+      "meal prep containers in a fridge",
+      "a phone in a drawer"
+     ]
+    },
+    {
+     "caption": "Why do I never doomscroll?",
+     "tiles": [
+      "a phone face-down in a drawer",
+      "an open book on a nightstand",
+      "an analog alarm clock",
+      "a journal and pen on a desk"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "habit tracker"
+   }
+  },
+  {
+   "id": "ST03",
+   "pillar": "style",
+   "priority": 2,
+   "formula": "contrast",
+   "topic": "fast fashion vs 5 pieces",
+   "slides": [
+    {
+     "caption": "fast fashion haul",
+     "tiles": [
+      "a pile of cheap polyester clothes",
+      "a logo-heavy hoodie",
+      "ripped skinny jeans",
+      "chunky dad sneakers"
+     ]
+    },
+    {
+     "caption": "5 pieces that work",
+     "tiles": [
+      "a crisp plain white t-shirt",
+      "a navy overshirt",
+      "dark straight-leg jeans",
+      "clean white leather sneakers"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "style checklist"
+   }
+  },
+  {
+   "id": "ST04",
+   "pillar": "style",
+   "priority": 3,
+   "formula": "category",
+   "topic": "outfit by occasion",
+   "slides": [
+    {
+     "caption": "outfit for the GYM",
+     "tiles": [
+      "a fitted black t-shirt",
+      "black training shorts",
+      "white crew socks",
+      "clean training shoes"
+     ]
+    },
+    {
+     "caption": "outfit for a DATE",
+     "tiles": [
+      "a white oxford shirt",
+      "dark straight-leg jeans",
+      "brown leather loafers",
+      "a minimal silver watch"
+     ]
+    },
+    {
+     "caption": "outfit for CLASS",
+     "tiles": [
+      "a grey crewneck sweater",
+      "beige chinos",
+      "white leather sneakers",
+      "a canvas backpack"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "outfit planner"
+   }
+  },
+  {
+   "id": "ST05",
+   "pillar": "style",
+   "priority": 5,
+   "formula": "question",
+   "topic": "put-together look",
+   "slides": [
+    {
+     "caption": "Why do I always look put together?",
+     "tiles": [
+      "a lint roller",
+      "a handheld clothes steamer",
+      "a sneaker cleaning kit",
+      "a fitted plain t-shirt on a hanger"
+     ]
+    },
+    {
+     "caption": "Why do my clothes fit so well?",
+     "tiles": [
+      "a tailor's measuring tape and pins",
+      "an ironed white shirt",
+      "neatly folded dark jeans",
+      "a fitted navy t-shirt"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "style checklist"
+   }
+  },
+  {
+   "id": "ST06",
+   "pillar": "style",
+   "priority": 1,
+   "formula": "mythbust",
+   "topic": "looks cheap vs expensive",
+   "slides": [
+    {
+     "caption": "this makes you look cheap",
+     "tiles": [
+      "a logo-heavy hoodie",
+      "dirty white sneakers",
+      "a wrinkled shirt",
+      "oversized baggy jeans"
+     ],
+     "cutout": "statue_facepalm"
+    },
+    {
+     "caption": "this looks expensive.",
+     "tiles": [
+      "@person_good",
+      "a crisp white t-shirt",
+      "clean white leather sneakers",
+      "a simple silver watch"
+     ],
+     "person_at": 0
+    }
+   ],
+   "cta": {
+    "screen": "style checklist"
+   },
+   "description": "it's not the price"
+  },
+  {
+   "id": "ST07",
+   "pillar": "style",
+   "priority": 6,
+   "formula": "routine",
+   "topic": "getting ready",
+   "slides": [
+    {
+     "caption": "getting ready routine",
+     "tiles": [
+      "a steaming shower",
+      "a minimal skincare set on a sink",
+      "a tin of matte hair clay",
+      "an unlabelled fragrance bottle"
+     ]
+    },
+    {
+     "caption": "outfit check",
+     "tiles": [
+      "a full-length mirror",
+      "a lint roller",
+      "freshly wiped white sneakers",
+      "a minimal silver watch"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "routine planner"
+   }
+  },
+  {
+   "id": "ST08",
+   "pillar": "style",
+   "priority": 4,
+   "formula": "category",
+   "topic": "scent by season",
+   "slides": [
+    {
+     "caption": "scent for SUMMER",
+     "tiles": [
+      "an unlabelled citrus fragrance bottle with lemon slices",
+      "a white linen shirt",
+      "sunglasses on a beach towel",
+      "a glass of sparkling water"
+     ]
+    },
+    {
+     "caption": "scent for WINTER",
+     "tiles": [
+      "an unlabelled amber fragrance bottle with cinnamon sticks",
+      "a chunky wool sweater",
+      "a leather jacket",
+      "a lit candle"
+     ]
+    },
+    {
+     "caption": "scent for DATE NIGHT",
+     "tiles": [
+      "a dark glass fragrance bottle",
+      "a black shirt on a hanger",
+      "a minimal watch",
+      "a candlelit table"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "style checklist"
+   }
+  },
+  {
+   "id": "ST09",
+   "pillar": "style",
+   "priority": 7,
+   "formula": "contrast",
+   "topic": "new money vs old money",
+   "slides": [
+    {
+     "caption": "new money fit",
+     "tiles": [
+      "a flashy logo belt",
+      "a chunky gold chain",
+      "bright logo sneakers",
+      "a glossy logo cap"
+     ]
+    },
+    {
+     "caption": "old money fit",
+     "tiles": [
+      "a navy knitted polo",
+      "brown suede loafers",
+      "beige linen trousers",
+      "a simple leather-strap watch"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "style checklist"
+   }
+  },
+  {
+   "id": "ST10",
+   "pillar": "style",
+   "priority": 8,
+   "formula": "progress",
+   "topic": "style arc",
+   "slides": [
+    {
+     "caption": "style day 1",
+     "tiles": [
+      "a pile of wrinkled hoodies",
+      "@statue:young man's marble bust wearing a baggy hoodie",
+      "dirty sneakers",
+      "a messy closet"
+     ]
+    },
+    {
+     "caption": "day 30",
+     "tiles": [
+      "a folded white t-shirt",
+      "@statue:the same marble bust wearing a plain fitted white t-shirt",
+      "dark jeans",
+      "clean white sneakers"
+     ]
+    },
+    {
+     "caption": "day 90",
+     "tiles": [
+      "a navy overshirt on a hanger",
+      "@statue:the same marble bust wearing a tailored navy overshirt",
+      "brown loafers",
+      "a minimal silver watch"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "style timeline"
+   }
+  },
+  {
+   "id": "PG04",
+   "pillar": "progress",
+   "priority": 1,
+   "formula": "mythbust",
+   "topic": "bad progress pics",
+   "slides": [
+    {
+     "caption": "your progress pics look like this",
+     "tiles": [
+      "a bathroom with harsh yellow overhead light",
+      "a dirty smudged mirror",
+      "a phone held too close at a low angle",
+      "a messy room in the background"
+     ],
+     "cutout": "statue_facepalm"
+    },
+    {
+     "caption": "do this instead.",
+     "tiles": [
+      "@person_good",
+      "soft window daylight in a clean room",
+      "a phone on a tripod at chest height",
+      "a clean bright mirror"
+     ],
+     "person_at": 0
+    }
+   ],
+   "cta": {
+    "screen": "progress photo guide"
+   }
+  },
+  {
+   "id": "PG05",
+   "pillar": "progress",
+   "priority": 4,
+   "formula": "routine",
+   "topic": "weekly & monthly check-in",
+   "slides": [
+    {
+     "caption": "weekly check-in",
+     "tiles": [
+      "a tape measure on a desk",
+      "a phone on a tripod by a window",
+      "a journal and pen",
+      "a habit tracker full of checkmarks"
+     ]
+    },
+    {
+     "caption": "monthly check-in",
+     "tiles": [
+      "a laptop showing two side-by-side photos",
+      "an empty barber chair",
+      "a calendar with a month of checkmarks",
+      "a sunrise through a window"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "progress check-in"
+   }
+  },
+  {
+   "id": "PG06",
+   "pillar": "progress",
+   "priority": 5,
+   "formula": "question",
+   "topic": "visible progress",
+   "slides": [
+    {
+     "caption": "Why is my progress so visible?",
+     "tiles": [
+      "a phone on a tripod by a window",
+      "soft window daylight",
+      "a habit tracker full of checkmarks",
+      "a tape measure"
+     ]
+    },
+    {
+     "caption": "Why do I never lose motivation?",
+     "tiles": [
+      "a laptop showing a photo timeline",
+      "a paper habit tracker",
+      "sunrise through a window",
+      "a packed gym bag"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "progress timeline"
+   }
+  },
+  {
+   "id": "PG07",
+   "pillar": "progress",
+   "priority": 2,
+   "formula": "contrast",
+   "topic": "what people see vs what it took",
+   "slides": [
+    {
+     "caption": "what people see",
+     "tiles": [
+      "a phone showing a selfie with many likes",
+      "@statue:heroic young man's head looking up, sharp jawline",
+      "a sunny beach",
+      "a sharp outfit on a hanger"
+     ]
+    },
+    {
+     "caption": "what it took",
+     "tiles": [
+      "a calendar full of checkmarks",
+      "@statue:young man's head bowed, tired, determined",
+      "an alarm clock at 5am",
+      "worn-out running shoes"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "progress timeline"
+   },
+   "description": "nobody sees day 47"
+  },
+  {
+   "id": "PG08",
+   "pillar": "progress",
+   "priority": 3,
+   "formula": "progress",
+   "topic": "marble block to statue",
+   "slides": [
+    {
+     "caption": "month 1",
+     "tiles": [
+      "a dusty chisel and hammer",
+      "@statue:rough unfinished marble block with a face barely emerging",
+      "a fast-food bag",
+      "a messy desk"
+     ]
+    },
+    {
+     "caption": "month 6",
+     "tiles": [
+      "a gym bag",
+      "@statue:half-carved marble bust with visible chisel marks",
+      "meal prep containers",
+      "a skincare shelf"
+     ]
+    },
+    {
+     "caption": "month 12",
+     "tiles": [
+      "an empty gym at sunrise",
+      "@statue:finished perfectly polished marble bust of a handsome young man",
+      "a made bed",
+      "a fresh fruit plate"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "progress timeline"
+   },
+   "description": "you're the sculptor"
+  },
+  {
+   "id": "PG09",
+   "pillar": "progress",
+   "priority": 6,
+   "formula": "category",
+   "topic": "what to track",
+   "slides": [
+    {
+     "caption": "track your SLEEP",
+     "tiles": [
+      "a dark bedroom at night",
+      "an analog alarm clock",
+      "a smart ring on a nightstand",
+      "a journal and pen"
+     ]
+    },
+    {
+     "caption": "track your FOOD",
+     "tiles": [
+      "a digital kitchen scale",
+      "meal prep containers",
+      "a tall glass of water",
+      "a bowl of eggs"
+     ]
+    },
+    {
+     "caption": "track your FACE",
+     "tiles": [
+      "a phone on a tripod by a window",
+      "soft morning window light",
+      "a clean bathroom mirror",
+      "a calendar with checkmarks"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "progress tracker"
+   }
+  },
+  {
+   "id": "PG10",
+   "pillar": "progress",
+   "priority": 7,
+   "formula": "question",
+   "topic": "people think I edit",
+   "slides": [
+    {
+     "caption": "Why do people think I edit my pics?",
+     "tiles": [
+      "soft window daylight",
+      "a frosty ice roller",
+      "an empty barber chair",
+      "a sunscreen tube"
+     ]
+    },
+    {
+     "caption": "Why is my day 90 so different?",
+     "tiles": [
+      "meal prep containers",
+      "an empty gym at sunrise",
+      "a minimal skincare shelf",
+      "a dark bedroom with blackout curtains"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "progress photo compare"
+   }
+  },
+  {
+   "id": "CR06",
+   "pillar": "creator",
+   "priority": 1,
+   "formula": "mythbust",
+   "topic": "this isn't jawmaxxing",
+   "slides": [
+    {
+     "caption": "this isn't jawmaxxing",
+     "tiles": [
+      "a ring light glowing in a bedroom",
+      "a phone on a tripod",
+      "a laptop with a video editing timeline",
+      "a phone gallery full of near-identical selfies"
+     ],
+     "cutout": "statue_facepalm"
+    },
+    {
+     "caption": "this is.",
+     "tiles": [
+      "@statue:young man's head side profile with a sharp jawline",
+      "hard mastic gum pieces",
+      "a tall glass of water",
+      "a dark bedroom at night"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "jaw routine checklist"
+   },
+   "description": "I said what I said"
+  },
+  {
+   "id": "CR07",
+   "pillar": "creator",
+   "priority": 2,
+   "formula": "contrast",
+   "topic": "gua sha on camera vs off camera",
+   "slides": [
+    {
+     "caption": "my gua sha in the video",
+     "tiles": [
+      "a jade gua sha on a white marble counter",
+      "lit candles and eucalyptus",
+      "soft golden window light",
+      "a folded white towel"
+     ]
+    },
+    {
+     "caption": "my gua sha the other 23 hours",
+     "tiles": [
+      "a jade gua sha buried under a pile of laundry",
+      "a gua sha in a cluttered drawer full of cables",
+      "a dusty gua sha behind a gaming headset",
+      "a gua sha under an unmade bed"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "daily face routine"
+   },
+   "description": "it's somewhere in my room"
+  },
+  {
+   "id": "CR08",
+   "pillar": "creator",
+   "priority": 3,
+   "formula": "category",
+   "topic": "creator kit vs actual kit",
+   "slides": [
+    {
+     "caption": "softmaxxer creator KIT",
+     "tiles": [
+      "a ring light",
+      "a phone tripod",
+      "a clip-on microphone",
+      "a phone with a video editing app open"
+     ]
+    },
+    {
+     "caption": "actual softmaxxer KIT",
+     "tiles": [
+      "hard mastic gum pieces",
+      "a sunscreen tube",
+      "light dumbbells",
+      "a tall glass of water"
+     ]
+    },
+    {
+     "caption": "kit I ACTUALLY use",
+     "tiles": [
+      "a ring light",
+      "a phone tripod",
+      "a clip-on microphone",
+      "a single piece of mastic gum"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "routine tracker"
+   },
+   "description": "be honest"
+  },
+  {
+   "id": "CR09",
+   "pillar": "creator",
+   "priority": 4,
+   "formula": "routine",
+   "topic": "filmed morning vs real morning",
+   "slides": [
+    {
+     "caption": "my morning (as filmed)",
+     "tiles": [
+      "golden sunrise through a window",
+      "a matcha latte on a wooden table",
+      "a journal and pen in soft light",
+      "an empty gym at sunrise"
+     ]
+    },
+    {
+     "caption": "my morning (not filmed)",
+     "tiles": [
+      "an alarm clock knocked over on the floor",
+      "a bowl of soggy cereal",
+      "a phone glowing in an unmade bed",
+      "clothes piled on a chair"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "morning routine planner"
+   },
+   "description": "the 5am routine was filmed at 11"
+  },
+  {
+   "id": "CR10",
+   "pillar": "creator",
+   "priority": 5,
+   "formula": "contrast",
+   "topic": "my posts vs my camera roll",
+   "slides": [
+    {
+     "caption": "my posts",
+     "tiles": [
+      "a sunrise gym through a window",
+      "@statue:heroic young man's head with a sharp jawline, looking up",
+      "a clean healthy meal",
+      "a minimal skincare shelf"
+     ]
+    },
+    {
+     "caption": "my camera roll",
+     "tiles": [
+      "a phone gallery of 47 near-identical blurry selfies",
+      "@statue:young man's head looking down, double chin angle",
+      "screenshots of other creators' jawlines on a phone",
+      "a phone storage-full warning glowing in the dark"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "progress photo timeline"
+   },
+   "description": "the camera roll knows the truth"
   }
  ],
  "pillars": {
@@ -1932,5 +4029,17 @@
    "unkempt black hair, wrinkled navy t-shirt, plain white wall",
    "overgrown curly hair, oversized black hoodie, beige wall"
   ]
- }
+ },
+ "quality_rules": [
+  "One story per post that reads in 1 second without the caption: before/after, expectation/reality, a progression, or a punchline on the last slide.",
+  "Tiles must be desirable or identity-signalling, not a tool catalogue. Food works because it's visceral; dumbbells and floss aren't. Mix tools with result or scene tiles (statue, sunrise gym, made bed).",
+  "Every tile must be recognisable at thumbnail size without the caption. If you need the caption to understand a tile (spoons in a freezer, a foam mat), swap it.",
+  "No repeated subject inside a post (two ice tiles), and the CTA grid should not copy the previous slide.",
+  "One photo style per post. Macro for product/food, casual for scenes. Never macro for screens or furniture (they turn into abstract gradients).",
+  "Colour: 3-4 distinct dominant colours per grid. All-black gym gear and all-dark moody grids turn to mush at thumbnail size.",
+  "Captions: 2 balanced lines max, no single-word orphan on line 2. Keep the punchline word in CAPS.",
+  "The statue cut-out must not cover the two bottom tiles' subjects. Use it on question posts only, or make it a tile.",
+  "Faces: one stable face per post, never the same face across posts, and keep them believable (no flawless model gloss).",
+  "Slide 1 is the cover: it must carry the strongest hook, because it decides whether anyone swipes."
+ ]
 }

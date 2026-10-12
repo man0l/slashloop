@@ -23,15 +23,15 @@ extrapolated from the proven ones. They're untested, so test them before you sca
 | Pillar | Suggested mix | Angle | Best formulas | Posts |
 |---|---|---|---|---|
 | **Food & diet** | 15% | food -> looks (skin, jaw, body fat) | question, mythbust, contrast, category, sprite | 18 |
-| **Skin** | 15% | clear skin, glow, acne, SPF, simple routines | question, mythbust, category | 3 |
-| **Face & jawline** | 15% | definition through body fat, de-bloating, sleep, chewing, posture | question, mythbust | 2 |
-| **Body & gym** | 15% | V-taper, shoulders, neck, the 'looks better in clothes' lifts | category, question, contrast | 3 |
-| **Posture** | 5% | standing taller, desk setup, anti-slouch habits | contrast, question | 2 |
-| **Hair, teeth, eyes & grooming** | 10% | haircare, brows, oral care, under-eyes | category, mythbust, question | 3 |
-| **Sleep & discipline** | 10% | sleep, mornings, dopamine, consistency | routine, contrast, mythbust | 4 |
-| **Style & scent** | 5% | basics that look expensive, scent, accessories | category, contrast | 2 |
-| **Progress & creator** | 5% | glow-up arcs, progress pics, tracking | progress, category, question | 3 |
-| **Documenting the journey (creator humor)** | 10% | self-aware joke: softmaxxers spend more time filming, editing and posting the glow-up than actually doing it. Relatable for the creators in the audience, very shareable | category, contrast, progress, question, routine | 5 |
+| **Skin** | 15% | clear skin, glow, acne, SPF, simple routines | question, mythbust, category | 10 |
+| **Face & jawline** | 15% | definition through body fat, de-bloating, sleep, chewing, posture | question, mythbust | 10 |
+| **Body & gym** | 15% | V-taper, shoulders, neck, the 'looks better in clothes' lifts | category, question, contrast | 10 |
+| **Posture** | 5% | standing taller, desk setup, anti-slouch habits | contrast, question | 10 |
+| **Hair, teeth, eyes & grooming** | 10% | haircare, brows, oral care, under-eyes | category, mythbust, question | 10 |
+| **Sleep & discipline** | 10% | sleep, mornings, dopamine, consistency | routine, contrast, mythbust | 10 |
+| **Style & scent** | 5% | basics that look expensive, scent, accessories | category, contrast | 10 |
+| **Progress & creator** | 5% | glow-up arcs, progress pics, tracking | progress, category, question | 10 |
+| **Documenting the journey (creator humor)** | 10% | self-aware joke: softmaxxers spend more time filming, editing and posting the glow-up than actually doing it. Relatable for the creators in the audience, very shareable | category, contrast, progress, question, routine | 10 |
 
 At 1 post/day, the mix works out to roughly 1 food, 1 skin, 1 face, 1 gym, 1 creator-humor and 1 habits/progress post per week, with posture, style and grooming rotating in.
 
@@ -68,15 +68,15 @@ creators send them to each other.
 | Pillar | Humble-brag question | Average X vs average Y | This isn't X / but this is. | real <CATEGORY> list | Game-item meme pairing | Routine grid | Day-N progress checkpoints |
 |---|---|---|---|---|---|---|---|
 | **Food & diet** | Q01, Q02, Q03, Q04, Q05, Q06 | C01, C02, C03 | M01, M02, M03, M04 | L01, L02, L03 | S01, S02 | · | · |
-| **Skin** | SK01 | · | SK02 | SK03 | · | · | · |
-| **Face & jawline** | FJ01 | · | FJ02 | · | · | · | · |
-| **Body & gym** | GY02 | GY03 | · | GY01 | · | · | · |
-| **Posture** | PO02 | PO01 | · | · | · | · | · |
-| **Hair, teeth, eyes & grooming** | HG01 | · | HG02 | HG03 | · | · | · |
-| **Sleep & discipline** | · | DH01 | DH03 | · | · | DH02, DH04 | · |
-| **Style & scent** | · | ST02 | · | ST01 | · | · | · |
-| **Progress & creator** | PG03 | · | · | PG02 | · | · | PG01 |
-| **Documenting the journey (creator humor)** | CR05 | CR03 | · | CR01 | · | CR04 | CR02 |
+| **Skin** | SK01, SK05, SK10 | SK04 | SK02, SK06 | SK03, SK07 | · | SK08 | SK09 |
+| **Face & jawline** | FJ01, FJ05, FJ10 | FJ03, FJ09 | FJ02, FJ06 | FJ04 | · | FJ08 | FJ07 |
+| **Body & gym** | GY02, GY09 | GY03, GY04, GY10 | GY05 | GY01, GY06 | · | GY07 | GY08 |
+| **Posture** | PO02, PO05 | PO01, PO07, PO10 | PO03, PO09 | PO04 | · | PO06 | PO08 |
+| **Hair, teeth, eyes & grooming** | HG01, HG05, HG08 | HG04 | HG02, HG06 | HG03, HG10 | · | HG07 | HG09 |
+| **Sleep & discipline** | DH05, DH10 | DH01, DH07 | DH03, DH08 | DH06 | · | DH02, DH04, DH09 | · |
+| **Style & scent** | ST05 | ST02, ST03, ST09 | ST06 | ST01, ST04, ST08 | · | ST07 | ST10 |
+| **Progress & creator** | PG03, PG06, PG10 | PG07 | PG04 | PG02, PG09 | · | PG05 | PG01, PG08 |
+| **Documenting the journey (creator humor)** | CR05 | CR03, CR07, CR10 | CR06 | CR01, CR08 | · | CR04, CR09 | CR02 |
 
 Empty cells (·) are open slots. Copy a row from the same column and swap the subjects to fill them.
 
@@ -109,6 +109,19 @@ These get videos removed, suppressed or reported in this niche, and they're risk
 - **Extreme cuts**, water/sodium manipulation for "face gains", dehydration before photos
 - Rating or mocking **real people's** faces/bodies, "looksmin" self-hate framing, and shirtless content that looks underage
 - Medical promises ("cures acne", "fixes recession"). Keep claims *implied* by the images, as the reference posts do.
+
+## 6b. Quality rules (learned from the first 15 slideshows)
+
+1. One story per post that reads in 1 second without the caption: before/after, expectation/reality, a progression, or a punchline on the last slide.
+2. Tiles must be desirable or identity-signalling, not a tool catalogue. Food works because it's visceral; dumbbells and floss aren't. Mix tools with result or scene tiles (statue, sunrise gym, made bed).
+3. Every tile must be recognisable at thumbnail size without the caption. If you need the caption to understand a tile (spoons in a freezer, a foam mat), swap it.
+4. No repeated subject inside a post (two ice tiles), and the CTA grid should not copy the previous slide.
+5. One photo style per post. Macro for product/food, casual for scenes. Never macro for screens or furniture (they turn into abstract gradients).
+6. Colour: 3-4 distinct dominant colours per grid. All-black gym gear and all-dark moody grids turn to mush at thumbnail size.
+7. Captions: 2 balanced lines max, no single-word orphan on line 2. Keep the punchline word in CAPS.
+8. The statue cut-out must not cover the two bottom tiles' subjects. Use it on question posts only, or make it a tile.
+9. Faces: one stable face per post, never the same face across posts, and keep them believable (no flawless model gloss).
+10. Slide 1 is the cover: it must carry the strongest hook, because it decides whether anyone swipes.
 
 ---
 
@@ -370,6 +383,32 @@ Description: *"eat like it's survival mode"* · #minecraft #healthyfood #softmax
 
 Description: *"it's not genetics"* · #skincareformen #softmaxxing #clearskin #glowup #fyp
 
+### SK04 · Average X vs average Y: average guy vs softmaxxer skincare  (priority 2)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **average guy skincare** | a cracked dry bar of soap on a dirty sink | a crumpled damp towel on a bathroom floor | 👤 *weak face* | a greasy smudged phone screen | — |
+| 2 | **softmaxxer skincare** | a minimal three-step skincare set on a white marble sink | a sunscreen tube in bright sunlight | 👤 *good face* | a fresh folded white towel | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **skin score / skincare routine**
+
+Description: *"which one are you?"* · #skincareformen #softmaxxing #clearskin #glowup #fyp
+
+### SK06 · This isn't X / but this is.: fake skincare hacks  (priority 3)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **this isn't skincare** | toothpaste dabbed on a fingertip | a squeezed lemon half | a jar of gritty walnut scrub | a bottle of alcohol hand sanitiser | Statue (facepalm) |
+| 2 | **this is.** | 👤 *good face* | a sunscreen tube in sunlight | a serum dropper bottle | a white moisturiser jar | — |
+
+**Slide 3 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **skincare routine**
+
+Description: *"please stop"* · #skincareformen #softmaxxing #clearskin #glowup #fyp
+
 ### SK02 · This isn't X / but this is.: skin-ruining habits  (priority 4)
 
 `3:4` · Casual phone · overlay: — · CTA: Phone in dark
@@ -382,6 +421,60 @@ Description: *"it's not genetics"* · #skincareformen #softmaxxing #clearskin #g
 **Slide 3 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **skincare routine checklist**
 
 Description: *"sorry not sorry"* · #skincareformen #softmaxxing #clearskin #glowup #fyp
+
+### SK09 · Day-N progress checkpoints ⚗️: skin day 1 to day 90  (priority 4)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **skin day 1** | a messy sink crowded with random products | a greasy fast-food bag | 🗿 *statue: young man's face carved from rough, cracked, pitted marble* | a phone glowing in bed at 2am | — |
+| 2 | **day 30** | a minimal three-product skincare shelf | a tall glass of water | 🗿 *statue: the same young man's face, marble partly smoothed, fewer cracks* | a fresh pillowcase | — |
+| 3 | **day 90** | a sunscreen tube in sunlight | a bowl of fresh berries | 🗿 *statue: the same young man's face carved from perfectly smooth, polished, glowing white marble* | a dark bedroom with blackout curtains | — |
+
+**Slide 4 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **skin progress timeline**
+
+Description: *"trust the process"* · #skincareformen #softmaxxing #clearskin #glowup #fyp
+
+### SK05 · Humble-brag question: acne & oil  (priority 5)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why don't I get acne?** | a fresh white pillowcase on a bed | pumpkin seeds | a glass of iced green tea | a phone screen being wiped with a cloth | Statue (back) |
+| 2 | **Why is my skin never oily?** | a clear gel cleanser bottle | blotting paper sheets | cucumber slices | an oil-free moisturiser jar | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **skin routine checklist** (screenshot replaces the TR tile, statue stays)
+
+Description: *"it's not genetics"* · #skincareformen #softmaxxing #clearskin #glowup #fyp
+
+### SK07 · real <CATEGORY> list: morning / night / weekly skin  (priority 6)
+
+`9:16` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **skin routine: MORNING** | a gel cleanser bottle | a vitamin C serum dropper | a moisturiser jar | a sunscreen tube | — |
+| 2 | **skin routine: NIGHT** | a cleansing balm jar | a retinol serum bottle | a thick night cream | a white silk pillowcase | — |
+| 3 | **skin routine: WEEKLY** | a green clay mask in a bowl with a brush | an exfoliating toner bottle | a fresh pillowcase being changed | a frosty ice roller | — |
+
+**Slide 4 (CTA):** Store card, caption **get the '<APP>' app**, showing **morning / night routine planner**
+
+Description: *"save this"* · #skincareformen #softmaxxing #clearskin #glowup #fyp
+
+### SK08 · Routine grid ⚗️: 6am vs 11pm skin  (priority 8)
+
+`9:16` · Moody dark · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **skin at 6am** | cold water splashing in a sink at dawn | a gel cleanser on a dark bathroom shelf | a sunscreen tube by a window at sunrise | a glass of water with lemon | — |
+| 2 | **skin at 11pm** | a cleansing balm on a dark sink | a serum dropper in low warm light | a silk pillowcase in a dark bedroom | a phone face-down in a drawer | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **skin routine streak**
+
+Description: *"steal my routine"* · #skincareformen #softmaxxing #clearskin #glowup #fyp
 
 ### SK03 · real <CATEGORY> list: minimal routines  (priority 9)
 
@@ -396,6 +489,19 @@ Description: *"sorry not sorry"* · #skincareformen #softmaxxing #clearskin #glo
 **Slide 4 (CTA):** Store card, caption **get the '<APP>' app**, showing **daily routine checklist with streak**
 
 Description: *"save this"* · #skincareformen #softmaxxing #clearskin #glowup #fyp
+
+### SK10 · Humble-brag question: skin people notice  (priority 9)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why does my skin glow in photos?** | a frosty ice roller | a sunscreen tube | raw salmon slices | a tall glass of ice water | Statue (back) |
+| 2 | **Why do people ask about my skin?** | a serum dropper bottle | a white silk pillowcase | halved kiwis | a dark quiet bedroom | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **skin score** (screenshot replaces the TR tile, statue stays)
+
+Description: *"it's not genetics"* · #skincareformen #softmaxxing #clearskin #glowup #fyp
 
 ## Pillar: Face & jawline
 
@@ -412,6 +518,59 @@ Description: *"save this"* · #skincareformen #softmaxxing #clearskin #glowup #f
 
 Description: *"it's not genetics"* · #jawline #softmaxxing #looksmaxxing #glowup #fyp
 
+### FJ04 · real <CATEGORY> list: jaw / debloat / lean face  (priority 2)
+
+`9:16` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **for a SHARP JAW** | hard mastic gum pieces | grilled chicken breast slices | a tall glass of water | a low-salt plate of steamed fish and vegetables | — |
+| 2 | **for LESS BLOAT** | a glass bowl of ice water | ripe bananas | a cup of green tea | cucumber slices | — |
+| 3 | **for a LEANER FACE** | a jump rope on a gym floor | running shoes on a pavement at sunrise | a bowl of fresh berries | boiled eggs | — |
+
+**Slide 4 (CTA):** Store card, caption **get the '<APP>' app**, showing **face routine**
+
+Description: *"save this"* · #jawline #softmaxxing #looksmaxxing #glowup #fyp
+
+### FJ03 · Average X vs average Y: average vs softmaxxer jaw habits  (priority 3)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **average jaw routine** | pink bubble gum | a can of sugary soda | 👤 *weak face* | a phone glowing in bed at 2am | — |
+| 2 | **softmaxxer jaw routine** | hard mastic gum pieces | a glass of water with lemon | 👤 *good face* | a dark bedroom with blackout curtains | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **jawline score**
+
+Description: *"which one are you?"* · #jawline #softmaxxing #looksmaxxing #glowup #fyp
+
+### FJ06 · This isn't X / but this is.: puffy face causes  (priority 4)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **this is making your face puffy** | salty instant ramen | beer cans on a coffee table | a late-night pizza box | a phone glowing in bed at 3am | Statue (facepalm) |
+| 2 | **this de-puffs it.** | 👤 *good face* | a glass bowl of ice water | a cup of green tea | ripe bananas | — |
+
+**Slide 3 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **debloat tracker**
+
+Description: *"the 3am pizza is not your friend"* · #jawline #softmaxxing #looksmaxxing #glowup #fyp
+
+### FJ05 · Humble-brag question: side profile & photos  (priority 5)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why is my side profile so clean?** | 🗿 *statue: perfect side profile of a young man's head with a sharp jawline* | a laptop raised to eye level on a stand | hard mastic gum pieces | a firm pillow on a made bed | — |
+| 2 | **Why do I photograph so well?** | soft window light in a bright room | a phone on a tripod at eye level | a glass bowl of ice water | a jade gua sha stone | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **jawline score** (screenshot replaces the TR tile, statue stays)
+
+Description: *"it's not genetics"* · #jawline #softmaxxing #looksmaxxing #glowup #fyp
+
 ### FJ02 · This isn't X / but this is.: jawline gadgets  (priority 6)
 
 `3:4` · Casual phone · overlay: — · CTA: Phone in dark
@@ -425,7 +584,86 @@ Description: *"it's not genetics"* · #jawline #softmaxxing #looksmaxxing #glowu
 
 Description: *"sorry not sorry"* · #jawline #softmaxxing #looksmaxxing #glowup #fyp
 
+### FJ09 · Average X vs average Y: bloated vs sharp face diet  (priority 6)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **bloated face diet** | a fast-food burger and fries | a big cola cup with ice | 👤 *weak face* | a bag of salty chips | — |
+| 2 | **sharp face diet** | a seared steak on a board | a bowl of fresh berries | 👤 *good face* | a tall glass of water | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **face score**
+
+Description: *"which one are you?"* · #jawline #softmaxxing #looksmaxxing #glowup #fyp
+
+### FJ07 · Day-N progress checkpoints ⚗️: jawline arc  (priority 7)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **jawline day 1** | a fast-food burger and fries | pink bubble gum | 🗿 *statue: young man's head side profile with a soft rounded jaw* | cans of soda | — |
+| 2 | **day 60** | hard mastic gum pieces | a tall glass of water | 🗿 *statue: the same young man's head side profile, jaw more defined* | running shoes | — |
+| 3 | **day 120** | a plate of steak and vegetables | a jump rope | 🗿 *statue: the same young man's head side profile with a razor-sharp chiselled jawline* | a dark bedroom at night | — |
+
+**Slide 4 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **jawline progress timeline**
+
+Description: *"day 180 next?"* · #jawline #softmaxxing #looksmaxxing #glowup #fyp
+
+### FJ08 · Routine grid ⚗️: 10-minute face routine  (priority 8)
+
+`9:16` · Moody dark · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **my 10 min morning face routine** | a glass bowl of ice water at dawn | a jade gua sha stone on a dark counter | hard mastic gum pieces | a sunscreen tube by a window | — |
+| 2 | **my 10 min night face routine** | a cleanser on a dark sink | a gua sha with face oil in warm low light | a firm pillow in a dark bedroom | a phone in a drawer | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **face routine timer**
+
+Description: *"steal my routine"* · #jawline #softmaxxing #looksmaxxing #glowup #fyp
+
+### FJ10 · Humble-brag question: cheekbones & lean face  (priority 10)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why do my cheekbones show?** | 🗿 *statue: young man's face three-quarter view with high sharp cheekbones* | grilled chicken breast slices | a tall glass of water | a rowing machine | — |
+| 2 | **Why is my face so lean?** | a jump rope | a bowl of fresh berries | a cup of green tea | boiled eggs cut in half | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **face score** (screenshot replaces the TR tile, statue stays)
+
+Description: *"it's not genetics"* · #jawline #softmaxxing #looksmaxxing #glowup #fyp
+
 ## Pillar: Body & gym
+
+### GY04 · Average X vs average Y: what you train vs what looks good  (priority 1)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **what you train** | a crowded flat bench press | dumbbells for bicep curls | 👤 *weak face* | an ab crunch machine | — |
+| 2 | **what makes you look good** | light dumbbells for lateral raises | a pull-up bar | 👤 *good face* | a leather neck harness with a weight plate | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **workout plan for aesthetics**
+
+Description: *"train for the mirror AND the street"* · #gymtok #softmaxxing #aesthetic #vtaper #fyp
+
+### GY09 · Humble-brag question: t-shirt physique  (priority 2)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why do I look good in a t-shirt?** | 🗿 *statue: broad muscular shoulders and back seen from behind* | light dumbbells for lateral raises | a pull-up bar | a folded fitted white t-shirt | — |
+| 2 | **Why is my back so wide?** | a lat pulldown machine | a rowing machine | a pull-up bar | a plate of chicken and rice | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **workout plan** (screenshot replaces the TR tile, statue stays)
+
+Description: *"it's not genetics"* · #gymtok #softmaxxing #aesthetic #vtaper #fyp
 
 ### GY01 · real <CATEGORY> list: aesthetic lifts  (priority 3)
 
@@ -441,6 +679,60 @@ Description: *"sorry not sorry"* · #jawline #softmaxxing #looksmaxxing #glowup 
 
 Description: *"save this"* · #gymtok #softmaxxing #aesthetic #vtaper #fyp
 
+### GY08 · Day-N progress checkpoints ⚗️: gym arc  (priority 3)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **gym day 1** | light dumbbells on an empty rack | a phone showing a workout tutorial | 🗿 *statue: slim skinny young athlete torso* | a tiny gym bag | — |
+| 2 | **day 100** | a loaded barbell | a pull-up bar | 🗿 *statue: the same young athlete torso, visibly more muscular* | meal prep containers | — |
+| 3 | **day 365** | a heavy loaded deadlift barbell | a leather neck harness | 🗿 *statue: the same young athlete, broad heroic muscular torso, V-taper* | worn-out training shoes | — |
+
+**Slide 4 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **workout progress chart**
+
+Description: *"day 1 is the hardest"* · #gymtok #softmaxxing #aesthetic #vtaper #fyp
+
+### GY05 · This isn't X / but this is.: fake aesthetic shortcuts  (priority 4)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **this won't make you aesthetic** | a plastic ab roller gadget | a vibrating fat-burning belt | a sauna sweat suit | a tub of fat-burner powder | Statue (facepalm) |
+| 2 | **this will.** | 👤 *good face* | a pull-up bar | light dumbbells for lateral raises | a plate of chicken, rice and vegetables | — |
+
+**Slide 3 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **workout plan**
+
+Description: *"sorry not sorry"* · #gymtok #softmaxxing #aesthetic #vtaper #fyp
+
+### GY06 · real <CATEGORY> list: no-gym training  (priority 5)
+
+`9:16` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **no-gym SHOULDERS** | a resistance band on a door handle | two full water jugs | a backpack filled with books | a sturdy chair for dips | — |
+| 2 | **no-gym BACK** | a doorframe pull-up bar | a towel looped around a door handle | a resistance band | a heavy backpack | — |
+| 3 | **no-gym LEGS** | a flight of stairs | a wooden step box | a jump rope | a heavy backpack on a floor | — |
+
+**Slide 4 (CTA):** Store card, caption **get the '<APP>' app**, showing **home workout plan**
+
+Description: *"save this"* · #gymtok #softmaxxing #aesthetic #vtaper #fyp
+
+### GY07 · Routine grid ⚗️: 5:45am gym routine  (priority 6)
+
+`9:16` · Moody dark · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **5:45am gym routine** | an alarm clock in a dark bedroom | a banana and a glass of water on a dark counter | an empty gym in blue morning light | a chalked barbell | — |
+| 2 | **post-gym routine** | a high-protein meal of eggs and steak | a steaming shower | a foam roller on a mat | a dark bedroom at 10pm | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **workout streak**
+
+Description: *"steal my routine"* · #gymtok #softmaxxing #aesthetic #vtaper #fyp
+
 ### GY02 · Humble-brag question: gym consistency  (priority 7)
 
 `9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
@@ -453,6 +745,19 @@ Description: *"save this"* · #gymtok #softmaxxing #aesthetic #vtaper #fyp
 **Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **workout streak calendar** (screenshot replaces the TR tile, statue stays)
 
 Description: *"it's not genetics"* · #gymtok #softmaxxing #aesthetic #vtaper #fyp
+
+### GY10 · Average X vs average Y: gym at 7pm vs 6am  (priority 7)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **gym at 7pm** | a crowded gym with every bench taken | a queue for the squat rack | 👤 *weak face* | a loud speaker on a gym floor | — |
+| 2 | **gym at 6am** | an empty gym at sunrise | a free squat rack | 👤 *good face* | a quiet gym with morning light | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **workout streak**
+
+Description: *"6am gym is a different world"* · #gymtok #softmaxxing #aesthetic #vtaper #fyp
 
 ### GY03 · Average X vs average Y: gym bro vs softmaxxer  (priority 8)
 
@@ -469,6 +774,46 @@ Description: *"which one are you?"* · #gymtok #softmaxxing #aesthetic #vtaper #
 
 ## Pillar: Posture
 
+### PO03 · This isn't X / but this is.: posture-ruining habits  (priority 2)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **this is ruining your posture** | a phone held low at chest level | a laptop on a lap on a couch | a heavy bag on one shoulder | a slouched gaming chair | Statue (facepalm) |
+| 2 | **do this instead.** | 👤 *good face* | a laptop on a stand at eye level | a backpack worn on both shoulders | a standing desk | — |
+
+**Slide 3 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **posture routine**
+
+Description: *"sorry not sorry"* · #posture #softmaxxing #looksmaxxing #selfimprovement #fyp
+
+### PO04 · real <CATEGORY> list: posture fixes  (priority 3)
+
+`9:16` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **posture fix: DESK** | a monitor raised to eye level | an external keyboard on a clean desk | a lumbar support pillow on a chair | a small footrest under a desk | — |
+| 2 | **posture fix: GYM** | a cable machine set up for face pulls | light dumbbells for rear-delt flyes | a pull-up bar for dead hangs | a foam roller | — |
+| 3 | **posture fix: SLEEP** | a firm mattress | a thin pillow | a pillow between knees for side sleeping | a dark tidy bedroom | — |
+
+**Slide 4 (CTA):** Store card, caption **get the '<APP>' app**, showing **posture plan**
+
+Description: *"save this"* · #posture #softmaxxing #looksmaxxing #selfimprovement #fyp
+
+### PO07 · Average X vs average Y: 8h gaming vs 8 weeks training  (priority 4)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **after 8 hours of gaming** | a gaming chair with RGB lights at night | 👤 *weak face* | empty energy drink cans | a glowing gaming mouse | — |
+| 2 | **after 8 weeks of training** | a pull-up bar | 👤 *good face* | a foam roller | a laptop on a stand at eye level | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **posture progress**
+
+Description: *"which one are you?"* · #posture #softmaxxing #looksmaxxing #selfimprovement #fyp
+
 ### PO01 · Average X vs average Y: gamer vs softmaxxer posture  (priority 5)
 
 `3:4` · Casual phone · overlay: — · CTA: Store card
@@ -479,6 +824,72 @@ Description: *"which one are you?"* · #gymtok #softmaxxing #aesthetic #vtaper #
 | 2 | **softmaxxer posture** | a laptop on a stand at eye level on a clean desk | a foam roller on a yoga mat | 👤 *good face* | a resistance band attached to a door frame | — |
 
 **Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **posture routine checklist**
+
+Description: *"which one are you?"* · #posture #softmaxxing #looksmaxxing #selfimprovement #fyp
+
+### PO05 · Humble-brag question: confidence posture  (priority 5)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why do I look so confident?** | 🗿 *statue: upright young man, chest proud, shoulders back, side view* | a pull-up bar for dead hangs | a resistance band | a laptop at eye level | — |
+| 2 | **Why does my neck look longer?** | a book balanced on a shelf at eye level | a doorframe for a chest stretch | a phone held up at eye level | a foam roller under a mat | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **posture score** (screenshot replaces the TR tile, statue stays)
+
+Description: *"it's not genetics"* · #posture #softmaxxing #looksmaxxing #selfimprovement #fyp
+
+### PO06 · Routine grid ⚗️: 5-minute posture routine  (priority 6)
+
+`9:16` · Moody dark · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **5 min posture routine** | a pull-up bar in a doorframe | a doorframe in morning light | a foam roller on a mat | a resistance band | — |
+| 2 | **desk posture routine** | a kitchen timer on a desk | a standing desk | a water bottle on a desk | a stretching strap | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **daily stretch timer**
+
+Description: *"steal my routine"* · #posture #softmaxxing #looksmaxxing #selfimprovement #fyp
+
+### PO08 · Day-N progress checkpoints ⚗️: posture arc  (priority 7)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **posture day 1** | a slouched gaming chair | 🗿 *statue: young man standing hunched with forward head posture, side view* | a phone held at chest level | a laptop on a bed | — |
+| 2 | **day 30** | a foam roller | 🗿 *statue: the same young man standing straighter, side view* | a laptop stand | a resistance band | — |
+| 3 | **day 90** | a pull-up bar | 🗿 *statue: the same young man standing perfectly upright, chest proud, side view* | a standing desk | running shoes | — |
+
+**Slide 4 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **posture timeline**
+
+Description: *"day 180 next?"* · #posture #softmaxxing #looksmaxxing #selfimprovement #fyp
+
+### PO09 · This isn't X / but this is.: posture gadgets  (priority 8)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **this won't fix your posture** | a posture corrector brace | a vibrating posture sensor gadget | an inflatable exercise ball as a chair | a neck massager gadget | Statue (facepalm) |
+| 2 | **this will.** | 👤 *good face* | a cable machine set up for face pulls | a rowing machine | a pull-up bar | — |
+
+**Slide 3 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **posture plan**
+
+Description: *"sorry not sorry"* · #posture #softmaxxing #looksmaxxing #selfimprovement #fyp
+
+### PO10 · Average X vs average Y: how you sit vs how you should  (priority 9)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **how you sit** | a slumped sofa with a laptop | a laptop on an unmade bed | a high bar stool at a kitchen counter | a reclined gaming chair | — |
+| 2 | **how you should sit** | an ergonomic office chair | a standing desk | a kneeling chair | a laptop on a stand with external keyboard | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **desk setup checklist**
 
 Description: *"which one are you?"* · #posture #softmaxxing #looksmaxxing #selfimprovement #fyp
 
@@ -496,6 +907,99 @@ Description: *"which one are you?"* · #posture #softmaxxing #looksmaxxing #self
 Description: *"it's not genetics"* · #posture #softmaxxing #looksmaxxing #selfimprovement #fyp
 
 ## Pillar: Hair, teeth, eyes & grooming
+
+### HG04 · Average X vs average Y: bathroom shelf identity  (priority 1)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **average guy bathroom shelf** | a 3-in-1 shampoo bottle | an aerosol body spray can | a cracked bar of soap | an old rusty disposable razor | — |
+| 2 | **softmaxxer bathroom shelf** | a minimal skincare set | an electric toothbrush | a beard trimmer | an unlabelled glass fragrance bottle | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **grooming checklist**
+
+Description: *"your shelf says everything"* · #groomingtips #softmaxxing #glowup #selfcare #fyp
+
+### HG08 · Humble-brag question: smell & hair compliments  (priority 2)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why do I smell so good?** | an unlabelled glass fragrance bottle | an unscented body lotion | freshly washed laundry | a stick deodorant | Statue (back) |
+| 2 | **Why do people compliment my hair?** | a scalp massager brush | a white silk pillowcase | a tin of matte hair clay | an empty barber chair | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **grooming checklist** (screenshot replaces the TR tile, statue stays)
+
+Description: *"it's not genetics"* · #groomingtips #softmaxxing #glowup #selfcare #fyp
+
+### HG05 · Humble-brag question: brows & beard  (priority 3)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why are my brows so clean?** | an eyebrow trimmer | slanted tweezers | an eyebrow spoolie brush | a small pair of grooming scissors | Statue (back) |
+| 2 | **Why is my beard line so sharp?** | a beard trimmer | white shaving foam | a safety razor | a beard oil dropper bottle | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **grooming checklist** (screenshot replaces the TR tile, statue stays)
+
+Description: *"it's not genetics"* · #groomingtips #softmaxxing #glowup #selfcare #fyp
+
+### HG06 · This isn't X / but this is.: teeth staining  (priority 4)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **this is yellowing your teeth** | a black coffee | a can of energy drink | a glass of cola | a cup of strong black tea | Statue (facepalm) |
+| 2 | **do this instead.** | 👤 *good face* | an iced coffee with a metal straw | an electric toothbrush | a glass of water | — |
+
+**Slide 3 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **grooming checklist**
+
+Description: *"sorry not sorry"* · #groomingtips #softmaxxing #glowup #selfcare #fyp
+
+### HG09 · Day-N progress checkpoints ⚗️: grooming arc  (priority 5)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **grooming day 1** | an old rusty razor | 🗿 *statue: young man's head with messy overgrown marble hair and patchy stubble* | a cracked bar of soap | a crumpled towel | — |
+| 2 | **day 30** | a beard trimmer | 🗿 *statue: the same young man's head with neater hair* | a minimal skincare set | an electric toothbrush | — |
+| 3 | **day 90** | an empty barber chair | 🗿 *statue: the same young man's head with sharply sculpted short hair and a clean jawline* | an unlabelled fragrance bottle | a silk pillowcase | — |
+
+**Slide 4 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **grooming timeline**
+
+Description: *"day 180 next?"* · #groomingtips #softmaxxing #glowup #selfcare #fyp
+
+### HG07 · Routine grid ⚗️: hair wash / no-wash day  (priority 6)
+
+`9:16` · Moody dark · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **hair routine: wash day** | a sulfate-free shampoo bottle | a conditioner bottle | a microfibre hair towel | a sea salt spray bottle | — |
+| 2 | **hair routine: no-wash day** | a water spray bottle | a wide-tooth comb | a tin of matte hair clay | a scalp massager brush | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **haircare routine**
+
+Description: *"steal my routine"* · #groomingtips #softmaxxing #glowup #selfcare #fyp
+
+### HG10 · real <CATEGORY> list: nails, eyes, lips  (priority 7)
+
+`9:16` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **real NAIL CARE** | nail clippers | a glass nail file | a cuticle oil bottle | a hand cream tube | — |
+| 2 | **real EYE CARE** | two metal spoons chilling in a freezer | a black sleep mask | an eye cream tube | classic black sunglasses | — |
+| 3 | **real LIP CARE** | a lip balm | an SPF lip balm | a glass of water | a jar of honey | — |
+
+**Slide 4 (CTA):** Store card, caption **get the '<APP>' app**, showing **grooming checklist**
+
+Description: *"save this"* · #groomingtips #softmaxxing #glowup #selfcare #fyp
 
 ### HG01 · Humble-brag question: smile & eyes  (priority 10)
 
@@ -552,6 +1056,33 @@ Description: *"save this"* · #groomingtips #softmaxxing #glowup #selfcare #fyp
 
 Description: *"which one are you?"* · #softmaxxing #discipline #thatguy #selfimprovement #fyp
 
+### DH06 · real <CATEGORY> list: free / cheap / worth paying  (priority 1)
+
+`9:16` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **FREE looksmaxxing** | morning sunlight on a street | a tall glass of water | a dark bedroom at night | a walking path in a park | — |
+| 2 | **CHEAP looksmaxxing** | a sunscreen tube | hard mastic gum pieces | a resistance band | a carton of eggs | — |
+| 3 | **worth PAYING for** | an empty barber chair | an electric toothbrush | a gym entrance at sunrise | a good firm mattress | — |
+
+**Slide 4 (CTA):** Store card, caption **get the '<APP>' app**, showing **routine planner**
+
+Description: *"save this before your next paycheck"* · #softmaxxing #discipline #thatguy #selfimprovement #fyp
+
+### DH10 · Humble-brag question: discipline  (priority 2)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why am I so disciplined?** | a neatly made bed | gym clothes laid out the night before | meal prep containers in a fridge | a phone in a drawer | Statue (back) |
+| 2 | **Why do I never doomscroll?** | a phone face-down in a drawer | an open book on a nightstand | an analog alarm clock | a journal and pen on a desk | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **habit tracker** (screenshot replaces the TR tile, statue stays)
+
+Description: *"it's not genetics"* · #softmaxxing #discipline #thatguy #selfimprovement #fyp
+
 ### DH02 · Routine grid ⚗️: morning & night routine  (priority 3)
 
 `9:16` · Moody dark · overlay: — · CTA: Store card
@@ -565,6 +1096,45 @@ Description: *"which one are you?"* · #softmaxxing #discipline #thatguy #selfim
 
 Description: *"steal my routine"* · #softmaxxing #discipline #thatguy #selfimprovement #fyp
 
+### DH05 · Humble-brag question: energy & waking  (priority 3)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why do I wake up before my alarm?** | sunrise through a bedroom window | a dark bedroom with blackout curtains | a phone charging outside the bedroom | a glass of water on a nightstand | Statue (back) |
+| 2 | **Why do I never feel tired?** | a morning walk on an empty street at sunrise | a tall glass of water | eggs and fruit for breakfast | an analog alarm clock set for 10pm | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **sleep tracker** (screenshot replaces the TR tile, statue stays)
+
+Description: *"it's not genetics"* · #softmaxxing #discipline #thatguy #selfimprovement #fyp
+
+### DH07 · Average X vs average Y: weekend average vs softmaxxer  (priority 4)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **average weekend** | an alarm clock showing 2pm in a messy room | beer cans on a table | 👤 *weak face* | a gaming setup at 4am | — |
+| 2 | **softmaxxer weekend** | a sunrise hike trail | a farmers market stall with vegetables | 👤 *good face* | fresh sheets on a made bed | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **weekly planner**
+
+Description: *"which one are you?"* · #softmaxxing #discipline #thatguy #selfimprovement #fyp
+
+### DH08 · This isn't X / but this is.: fake rest  (priority 5)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **this isn't rest** | doomscrolling a phone in bed at night | a TV glowing at 3am | energy drink cans | a 4-hour afternoon nap in a messy bed | Statue (facepalm) |
+| 2 | **this is.** | 👤 *good face* | a walk in a green park | a dark bedroom at 10pm | an open book on a nightstand | — |
+
+**Slide 3 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **sleep tracker**
+
+Description: *"sorry not sorry"* · #softmaxxing #discipline #thatguy #selfimprovement #fyp
+
 ### DH03 · This isn't X / but this is.: looks-lowering habits  (priority 6)
 
 `3:4` · Casual phone · overlay: — · CTA: Phone in dark
@@ -577,6 +1147,19 @@ Description: *"steal my routine"* · #softmaxxing #discipline #thatguy #selfimpr
 **Slide 3 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **habit tracker**
 
 Description: *"sorry not sorry"* · #softmaxxing #discipline #thatguy #selfimprovement #fyp
+
+### DH09 · Routine grid ⚗️: 9pm shutdown & 6am start  (priority 6)
+
+`9:16` · Moody dark · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **softmaxxer 9pm shutdown** | a phone placed in a drawer | a skincare routine on a dark sink | an open book under a warm lamp | blackout curtains being closed | — |
+| 2 | **softmaxxer 6am start** | sunrise through a window | a glass of water with lemon | a cold shower head running | a packed gym bag by the door | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **routine planner**
+
+Description: *"steal my routine"* · #softmaxxing #discipline #thatguy #selfimprovement #fyp
 
 ### DH04 · Routine grid ⚗️: sunday reset  (priority 11)
 
@@ -592,6 +1175,113 @@ Description: *"sorry not sorry"* · #softmaxxing #discipline #thatguy #selfimpro
 Description: *"steal my routine"* · #softmaxxing #discipline #thatguy #selfimprovement #fyp
 
 ## Pillar: Style & scent
+
+### ST06 · This isn't X / but this is.: looks cheap vs expensive  (priority 1)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **this makes you look cheap** | a logo-heavy hoodie | dirty white sneakers | a wrinkled shirt | oversized baggy jeans | Statue (facepalm) |
+| 2 | **this looks expensive.** | 👤 *good face* | a crisp white t-shirt | clean white leather sneakers | a simple silver watch | — |
+
+**Slide 3 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **style checklist**
+
+Description: *"it's not the price"* · #mensstyle #softmaxxing #oldmoney #glowup #fyp
+
+### ST03 · Average X vs average Y: fast fashion vs 5 pieces  (priority 2)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **fast fashion haul** | a pile of cheap polyester clothes | a logo-heavy hoodie | ripped skinny jeans | chunky dad sneakers | — |
+| 2 | **5 pieces that work** | a crisp plain white t-shirt | a navy overshirt | dark straight-leg jeans | clean white leather sneakers | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **style checklist**
+
+Description: *"which one are you?"* · #mensstyle #softmaxxing #oldmoney #glowup #fyp
+
+### ST04 · real <CATEGORY> list: outfit by occasion  (priority 3)
+
+`9:16` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **outfit for the GYM** | a fitted black t-shirt | black training shorts | white crew socks | clean training shoes | — |
+| 2 | **outfit for a DATE** | a white oxford shirt | dark straight-leg jeans | brown leather loafers | a minimal silver watch | — |
+| 3 | **outfit for CLASS** | a grey crewneck sweater | beige chinos | white leather sneakers | a canvas backpack | — |
+
+**Slide 4 (CTA):** Store card, caption **get the '<APP>' app**, showing **outfit planner**
+
+Description: *"save this"* · #mensstyle #softmaxxing #oldmoney #glowup #fyp
+
+### ST08 · real <CATEGORY> list: scent by season  (priority 4)
+
+`9:16` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **scent for SUMMER** | an unlabelled citrus fragrance bottle with lemon slices | a white linen shirt | sunglasses on a beach towel | a glass of sparkling water | — |
+| 2 | **scent for WINTER** | an unlabelled amber fragrance bottle with cinnamon sticks | a chunky wool sweater | a leather jacket | a lit candle | — |
+| 3 | **scent for DATE NIGHT** | a dark glass fragrance bottle | a black shirt on a hanger | a minimal watch | a candlelit table | — |
+
+**Slide 4 (CTA):** Store card, caption **get the '<APP>' app**, showing **style checklist**
+
+Description: *"save this"* · #mensstyle #softmaxxing #oldmoney #glowup #fyp
+
+### ST05 · Humble-brag question: put-together look  (priority 5)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why do I always look put together?** | a lint roller | a handheld clothes steamer | a sneaker cleaning kit | a fitted plain t-shirt on a hanger | Statue (back) |
+| 2 | **Why do my clothes fit so well?** | a tailor's measuring tape and pins | an ironed white shirt | neatly folded dark jeans | a fitted navy t-shirt | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **style checklist** (screenshot replaces the TR tile, statue stays)
+
+Description: *"it's not genetics"* · #mensstyle #softmaxxing #oldmoney #glowup #fyp
+
+### ST07 · Routine grid ⚗️: getting ready  (priority 6)
+
+`9:16` · Moody dark · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **getting ready routine** | a steaming shower | a minimal skincare set on a sink | a tin of matte hair clay | an unlabelled fragrance bottle | — |
+| 2 | **outfit check** | a full-length mirror | a lint roller | freshly wiped white sneakers | a minimal silver watch | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **routine planner**
+
+Description: *"steal my routine"* · #mensstyle #softmaxxing #oldmoney #glowup #fyp
+
+### ST09 · Average X vs average Y: new money vs old money  (priority 7)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **new money fit** | a flashy logo belt | a chunky gold chain | bright logo sneakers | a glossy logo cap | — |
+| 2 | **old money fit** | a navy knitted polo | brown suede loafers | beige linen trousers | a simple leather-strap watch | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **style checklist**
+
+Description: *"which one are you?"* · #mensstyle #softmaxxing #oldmoney #glowup #fyp
+
+### ST10 · Day-N progress checkpoints ⚗️: style arc  (priority 8)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **style day 1** | a pile of wrinkled hoodies | 🗿 *statue: young man's marble bust wearing a baggy hoodie* | dirty sneakers | a messy closet | — |
+| 2 | **day 30** | a folded white t-shirt | 🗿 *statue: the same marble bust wearing a plain fitted white t-shirt* | dark jeans | clean white sneakers | — |
+| 3 | **day 90** | a navy overshirt on a hanger | 🗿 *statue: the same marble bust wearing a tailored navy overshirt* | brown loafers | a minimal silver watch | — |
+
+**Slide 4 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **style timeline**
+
+Description: *"day 180 next?"* · #mensstyle #softmaxxing #oldmoney #glowup #fyp
 
 ### ST01 · real <CATEGORY> list: look-expensive basics  (priority 14)
 
@@ -622,6 +1312,19 @@ Description: *"which one are you?"* · #mensstyle #softmaxxing #oldmoney #glowup
 
 ## Pillar: Progress & creator
 
+### PG04 · This isn't X / but this is.: bad progress pics  (priority 1)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **your progress pics look like this** | a bathroom with harsh yellow overhead light | a dirty smudged mirror | a phone held too close at a low angle | a messy room in the background | Statue (facepalm) |
+| 2 | **do this instead.** | 👤 *good face* | soft window daylight in a clean room | a phone on a tripod at chest height | a clean bright mirror | — |
+
+**Slide 3 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **progress photo guide**
+
+Description: *"sorry not sorry"* · #softmaxxing #glowup #progress #looksmaxxing #fyp
+
 ### PG01 · Day-N progress checkpoints ⚗️: 90-day softmaxxing arc  (priority 2)
 
 `3:4` · Casual phone · overlay: — · CTA: Phone in dark
@@ -636,6 +1339,46 @@ Description: *"which one are you?"* · #mensstyle #softmaxxing #oldmoney #glowup
 
 Description: *"day 180 next?"* · #softmaxxing #glowup #progress #looksmaxxing #fyp
 
+### PG07 · Average X vs average Y: what people see vs what it took  (priority 2)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **what people see** | a phone showing a selfie with many likes | 🗿 *statue: heroic young man's head looking up, sharp jawline* | a sunny beach | a sharp outfit on a hanger | — |
+| 2 | **what it took** | a calendar full of checkmarks | 🗿 *statue: young man's head bowed, tired, determined* | an alarm clock at 5am | worn-out running shoes | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **progress timeline**
+
+Description: *"nobody sees day 47"* · #softmaxxing #glowup #progress #looksmaxxing #fyp
+
+### PG08 · Day-N progress checkpoints ⚗️: marble block to statue  (priority 3)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **month 1** | a dusty chisel and hammer | 🗿 *statue: rough unfinished marble block with a face barely emerging* | a fast-food bag | a messy desk | — |
+| 2 | **month 6** | a gym bag | 🗿 *statue: half-carved marble bust with visible chisel marks* | meal prep containers | a skincare shelf | — |
+| 3 | **month 12** | an empty gym at sunrise | 🗿 *statue: finished perfectly polished marble bust of a handsome young man* | a made bed | a fresh fruit plate | — |
+
+**Slide 4 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **progress timeline**
+
+Description: *"you're the sculptor"* · #softmaxxing #glowup #progress #looksmaxxing #fyp
+
+### PG05 · Routine grid ⚗️: weekly & monthly check-in  (priority 4)
+
+`9:16` · Moody dark · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **weekly check-in** | a tape measure on a desk | a phone on a tripod by a window | a journal and pen | a habit tracker full of checkmarks | — |
+| 2 | **monthly check-in** | a laptop showing two side-by-side photos | an empty barber chair | a calendar with a month of checkmarks | a sunrise through a window | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **progress check-in**
+
+Description: *"steal my routine"* · #softmaxxing #glowup #progress #looksmaxxing #fyp
+
 ### PG02 · real <CATEGORY> list: how to take progress pics  (priority 5)
 
 `9:16` · Casual phone · overlay: — · CTA: Store card
@@ -649,6 +1392,46 @@ Description: *"day 180 next?"* · #softmaxxing #glowup #progress #looksmaxxing #
 **Slide 4 (CTA):** Store card, caption **get the '<APP>' app**, showing **progress photo timeline / side-by-side compare**
 
 Description: *"save this"* · #softmaxxing #glowup #progress #looksmaxxing #fyp
+
+### PG06 · Humble-brag question: visible progress  (priority 5)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why is my progress so visible?** | a phone on a tripod by a window | soft window daylight | a habit tracker full of checkmarks | a tape measure | Statue (back) |
+| 2 | **Why do I never lose motivation?** | a laptop showing a photo timeline | a paper habit tracker | sunrise through a window | a packed gym bag | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **progress timeline** (screenshot replaces the TR tile, statue stays)
+
+Description: *"it's not genetics"* · #softmaxxing #glowup #progress #looksmaxxing #fyp
+
+### PG09 · real <CATEGORY> list: what to track  (priority 6)
+
+`9:16` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **track your SLEEP** | a dark bedroom at night | an analog alarm clock | a smart ring on a nightstand | a journal and pen | — |
+| 2 | **track your FOOD** | a digital kitchen scale | meal prep containers | a tall glass of water | a bowl of eggs | — |
+| 3 | **track your FACE** | a phone on a tripod by a window | soft morning window light | a clean bathroom mirror | a calendar with checkmarks | — |
+
+**Slide 4 (CTA):** Store card, caption **get the '<APP>' app**, showing **progress tracker**
+
+Description: *"save this"* · #softmaxxing #glowup #progress #looksmaxxing #fyp
+
+### PG10 · Humble-brag question: people think I edit  (priority 7)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why do people think I edit my pics?** | soft window daylight | a frosty ice roller | an empty barber chair | a sunscreen tube | Statue (back) |
+| 2 | **Why is my day 90 so different?** | meal prep containers | an empty gym at sunrise | a minimal skincare shelf | a dark bedroom with blackout curtains | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **progress photo compare** (screenshot replaces the TR tile, statue stays)
+
+Description: *"it's not genetics"* · #softmaxxing #glowup #progress #looksmaxxing #fyp
 
 ### PG03 · Humble-brag question: fast glow-up  (priority 8)
 
@@ -679,6 +1462,19 @@ Description: *"it's not genetics"* · #softmaxxing #glowup #progress #looksmaxxi
 
 Description: *"the math isn't mathing"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
 
+### CR06 · This isn't X / but this is.: this isn't jawmaxxing  (priority 1)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **this isn't jawmaxxing** | a ring light glowing in a bedroom | a phone on a tripod | a laptop with a video editing timeline | a phone gallery full of near-identical selfies | Statue (facepalm) |
+| 2 | **this is.** | 🗿 *statue: young man's head side profile with a sharp jawline* | hard mastic gum pieces | a tall glass of water | a dark bedroom at night | — |
+
+**Slide 3 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **jaw routine checklist**
+
+Description: *"I said what I said"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
+
 ### CR02 · Day-N progress checkpoints ⚗️: the setup glowed up, the jaw didn't  (priority 2)
 
 `3:4` · Casual phone · overlay: — · CTA: Phone in dark
@@ -693,6 +1489,19 @@ Description: *"the math isn't mathing"* · #softmaxxing #jawmaxxing #creatorlife
 
 Description: *"the setup glowed up more than me"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
 
+### CR07 · Average X vs average Y: gua sha on camera vs off camera  (priority 2)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **my gua sha in the video** | a jade gua sha on a white marble counter | lit candles and eucalyptus | soft golden window light | a folded white towel | — |
+| 2 | **my gua sha the other 23 hours** | a jade gua sha buried under a pile of laundry | a gua sha in a cluttered drawer full of cables | a dusty gua sha behind a gaming headset | a gua sha under an unmade bed | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **daily face routine**
+
+Description: *"it's somewhere in my room"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
+
 ### CR03 · Average X vs average Y: how followers think I jawmax vs reality  (priority 3)
 
 `3:4` · Casual phone · overlay: — · CTA: Store card
@@ -705,6 +1514,20 @@ Description: *"the setup glowed up more than me"* · #softmaxxing #jawmaxxing #c
 **Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **daily jaw / face routine checklist**
 
 Description: *"we all know which one it is"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
+
+### CR08 · real <CATEGORY> list: creator kit vs actual kit  (priority 3)
+
+`9:16` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **softmaxxer creator KIT** | a ring light | a phone tripod | a clip-on microphone | a phone with a video editing app open | — |
+| 2 | **actual softmaxxer KIT** | hard mastic gum pieces | a sunscreen tube | light dumbbells | a tall glass of water | — |
+| 3 | **kit I ACTUALLY use** | a ring light | a phone tripod | a clip-on microphone | a single piece of mastic gum | — |
+
+**Slide 4 (CTA):** Store card, caption **get the '<APP>' app**, showing **routine tracker**
+
+Description: *"be honest"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
 
 ### CR04 · Routine grid ⚗️: the 5am routine and what it took to film it  (priority 4)
 
@@ -719,6 +1542,19 @@ Description: *"we all know which one it is"* · #softmaxxing #jawmaxxing #creato
 
 Description: *"14 takes for a 7 second clip"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
 
+### CR09 · Routine grid ⚗️: filmed morning vs real morning  (priority 4)
+
+`9:16` · Moody dark · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **my morning (as filmed)** | golden sunrise through a window | a matcha latte on a wooden table | a journal and pen in soft light | an empty gym at sunrise | — |
+| 2 | **my morning (not filmed)** | an alarm clock knocked over on the floor | a bowl of soggy cereal | a phone glowing in an unmade bed | clothes piled on a chair | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **morning routine planner**
+
+Description: *"the 5am routine was filmed at 11"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
+
 ### CR05 · Humble-brag question: why isn't my jawline improving  (priority 5)
 
 `9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
@@ -731,6 +1567,19 @@ Description: *"14 takes for a 7 second clip"* · #softmaxxing #jawmaxxing #creat
 **Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **screen-time vs routine-time tracker** (screenshot replaces the TR tile, statue stays)
 
 Description: *"no idea what's going on tbh"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
+
+### CR10 · Average X vs average Y: my posts vs my camera roll  (priority 5)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **my posts** | a sunrise gym through a window | 🗿 *statue: heroic young man's head with a sharp jawline, looking up* | a clean healthy meal | a minimal skincare shelf | — |
+| 2 | **my camera roll** | a phone gallery of 47 near-identical blurry selfies | 🗿 *statue: young man's head looking down, double chin angle* | screenshots of other creators' jawlines on a phone | a phone storage-full warning glowing in the dark | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **progress photo timeline**
+
+Description: *"the camera roll knows the truth"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
 
 ---
 
