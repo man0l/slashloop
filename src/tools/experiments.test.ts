@@ -742,6 +742,20 @@ describe('edits, cancel and delete', () => {
     expect(body.hint).toContain('instructions.variables');
   });
 
+  test('update_experiment_variant forwards the slide contract fields instead of stripping them', async () => {
+    const contract = { ...brief, slides: brief.slides.map((sl, i) => ({ ...sl, composition: `c${i}`, visibleChange: `v${i}`, arcLevel: 'mid' })) };
+    store.set('e1', exp('e1', { status: 'review' }));
+    const res = await call('update_experiment_variant', { experimentId: 'e1', variantId: 'v1', revision: 1, brief: contract });
+    expect(res.isError).toBe(false);
+    const forwarded = callsOf('mutate')[0]![3] as any;
+    expect(forwarded.brief.slides).toEqual(contract.slides);
+    expect(EditBrief.safeParse(forwarded).success).toBe(true);
+    const before = callsOf('mutate').length;
+    const bad = await (await connect()).callTool({ name: 'update_experiment_variant', arguments: { experimentId: 'e1', variantId: 'v1', revision: 1, brief: { ...contract, slides: contract.slides.map(sl => ({ ...sl, arcLevel: 'extreme' })) } } }) as { isError?: boolean };
+    expect(bad.isError).toBe(true);
+    expect(callsOf('mutate')).toHaveLength(before);
+  });
+
   test('update_experiment_variant keeps the pinned copy overrides on the brief', async () => {
     // M3: briefInput used to be a plain z.object, so it silently STRIPPED
     // copyOverrides. An explicitly blank slide 1 has exactly two carriers

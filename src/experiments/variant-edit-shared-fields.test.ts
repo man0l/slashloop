@@ -93,6 +93,26 @@ describe('update_experiment_variant shared fields', () => {
     expect(err.message).toContain('identical to the baseline');
   });
 
+  test('an edit that omits slide contract fields keeps the stored ones and takes the ones it sends', () => {
+    const contractSlides = slides('food').map((sl, i) => ({ ...sl, composition: `comp${i}`, visibleChange: `change${i}`, arcLevel: (['low', 'mid', 'high'] as const)[i] }));
+    const stored: BriefData = { ...food, slides: contractSlides };
+    const e = exp(['hook']);
+    e.variants[0]!.brief = stored;
+    e.variants[1]!.brief = { ...stored, hook: 'Sub 3 vs chad' };
+    // Reword one visibleChange and one overlay; send no other contract field.
+    const sent = stored.slides.map(({ role, scene, overlayText }) => ({ role, scene, overlayText }));
+    sent[1] = { ...sent[1]!, overlayText: 'new body copy', visibleChange: 'reworded change' } as typeof sent[number];
+    applyVariantEdit(e, 'base', edit({ ...stored, slides: sent as BriefData['slides'] }));
+    const got = e.variants[0]!.brief.slides;
+    expect(got.map(s => s.composition)).toEqual(['comp0', 'comp1', 'comp2']);
+    expect(got.map(s => s.arcLevel)).toEqual(['low', 'mid', 'high']);
+    expect(got.map(s => s.visibleChange)).toEqual(['change0', 'reworded change', 'change2']);
+    expect(got[1]!.overlayText).toBe('new body copy');
+    // Shared slides mirror onto the alternate with the contract intact.
+    expect(e.variants[1]!.brief.slides[1]!.visibleChange).toBe('reworded change');
+    expect(e.variants[1]!.brief.slides[2]!.arcLevel).toBe('high');
+  });
+
   test('stale revision and non-editable states are still refused', () => {
     expect(code(() => applyVariantEdit(exp(['hook']), 'base', edit(food, { revision: 1 })))).toBe('409:revision_conflict');
     expect(code(() => applyVariantEdit(exp(['hook'], { status: 'generating' }), 'base', edit(food)))).toBe('409:experiment_active');
