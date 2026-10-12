@@ -1,0 +1,188 @@
+{
+  "_about": "Content matrix for faceless 2x2-grid health slideshows. Derived from the teardown in docs/slideshow-teardown-clear-food.md. Each post row is a complete slideshow spec; pick rows by id. Tile tokens: plain text = food photo in the post's look; '@person_good' / '@person_bad' = outcome face; '@sprite:<item>' = pixel-art game item icon. 'priority' is a heuristic (1 = run first), not measured data.",
+
+  "formulas": {
+    "question": {
+      "name": "Humble-brag question",
+      "pattern": "Why is my <body part/outcome> so <good adjective>?  (x2)  ->  CTA inside the same grid",
+      "seen_in": "post D (blood flow / eyes)",
+      "slides": 2,
+      "defaults": {"ratio": "9:16", "look": "macro", "cutout": "statue_back", "cta": "in_grid"},
+      "why_it_works": "Reads as a flex, not advice. Viewers comment to ask what the foods do. The same statue on every slide makes it a recognisable series.",
+      "description": ["the answer is on your plate", "save this for later", "which one do you eat daily?"],
+      "hashtags": ["#looksmax", "#healthyfood", "#nutrition", "#selfimprovement", "#fyp"]
+    },
+    "contrast": {
+      "name": "Average X vs average Y",
+      "pattern": "average <group A> <meal>  ->  average <group B> <meal>  ->  CTA",
+      "seen_in": "post A (american vs european)",
+      "slides": 2,
+      "defaults": {"ratio": "3:4", "look": "casual", "cutout": "none", "cta": "store_card"},
+      "why_it_works": "Group rivalry gets defensive comments from both sides. The bottom-left face tile turns 'food' into 'what you'll look like'.",
+      "description": ["which one are you?", "be honest in the comments", "the difference is crazy"],
+      "hashtags": ["#healthyfood", "#diet", "#looksmax", "#mealideas", "#fyp"]
+    },
+    "mythbust": {
+      "name": "This isn't X / but this is.",
+      "pattern": "<this isn't healthy> (popular 'healthy' or junk foods)  ->  but this is.  ->  CTA",
+      "seen_in": "post E (junk food vs steak, eggs, fruit)",
+      "slides": 2,
+      "defaults": {"ratio": "3:4", "look": "casual", "cutout": "none", "cta": "phone_dark"},
+      "why_it_works": "Calls out foods people love or think are healthy, so the comments fill with people defending them. The facepalm statue on slide 1 is the punchline.",
+      "description": ["sorry not sorry", "who else was lied to?", "agree or disagree?"],
+      "hashtags": ["#healthyfood", "#nutritiontips", "#wholefoods", "#diet", "#fyp"]
+    },
+    "category": {
+      "name": "real <CATEGORY> list",
+      "pattern": "real <CAT 1>  ->  real <CAT 2>  ->  real <CAT 3>  ->  CTA",
+      "seen_in": "post C (real PROTEIN / FATS / CARBS)",
+      "slides": 3,
+      "defaults": {"ratio": "9:16", "look": "casual", "cutout": "none", "cta": "store_card"},
+      "why_it_works": "Built to be saved: a cheat-sheet people screenshot. The word 'real' implies everyone else is eating fake versions.",
+      "description": ["save this", "screenshot this for your next grocery run", "the only list you need"],
+      "hashtags": ["#healthyfood", "#groceryhaul", "#nutrition", "#wholefoods", "#fyp"]
+    },
+    "sprite": {
+      "name": "Game-item meme pairing",
+      "pattern": "<food> & <food> with real photo + pixel-art item icon on a diagonal  (x3)  ->  CTA",
+      "seen_in": "post B (eggs & milk / melon & tomatoes / apples & potatoes)",
+      "slides": 3,
+      "defaults": {"ratio": "3:4", "look": "casual", "cutout": "none", "cta": "store_card"},
+      "why_it_works": "Nostalgia hits gamers and stops the scroll. The implied joke ('eat like a block game character') makes it shareable.",
+      "description": ["eat like it's survival mode", "full hunger bar", "you can only pick one"],
+      "hashtags": ["#minecraft", "#healthyfood", "#gamer", "#nutrition", "#fyp"]
+    }
+  },
+
+  "looks": {
+    "macro": "Extreme close-up overhead food photograph of {food}. The food completely fills the frame edge to edge, no plate, table or background visible. Natural soft daylight, rich saturated colour, crisp glossy detail, commercial food photography.",
+    "casual": "Casual realistic iPhone photo of {food}, shot from slightly above in a real home kitchen, warm natural window light, slightly imperfect and unstyled, Pinterest aesthetic, shallow depth of field.",
+    "_suffix": " Vertical 2:3 composition, subject centred. No text, no labels, no logos, no watermark, no hands, no people."
+  },
+
+  "special_tiles": {
+    "@person_good": "Editorial portrait photo of a handsome young man around 20 years old with a sharp defined jawline, clear glowing skin, light eyes and thick dark hair, neutral confident expression looking at the camera, soft beige wall background, natural light, vertical 2:3. No text.",
+    "@person_bad": "Plain side-profile photo of an ordinary young man around 20 years old with a soft recessed chin, forward head posture and dull tired skin, standing against a plain off-white wall, flat indoor light, unflattering amateur snapshot, vertical 2:3. No text.",
+    "@sprite": "16x16 pixel-art inventory item icon of {item} in the style of a blocky voxel survival game, chunky square pixels, simple palette, the icon centred and filling most of the frame on a pure white background, vertical 2:3. No text."
+  },
+
+  "cutouts": {
+    "statue_back": "Black-and-white grey marble statue of a muscular classical Greek athlete, seen from behind showing a defined back with broken-off arms, head turned to the side in profile with curly hair, dramatic studio light, full bust down to the hips. Isolated on a transparent background, no ground shadow.",
+    "statue_facepalm": "White marble classical statue of a man covering his face with one hand in shame, head and shoulders and upper chest, dramatic soft light. Isolated on a transparent background, no ground shadow."
+  },
+
+  "posts": [
+    {"id": "Q01", "priority": 1, "formula": "question", "topic": "testosterone",
+     "slides": [
+       {"caption": "Why is my testosterone so high?", "tiles": ["raw oysters on crushed ice", "bright orange egg yolks", "raw red beef steak cubes", "brazil nuts"]},
+       {"caption": "Why is my energy so stable?", "tiles": ["fresh blueberries", "rolled oats", "roasted sweet potato cubes", "raw salmon fillet slices"]}],
+     "cta": {"food": "Steak and eggs", "score": 94, "tile": 1}},
+
+    {"id": "Q02", "priority": 2, "formula": "question", "topic": "skin & hair",
+     "slides": [
+       {"caption": "Why is my skin so clear?", "tiles": ["sliced avocado halves", "fresh raspberries", "baby spinach leaves", "sliced cucumber"]},
+       {"caption": "Why is my hair so thick?", "tiles": ["boiled eggs cut in half", "shelled walnuts", "sardines", "pumpkin seeds"]}],
+     "cta": {"food": "Avocado and eggs", "score": 92, "tile": 1}},
+
+    {"id": "Q03", "priority": 4, "formula": "question", "topic": "sleep & recovery",
+     "slides": [
+       {"caption": "Why is my sleep so deep?", "tiles": ["halved kiwis", "dark red cherries", "raw almonds", "pumpkin seeds"]},
+       {"caption": "Why do I recover so fast?", "tiles": ["pineapple chunks", "thick greek yogurt", "seared beef steak slices", "raw salmon fillet"]}],
+     "cta": {"food": "Kiwi and cherries", "score": 95, "tile": 1}},
+
+    {"id": "Q04", "priority": 6, "formula": "question", "topic": "focus & mood",
+     "slides": [
+       {"caption": "Why is my focus so sharp?", "tiles": ["fresh blueberries", "dark chocolate pieces", "shelled walnuts", "sunny side up eggs"]},
+       {"caption": "Why is my mood so good?", "tiles": ["ripe bananas", "raw salmon fillet slices", "baby spinach leaves", "pumpkin seeds"]}],
+     "cta": {"food": "Blueberries", "score": 97, "tile": 1}},
+
+    {"id": "Q05", "priority": 8, "formula": "question", "topic": "immune & blood flow",
+     "slides": [
+       {"caption": "Why do I never get sick?", "tiles": ["halved oranges", "peeled garlic cloves", "fresh ginger root slices", "sliced red bell peppers"]},
+       {"caption": "Why is my blood flow so good?", "tiles": ["sliced red beetroot", "dark chocolate pieces", "watermelon cubes", "pomegranate seeds"]}],
+     "cta": {"food": "Mixed fruit bowl", "score": 96, "tile": 1}},
+
+    {"id": "Q06", "priority": 10, "formula": "question", "topic": "gut & lean",
+     "slides": [
+       {"caption": "Why is my digestion so good?", "tiles": ["kefir in a glass", "sauerkraut", "halved kiwis", "fresh ginger root"]},
+       {"caption": "Why am I so lean?", "tiles": ["grilled chicken breast slices", "fresh strawberries", "steamed broccoli florets", "boiled potatoes"]}],
+     "cta": {"food": "Chicken and potatoes", "score": 91, "tile": 1}},
+
+    {"id": "M01", "priority": 3, "formula": "mythbust", "topic": "fake healthy foods",
+     "slides": [
+       {"caption": "this isn't healthy", "tiles": ["an acai bowl overloaded with granola, syrup and chocolate", "a supermarket granola bar", "a giant sugary fruit smoothie in a plastic cup", "flavoured fruit yogurt cups"], "cutout": "statue_facepalm"},
+       {"caption": "but this is.", "tiles": ["@person_good", "a wooden board with steak slices and fried eggs", "a big tray of fresh mixed fruit", "plain greek yogurt with honey"], "person_at": 0}],
+     "cta": {"food": "Steak, eggs and fruit plate", "score": 90}},
+
+    {"id": "M02", "priority": 5, "formula": "mythbust", "topic": "protein products",
+     "slides": [
+       {"caption": "this isn't protein", "tiles": ["a stack of wrapped protein bars", "protein chips in a bag", "protein cookies", "a sugary protein cereal bowl"], "cutout": "statue_facepalm"},
+       {"caption": "this is.", "tiles": ["@person_good", "a pan of fried eggs", "a seared ribeye steak on a cutting board", "grilled chicken breasts in a pan"], "person_at": 0}],
+     "cta": {"food": "Ribeye steak", "score": 93}},
+
+    {"id": "M03", "priority": 9, "formula": "mythbust", "topic": "breakfast",
+     "slides": [
+       {"caption": "stop eating this for breakfast", "tiles": ["a bowl of sugary colourful cereal", "frosted toaster pastries", "giant blueberry muffins", "a glass of orange juice from a carton"], "cutout": "statue_facepalm"},
+       {"caption": "eat this instead.", "tiles": ["@person_good", "steak and eggs on a plate", "fresh berries in a bowl", "sourdough toast with butter"], "person_at": 0}],
+     "cta": {"food": "Steak and eggs", "score": 92}},
+
+    {"id": "M04", "priority": 12, "formula": "mythbust", "topic": "snacks",
+     "slides": [
+       {"caption": "your 'healthy' snacks", "tiles": ["chocolate-coated rice cakes", "fruit gummies", "veggie straws", "trail mix full of candy"], "cutout": "statue_facepalm"},
+       {"caption": "actual healthy snacks", "tiles": ["@person_good", "sliced apples with peanut butter", "a bowl of mixed nuts", "cottage cheese with berries"], "person_at": 0}],
+     "cta": {"food": "Apple and peanut butter", "score": 88}},
+
+    {"id": "C01", "priority": 7, "formula": "contrast", "topic": "US vs Greece breakfast",
+     "slides": [
+       {"caption": "average american breakfast", "tiles": ["a stack of pancakes drowning in syrup", "glazed donuts in a box", "@person_bad", "a breakfast sandwich in fast-food paper"], "person_at": 2},
+       {"caption": "average greek breakfast", "tiles": ["greek yogurt with honey", "olives and feta cheese", "@person_good", "fresh figs cut in half"], "person_at": 2}],
+     "cta": {"food": "Greek yogurt and figs", "score": 95}},
+
+    {"id": "C02", "priority": 11, "formula": "contrast", "topic": "gym bro vs grandpa protein",
+     "slides": [
+       {"caption": "gym bro protein", "tiles": ["protein shake bottles", "wrapped protein bars", "@person_bad", "processed deli ham slices"], "person_at": 2},
+       {"caption": "grandpa protein", "tiles": ["a cast iron pan of fried eggs", "sardines in a tin", "@person_good", "a slow cooked beef stew"], "person_at": 2}],
+     "cta": {"food": "Fried eggs", "score": 90}},
+
+    {"id": "C03", "priority": 14, "formula": "contrast", "topic": "school lunch US vs Japan",
+     "slides": [
+       {"caption": "school lunch in america", "tiles": ["a cafeteria tray with pizza slice and tater tots", "chocolate milk cartons", "@person_bad", "chicken nuggets and fries on a tray"], "person_at": 2},
+       {"caption": "school lunch in japan", "tiles": ["a bento tray with rice, grilled fish and vegetables", "miso soup in a bowl", "@person_good", "fresh fruit slices on a small plate"], "person_at": 2}],
+     "cta": {"food": "Grilled fish and rice", "score": 93}},
+
+    {"id": "L01", "priority": 13, "formula": "category", "topic": "real snacks / sweets / drinks",
+     "slides": [
+       {"caption": "real SNACKS", "tiles": ["a bowl of mixed nuts", "sliced apples", "beef jerky strips", "boiled eggs"]},
+       {"caption": "real SWEETS", "tiles": ["medjool dates", "a honeycomb", "dark chocolate pieces", "fresh strawberries"]},
+       {"caption": "real DRINKS", "tiles": ["a glass of water with lemon", "a glass of whole milk", "a cup of green tea", "fresh coconut water in a coconut"]}],
+     "cta": {"food": "Mixed nuts", "score": 89}},
+
+    {"id": "L02", "priority": 15, "formula": "category", "topic": "foods for goals",
+     "slides": [
+       {"caption": "foods for CLEAR SKIN", "tiles": ["sliced avocado", "fresh blueberries", "raw salmon fillet", "sliced cucumbers"]},
+       {"caption": "foods for MUSCLE", "tiles": ["seared steak slices", "fried eggs", "grilled chicken breast", "greek yogurt"]},
+       {"caption": "foods for SLEEP", "tiles": ["halved kiwis", "cherries", "a glass of warm milk", "almonds"]}],
+     "cta": {"food": "Salmon and avocado", "score": 96}},
+
+    {"id": "L03", "priority": 17, "formula": "category", "topic": "ancient diets",
+     "slides": [
+       {"caption": "ancient GREEK diet", "tiles": ["green olives", "fresh figs", "a jar of honey", "grilled lamb chops"]},
+       {"caption": "ancient ROMAN diet", "tiles": ["crusty bread loaf", "bunches of grapes", "a wedge of hard cheese", "grilled fish"]},
+       {"caption": "ancient SPARTAN diet", "tiles": ["a dark pork and lentil stew", "barley grains", "roasted wild boar meat", "goat cheese"]}],
+     "cta": {"food": "Lamb chops", "score": 90}},
+
+    {"id": "S01", "priority": 16, "formula": "sprite", "topic": "survival-mode foods",
+     "slides": [
+       {"caption": "steak & carrots", "tiles": ["a seared steak on a cutting board", "@sprite:cooked steak", "@sprite:carrot", "fresh carrots with green tops"]},
+       {"caption": "bread & honey", "tiles": ["a crusty sourdough loaf", "@sprite:bread loaf", "@sprite:honey bottle", "a jar of golden honey"]},
+       {"caption": "salmon & berries", "tiles": ["a cooked salmon fillet", "@sprite:cooked salmon fish", "@sprite:sweet berries", "a bowl of fresh red berries"]}],
+     "cta": {"food": "Salmon fillet", "score": 94}},
+
+    {"id": "S02", "priority": 18, "formula": "sprite", "topic": "survival-mode foods 2",
+     "slides": [
+       {"caption": "baked potatoes & beetroot", "tiles": ["baked potatoes with butter", "@sprite:baked potato", "@sprite:beetroot", "fresh beetroots"]},
+       {"caption": "chicken & mushroom stew", "tiles": ["a roast chicken", "@sprite:cooked chicken leg", "@sprite:mushroom stew bowl", "a bowl of mushroom stew"]},
+       {"caption": "pumpkin pie & cookies", "tiles": ["a pumpkin pie", "@sprite:pumpkin pie", "@sprite:chocolate chip cookie", "chocolate chip cookies"]}],
+     "cta": {"food": "Baked potato", "score": 82}}
+  ]
+}
