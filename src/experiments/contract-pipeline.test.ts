@@ -214,18 +214,18 @@ describe('QA: hard failures get one repair and one re-QA, never downgraded', () 
 });
 
 describe('frames are picked by arc level, not position', () => {
-  test('slides take the source frame at their own level; an unmatched slide is created new', async () => {
+  test('slides take the source frame at their own level; a slide with no frame is dropped, never rendered new', async () => {
     const levels = [{ index: 0, level: 'high', showsPerson: false }, { index: 1, level: 'low', showsPerson: false }, { index: 2, level: 'none', showsPerson: false }];
     const w = world({
       contract: rawContract({ arcAxis: 'size', sourceFrameLevels: levels, slides: [slide({ overlayText: 'a', arcLevel: 'low' }), slide({ overlayText: 'b', arcLevel: 'mid' }), slide({ overlayText: 'c', arcLevel: 'high' })] }),
-      qa: [() => qaPass(), () => qaPass()],
+      qa: [() => qaPass(2), () => qaPass(2)],
     });
     await w.plan();
+    expect(w.row.variants[0]!.brief.slides.map(s => s.overlayText)).toEqual(['a', 'c']);
+    expect(w.row.notices?.join(' ')).toMatch(/2 slides instead of 3/);
     await w.generate([w.row.variants[0]!.id]);
     const urls = w.calls.images.map(i => i.referenceUrl);
-    expect(urls[0]).toBe('https://assets.example.test/w/src/slides/1.jpg'); // low
-    expect(urls[1]).toBeUndefined(); // no mid frame: created new, no last-frame fallback
-    expect(urls[2]).toBe('https://assets.example.test/w/src/slides/0.jpg'); // high
+    expect(urls).toEqual(['https://assets.example.test/w/src/slides/1.jpg', 'https://assets.example.test/w/src/slides/0.jpg']); // low, high: no render without a source frame
   });
 });
 

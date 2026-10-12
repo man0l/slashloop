@@ -147,7 +147,7 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
   if (raw.slides.length < input.slideCount) throw new ContractError('contract_slide_count', `The contract has ${raw.slides.length} slides; ${input.slideCount} were requested.`);
   const arcAxis = raw.arcAxis.trim();
   const arcOn = arcAxis !== '';
-  const slides = raw.slides.slice(0, input.slideCount).map(s => cleanSlide(s, arcOn));
+  let slides = raw.slides.slice(0, input.slideCount).map(s => cleanSlide(s, arcOn));
   if (slides.some(s => !s.scene) ) throw new ContractError('contract_empty_scene', 'Every slide needs a scene.');
 
   // Locks: user locks can never be dropped; a workspace lock only with a stated reason.
@@ -185,22 +185,33 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
   // A frame the model did not describe is unknown, and an unknown frame may show a person.
   for (let i = 0; i < input.frameCount; i++) if (!frames.has(i)) frames.set(i, { index: i, level: 'none', showsPerson: true });
 
-  const variantB = normalizeVariantB(raw.variantB, input, arcOn);
+  const sourceFrames = [...frames.values()].sort((a, b) => a.index - b.index);
+  const framing = { keepSourceImage: raw.keepSourceImage, borrowSourceLook: raw.borrowSourceLook && !raw.keepSourceImage, identity, sourceFrames, arcAxis };
+  const framed = onlyFramedSlides(framing, slides);
+  if (!framed.length) throw new ContractError('contract_no_matching_frame', 'No source frame matches any slide, and the source images are kept.');
+  if (framed.length < slides.length) {
+    issues.push(`Keeping the source images: ${slides.length - framed.length} slide(s) had no unused source frame at their arc level and were dropped, so the deck has ${framed.length} slides.`);
+    slides = framed;
+  }
+
+  const variantB = normalizeVariantB(raw.variantB, input, arcOn, framing);
   return {
     version: 1, subject: raw.subject, identity, identitySheet, medium: raw.medium.trim(),
-    keepSourceImage: raw.keepSourceImage, borrowSourceLook: raw.borrowSourceLook && !raw.keepSourceImage, arcAxis,
-    sourceFrames: [...frames.values()].sort((a, b) => a.index - b.index),
+    keepSourceImage: framing.keepSourceImage, borrowSourceLook: framing.borrowSourceLook, arcAxis,
+    sourceFrames,
     hardLocks, keptSourceDefaults, droppedSourceDefaults, droppedLocks,
     slides, hook: slides[0]!.overlayText, variantB, issues,
   };
 }
 
-function normalizeVariantB(b: RawContractT['variantB'], input: ContractInput, arcOn: boolean): VariantB {
+function normalizeVariantB(b: RawContractT['variantB'], input: ContractInput, arcOn: boolean, framing: Parameters<typeof onlyFramedSlides>[0]): VariantB {
   const variable = input.variable;
   const value = b.value.trim();
-  const slides = b.slides.slice(0, input.slideCount).map(s => cleanSlide(s, arcOn));
+  let slides = b.slides.slice(0, input.slideCount).map(s => cleanSlide(s, arcOn));
   if ((variable === 'concept' || variable === 'slides')) {
     if (slides.length < input.slideCount) throw new ContractError('contract_variant_missing', `Arm B needs an alternative storyline of ${input.slideCount} slides.`);
+    slides = onlyFramedSlides(framing, slides);
+    if (!slides.length) throw new ContractError('contract_variant_missing', 'No slide of the alternative storyline has a source frame, and the source images are kept.');
   } else if (!value) throw new ContractError('contract_variant_missing', `Arm B needs a value for "${variable}".`);
   return { variable, value, slides: variable === 'concept' || variable === 'slides' ? slides : [] };
 }
@@ -214,6 +225,13 @@ export function chooseReferenceUse(c: Pick<ResolvedContract, 'keepSourceImage' |
   if (c.keepSourceImage) return 'edit';
   if (c.borrowSourceLook && (!c.identity.startsWith('invented') || !c.sourceFrames.some(f => f.showsPerson))) return 'style-only';
   return 'none';
+}
+
+/** With the source images kept, a slide that finds no frame would be rendered as a new photo. Such a slide is dropped, never rendered. */
+export function onlyFramedSlides<T extends ContractSlide>(c: Pick<ResolvedContract, 'keepSourceImage' | 'borrowSourceLook' | 'identity' | 'sourceFrames' | 'arcAxis'>, slides: T[]): T[] {
+  if (!c.keepSourceImage) return slides;
+  const picks = pickFramesByArc({ ...c, slides });
+  return slides.filter((_, i) => picks[i]!.frameIndex !== null);
 }
 
 export interface FramePick { referenceUse: ReferenceUse; frameIndex: number | null; note?: string }

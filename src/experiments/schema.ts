@@ -619,8 +619,8 @@ export interface Experiment {
     candidateTruncated?: boolean } | null;
 }
 export function same(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b); }
-export function assertBrief(e: Experiment, b: BriefData) {
-  if (b.slides.length !== e.slideCount || !same(b.lockedConstraints, e.instructions.lockedConstraints))
+export function assertBrief(e: Experiment, b: BriefData, slides = e.slideCount) {
+  if (b.slides.length !== slides || !same(b.lockedConstraints, e.instructions.lockedConstraints))
     throw new ExperimentError(422, 'locked_constraints', 'Slide count and lockedConstraints must match the experiment.');
 }
 /** Brief fields every variant must share: the ones the experiment did not approve as variables. `slides` is shared only when neither it nor `concept` (which retells the storyboard) is a variable. */
@@ -648,7 +648,8 @@ export function validateVariants(e: Experiment, proposals: Proposal[]) {
   if (proposals.length < 1 || proposals.length > e.variantCount) throw new ExperimentError(422, 'variant_count');
   const baseline = proposals[0]!;
   for (let i = 0; i < proposals.length; i++) {
-    const p = proposals[i]!; assertBrief(e, p.brief);
+    // A contract deck that keeps the source photos can be shorter than e.slideCount; it is never longer.
+    const p = proposals[i]!; assertBrief(e, p.brief, e.pipeline === 'contract' && p.brief.slides.length >= 1 && p.brief.slides.length <= e.slideCount ? p.brief.slides.length : e.slideCount);
     const effective = effectiveChangedFields(e, baseline.brief, p.brief);
     if (i === 0 && p.changedVariables.length) throw new ExperimentError(422, 'baseline_has_changes');
     if (i === 0) continue;
