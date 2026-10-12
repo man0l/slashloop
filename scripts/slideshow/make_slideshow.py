@@ -18,6 +18,7 @@ Usage:
 import argparse
 import base64
 import hashlib
+import io
 import itertools
 import json
 import os
@@ -94,19 +95,51 @@ def strip_white_bg(img):
     return img
 
 
+def openrouter_image(prompt, model, ratio="2:3"):
+    """OpenRouter /images endpoint (same contract as src/lib/openrouter.ts). Muse takes the
+    aspect ratio inside the prompt; other models take aspect_ratio/quality fields."""
+    muse = model == "meta/muse-image"
+    body = {"model": model, "prompt": f"{prompt}\nCompose the image in {ratio} aspect ratio." if muse else prompt}
+    if not muse:
+        body.update(aspect_ratio=ratio, quality="medium", output_format="png")
+    req = urllib.request.Request(
+        os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1") + "/images",
+        data=json.dumps(body).encode(),
+        headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}", "Content-Type": "application/json",
+                 "X-Title": "slashloop"})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            data = json.load(r)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"OpenRouter {e.code}: {e.read().decode(errors='replace')[:400]}\nprompt: {prompt[:160]}") from None
+    if data.get("error"):
+        raise RuntimeError(f"OpenRouter: {data['error']}")
+    cost = (data.get("usage") or {}).get("cost")
+    if cost is not None:
+        print(f"  openrouter cost ${cost:.4f}", file=sys.stderr, flush=True)
+    return base64.b64decode(data["data"][0]["b64_json"])
+
+
 class ImageCache:
-    def __init__(self, root, model, quality, dry_run):
-        self.root, self.model, self.quality, self.dry = root, model, quality, dry_run
+    def __init__(self, root, model, quality, dry_run, provider="openai"):
+        self.root, self.model, self.quality, self.dry, self.provider = root, model, quality, dry_run, provider
         os.makedirs(os.path.join(root, "override"), exist_ok=True)
 
     def get(self, prompt, transparent=False, override=None):
         if override and os.path.exists(override):
             return Image.open(override)
         key = hashlib.sha1(f"{self.model}|{self.quality}|{transparent}|{prompt}".encode()).hexdigest()[:16]
+        if self.provider == "openrouter":
+            key = "or-" + key
         path = os.path.join(self.root, key + ".png")
         if not os.path.exists(path):
             if self.dry:
                 return Image.new("RGB", (1024, 1536), (60, 60, 60))
+            if self.provider == "openrouter":
+                png = openrouter_image(prompt, self.model)
+                img = Image.open(io.BytesIO(png))
+                img.save(path)  # normalise to PNG on disk whatever format came back
+                return strip_white_bg(img) if transparent else img.convert("RGB")
             try:
                 png = openai_image(prompt, self.model, self.quality, transparent)
             except RuntimeError as e:  # occasional transient 400/5xx: retry once
@@ -400,10 +433,12 @@ def main():
     ap.add_argument("--app-name", default="YourApp")
     ap.add_argument("--app-icon")
     ap.add_argument("--app-screenshot")
-    ap.add_argument("--model", default="gpt-image-1.5")
+    ap.add_argument("--provider", choices=["openai", "openrouter"], default="openai")
+    ap.add_argument("--model", help="default: gpt-image-1.5 (openai) or meta/muse-image (openrouter)")
     ap.add_argument("--quality", default="medium", choices=["low", "medium", "high"])
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--out-suffix", help="write to <out>-<suffix>, e.g. 'muse' to compare models side by side")
     ap.add_argument("--cover-only", action="store_true", help="only generate slide 1 (cover) -> <out>/<id>/cover.jpg")
     args = ap.parse_args()
 
@@ -416,9 +451,13 @@ def main():
     missing = [i for i in args.ids if i not in posts]
     if missing:
         sys.exit(f"unknown ids: {missing}")
-    if not args.dry_run and not os.environ.get("OPENAI_API_KEY"):
-        sys.exit("OPENAI_API_KEY is not set")
-    cache = ImageCache(os.path.join(args.out, "_cache"), args.model, args.quality, args.dry_run)
+    args.model = args.model or ("meta/muse-image" if args.provider == "openrouter" else "gpt-image-1.5")
+    key_var = "OPENROUTER_API_KEY" if args.provider == "openrouter" else "OPENAI_API_KEY"
+    if not args.dry_run and not os.environ.get(key_var):
+        sys.exit(f"{key_var} is not set")
+    if args.out_suffix:
+        args.out = args.out.rstrip("/") + "-" + args.out_suffix
+    cache = ImageCache(os.path.join(args.out, "_cache"), args.model, args.quality, args.dry_run, args.provider)
     failed = []
     for i in args.ids:
         try:
