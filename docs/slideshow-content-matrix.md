@@ -5,7 +5,7 @@ Based on the teardown in `docs/slideshow-teardown-clear-food.md`.
 
 **Audience:** softmaxxers, i.e. people doing the safe, habit-based side of looksmaxxing: diet, workouts,
 skincare, face and jaw, posture, grooming, sleep. Many are TikTok creators who post their own
-progress. Food is **one pillar out of nine**. The account should feel like it covers their
+progress. Food is **one pillar out of ten**. The account should feel like it covers their
 whole day.
 
 **How to use it:** pick post IDs (e.g. "make SK01, FJ01 and DH01"). Each row is a complete
@@ -22,7 +22,7 @@ extrapolated from the proven ones. They're untested, so test them before you sca
 
 | Pillar | Suggested mix | Angle | Best formulas | Posts |
 |---|---|---|---|---|
-| **Food & diet** | 20% | food -> looks (skin, jaw, body fat) | question, mythbust, contrast, category, sprite | 18 |
+| **Food & diet** | 15% | food -> looks (skin, jaw, body fat) | question, mythbust, contrast, category, sprite | 18 |
 | **Skin** | 15% | clear skin, glow, acne, SPF, simple routines | question, mythbust, category | 3 |
 | **Face & jawline** | 15% | definition through body fat, de-bloating, sleep, chewing, posture | question, mythbust | 2 |
 | **Body & gym** | 15% | V-taper, shoulders, neck, the 'looks better in clothes' lifts | category, question, contrast | 3 |
@@ -31,8 +31,15 @@ extrapolated from the proven ones. They're untested, so test them before you sca
 | **Sleep & discipline** | 10% | sleep, mornings, dopamine, consistency | routine, contrast, mythbust | 4 |
 | **Style & scent** | 5% | basics that look expensive, scent, accessories | category, contrast | 2 |
 | **Progress & creator** | 5% | glow-up arcs, progress pics, tracking | progress, category, question | 3 |
+| **Documenting the journey (creator humor)** | 10% | self-aware joke: softmaxxers spend more time filming, editing and posting the glow-up than actually doing it. Relatable for the creators in the audience, very shareable | category, contrast, progress, question, routine | 5 |
 
-At 1 post/day, the mix works out to roughly 2 food, 1–2 skin, 1 face, 1 gym and 1 habits/progress post per week, with posture, style and grooming rotating in.
+At 1 post/day, the mix works out to roughly 1 food, 1 skin, 1 face, 1 gym, 1 creator-humor and 1 habits/progress post per week, with posture, style and grooming rotating in.
+
+**Creator humor direction:** the joke is that softmaxxers spend more time filming, editing and
+posting their glow-up than actually doing it. Use the *same* serious visual system (grids, statue,
+outline captions) and let the captions deliver the punchline. Keep it self-aware ("us"), never
+mocking a specific creator. These should be the most shareable posts in the matrix, because
+creators send them to each other.
 
 ## 2. Formula × format matrix
 
@@ -69,6 +76,7 @@ At 1 post/day, the mix works out to roughly 2 food, 1–2 skin, 1 face, 1 gym an
 | **Sleep & discipline** | · | DH01 | DH03 | · | · | DH02, DH04 | · |
 | **Style & scent** | · | ST02 | · | ST01 | · | · | · |
 | **Progress & creator** | PG03 | · | · | PG02 | · | · | PG01 |
+| **Documenting the journey (creator humor)** | CR05 | CR03 | · | CR01 | · | CR04 | CR02 |
 
 Empty cells (·) are open slots. Copy a row from the same column and swap the subjects to fill them.
 
@@ -655,6 +663,75 @@ Description: *"save this"* · #softmaxxing #glowup #progress #looksmaxxing #fyp
 
 Description: *"it's not genetics"* · #softmaxxing #glowup #progress #looksmaxxing #fyp
 
+## Pillar: Documenting the journey (creator humor)
+
+### CR01 · real <CATEGORY> list: time audit: filming vs jawmaxxing  (priority 1)
+
+`9:16` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **FILMING: 3 hours** | a ring light glowing in a dark bedroom | a phone on a tripod facing a mirror | a bathroom mirror with a phone clamp | a small clip-on microphone on a desk | — |
+| 2 | **EDITING: 2 hours** | a laptop showing a video editing timeline at night | a phone with a video editing app open | headphones on a messy desk | a cold half-drunk coffee | — |
+| 3 | **actual JAWMAXXING: 4 minutes** | a single piece of mastic chewing gum | a jade gua sha stone | 🗿 *statue: young man's head with an unchanged soft jawline, side profile* | a glass of water | — |
+
+**Slide 4 (CTA):** Store card, caption **get the '<APP>' app**, showing **progress tracker: track the real work, not the views**
+
+Description: *"the math isn't mathing"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
+
+### CR02 · Day-N progress checkpoints ⚗️: the setup glowed up, the jaw didn't  (priority 2)
+
+`3:4` · Casual phone · overlay: — · CTA: Phone in dark
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **day 1 of jawmaxxing** | an old cracked phone leaning on a cereal box | a single gua sha stone on a desk | 🗿 *statue: young man's head, side profile, neutral* | a dim desk lamp | — |
+| 2 | **day 30** | a ring light in a bedroom | a phone tripod | 🗿 *statue: the exact same young man's head, side profile, neutral* | a clip-on microphone | — |
+| 3 | **day 90** | a full home studio with two softbox lights | a mirrorless camera on a tripod with a shotgun mic | 🗿 *statue: the exact same young man's head, side profile, neutral, unchanged* | a second monitor showing an editing timeline | — |
+
+**Slide 4 (CTA):** Phone in dark, caption **get the '<APP>' app**, showing **progress photo timeline**
+
+Description: *"the setup glowed up more than me"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
+
+### CR03 · Average X vs average Y: how followers think I jawmax vs reality  (priority 3)
+
+`3:4` · Casual phone · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **how my followers think I jawmax** | a spotless gym at sunrise | a jade gua sha on a marble counter | 🗿 *statue: heroic young man's head looking up, sharp jawline* | a clean high-protein meal | — |
+| 2 | **how I actually jawmax** | a phone propped on a stack of books filming in a messy bedroom | a ring light next to an unmade bed | 🗿 *statue: man covering his face with his hand in shame* | a chewed piece of gum stuck on a desk edge | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **daily jaw / face routine checklist**
+
+Description: *"we all know which one it is"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
+
+### CR04 · Routine grid ⚗️: the 5am routine and what it took to film it  (priority 4)
+
+`9:16` · Moody dark · overlay: — · CTA: Store card
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **my 5am softmaxxing routine** | sunrise light through a bedroom window | a cold shower head running | a glass of water with lemon | running shoes by the door | — |
+| 2 | **what it took to film it** | an alarm clock showing 4am in a dark room | a ring light set up in a dark bedroom before sunrise | a phone gallery full of near-identical takes | a phone tripod standing in a shower cubicle | — |
+
+**Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **morning routine planner**
+
+Description: *"14 takes for a 7 second clip"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
+
+### CR05 · Humble-brag question: why isn't my jawline improving  (priority 5)
+
+`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+
+| # | Caption | TL | TR | BL | BR | Overlay |
+|---|---|---|---|---|---|---|
+| 1 | **Why is my jawline not improving?** | a ring light glowing at night | a phone on a tripod | a laptop with a video editing timeline at 2am | a phone gallery full of hundreds of selfies | Statue (back) |
+| 2 | **Why is my screen time 9 hours?** | a phone showing an analytics graph | a phone with a video editing app open | a messy desk with energy drinks at night | a phone charging next to a pillow | Statue (back) |
+
+**Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **screen-time vs routine-time tracker** (screenshot replaces the TR tile, statue stays)
+
+Description: *"no idea what's going on tbh"* · #softmaxxing #jawmaxxing #creatorlife #relatable #fyp
+
 ---
 
 ## 8. Suggested first test batch (one per pillar)
@@ -667,6 +744,7 @@ Description: *"it's not genetics"* · #softmaxxing #glowup #progress #looksmaxxi
 | 4 | **Q01** | food pillar. Closest to the reference post that's already proven |
 | 5 | **GY01** | built to be saved (cheat-sheet), and the gym crowd overlaps heavily with this audience |
 | 6 | **PG01** ⚗️ | the progress-arc test. If it works, it becomes a recurring series (day 180, day 365) |
+| 7 | **CR01** | creator-humor test: "FILMING: 3 hours / EDITING: 2 hours / actual JAWMAXXING: 4 minutes". The punchline lands on the last slide, which rewards swiping all the way through and gets shared |
 
 ## 9. Building new rows
 

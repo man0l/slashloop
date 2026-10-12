@@ -1557,12 +1557,187 @@
    "cta": {
     "screen": "streak counter / progress chart"
    }
+  },
+  {
+   "id": "CR01",
+   "pillar": "creator",
+   "priority": 1,
+   "formula": "category",
+   "topic": "time audit: filming vs jawmaxxing",
+   "slides": [
+    {
+     "caption": "FILMING: 3 hours",
+     "tiles": [
+      "a ring light glowing in a dark bedroom",
+      "a phone on a tripod facing a mirror",
+      "a bathroom mirror with a phone clamp",
+      "a small clip-on microphone on a desk"
+     ]
+    },
+    {
+     "caption": "EDITING: 2 hours",
+     "tiles": [
+      "a laptop showing a video editing timeline at night",
+      "a phone with a video editing app open",
+      "headphones on a messy desk",
+      "a cold half-drunk coffee"
+     ]
+    },
+    {
+     "caption": "actual JAWMAXXING: 4 minutes",
+     "tiles": [
+      "a single piece of mastic chewing gum",
+      "a jade gua sha stone",
+      "@statue:young man's head with an unchanged soft jawline, side profile",
+      "a glass of water"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "progress tracker: track the real work, not the views"
+   },
+   "description": "the math isn't mathing"
+  },
+  {
+   "id": "CR02",
+   "pillar": "creator",
+   "priority": 2,
+   "formula": "progress",
+   "topic": "the setup glowed up, the jaw didn't",
+   "slides": [
+    {
+     "caption": "day 1 of jawmaxxing",
+     "tiles": [
+      "an old cracked phone leaning on a cereal box",
+      "a single gua sha stone on a desk",
+      "@statue:young man's head, side profile, neutral",
+      "a dim desk lamp"
+     ]
+    },
+    {
+     "caption": "day 30",
+     "tiles": [
+      "a ring light in a bedroom",
+      "a phone tripod",
+      "@statue:the exact same young man's head, side profile, neutral",
+      "a clip-on microphone"
+     ]
+    },
+    {
+     "caption": "day 90",
+     "tiles": [
+      "a full home studio with two softbox lights",
+      "a mirrorless camera on a tripod with a shotgun mic",
+      "@statue:the exact same young man's head, side profile, neutral, unchanged",
+      "a second monitor showing an editing timeline"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "progress photo timeline"
+   },
+   "description": "the setup glowed up more than me"
+  },
+  {
+   "id": "CR03",
+   "pillar": "creator",
+   "priority": 3,
+   "formula": "contrast",
+   "topic": "how followers think I jawmax vs reality",
+   "slides": [
+    {
+     "caption": "how my followers think I jawmax",
+     "tiles": [
+      "a spotless gym at sunrise",
+      "a jade gua sha on a marble counter",
+      "@statue:heroic young man's head looking up, sharp jawline",
+      "a clean high-protein meal"
+     ],
+     "person_at": 2
+    },
+    {
+     "caption": "how I actually jawmax",
+     "tiles": [
+      "a phone propped on a stack of books filming in a messy bedroom",
+      "a ring light next to an unmade bed",
+      "@statue:man covering his face with his hand in shame",
+      "a chewed piece of gum stuck on a desk edge"
+     ],
+     "person_at": 2
+    }
+   ],
+   "cta": {
+    "screen": "daily jaw / face routine checklist"
+   },
+   "description": "we all know which one it is"
+  },
+  {
+   "id": "CR04",
+   "pillar": "creator",
+   "priority": 4,
+   "formula": "routine",
+   "topic": "the 5am routine and what it took to film it",
+   "slides": [
+    {
+     "caption": "my 5am softmaxxing routine",
+     "tiles": [
+      "sunrise light through a bedroom window",
+      "a cold shower head running",
+      "a glass of water with lemon",
+      "running shoes by the door"
+     ]
+    },
+    {
+     "caption": "what it took to film it",
+     "tiles": [
+      "an alarm clock showing 4am in a dark room",
+      "a ring light set up in a dark bedroom before sunrise",
+      "a phone gallery full of near-identical takes",
+      "a phone tripod standing in a shower cubicle"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "morning routine planner"
+   },
+   "description": "14 takes for a 7 second clip"
+  },
+  {
+   "id": "CR05",
+   "pillar": "creator",
+   "priority": 5,
+   "formula": "question",
+   "topic": "why isn't my jawline improving",
+   "slides": [
+    {
+     "caption": "Why is my jawline not improving?",
+     "tiles": [
+      "a ring light glowing at night",
+      "a phone on a tripod",
+      "a laptop with a video editing timeline at 2am",
+      "a phone gallery full of hundreds of selfies"
+     ]
+    },
+    {
+     "caption": "Why is my screen time 9 hours?",
+     "tiles": [
+      "a phone showing an analytics graph",
+      "a phone with a video editing app open",
+      "a messy desk with energy drinks at night",
+      "a phone charging next to a pillow"
+     ]
+    }
+   ],
+   "cta": {
+    "screen": "screen-time vs routine-time tracker"
+   },
+   "description": "no idea what's going on tbh"
   }
  ],
  "pillars": {
   "food": {
    "name": "Food & diet",
-   "mix": "20%",
+   "mix": "15%",
    "angle": "food -> looks (skin, jaw, body fat)",
    "best_formulas": [
     "question",
@@ -1647,6 +1822,18 @@
     "progress",
     "category",
     "question"
+   ]
+  },
+  "creator": {
+   "name": "Documenting the journey (creator humor)",
+   "mix": "10%",
+   "angle": "self-aware joke: softmaxxers spend more time filming, editing and posting the glow-up than actually doing it. Relatable for the creators in the audience, very shareable",
+   "best_formulas": [
+    "category",
+    "contrast",
+    "progress",
+    "question",
+    "routine"
    ]
   }
  }
