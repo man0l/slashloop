@@ -72,6 +72,7 @@ export function proposalsFromContract(e: Pick<Experiment, 'instructions' | 'slid
   });
   const value = variable === 'slides' ? 'Alternative storyline' : variable === 'hook' ? briefB.hook : c.variantB.value;
   const notices: string[] = [];
+  if (c.slides.length < e.slideCount && c.keepSourceImage) notices.push(`Your source photos are kept unchanged, so the deck has ${c.slides.length} slides instead of ${e.slideCount}: only that many source frames match the story arc.`);
   if (e.variantCount > 2) notices.push(`The slide contract compares the direction against one alternative, so this run has 2 variants instead of ${e.variantCount}.`);
   return {
     proposals: [

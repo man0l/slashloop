@@ -143,6 +143,62 @@ describe('frames are picked by arc level, never by position', () => {
   });
 });
 
+describe('keeping the source photos never plans a slide without a frame', () => {
+  const levels = (ls: Array<'low' | 'mid' | 'high' | 'none'>) => ls.map((level, index) => ({ index, level, showsPerson: true }));
+  const keep = (o: Record<string, unknown>, i: Partial<ContractInput> = {}) => normalizeContract(raw({ keepSourceImage: true, identity: 'source', ...o }), input(i));
+
+  test('4 slides but 3 arc points: the extra slide is dropped and every remaining slide has a frame', () => {
+    const c = keep({
+      arcAxis: 'week 1 to week 4',
+      sourceFrameLevels: levels(['low', 'mid', 'high', 'none']).slice(0, 3),
+      slides: [slide({ overlayText: 'a', arcLevel: 'low' }), slide({ overlayText: 'b', arcLevel: 'mid' }), slide({ overlayText: 'c', arcLevel: 'high' }), slide({ overlayText: 'd', arcLevel: 'none' })],
+    }, { slideCount: 4, frameCount: 3 });
+    expect(c.slides.map(s => s.overlayText)).toEqual(['a', 'b', 'c']);
+    expect(pickFramesByArc(c).every(p => p.referenceUse === 'edit' && p.frameIndex !== null)).toBe(true);
+    expect(c.issues.join(' ')).toMatch(/dropped/);
+  });
+
+  test('a middle slide with no frame at its level is dropped; the others keep their order', () => {
+    const c = keep({
+      arcAxis: 'size', sourceFrameLevels: levels(['low', 'high', 'none']),
+      slides: [slide({ overlayText: 'a', arcLevel: 'low' }), slide({ overlayText: 'b', arcLevel: 'mid' }), slide({ overlayText: 'c', arcLevel: 'high' })],
+    });
+    expect(c.slides.map(s => s.overlayText)).toEqual(['a', 'c']);
+    expect(c.hook).toBe('a');
+  });
+
+  test('without an arc, more slides than frames are capped at the frame count', () => {
+    const c = keep({
+      sourceFrameLevels: levels(['none', 'none']),
+      slides: [slide({ overlayText: 'a' }), slide({ overlayText: 'b' }), slide({ overlayText: 'c' })],
+    }, { frameCount: 2 });
+    expect(c.slides).toHaveLength(2);
+  });
+
+  test('nothing is dropped when every slide has a frame, or when the photos are not kept', () => {
+    const all = keep({ sourceFrameLevels: levels(['none', 'none', 'none']) });
+    expect(all.slides).toHaveLength(3);
+    expect(all.issues.join(' ')).not.toMatch(/dropped/);
+    const fresh = normalizeContract(raw({ sourceFrameLevels: levels(['none']) }), input({ frameCount: 1 }));
+    expect(fresh.slides).toHaveLength(3);
+  });
+
+  test('no frame matching any slide is an error, not an all-new deck', () => {
+    expect(() => keep({ arcAxis: 'size', sourceFrameLevels: levels(['none', 'none', 'none']), slides: [slide({ arcLevel: 'low' }), slide({ arcLevel: 'mid' }), slide({ arcLevel: 'high' })] }))
+      .toThrow(ContractError);
+  });
+
+  test('an alternative storyline is trimmed the same way', () => {
+    const c = keep({
+      arcAxis: 'size', sourceFrameLevels: levels(['low', 'high', 'none']),
+      slides: [slide({ arcLevel: 'low' }), slide({ arcLevel: 'high' }), slide({ arcLevel: 'high' })],
+      variantB: { variable: 'concept', value: '', slides: [slide({ overlayText: 'x', arcLevel: 'low' }), slide({ overlayText: 'y', arcLevel: 'high' }), slide({ overlayText: 'z', arcLevel: 'mid' })] },
+    }, { variable: 'concept' });
+    expect(c.slides).toHaveLength(2);
+    expect(c.variantB.slides.map(s => s.overlayText)).toEqual(['x', 'y']);
+  });
+});
+
 describe('invented-consistent identity chain and the single text field', () => {
   const c = normalizeContract(raw({
     identity: 'invented-consistent', identitySheet: 'A man, 25, short black hair, right profile', arcAxis: 'week 1 to week 4', subject: 'person',
@@ -209,7 +265,10 @@ describe('QA is compiled from the same contract', () => {
     expect(repairSlides(v.failures, 3)).toEqual([0, 1, 2]);
   });
   test('in edit mode a missing arc is a warning and the picture state is not judged', () => {
-    const e = normalizeContract(raw({ keepSourceImage: true, arcAxis: 'low to high', slides: [slide({ arcLevel: 'low' }), slide({ arcLevel: 'mid' }), slide({ arcLevel: 'high' })] }), input());
+    const e = normalizeContract(raw({
+      keepSourceImage: true, arcAxis: 'low to high', slides: [slide({ arcLevel: 'low' }), slide({ arcLevel: 'mid' }), slide({ arcLevel: 'high' })],
+      sourceFrameLevels: (['low', 'mid', 'high'] as const).map((level, index) => ({ index, level, showsPerson: false })),
+    }), input());
     const v = qaVerdict(e, { slides: [ok(0, 'high'), ok(1, 'high'), ok(2, 'high')], deck: { ...deck, arcVisibleWithoutText: false, notes: 'flat' } } as never);
     expect(v.passed).toBe(true);
     expect(v.warnings.length).toBe(1);

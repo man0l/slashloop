@@ -381,7 +381,7 @@ export function applyVariantEdit(e:S.Experiment,variantId:string|undefined,edit:
   const v=assertVariantEditable(e,variantId,edit.revision);
   // One text field: on the contract pipeline the hook is the first slide's caption, never a second copy.
   if(isContractPipeline(e)&&edit.brief.slides[0]?.overlayText)edit={...edit,brief:{...edit.brief,hook:edit.brief.slides[0].overlayText}};
-  S.assertBrief(e,edit.brief);
+  S.assertBrief(e,edit.brief,isContractPipeline(e)?v.brief.slides.length:e.slideCount);
   const mirroredTo=new Set<string>();
   const proposals=e.variants.map(p=>p.id===v.id?{...p,brief:edit.brief}:{...p});
   for(const k of S.sharedBriefFields(e)) {
