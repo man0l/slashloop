@@ -1745,6 +1745,20 @@
     "contrast",
     "category",
     "sprite"
+   ],
+   "hashtags": [
+    "#healthyfood",
+    "#softmaxxing",
+    "#looksmaxxing",
+    "#nutrition",
+    "#fyp"
+   ],
+   "meme_hashtags": [
+    "#minecraft",
+    "#healthyfood",
+    "#softmaxxing",
+    "#gamer",
+    "#fyp"
    ]
   },
   "skin": {
@@ -1755,6 +1769,13 @@
     "question",
     "mythbust",
     "category"
+   ],
+   "hashtags": [
+    "#skincareformen",
+    "#softmaxxing",
+    "#clearskin",
+    "#glowup",
+    "#fyp"
    ]
   },
   "face": {
@@ -1764,6 +1785,13 @@
    "best_formulas": [
     "question",
     "mythbust"
+   ],
+   "hashtags": [
+    "#jawline",
+    "#softmaxxing",
+    "#looksmaxxing",
+    "#glowup",
+    "#fyp"
    ]
   },
   "gym": {
@@ -1774,6 +1802,13 @@
     "category",
     "question",
     "contrast"
+   ],
+   "hashtags": [
+    "#gymtok",
+    "#softmaxxing",
+    "#aesthetic",
+    "#vtaper",
+    "#fyp"
    ]
   },
   "posture": {
@@ -1783,6 +1818,13 @@
    "best_formulas": [
     "contrast",
     "question"
+   ],
+   "hashtags": [
+    "#posture",
+    "#softmaxxing",
+    "#looksmaxxing",
+    "#selfimprovement",
+    "#fyp"
    ]
   },
   "grooming": {
@@ -1793,6 +1835,13 @@
     "category",
     "mythbust",
     "question"
+   ],
+   "hashtags": [
+    "#groomingtips",
+    "#softmaxxing",
+    "#glowup",
+    "#selfcare",
+    "#fyp"
    ]
   },
   "habits": {
@@ -1803,6 +1852,13 @@
     "routine",
     "contrast",
     "mythbust"
+   ],
+   "hashtags": [
+    "#softmaxxing",
+    "#discipline",
+    "#thatguy",
+    "#selfimprovement",
+    "#fyp"
    ]
   },
   "style": {
@@ -1812,6 +1868,13 @@
    "best_formulas": [
     "category",
     "contrast"
+   ],
+   "hashtags": [
+    "#mensstyle",
+    "#softmaxxing",
+    "#oldmoney",
+    "#glowup",
+    "#fyp"
    ]
   },
   "progress": {
@@ -1822,6 +1885,13 @@
     "progress",
     "category",
     "question"
+   ],
+   "hashtags": [
+    "#softmaxxing",
+    "#glowup",
+    "#progress",
+    "#looksmaxxing",
+    "#fyp"
    ]
   },
   "creator": {
@@ -1834,6 +1904,13 @@
     "progress",
     "question",
     "routine"
+   ],
+   "hashtags": [
+    "#softmaxxing",
+    "#jawmaxxing",
+    "#creatorlife",
+    "#relatable",
+    "#fyp"
    ]
   }
  }

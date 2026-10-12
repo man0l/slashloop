@@ -123,6 +123,11 @@ def tile_prompt(m, look, token):
     return m["looks"][look].format(subject=token, food=token) + m["looks"]["_suffix"]
 
 
+def pillar_tags(m, post):
+    pl = m["pillars"].get("food" if post["pillar"].startswith("food") else post["pillar"], {})
+    return pl.get("meme_hashtags") if post["pillar"] == "food (meme)" else pl.get("hashtags")
+
+
 def plan_post(m, post):
     f = m["formulas"][post["formula"]]
     d = dict(f["defaults"], **post.get("format", {}))
@@ -136,7 +141,7 @@ def plan_post(m, post):
             "ratio": d["ratio"], "look": d["look"], "cta_variant": d["cta"], "default_cutout": d["cutout"],
             "slides": slides, "cta": post["cta"],
             "description": post.get("description") or random.choice(f["description"]),
-            "hashtags": f["hashtags"]}
+            "hashtags": pillar_tags(m, post) or f["hashtags"]}
 
 
 def arrange_for_contrast(tiles, imgs):
