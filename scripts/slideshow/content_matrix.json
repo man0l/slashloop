@@ -1047,10 +1047,10 @@
     {
      "caption": "Why do I never skip the gym?",
      "tiles": [
-      "a packed gym bag by the front door",
-      "gym clothes laid out neatly on a bed",
-      "wireless headphones on a bench",
-      "a water bottle in an empty gym at 6am"
+      "a packed men's gym bag by the front door",
+      "men's black gym t-shirt and shorts folded neatly on a bed",
+      "wireless headphones on a gym bench",
+      "an empty gym at 6am in early morning light"
      ]
     }
    ],
@@ -1151,6 +1151,9 @@
    ],
    "cta": {
     "screen": "posture score / daily stretch timer"
+   },
+   "format": {
+    "look": "casual"
    }
   },
   {
@@ -1658,7 +1661,7 @@
     {
      "caption": "how I actually jawmax",
      "tiles": [
-      "a phone propped on a stack of books filming in a messy bedroom",
+      "a phone propped on a stack of books filming an empty messy bedroom, nobody in frame",
       "a ring light next to an unmade bed",
       "@statue:man covering his face with his hand in shame",
       "a chewed piece of gum stuck on a desk edge"
@@ -1913,5 +1916,21 @@
     "#fyp"
    ]
   }
+ },
+ "person_variants": {
+  "good": [
+   "thick wavy dark-brown hair, olive skin, plain grey t-shirt, warm beige wall",
+   "short blond textured crop, fair skin, plain black t-shirt, light grey wall",
+   "curly black hair, light brown skin, white linen shirt, soft sage-green wall",
+   "slicked-back black hair, tan skin, navy knit sweater, cream wall",
+   "messy light-brown fringe, light freckles, plain white t-shirt, pale blue wall",
+   "short buzz cut, dark skin, charcoal t-shirt, warm stone wall"
+  ],
+  "bad": [
+   "messy greasy brown hair, grey hoodie, off-white wall",
+   "flat blond hair, faded band t-shirt, pale yellow wall",
+   "unkempt black hair, wrinkled navy t-shirt, plain white wall",
+   "overgrown curly hair, oversized black hoodie, beige wall"
+  ]
  }
 }

@@ -23,6 +23,7 @@ import json
 import os
 import random
 import sys
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -69,8 +70,11 @@ def openai_image(prompt, model, quality, transparent=False):
     req = urllib.request.Request(
         "https://api.openai.com/v1/images/generations", data=json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}", "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=300) as r:
-        data = json.load(r)
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            data = json.load(r)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"OpenAI {e.code}: {e.read().decode(errors='replace')[:400]}\nprompt: {prompt[:160]}") from None
     return base64.b64decode(data["data"][0]["b64_json"])
 
 
@@ -103,7 +107,11 @@ class ImageCache:
         if not os.path.exists(path):
             if self.dry:
                 return Image.new("RGB", (1024, 1536), (60, 60, 60))
-            png = openai_image(prompt, self.model, self.quality, transparent)
+            try:
+                png = openai_image(prompt, self.model, self.quality, transparent)
+            except RuntimeError as e:  # occasional transient 400/5xx: retry once
+                print(f"retrying after error: {e}", file=sys.stderr, flush=True)
+                png = openai_image(prompt, self.model, self.quality, transparent)
             with open(path, "wb") as f:
                 f.write(png)
         img = Image.open(path)
@@ -112,10 +120,15 @@ class ImageCache:
 
 # --------------------------------------------------------------------------- planning
 
-def tile_prompt(m, look, token):
+def tile_prompt(m, look, token, post_id=""):
     st = m["special_tiles"]
     if token in ("@person_good", "@person_bad"):
-        return st[token]
+        # a different (but stable) face per post, so the account doesn't repeat one person
+        variants = m.get("person_variants", {}).get(token[8:], [])
+        if not variants:
+            return st[token]
+        v = variants[int(hashlib.sha1(post_id.encode()).hexdigest(), 16) % len(variants)]
+        return st[token].replace(" No text.", f" Look: {v}. No text.")
     if token.startswith("@sprite:"):
         return st["@sprite"].format(item=token[8:])
     if token.startswith("@statue:"):
@@ -135,7 +148,7 @@ def plan_post(m, post):
     for i, s in enumerate(post["slides"], 1):
         slides.append({
             "n": i, "caption": s["caption"], "cutout": s.get("cutout", d["cutout"]),
-            "tiles": [{"token": t, "prompt": tile_prompt(m, d["look"], t)} for t in s["tiles"]],
+            "tiles": [{"token": t, "prompt": tile_prompt(m, d["look"], t, post["id"])} for t in s["tiles"]],
         })
     return {"id": post["id"], "pillar": post["pillar"], "formula": post["formula"], "topic": post["topic"],
             "ratio": d["ratio"], "look": d["look"], "cta_variant": d["cta"], "default_cutout": d["cutout"],

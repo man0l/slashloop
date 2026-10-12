@@ -448,7 +448,7 @@ Description: *"save this"* · #gymtok #softmaxxing #aesthetic #vtaper #fyp
 | # | Caption | TL | TR | BL | BR | Overlay |
 |---|---|---|---|---|---|---|
 | 1 | **Why are my shoulders so wide?** | 🗿 *statue: broad muscular shoulders and back seen from behind* | a pair of dumbbells on a gym floor | a cable machine | a pull-up bar | — |
-| 2 | **Why do I never skip the gym?** | a packed gym bag by the front door | gym clothes laid out neatly on a bed | wireless headphones on a bench | a water bottle in an empty gym at 6am | Statue (back) |
+| 2 | **Why do I never skip the gym?** | a packed men's gym bag by the front door | men's black gym t-shirt and shorts folded neatly on a bed | wireless headphones on a gym bench | an empty gym at 6am in early morning light | Statue (back) |
 
 **Slide 3 (CTA):** In-grid screenshot, caption **get the '<APP>' app**, showing **workout streak calendar** (screenshot replaces the TR tile, statue stays)
 
@@ -484,7 +484,7 @@ Description: *"which one are you?"* · #posture #softmaxxing #looksmaxxing #self
 
 ### PO02 · Humble-brag question: standing taller  (priority 12)
 
-`9:16` · Macro fill · overlay: Statue (back) · CTA: In-grid screenshot
+`9:16` · Casual phone · overlay: Statue (back) · CTA: In-grid screenshot
 
 | # | Caption | TL | TR | BL | BR | Overlay |
 |---|---|---|---|---|---|---|
@@ -700,7 +700,7 @@ Description: *"the setup glowed up more than me"* · #softmaxxing #jawmaxxing #c
 | # | Caption | TL | TR | BL | BR | Overlay |
 |---|---|---|---|---|---|---|
 | 1 | **how my followers think I jawmax** | a spotless gym at sunrise | a jade gua sha on a marble counter | 🗿 *statue: heroic young man's head looking up, sharp jawline* | a clean high-protein meal | — |
-| 2 | **how I actually jawmax** | a phone propped on a stack of books filming in a messy bedroom | a ring light next to an unmade bed | 🗿 *statue: man covering his face with his hand in shame* | a chewed piece of gum stuck on a desk edge | — |
+| 2 | **how I actually jawmax** | a phone propped on a stack of books filming an empty messy bedroom, nobody in frame | a ring light next to an unmade bed | 🗿 *statue: man covering his face with his hand in shame* | a chewed piece of gum stuck on a desk edge | — |
 
 **Slide 3 (CTA):** Store card, caption **get the '<APP>' app**, showing **daily jaw / face routine checklist**
 
