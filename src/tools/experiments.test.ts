@@ -422,6 +422,12 @@ describe('create_experiment', () => {
     expect(editSlideDirection('Only a hook', [])).toBe('Render the exact overlay texts. Slide 1 (hook): "Only a hook" (empty clears it too)');
   });
 
+  test('overlayMode flows into edit instructions only when requested (SLA-787)', () => {
+    expect(editInstructions('H', [], 'English').overlayMode).toBeUndefined();
+    expect(editInstructions('H', [], 'English', { overlayMode: 'script' }).overlayMode).toBe('script');
+    expect(editInstructions(undefined, [], 'English', { variables: ['character'], character: 'short blond hair', overlayMode: 'script' }).overlayMode).toBe('script');
+  });
+
   test('edit mode carries the requested copy as structured values, not prose alone', () => {
     // The exact user values, trimmed the same way the quoted prose is. Slide 1 is
     // the hook and slides 2..N are the requested supporting copy.

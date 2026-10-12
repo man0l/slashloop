@@ -59,6 +59,17 @@ Build `instructions`:
   whose last slide is a detected call-to-action loses that slide from the count
   by default. Pass `true` to keep the source deck's own closing CTA slide. The
   flag is structural only: it changes the slide count, nothing else.
+- `overlayMode`: optional, `"model"` (default) or `"script"`. With `"model"` the
+  image model draws the overlay text. With `"script"` slides are rendered
+  text-free (the copy never reaches the image provider), QA checks that no text
+  was added, and the exact copy is then drawn in code (Inter Bold, white with a
+  dark outline, hook centred, later slides in the upper third) before upload.
+  Use it when a slide fails with `provider_result_rejected:provider_content_filtered`
+  — the provider's content filter refused the prompt, usually because of a word
+  in the overlay copy. That failure is terminal and refunded; re-create the
+  experiment with `overlayMode:"script"`. Edit mode takes the same value as a
+  top-level `overlayMode`. Characters the bundled font lacks (e.g. emoji) are
+  skipped. If it still fails with the filter, the scene itself is the trigger.
 
 Write `goal` yourself and keep it free of source captions, creator handles and
 competitor names. The server no longer appends the source caption to `goal`

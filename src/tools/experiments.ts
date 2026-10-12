@@ -120,7 +120,7 @@ export function editSlideDirection(hook: string | undefined, overlayTexts: Array
 
 /** Edit mode is a single deck, so the "one experiment per source" loop is length 1 by definition. */
 export function editInstructions(hook: string | undefined, overlayTexts: Array<string | null>, language: string,
-  options: { variables?: Array<'hook' | 'character'>; character?: string } = {}): InstructionsData {
+  options: { variables?: Array<'hook' | 'character'>; character?: string; overlayMode?: 'model' | 'script' } = {}): InstructionsData {
   const variables = options.variables ?? [options.character !== undefined ? 'character' : 'hook'];
   if (variables.length !== 1) throw new ExperimentError(400, 'invalid_request', 'Edit mode tests exactly one variable: hook or character. Use create mode for several variables.');
   if (variables[0] === 'character') {
@@ -129,6 +129,7 @@ export function editInstructions(hook: string | undefined, overlayTexts: Array<s
     return Instructions.parse({
       goal: EDIT_CHARACTER_GOAL, brand: '', audience: '', language: language.trim() || 'English',
       direction: editCharacterDirection(options.character), lockedConstraints: [], variables, mode: 'controlled',
+      ...(options.overlayMode ? { overlayMode: options.overlayMode } : {}),
     });
   }
   if (options.character !== undefined) throw new ExperimentError(400, 'invalid_request', 'A character casting direction requires variables=["character"].');
@@ -145,6 +146,7 @@ export function editInstructions(hook: string | undefined, overlayTexts: Array<s
     direction: editSlideDirection(hook, overlayTexts),
     lockedConstraints: [], variables: ['hook'], mode: 'controlled',
     copyOverrides,
+    ...(options.overlayMode ? { overlayMode: options.overlayMode } : {}),
   };
 }
 
@@ -420,6 +422,7 @@ const instructionsInput = z.object({
     'controlled (default without a preset): each alternate changes one of the selected variables vs the baseline. exploration (SaaS Explore combinations): an alternate may change several selected variables together, including hook + character + visualStyle; concept/slides are allowed.',
   ),
   varySupportingOverlays: z.boolean().optional().describe('Hook tests only (controlled, variables=["hook"]): variants may also retell slide 2+ overlay text while scenes stay identical.'),
+  overlayMode: z.enum(['model', 'script']).optional().describe('Who draws the overlay text. "model" (default): the image model renders it. "script": slides are rendered text-free and the text is composed in code afterwards — use it when the image provider rejects slides with a content-filter error caused by the copy.'),
   preserveSourceCtaSlide: z.boolean().optional().describe('Keep the source deck\'s own closing call-to-action slide in the deck instead of subtracting it from the slide count (default false, which drops a detected final CTA slide).'),
 });
 const briefSlideInput = z.object({ role: z.string().min(1).max(80), scene: z.string().min(1).max(2000), overlayText: z.string().max(2000).default(''),
@@ -528,6 +531,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         'EDIT mode: overlay text for slides 2, 3, … in order. Empty string = render no text on that slide. null = leave that slide\'s original text unchanged (use it to skip a slide between two you are editing).',
       ),
       language: z.string().trim().min(1).max(80).optional().describe('EDIT mode: output language for the copy (default English).'),
+      overlayMode: z.enum(['model', 'script']).optional().describe('EDIT mode: "script" renders slides text-free and composes the copy in code (use when the image provider rejects slides with a content-filter error). Default "model". In create mode use instructions.overlayMode.'),
       variantCount: z.number().int().min(1).max(12).default(3).describe('CREATE mode: variants per experiment, including the baseline (1–12). Edit mode is always 2.'),
       slideCount: z.number().int().min(3).max(8).default(5).describe('Slides per variant (3–8); overridden by the source deck length when known, minus a detected source CTA slide unless instructions.preserveSourceCtaSlide is true.'),
       maxCredits: z.number().int().min(1).max(MAX_EXPERIMENT_CREDITS).optional().describe(
@@ -540,7 +544,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       notify: notifyField,
     },
     { readOnlyHint: false },
-    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, variantCount, slideCount, maxCredits, idempotencyKey, ran_by: ranByRaw, ranBy: ranByCamel, tagGoalWithSource, notify }) => guarded(async () => {
+    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, overlayMode, variantCount, slideCount, maxCredits, idempotencyKey, ran_by: ranByRaw, ranBy: ranByCamel, tagGoalWithSource, notify }) => guarded(async () => {
       const ran_by = ranByRaw ?? ranByCamel;
       const workspace = await d.resolveWorkspace({ workspaceId });
       if (new Set(videoIds).size !== videoIds.length) return text({ error: 'invalid_request', message: 'videoIds must be distinct.' }, true);
@@ -554,14 +558,14 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         if (!character && variables?.[0] !== 'character' && !hook?.trim() && !(overlayTexts ?? []).some(t => t?.trim())) {
           return text({ error: 'invalid_request', message: 'mode "edit" needs new copy: a hook for slide 1, or overlay text for a later slide.' }, true);
         }
-      } else if (variables || character !== undefined) {
-        return text({ error: 'invalid_request', message: 'Create mode uses instructions.variables and instructions.direction; top-level variables/character are edit-only.' }, true);
+      } else if (variables || character !== undefined || overlayMode !== undefined) {
+        return text({ error: 'invalid_request', message: 'Create mode uses instructions.variables and instructions.direction; top-level variables/character/overlayMode are edit-only (create mode: instructions.overlayMode).' }, true);
       } else if (!instructions) {
         return text({ error: 'invalid_request', message: 'mode "create" needs instructions — a goal and at least one variable to test.' }, true);
       }
       const edit = mode === 'edit'
         ? {
-          instructions: editInstructions(hook, overlayTexts ?? [], language ?? 'English', { variables, character }),
+          instructions: editInstructions(hook, overlayTexts ?? [], language ?? 'English', { variables, character, overlayMode }),
           variantCount: EDIT_VARIANT_COUNT,
           maxCredits: EDIT_MAX_CREDITS,
         }
