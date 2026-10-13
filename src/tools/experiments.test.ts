@@ -19,7 +19,7 @@ import {
 const TOOLS = [
   'list_experiments', 'get_experiment', 'create_experiment', 'estimate_experiment', 'plan_experiment',
   'update_experiment_variant', 'generate_experiment', 'retry_experiment', 'cancel_experiment', 'delete_experiment',
-  'submit_experiment_feedback',
+  'submit_experiment_feedback', 'revise_experiment',
 ];
 
 function exp(id: string, over: Partial<Experiment> = {}): Experiment {
@@ -1103,5 +1103,55 @@ describe('submit_experiment_feedback (SLA-797)', () => {
     expect(Feedback.parse({ workspaceId: 'w1', idempotencyKey: 'mcp:feedback:abc', variantId: 'v1', slides })).toBeTruthy();
     expect(() => Feedback.parse({ workspaceId: 'w1', idempotencyKey: 'mcp:feedback:abc', variantId: 'v1' })).toThrow();
     expect(() => Feedback.parse({ workspaceId: 'w1', idempotencyKey: 'mcp:feedback:abc', variantId: 'v1', slides: [slides[0], slides[0]] })).toThrow();
+  });
+});
+
+describe('revise_experiment (SLA-811)', () => {
+  beforeEach(() => { store.set('e1', exp('e1', { status: 'failed', pipeline: 'contract' })); });
+
+  test('estimateOnly prices stage revise and starts nothing', async () => {
+    const r = await call('revise_experiment', { experimentId: 'e1', estimateOnly: true });
+    expect(r.isError).toBe(false);
+    expect(r.body.estimate.totalCredits).toBe(9);
+    expect(callsOf('estimate')[0]).toEqual(['e1', 'revise', undefined, undefined]);
+    expect(callsOf('mutate')).toHaveLength(0);
+  });
+
+  test('estimate_experiment accepts the revise stage', async () => {
+    const r = await call('estimate_experiment', { experimentId: 'e1', stage: 'revise' });
+    expect(r.isError).toBe(false);
+    expect(callsOf('estimate')[0]).toEqual(['e1', 'revise', undefined, undefined]);
+  });
+
+  test('refuses above the approval and without one', async () => {
+    estimateTotal = 50;
+    const over = await call('revise_experiment', { experimentId: 'e1', approvedCredits: 20 });
+    expect(over.isError).toBe(true);
+    expect(over.body.error).toBe('estimate_exceeds_approval');
+    const none = await call('revise_experiment', { experimentId: 'e1' });
+    expect(none.isError).toBe(true);
+    expect(callsOf('mutate')).toHaveLength(0);
+  });
+
+  test('within the approval it runs the revise action with a stable derived key', async () => {
+    const r = await call('revise_experiment', { experimentId: 'e1', approvedCredits: 20 });
+    expect(r.isError).toBe(false);
+    const [[ws, id, action, body]] = callsOf('mutate') as [[string, string, string, Record<string, unknown>]];
+    expect([ws, id, action]).toEqual(['w1', 'e1', 'revise']);
+    expect(String(body.idempotencyKey)).toStartWith('mcp:revise:');
+    await call('revise_experiment', { experimentId: 'e1', approvedCredits: 20 });
+    expect((callsOf('mutate')[1]![3] as Record<string, unknown>).idempotencyKey).toBe(body.idempotencyKey);
+  });
+
+  test('service refusals carry a hint', async () => {
+    mutateError = new ExperimentError(409, 'revise_limit');
+    const r = await call('revise_experiment', { experimentId: 'e1', approvedCredits: 20 });
+    expect(r.isError).toBe(true);
+    expect(r.body.hint).toMatch(/maximum number of times/);
+  });
+
+  test('a failed experiment points at revise_experiment', async () => {
+    const r = await call('get_experiment', { experimentId: 'e1' });
+    expect(JSON.stringify(r.body)).toContain('revise_experiment');
   });
 });

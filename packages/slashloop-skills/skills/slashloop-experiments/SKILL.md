@@ -175,7 +175,14 @@ Drive every experiment all the way to `completed`; do not leave drafts or
 6. **paused** or **failed**: get the `retryableJobs` from `get_experiment`,
    price them with `estimate_experiment(taskIds)` (or `variantIds`/`stage`),
    and `retry_experiment` with `approvedCredits` as above. Completed images are
-   kept.
+   kept. Jobs marked `terminalQa` (the deck failed QA after its repair round)
+   cannot pass by retrying: call `revise_experiment` instead. It feeds the QA
+   failures back to the model, which rewrites the contract and briefs (the tested
+   variable stays the only difference between the arms), then re-renders and
+   QA-checks every arm. Price it first with `estimateOnly: true` (or
+   `estimate_experiment(stage="revise")`), then pass `approvedCredits`. It is
+   capped at 2 revisions per experiment; after that, create a new experiment
+   with a changed direction.
 7. **Human feedback on rendered slides**: when the user says what is wrong with
    a generated slideshow ("LTN still looks like MTN"), call
    `submit_experiment_feedback` with the variant id and `feedback` (whole

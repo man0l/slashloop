@@ -218,6 +218,10 @@ export function parseNotify(raw: unknown, assertUrl: (u: string) => void): Notif
 export const WorkspaceBody = z.object({ workspaceId: Id }).strict();
 export const Command = WorkspaceBody.extend({ idempotencyKey: Key });
 export const Plan = Command.extend({ allowPartial: z.boolean().optional() });
+/** QA-failed contract experiment: have the model rewrite the brief against the QA failures, then re-render every arm. */
+export const Revise = Command;
+/** Brief rewrites one experiment may buy; past this, re-create it. */
+export const MAX_BRIEF_REVISIONS = 2;
 export const Retry = Command.extend({ variantIds: z.array(Id).min(1).max(12).optional(), taskIds: z.array(z.string().min(1)).min(1).max(150).optional() });
 export const Generate = Command.extend({ variants: z.array(z.object({ id: Id, revision: z.number().int().positive() }).strict()).min(1).max(12) });
 /* SLA-797: human feedback on a generated slideshow. `feedback` is about the whole
@@ -240,7 +244,7 @@ export const Feedback = Command.extend(feedbackFields).superRefine(feedbackRefin
 /** Feedback rounds kept per variant, and feedback notes kept per slide (newest last). */
 export const FEEDBACK_HISTORY_LIMIT = 5;
 export const SLIDE_FEEDBACK_LIMIT = 3;
-export const Estimate = WorkspaceBody.extend({ stage: z.enum(['plan', 'generate', 'feedback']), variantIds: z.array(Id).min(1).max(12).optional(), taskIds: z.array(z.string().min(1)).min(1).max(150).optional(),
+export const Estimate = WorkspaceBody.extend({ stage: z.enum(['plan', 'generate', 'feedback', 'revise']), variantIds: z.array(Id).min(1).max(12).optional(), taskIds: z.array(z.string().min(1)).min(1).max(150).optional(),
   // stage "feedback" only: the same fields the feedback action takes.
   variantId: Id.optional(), feedback: feedbackText.optional(), slides: feedbackFields.slides });
 export const EditBrief = WorkspaceBody.extend({ revision: z.number().int().positive(), brief: Brief, title: z.string().trim().min(1).max(160).optional(), hypothesis: text.min(1).optional() });
@@ -609,7 +613,7 @@ export interface SlideQaRecord {
 }
 /** SLA-700: one vision call per arm, compiled from the resolved contract. Hard failures are never softened. */
 export interface DeckQaRecord { verdict: 'passed' | 'failed' | 'repairing' | 'unverified'; attempts: number; failures: Record<string, string[]>; warnings: string[]; repaired: number[]; judgedSlides: number[]; prompt?: string }
-export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide' | 'qa'; target?: string; index?: number;
+export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide' | 'qa' | 'revise'; target?: string; index?: number;
   status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number;
   /** Provider requests started, internal QA correction waves included. Absent on tasks that predate it (then `attempts`). */
   requests?: number;
@@ -647,6 +651,8 @@ export interface Variant extends Proposal { id: string; revision: number; status
     /** SLA-797: human feedback in force for this slide, newest last. Every later render of it carries these notes. */
     feedback?: string[] | null }>; error: string | null; }
 /** One human feedback round: what was asked, which slides it re-rendered, and the QA verdict it replaced. */
+/** One QA-driven brief rewrite: why the previous briefs were rejected, kept for audit. */
+export interface BriefRevision { at: string; error: string | null; arms: Array<{ title: string; failures: Record<string, string[]> }> }
 export interface FeedbackRound { at: string; feedback: string | null; slides: Array<{ index: number; feedback: string }>; redo: number[]; previousQa: DeckQaRecord['verdict'] | null }
 export interface Experiment {
   id: string; workspaceId: string; status: string; createdAt: string; updatedAt: string; instructions: InstructionsData;
@@ -672,6 +678,8 @@ export interface Experiment {
   styleFormula?: { medium: string; density: string } | null;
   /** SLA-700: set on every non-exact_edit experiment created on the resolved-contract pipeline. */
   pipeline?: 'contract' | null;
+  /** QA-driven brief rewrites already bought (newest last), capped by MAX_BRIEF_REVISIONS. */
+  revisions?: BriefRevision[] | null;
   /** SLA-700: provider calls this run made, by kind (contract, render, caption-edit, qa, render-extra). */
   providerCalls?: Record<string, number>;
   /** SLA-700: the resolved slide contract (precedence applied) that renderer and QA both read. */
