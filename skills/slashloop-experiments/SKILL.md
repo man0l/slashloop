@@ -136,7 +136,8 @@ Drive every experiment all the way to `completed`; do not leave drafts or
 4. **generating**: wait.
 5. **completed**: read the image URLs from `get_experiment`
    (`progress`), record them on the test's case (see State below), post them
-   (and the experiment ID, variants and credits spent) on the task, and close the task. Do not re-run a completed experiment.
+   (and the experiment ID, variants and credits spent) on the task, and close
+   the task. Do not re-run a completed experiment.
 6. **paused** or **failed**: get the `retryableJobs` from `get_experiment`,
    price them with `estimate_experiment(taskIds)` (or `variantIds`/`stage`),
    and `retry_experiment` with `approvedCredits` as above. Completed images are
