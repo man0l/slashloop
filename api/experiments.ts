@@ -21,7 +21,7 @@ async function body(request:Request):Promise<Record<string,unknown>> {
 async function handle(request:Request):Promise<Response> {
   try{
     const url=new URL(request.url);
-    const match=/^\/api\/experiments(?:\/([^/]+))?(?:\/(estimate|plan|generate|cancel|retry|exact-edit|feedback)|\/variants\/([^/]+))?$/.exec(url.pathname);
+    const match=/^\/api\/experiments(?:\/([^/]+))?(?:\/(estimate|plan|generate|cancel|retry|revise|exact-edit|feedback)|\/variants\/([^/]+))?$/.exec(url.pathname);
     if(!match)return jsonResponse(404,{error:'not_found'},request);
     const id=match[1]?Id.parse(match[1]):null;const action=match[2];const variantId=match[3]?Id.parse(match[3]):undefined;
     const b=request.method==='GET'?null:await body(request);
