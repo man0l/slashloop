@@ -1,7 +1,8 @@
 // SLA-617: outbox queue operations. Rows are written by store.save() in the same
 // batch as the terminal status change; this file claims, settles and prunes them.
-import { batch, type Run } from './store.js';
-import { deliver, isPaperclipConfigError, type DeliverDeps } from './webhook-delivery.js';
+import { batch, testSummary, type Run, type TestSummary } from './store.js';
+import { deliver, isPaperclipConfigError, mirrorPaperclipCase, type DeliverDeps, type DeliveryResult } from './webhook-delivery.js';
+import { paperclipIssueIdOf, type NotifyConfig } from './schema.js';
 
 /** Delay before retry n (after the nth failed attempt). Sums to ~23.7h, then the row goes dead. */
 export const RETRY_DELAYS_MS = [30_000, 120_000, 600_000, 1_800_000, 3_600_000, 7_200_000, 14_400_000, 21_600_000, 36_000_000] as const;
@@ -49,17 +50,46 @@ export async function pruneSettled(now: Date, run: Run = batch): Promise<void> {
   await run([{ sql: `DELETE FROM "ExperimentWebhookOutbox" WHERE "state" <> 'pending' AND "createdAt" < ?`, params: [new Date(now.getTime() - RETAIN_SETTLED_MS)] }]);
 }
 
+export type CaseMirror = (row: OutboxRow, summary: TestSummary, deps: DeliverDeps) => Promise<DeliveryResult>;
+/**
+ * SLA-806: after a Paperclip-mode event for an experiment with a test key is
+ * delivered, upsert that test's Paperclip case. It is a mirror: a failure is
+ * logged and never touches the delivery's state, and the next event for the
+ * test rebuilds the whole case from slashloop's rows, so one miss heals itself.
+ */
+export async function mirrorTestCase(
+  row: OutboxRow, deps: DeliverDeps & { run?: Run; mirror?: CaseMirror } = {},
+): Promise<DeliveryResult | null> {
+  let testKey: unknown;
+  let notify: NotifyConfig;
+  try {
+    testKey = (JSON.parse(row.payloadJson) as { testKey?: unknown }).testKey;
+    notify = JSON.parse(row.notifyJson) as NotifyConfig;
+  } catch { return null; }
+  if (typeof testKey !== 'string' || !testKey || !paperclipIssueIdOf(notify.metadata)) return null;
+  const summary = await testSummary(row.workspaceId, testKey, deps.run ?? batch);
+  if (!summary) return null;
+  return (deps.mirror ?? mirrorPaperclipCase)(row, summary, deps);
+}
+
 export interface DeliverySweep { delivered: number; retried: number; dead: number }
 /** One sweep: claim due events, deliver each, settle. Rows are independent; one failure never blocks the rest. */
 export async function runWebhookDeliveries(
-  deps: DeliverDeps & { run?: Run; limit?: number; clock?: () => Date } = {},
+  deps: DeliverDeps & { run?: Run; limit?: number; clock?: () => Date; mirror?: CaseMirror } = {},
 ): Promise<DeliverySweep> {
   const run = deps.run ?? batch;
   const clock = deps.clock ?? (() => new Date());
   const sweep: DeliverySweep = { delivered: 0, retried: 0, dead: 0 };
   for (const row of await claimDue(clock(), deps.limit ?? 10, run)) {
     const result = await deliver(row, deps);
-    if (result.ok) { await markDelivered(row.id, clock(), run); sweep.delivered++; continue; }
+    if (result.ok) {
+      await markDelivered(row.id, clock(), run); sweep.delivered++;
+      try {
+        const mirrored = await mirrorTestCase(row, { ...deps, run });
+        if (mirrored && !mirrored.ok) console.warn(`[webhook] case mirror for ${row.idempotencyKey} failed: ${mirrored.error}`);
+      } catch (err) { console.warn(`[webhook] case mirror for ${row.idempotencyKey} failed: ${(err as Error).message}`); }
+      continue;
+    }
     if (isPaperclipConfigError(result.error)) console.error(`[webhook] CONFIG ERROR delivering ${row.idempotencyKey}: ${result.error}. ${result.permanent ? 'Retrying cannot fix this; the row will not be re-sent until it is requeued.' : 'Fix the key or env and recreate the worker; the row retries on its backoff schedule.'}`);
     const settled = await markFailed(row, result.error ?? 'delivery_failed', result.permanent, clock(), run);
     sweep[settled === 'dead' ? 'dead' : 'retried']++;

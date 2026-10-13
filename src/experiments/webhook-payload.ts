@@ -12,6 +12,7 @@ export function buildWebhookPayload(e: Experiment): Record<string, unknown> {
     version: e.version,
     occurredAt: e.updatedAt,
     ranBy: e.ranBy ?? null,
+    testKey: e.testKey ?? null,
     ...(e.error && (e.status === 'failed' || e.status === 'paused') ? { error: e.error.slice(0, 500) } : {}),
     summary: { variants: e.variants.length, spentCredits: e.creditsCharged },
     links: { mcp: 'get_experiment' },

@@ -9,6 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Command, Create, CreateBriefRequest, CreateRequest, EditBrief, Feedback, Generate, Plan, Retry, ExperimentError, Key, validateVariants, type Experiment } from '../experiments/schema.js';
 import { normalizeBriefCandidates } from '../experiments/providers.js';
+import type { ListFilter } from '../experiments/store.js';
 import { renderContract } from '../experiments/render-prompt.js';
 import {
   registerExperimentTools, defaultExperimentCap, derivedKey, editSlideDirection, editInstructions,
@@ -52,7 +53,7 @@ function fakes(): ExperimentToolDeps {
       const failure = createFailures[raw.videoIds?.[0]];
       if (failure) throw failure;
       const id = `e-${raw.idempotencyKey.replace(/[^a-zA-Z0-9]/g, '').slice(-10)}`;
-      const e = store.get(id) ?? exp(id, { maxCredits: raw.maxCredits, ranBy: typeof raw.ran_by === 'string' ? raw.ran_by.trim() || null : null, inputs: raw.videoIds?.length ? [{ ...exp(id).inputs[0]!, videoId: raw.videoIds[0] }] : [], instructions: { ...exp(id).instructions, ...(raw.instructions ?? {}) }, variantCount: raw.variantCount, slideCount: raw.slideCount });
+      const e = store.get(id) ?? exp(id, { maxCredits: raw.maxCredits, ranBy: typeof raw.ran_by === 'string' ? raw.ran_by.trim() || null : null, testKey: typeof raw.test_key === 'string' ? raw.test_key : null, testMaxCredits: raw.test_max_credits ?? null, inputs: raw.videoIds?.length ? [{ ...exp(id).inputs[0]!, videoId: raw.videoIds[0] }] : [], instructions: { ...exp(id).instructions, ...(raw.instructions ?? {}) }, variantCount: raw.variantCount, slideCount: raw.slideCount });
       store.set(id, e);
       return e;
     }) as ExperimentToolDeps['createExperiment'],
@@ -73,14 +74,20 @@ function fakes(): ExperimentToolDeps {
       if (!e || e.workspaceId !== ws) throw new ExperimentError(404, 'experiment_not_found');
       return e;
     },
-    list: async (ws: string, limit = 50, offset = 0, ranBy?: string | null) => {
-      record('list', [ws, limit, offset, ranBy]);
-      return [...store.values()].filter(e => !ranBy || e.ranBy === ranBy).slice(offset, offset + limit);
+    list: async (ws: string, limit = 50, offset = 0, filter?: string | null | ListFilter) => {
+      const { ranBy, testKey } = filter && typeof filter === 'object' ? filter : { ranBy: filter, testKey: null };
+      record('list', testKey ? [ws, limit, offset, ranBy, testKey] : [ws, limit, offset, ranBy]);
+      return [...store.values()].filter(e => (!ranBy || e.ranBy === ranBy) && (!testKey || e.testKey === testKey)).slice(offset, offset + limit);
     },
     // The real projection lives in store.ts; a marker proves the tool routes through deps.serialize.
     serialize: ((e: Experiment) => ({ ...e, projected: true })) as unknown as ExperimentToolDeps['serialize'],
     deleteExperiment: async (ws: string, id: string) => { record('deleteExperiment', [ws, id]); return { deleted: true as const }; },
     deleteExperiments: async (ws: string, ids: string[]) => { record('deleteExperiments', [ws, ids]); return { deleted: ids.length, failed: [] }; },
+    testSummary: (async (ws: string, testKey: string) => {
+      record('testSummary', [ws, testKey]);
+      const rows = [...store.values()].filter(e => e.testKey === testKey);
+      return rows.length ? { testKey, attemptCount: rows.length, creditsChargedTotal: rows.reduce((n, e) => n + e.creditsCharged, 0) } : null;
+    }) as unknown as ExperimentToolDeps['testSummary'],
     estimateFeedback: (async (e: Experiment, req: unknown) => {
       record('estimateFeedback', [e.id, req]);
       return { analysisCredits: 0, planningCredits: 0, generationCredits: estimateTotal, totalCredits: estimateTotal, correctionCredits: estimateTotal, maxTotalCredits: 2 * estimateTotal, remainingCredits: e.maxCredits, workspaceCredits: 1000, maxCredits: e.maxCredits, generationBasis: e.generationBasis, exactProviderUsdCap: false, maxProviderRequests: 4, pricing: { analysis: 5, planningCall: 2, slide: 10 }, redo: [4, 5] };
@@ -129,6 +136,35 @@ describe('tool surface', () => {
     registerAllTools(server);
     const names = Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
     for (const name of TOOLS) expect(names).toContain(name);
+  });
+});
+
+describe('test_key (SLA-806)', () => {
+  test('create passes test_key and test_max_credits through; rows echo testKey', async () => {
+    const created = await call('create_experiment', { videoIds: ['vid1'], instructions, test_key: 'tier-ladder-mewing', test_max_credits: 600 });
+    expect(created.isError).toBe(false);
+    expect(callsOf('createExperiment')[0]![0]).toMatchObject({ test_key: 'tier-ladder-mewing', test_max_credits: 600 });
+    expect(created.body.experiments[0]).toMatchObject({ testKey: 'tier-ladder-mewing', testMaxCredits: 600 });
+    const brief = await call('create_experiment', { mode: 'brief', instructions: { ...instructions, direction: 'Slide 1: ...' }, test_key: 'brief-test' });
+    expect(callsOf('createExperiment')[1]![0]).toMatchObject({ test_key: 'brief-test' });
+    expect(brief.body.experiments[0].testKey).toBe('brief-test');
+  });
+
+  test('list_experiments(test_key) filters to the test and adds its summary; without it there is no test block', async () => {
+    await call('create_experiment', { videoIds: ['vid1'], instructions, test_key: 'tier-ladder-mewing' });
+    await call('create_experiment', { videoIds: ['vid2'], instructions, test_key: 'jawline' });
+    const listed = await call('list_experiments', { test_key: 'Tier-Ladder-Mewing' });
+    expect(listed.body.experiments.map((e: any) => e.testKey)).toEqual(['tier-ladder-mewing']);
+    expect(callsOf('list').at(-1)).toEqual(['w1', 13, 0, undefined, 'tier-ladder-mewing']);
+    expect(listed.body.test).toMatchObject({ testKey: 'tier-ladder-mewing', attemptCount: 1 });
+    expect((await call('list_experiments', { test_key: 'none-yet' })).body.test).toBeNull();
+    expect('test' in (await call('list_experiments', {})).body).toBe(false);
+  });
+
+  test('a malformed test_key is an invalid_test_key error, not a crash', async () => {
+    const res = await call('list_experiments', { test_key: 'not a slug' });
+    expect(res.isError).toBe(true);
+    expect(res.body.error).toBe('invalid_test_key');
   });
 });
 

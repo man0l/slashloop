@@ -31,11 +31,11 @@ import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload } fr
 import { createExperiment, dedupeSourcePosts, estimate, mutate, fingerprint, estimateFeedback } from '../experiments/service.js';
 import { SOURCE_FORMATS } from '../experiments/source-format.js';
 import { ARC_LEVELS } from '../experiments/resolved-contract.js';
-import { load, list, serialize } from '../experiments/store.js';
+import { load, list, serialize, testSummary } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
 import {
-  CopyOverrides, DIRECTION_MAX, ExperimentError, FEEDBACK_MAX, Id, Instructions, MAX_MANUAL_ATTEMPTS, slideFanout, VARIABLE_FIELDS, type Experiment, type InstructionsData,
+  CopyOverrides, DIRECTION_MAX, ExperimentError, FEEDBACK_MAX, Id, Instructions, MAX_MANUAL_ATTEMPTS, normalizeTestKey, slideFanout, VARIABLE_FIELDS, type Experiment, type InstructionsData,
 } from '../experiments/schema.js';
 
 // ---- dependencies ----------------------------------------------------------
@@ -56,9 +56,11 @@ export interface ExperimentToolDeps {
   dedupeSourcePosts?: typeof dedupeSourcePosts;
   /** Optional for the same reason; submit_experiment_feedback refuses without it. */
   estimateFeedback?: typeof estimateFeedback;
+  /** Optional for the same reason; list_experiments omits the `test` block without it. */
+  testSummary?: typeof testSummary;
 }
 export const defaultExperimentToolDeps: ExperimentToolDeps = {
-  resolveWorkspace: resolveToolWorkspace, createExperiment, dedupeSourcePosts, estimate, estimateFeedback, mutate, load, list, serialize, deleteExperiment, deleteExperiments,
+  resolveWorkspace: resolveToolWorkspace, createExperiment, dedupeSourcePosts, estimate, estimateFeedback, mutate, load, list, serialize, deleteExperiment, deleteExperiments, testSummary,
 };
 
 // ---- helpers ---------------------------------------------------------------
@@ -311,6 +313,8 @@ function listRow(e: Experiment) {
     maxCredits: e.maxCredits,
     creditsCharged: e.creditsCharged,
     ranBy: e.ranBy ?? null,
+    testKey: e.testKey ?? null,
+    testMaxCredits: e.testMaxCredits ?? null,
     error: e.error,
   };
 }
@@ -395,6 +399,15 @@ const ranByField = z.string().max(400).optional().describe(
 // Responses expose the value as `ranBy`, so agents echo that spelling back; without
 // this alias zod strips the unknown key and the experiment is stored with ranBy null.
 const ranByAliasField = z.string().max(400).optional().describe('Alias of ran_by (the name responses use). If both are given, ran_by wins.');
+const testKeyField = z.string().max(80).optional().describe(
+  'Stable slug for the TEST this experiment belongs to, i.e. the hypothesis, not the run (e.g. "tier-ladder-mewing"). Lower-case a-z, 0-9, ".", "_", ":", "-". '
+  + 'Pass the same key on every attempt: a re-created run after a failure is another attempt of the same test. list_experiments(test_key) then returns '
+  + 'all attempts and their total spend, so check it before creating and continue an open attempt instead of starting a duplicate.',
+);
+const testMaxCreditsField = z.number().int().min(1).max(100_000).optional().describe(
+  'Credit cap for the whole test: every experiment with this test_key together, not just this one. Needs test_key. Planning, generation, retries and '
+  + 'feedback rounds that would push the test past it are refused (test_budget_exceeded). Pass the budget the user approved for the test, on every attempt.',
+);
 const tagGoalField = z.boolean().default(false).describe(
   'Append "— @handle · source caption snippet (views)" to the stored goal so the title names the source. Default false: '
   + 'the source caption can name a competitor or creator and must not leak into the goal. Source videos are listed on every experiment anyway.',
@@ -475,14 +488,18 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       offset: z.number().int().min(0).default(0).describe('Pass nextOffset from the previous page.'),
       ran_by: z.string().max(400).optional().describe('Only experiments whose ranBy equals this value exactly (e.g. "agent:Leo"). Omit for all.'),
       ranBy: ranByAliasField,
+      test_key: z.string().max(80).optional().describe('Only the attempts of this test (the test_key given at create). Adds a `test` block: every attempt oldest first, total credits charged, the test cap and what is left of it.'),
+      testKey: z.string().max(80).optional().describe('Alias of test_key (the name responses use).'),
     },
     { readOnlyHint: true },
-    ({ workspaceId, limit, offset, ran_by, ranBy }) => guarded(async () => {
+    ({ workspaceId, limit, offset, ran_by, ranBy, test_key, testKey }) => guarded(async () => {
       const workspace = await d.resolveWorkspace({ workspaceId });
+      const key = normalizeTestKey(test_key ?? testKey);
       // One extra row reveals whether another page exists (same as api/experiments.ts).
-      const rows = await d.list(workspace.id, limit + 1, offset, ran_by ?? ranBy);
+      const rows = await d.list(workspace.id, limit + 1, offset, { ranBy: ran_by ?? ranBy, testKey: key });
       const nextOffset = rows.length > limit ? offset + limit : null;
-      return text({ experiments: rows.slice(0, limit).map(listRow), nextOffset });
+      const test = key && d.testSummary ? await d.testSummary(workspace.id, key) : undefined;
+      return text({ experiments: rows.slice(0, limit).map(listRow), nextOffset, ...(key ? { test: test ?? null } : {}) });
     }));
 
   // ---- get_experiment ----
@@ -557,10 +574,13 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       ranBy: ranByAliasField,
       tagGoalWithSource: tagGoalField,
       notify: notifyField,
+      test_key: testKeyField,
+      test_max_credits: testMaxCreditsField,
     },
     { readOnlyHint: false },
-    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, overlayMode, variantCount, slideCount, maxCredits, idempotencyKey, ran_by: ranByRaw, ranBy: ranByCamel, tagGoalWithSource, notify }) => guarded(async () => {
+    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, overlayMode, variantCount, slideCount, maxCredits, idempotencyKey, ran_by: ranByRaw, ranBy: ranByCamel, tagGoalWithSource, notify, test_key, test_max_credits }) => guarded(async () => {
       const ran_by = ranByRaw ?? ranByCamel;
+      const test = { ...(test_key === undefined ? {} : { test_key }), ...(test_max_credits === undefined ? {} : { test_max_credits }) };
       const workspace = await d.resolveWorkspace({ workspaceId });
       if (mode === 'brief') {
         if (videoIds?.length) return text({ error: 'invalid_request', message: 'mode "brief" has no source video — omit videoIds, or use mode "create" to generate from slideshows.' }, true);
@@ -573,7 +593,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         const body = { workspaceId: workspace.id, instructions, variantCount, slideCount, maxCredits: cap };
         const key = idempotencyKey ?? derivedKey('create', body);
         try {
-          const e = await d.createExperiment({ ...body, idempotencyKey: key, ...(ran_by === undefined ? {} : { ran_by }), ...(notify === undefined ? {} : { notify }) }, undefined, { sourceless: true });
+          const e = await d.createExperiment({ ...body, idempotencyKey: key, ...(ran_by === undefined ? {} : { ran_by }), ...(notify === undefined ? {} : { notify }), ...test }, undefined, { sourceless: true });
           const planEstimate = await d.estimate(e, 'plan');
           const row = { ...listRow(e), ...(e.notify ? { notify: e.notify } : {}), idempotencyKey: key, planEstimate };
           return text(withNextSteps({
@@ -627,7 +647,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
           ? (videoIds.length === 1 ? idempotencyKey : `${idempotencyKey}:${i + 1}`)
           : derivedKey('create', body);
         try {
-          const e = await d.createExperiment({ ...body, idempotencyKey: key, ...(ran_by === undefined ? {} : { ran_by }), ...(notify === undefined ? {} : { notify }) }, undefined, { ...(mode === 'edit' ? { expandFormat: false } : {}), tagGoal: tagGoalWithSource });
+          const e = await d.createExperiment({ ...body, idempotencyKey: key, ...(ran_by === undefined ? {} : { ran_by }), ...(notify === undefined ? {} : { notify }), ...test }, undefined, { ...(mode === 'edit' ? { expandFormat: false } : {}), tagGoal: tagGoalWithSource });
           created.push({ ...listRow(e), ...(e.notify ? { notify: e.notify } : {}), idempotencyKey: key, planEstimate: await d.estimate(e, 'plan') });
         } catch (err) {
           const payload = JSON.parse(experimentToolError(err).content[0]!.text);

@@ -71,6 +71,29 @@ your agent name, not who you act for; any `on behalf of ...` suffix is dropped.
 Free text, trimmed and capped at 120 characters; use the same string every time so the owner can filter by it. An
 experiment created without it keeps `ranBy: null` and cannot be attributed.
 
+**Always pass `test_key`** too. A test is one hypothesis (e.g. "which slide-1
+hook wins on the mewing tier ladder"). An experiment is one attempt at it, and
+re-creating after a failure (say with `overlayMode:"script"`) is another
+attempt at the same test. Choose a short, stable slug per test, such as
+`tier-ladder-mewing` (lower-case a-z, 0-9, `.`, `_`, `:`, `-`), and reuse it
+for every attempt. slashloop keeps the state, so you don't need to track it in
+comments or anywhere else:
+
+1. **Before creating**, call `list_experiments(test_key)`. Its `test` block
+   lists every attempt, oldest first, with `creditsChargedTotal`,
+   `testMaxCredits` and `creditsRemaining`. If the newest attempt is not
+   `failed` or `cancelled`, continue it (lifecycle below) and don't create a
+   duplicate. If it failed, create the next attempt with the fix and the same
+   `test_key`.
+2. **Budget per test.** When the task grants a budget for the test, pass it as
+   `test_max_credits` on every attempt. The server then refuses any plan,
+   generate, retry or feedback step, and any charge, that would push the
+   test's total spend across all attempts past it (`test_budget_exceeded`).
+   Use `creditsRemaining` as the remaining cap in the approval rules below.
+3. **On a wake** (completion notice or monitor), the experiment's `testKey`
+   leads back to the test: `list_experiments(test_key)` shows where it
+   stands.
+
 Defaults: `variantCount=3` including baseline and `slideCount=5`, overridden by
 the source deck when known. Call `create_experiment`; the draft is free.
 Return each created experiment ID and its `planEstimate`, plus failures. Do not
@@ -105,7 +128,8 @@ only when the fresh estimate is `<= approvedCredits`. Decide where
    with `estimate_experiment`; if the estimate is within the remaining cap, pass
    the remaining cap as `approvedCredits` and run it. Do not create a
    confirmation card, do not ask in a comment. Track the remaining cap as you
-   spend (`creditsCharged` on `get_experiment`). Ask only when an estimate
+   spend (`creditsCharged` on `get_experiment`; for a cap on a whole test,
+   `creditsRemaining` from `list_experiments(test_key)`). Ask only when an estimate
    exceeds the remaining cap, and then ask once with the numbers.
 2. **No cap is stated.** Ask for approval ONCE with a single batched
    `request_confirmation` covering every experiment and both stages (plan and
@@ -236,6 +260,7 @@ later `nextCheckAt`. An issue holds one monitor: with several experiments, set
 
 Call `list_experiments` with `limit<=50`; follow `nextOffset` only if asked.
 Return ID, status, goal, source video IDs, variant/slide counts, credit ceiling,
-credits charged, `ranBy`, and error. Pass `ran_by` (exact match) to list only
-the experiments run by one runner. Use `get_experiment` only to resolve a specific
+credits charged, `ranBy`, `testKey`, and error. Pass `ran_by` (exact match) to list only
+the experiments run by one runner, or `test_key` to list one test's attempts
+together with its `test` summary (attempts, total spend, cap, remaining). Use `get_experiment` only to resolve a specific
 experiment ID. Do not create, spend, edit, retry, cancel, or delete in list mode.
