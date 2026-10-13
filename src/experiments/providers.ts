@@ -1491,7 +1491,10 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
         if(reasons.some((r)=>/\b402\b|insufficient credits/i.test(r)))throw new SafeFailure('credits_exhausted_402');
         if(reasons.some((r)=>/\b429\b|rate.?limit/i.test(r)))throw new SafeFailure(`rate_limited_429 retry_after=${/retry_after=(\d+)/i.exec(joined)?.[1] ?? 30}`);
         const first=results[0];
-        const err=first&&first.status==='rejected'&&first.reason instanceof SafeFailure?first.reason:new SafeFailure(`all_candidates_failed[${joined.slice(0,160)}]`);
+        // The 60-char slice above cut a refusal at "The respons", so an unrecognised provider
+        // message could never be read back. Keep the provider's own message text instead.
+        const detail=refusals.map(m=>{const t=m.replace(/\s+/g,' ');const body=/"message"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(t)?.[1];return body?`${/error (\d{3})/.exec(t)?.[1]??''} ${body}`.trim().slice(0,140):t.slice(0,60);}).filter((v,i,all)=>all.indexOf(v)===i).join(' | ');
+        const err=first&&first.status==='rejected'&&first.reason instanceof SafeFailure?first.reason:new SafeFailure(`all_candidates_failed[${detail.slice(0,170)}]`);
         throw err;
       }
       return out;

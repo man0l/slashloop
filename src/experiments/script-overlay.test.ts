@@ -153,6 +153,13 @@ describe('content-filter classification', () => {
     expect((err as Error).message).not.toContain('Re-create');
   });
 
+  test('an unrecognised provider refusal keeps its own wording instead of a 60-char stub', async () => {
+    const odd = 'OpenRouter image error 400: {"error":{"message":"Request rejected by upstream moderation: category self_harm_adjacent","code":400}}';
+    const render = deps({ generateImage: async () => { throw new Error(odd); } });
+    const err = await run(fixture(), render).catch(e => e);
+    expect((err as Error).message).toStartWith('all_candidates_failed[400 Request rejected by upstream moderation: category self_harm_adjacent');
+  });
+
   test('a throttle that happens to mention nothing about filters stays retryable', async () => {
     const render = deps({ generateImage: async () => { throw new Error('OpenRouter image error 429: slow down'); } });
     const err = await run(fixture(), render).catch(e => e);
