@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { Command, Create, CreateRequest, EditBrief, Generate, Plan, Retry, ExperimentError, Key, validateVariants, type Experiment } from '../experiments/schema.js';
+import { Command, Create, CreateBriefRequest, CreateRequest, EditBrief, Generate, Plan, Retry, ExperimentError, Key, validateVariants, type Experiment } from '../experiments/schema.js';
 import { normalizeBriefCandidates } from '../experiments/providers.js';
 import { renderContract } from '../experiments/render-prompt.js';
 import {
@@ -48,10 +48,10 @@ function fakes(): ExperimentToolDeps {
     },
     createExperiment: (async (raw: any, _deps?: unknown, options?: unknown) => {
       record('createExperiment', [raw, options]);
-      const failure = createFailures[raw.videoIds[0]];
+      const failure = createFailures[raw.videoIds?.[0]];
       if (failure) throw failure;
       const id = `e-${raw.idempotencyKey.replace(/[^a-zA-Z0-9]/g, '').slice(-10)}`;
-      const e = store.get(id) ?? exp(id, { maxCredits: raw.maxCredits, ranBy: typeof raw.ran_by === 'string' ? raw.ran_by.trim() || null : null, inputs: [{ ...exp(id).inputs[0]!, videoId: raw.videoIds[0] }] });
+      const e = store.get(id) ?? exp(id, { maxCredits: raw.maxCredits, ranBy: typeof raw.ran_by === 'string' ? raw.ran_by.trim() || null : null, inputs: raw.videoIds?.length ? [{ ...exp(id).inputs[0]!, videoId: raw.videoIds[0] }] : [], instructions: { ...exp(id).instructions, ...(raw.instructions ?? {}) }, variantCount: raw.variantCount, slideCount: raw.slideCount });
       store.set(id, e);
       return e;
     }) as ExperimentToolDeps['createExperiment'],
@@ -897,6 +897,104 @@ describe('helpers', () => {
     const k = derivedKey('plan', { experimentId: 'e1' });
     expect(k).toBe(derivedKey('plan', { experimentId: 'e1' }));
     expect(Key.safeParse(k).success).toBe(true);
+  });
+});
+
+describe('brief mode: no source video (SLA-802)', () => {
+  const direction = 'Slide 1: a kitchen counter, overlay "Stop scrolling". Slide 2: a hand holding a jar, overlay "Try this".';
+  const brief = { mode: 'brief', instructions: { goal: 'Test a hook', variables: ['hook'], direction }, variantCount: 2, slideCount: 6 };
+
+  test('the catalog lists brief and no longer requires videoIds', async () => {
+    const { tools } = await (await connect()).listTools();
+    const tool = tools.find(t => t.name === 'create_experiment')!;
+    const props = tool.inputSchema.properties as Record<string, any>;
+    expect(props.mode.enum).toEqual(['edit', 'create', 'brief']);
+    expect(tool.inputSchema.required ?? []).not.toContain('videoIds');
+    expect(tool.description).toContain('mode "brief"');
+  });
+
+  test('creates one sourceless draft with a planEstimate and a plan next step', async () => {
+    const { isError, body } = await call('create_experiment', brief);
+    expect(isError).toBe(false);
+    const [raw, options] = callsOf('createExperiment')[0]! as [any, any];
+    expect(options).toEqual({ sourceless: true });
+    expect('videoIds' in raw).toBe(false);
+    expect(raw).toMatchObject({ workspaceId: 'w1', variantCount: 2, slideCount: 6, maxCredits: defaultExperimentCap(2, 6, false) });
+    expect(raw.instructions.direction).toBe(direction);
+    expect(Key.safeParse(raw.idempotencyKey).success).toBe(true);
+    expect(CreateBriefRequest.safeParse({ ...raw, videoIds: [] }).success).toBe(true);
+    expect(body.experiments).toHaveLength(1);
+    expect(body.experiments[0]).toMatchObject({ status: 'draft', sourceMode: 'brief', videoIds: [], variantCount: 2, slideCount: 6, planEstimate: { totalCredits: 9 } });
+    expect(callsOf('estimate')[0]).toEqual([body.experiments[0].id, 'plan', undefined, undefined]);
+    expect(body.nextSteps[0]).toMatchObject({ tool: 'plan_experiment', args: { experimentId: body.experiments[0].id, approvedCredits: 9 }, spendsMoney: true });
+    expect(body.failed).toEqual([]);
+  });
+
+  test('is idempotent: the same call derives the same key and returns the same draft', async () => {
+    const a = await call('create_experiment', brief);
+    const b = await call('create_experiment', brief);
+    expect(b.body.experiments[0].id).toBe(a.body.experiments[0].id);
+    expect(store.size).toBe(1);
+  });
+
+  test('a brief draft costs less to cap than a source draft (no analysis)', () => {
+    expect(defaultExperimentCap(2, 6, false)).toBeLessThanOrEqual(defaultExperimentCap(2, 6));
+  });
+
+  test('direction up to 8000 characters is accepted, longer is refused by the schema', async () => {
+    const long = 'Slide copy. '.repeat(400);
+    expect(long.length).toBeGreaterThan(2000);
+    const ok = await call('create_experiment', { ...brief, instructions: { ...brief.instructions, direction: long } });
+    expect(ok.isError).toBe(false);
+    expect((callsOf('createExperiment')[0]![0] as any).instructions.direction).toBe(long);
+    const client = await connect();
+    const res = await client.callTool({ name: 'create_experiment', arguments: { ...brief, instructions: { ...brief.instructions, direction: 'x'.repeat(8001) } } }) as { isError?: boolean };
+    expect(res.isError).toBe(true);
+  });
+
+  test('refuses videoIds, a missing brief, an empty direction and edit-only fields', async () => {
+    const withVideo = await call('create_experiment', { ...brief, videoIds: ['vid1'] });
+    expect(withVideo.isError).toBe(true);
+    expect(withVideo.body.error).toBe('invalid_request');
+    const noInstructions = await call('create_experiment', { mode: 'brief' });
+    expect(noInstructions.body.error).toBe('invalid_request');
+    const noDirection = await call('create_experiment', { ...brief, instructions: { goal: 'g', variables: ['hook'], direction: '   ' } });
+    expect(noDirection.body.error).toBe('invalid_request');
+    const editOnly = await call('create_experiment', { ...brief, hook: 'Hello' });
+    expect(editOnly.body.error).toBe('invalid_request');
+    expect(callsOf('createExperiment')).toHaveLength(0);
+  });
+
+  test('create and edit modes still need videoIds and point at brief mode', async () => {
+    for (const mode of ['create', 'edit']) {
+      const { isError, body } = await call('create_experiment', { mode, instructions });
+      expect(isError).toBe(true);
+      expect(body.error).toBe('invalid_request');
+      expect(body.message).toContain('"brief"');
+    }
+    expect(callsOf('createExperiment')).toHaveLength(0);
+  });
+
+  test('get_experiment and list_experiments read a sourceless draft like any other', async () => {
+    const created = await call('create_experiment', brief);
+    const id = created.body.experiments[0].id;
+    const got = await call('get_experiment', { experimentId: id });
+    expect(got.isError).toBe(false);
+    expect(got.body.progress).toMatchObject({ status: 'draft', sourceMode: 'brief', sources: { total: 0, ready: 0 } });
+    expect(got.body.experiment).toMatchObject({ variantCount: 2, slideCount: 6 });
+    const listed = await call('list_experiments', {});
+    expect(listed.body.experiments[0]).toMatchObject({ id, sourceMode: 'brief', videoIds: [], status: 'draft' });
+    store.set('src', exp('src'));
+    const withSource = await call('get_experiment', { experimentId: 'src' });
+    expect(withSource.body.progress.sourceMode).toBe('videos');
+  });
+
+  test('estimate_experiment and plan_experiment accept a sourceless draft id', async () => {
+    const created = await call('create_experiment', brief);
+    const id = created.body.experiments[0].id;
+    const est = await call('estimate_experiment', { experimentId: id, stage: 'plan' });
+    expect(est.isError).toBe(false);
+    expect(callsOf('estimate').at(-1)![1]).toBe('plan');
   });
 });
 
