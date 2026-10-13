@@ -11,7 +11,7 @@ import { persistedOverlayText } from './render-prompt.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { applyApprovedEstimate } from './budget.js';
 import { compileExactEdit } from './exact-edit.js';
-import { applyFeedback, briefToArm, generationTasks, isContractPipeline } from './contract-flow.js';
+import { applyFeedback, briefToArm, FALLBACK_HOOK, generationTasks, hookForOverlay, isContractPipeline } from './contract-flow.js';
 import { slideWork } from './resolved-contract.js';
 import { postKey } from '../lib/post-key.js';
 import { expandPreset, inferSharedFormat } from './source-format.js';
@@ -396,6 +396,23 @@ export function assertVariantEditable(e:S.Experiment,variantId:string|undefined,
   return v;
 }
 /**
+ * The contract pipeline renders the hook from slides[0].overlayText and ignores brief.hook, so the two must
+ * never disagree after an edit. Whichever one the caller changed wins (a blank caption stores the placeholder
+ * hook); changing both to different texts is ambiguous and refused rather than guessed.
+ */
+function reconcileContractHook(prior:S.BriefData,brief:S.BriefData):S.BriefData {
+  const first=brief.slides[0]; if(!first) return brief;
+  const overlay=first.overlayText??'';
+  const overlayChanged=overlay!==(prior.slides[0]?.overlayText??'');
+  const hookChanged=brief.hook!==prior.hook;
+  const hookText=brief.hook===FALLBACK_HOOK?'':brief.hook;
+  if(overlayChanged&&hookChanged&&hookText!==overlay)
+    throw new S.ExperimentError(422,'hook_overlay_conflict',"On the slide-contract pipeline the hook is the first slide's caption. brief.hook and slides[0].overlayText were both changed to different texts; send the same text in both, or change only one.");
+  if(overlayChanged) return {...brief,hook:hookForOverlay(overlay)};
+  if(hookChanged) return {...brief,slides:brief.slides.map((s,i)=>i===0?{...s,overlayText:hookText}:s)};
+  return brief;
+}
+/**
  * Apply an `update_experiment_variant` edit. Fields the experiment did not approve as
  * variables must be identical across variants, so a change to one is mirrored onto the other
  * draft variants (their revision advances); otherwise a coordinated rewrite (new topic, CTA,
@@ -410,15 +427,21 @@ export function applyVariantEdit(e:S.Experiment,variantId:string|undefined,edit:
     return prior?{...(prior.composition!==undefined?{composition:prior.composition}:{}),...(prior.visibleChange!==undefined?{visibleChange:prior.visibleChange}:{}),...(prior.arcLevel!==undefined?{arcLevel:prior.arcLevel}:{}),...s}:s;
   })}};
   // One text field: on the contract pipeline the hook is the first slide's caption, never a second copy.
-  if(isContractPipeline(e)&&edit.brief.slides[0]?.overlayText)edit={...edit,brief:{...edit.brief,hook:edit.brief.slides[0].overlayText}};
+  if(isContractPipeline(e)) edit={...edit,brief:reconcileContractHook(v.brief,edit.brief)};
   S.assertBrief(e,edit.brief,isContractPipeline(e)?v.brief.slides.length:e.slideCount);
   const mirroredTo=new Set<string>();
   const proposals=e.variants.map(p=>p.id===v.id?{...p,brief:edit.brief}:{...p});
+  // With hook a variable, each contract arm owns its first-slide caption: it is the one slides[] field that never mirrors.
+  const ownCaption=isContractPipeline(e)&&e.instructions.variables.includes('hook');
+  const withCaptionOf=(slides:S.BriefData['slides'],own:S.BriefData['slides'])=>slides.map((s,i)=>i===0&&own[0]?{...s,overlayText:own[0].overlayText}:s);
   for(const k of S.sharedBriefFields(e)) {
-    if(S.same(v.brief[k],edit.brief[k])) continue;
+    const next=(p:{brief:S.BriefData})=>k==='slides'&&ownCaption?withCaptionOf(structuredClone(edit.brief.slides),p.brief.slides):structuredClone(edit.brief[k]);
+    if(k==='slides'&&ownCaption?S.same(withCaptionOf(v.brief.slides,edit.brief.slides),edit.brief.slides):S.same(v.brief[k],edit.brief[k])) continue;
     for(const p of proposals) {
       if(p.id===v.id || p.status!=='draft' || p.frozenBrief) continue;
-      p.brief={...p.brief,[k]:structuredClone(edit.brief[k])}; mirroredTo.add(p.id);
+      const value=next(p);
+      if(k==='slides'&&ownCaption&&S.same(value,p.brief.slides)) continue;
+      p.brief={...p.brief,[k]:value}; mirroredTo.add(p.id);
     }
   }
   // Derive factual delta labels rather than accepting stale model labels after editing.

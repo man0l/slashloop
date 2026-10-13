@@ -664,7 +664,9 @@ export interface Experiment {
      *  was cut, not because of a source gap. Named so the cause is inspectable. */
     candidateTruncated?: boolean } | null;
 }
-export function same(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b); }
+/** Structural equality that ignores object key order: a slide merged with its stored contract fields serialises its keys differently from the same slide stored by a planner, and must not read as changed. */
+const canonical = (v: unknown): string => JSON.stringify(v, (_k, x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x as object).sort(([p], [q]) => p < q ? -1 : p > q ? 1 : 0)) : x);
+export function same(a: unknown, b: unknown): boolean { return canonical(a) === canonical(b); }
 export function assertBrief(e: Experiment, b: BriefData, slides = e.slideCount) {
   if (b.slides.length !== slides || !same(b.lockedConstraints, e.instructions.lockedConstraints))
     throw new ExperimentError(422, 'locked_constraints', 'Slide count and lockedConstraints must match the experiment.');
