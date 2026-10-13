@@ -16,6 +16,12 @@ export type LockOrigin = 'user' | 'workspace';
 export interface TaggedLock { text: string; origin: LockOrigin }
 export interface ContractSlide { overlayText: string; arcLevel: ArcLevel; scene: string; composition: string; visibleChange: string }
 export interface SourceFrameInfo { index: number; level: ArcLevel; showsPerson: boolean }
+export const ARC_MAGNITUDES = ['none', 'subtle', 'clear', 'strong'] as const;
+export type ArcMagnitude = (typeof ARC_MAGNITUDES)[number];
+/** SLA-809: what the source frames themselves show changing, read from the pixels. The direction says
+ *  where the story goes; this says how far the source moves the subject, so a brief cannot shrink it. */
+export interface SourceArc { axis: string; levers: string[]; magnitude: ArcMagnitude; lowVsHigh: string }
+export const NO_SOURCE_ARC: SourceArc = { axis: '', levers: [], magnitude: 'none', lowVsHigh: '' };
 export interface VariantB { variable: string; value: string; slides: ContractSlide[] }
 export interface ResolvedContract {
   version: 1;
@@ -27,6 +33,8 @@ export interface ResolvedContract {
   borrowSourceLook: boolean;
   arcAxis: string;
   sourceFrames: SourceFrameInfo[];
+  /** SLA-809. Absent on contracts resolved before it. */
+  sourceArc?: SourceArc;
   hardLocks: TaggedLock[];
   keptSourceDefaults: string[];
   droppedSourceDefaults: Array<{ default: string; reason: string }>;
@@ -65,6 +73,7 @@ export function tagLocks(lockedConstraints: readonly string[], workspaceLocks: r
 // ---- the model's answer -------------------------------------------------------
 
 const Level = z.enum(ARC_LEVELS);
+const RawSourceArc = z.object({ axis: z.string(), levers: z.array(z.string()), magnitude: z.enum(ARC_MAGNITUDES), lowVsHigh: z.string() });
 const RawSlide = z.object({ overlayText: z.string(), arcLevel: Level, scene: z.string(), composition: z.string(), visibleChange: z.string() });
 export const RawContract = z.object({
   droppedSourceDefaults: z.array(z.object({ default: z.string(), reason: z.string() })),
@@ -77,6 +86,8 @@ export const RawContract = z.object({
   borrowSourceLook: z.boolean(),
   arcAxis: z.string(),
   sourceFrameLevels: z.array(z.object({ index: z.number().int(), level: Level, showsPerson: z.boolean() })),
+  // Optional for older callers and fixtures; the JSON schema still requires it from the model.
+  sourceArc: RawSourceArc.optional(),
   slides: z.array(RawSlide),
   variantB: z.object({ variable: z.string(), value: z.string(), slides: z.array(RawSlide) }),
 });
@@ -95,6 +106,7 @@ export const CONTRACT_JSON_SCHEMA = obj({
   identity: { type: 'string', enum: [...IDENTITIES] },
   identitySheet: S, medium: S, keepSourceImage: B, borrowSourceLook: B, arcAxis: S,
   sourceFrameLevels: arr(obj({ index: { type: 'integer' }, level: LEVEL, showsPerson: B })),
+  sourceArc: obj({ axis: S, levers: arr(S), magnitude: { type: 'string', enum: [...ARC_MAGNITUDES] }, lowVsHigh: S }),
   slides: arr(SLIDE_JSON),
   variantB: obj({ variable: S, value: S, slides: arr(SLIDE_JSON) }),
 });
@@ -105,6 +117,9 @@ export const CONTRACT_SYSTEM = 'You turn a user\'s creative direction into a for
   + 'A workspace lock is dropped ONLY if the user\'s direction explicitly contradicts it (for example the user keeps a real source person against a "no real people" lock); otherwise it stays. Never drop an origin=user lock. '
   + 'Never copy the source\'s overlay text unless the direction asks for it; the direction\'s exact wording for on-image text wins. Return JSON only.';
 
+// SLA-809: image providers refuse an edit that judges a body ("fat", "ugly"); the same change in neutral words renders.
+const NEUTRAL_WORDS = 'Describe bodies and faces in neutral photographic words (fuller, rounder, softer, less defined, paler, thinner), never judging or shaming ones (fat, obese, ugly, puffy, bloated, flabby, disgusting).';
+
 export function contractFieldGuide(input: ContractInput): Record<string, string> {
   return {
     subject: 'what the slides show',
@@ -113,12 +128,16 @@ export function contractFieldGuide(input: ContractInput): Record<string, string>
     medium: 'the resolved medium plus style words for every slide',
     keepSourceImage: 'true ONLY if the direction says to keep the source images and change only the text',
     borrowSourceLook: 'true if the direction keeps the source medium or drawing style while changing the content',
-    arcAxis: 'the story axis in a few words ONLY if the direction states a progression (before/after, low to high, week 1 to week 4); otherwise ""',
+    sourceArc: `read from the attached source frames in order, by looking at the pixels (not the captions): does the SAME subject (a person's face or body, a character, an object, a room, a product...) visibly change from frame to frame? axis: that change in a few words; levers: every concrete visible attribute that changes (for example "cheek and jaw fullness", "hair volume", "skin texture", "clutter on the desk"); magnitude: subtle | clear | strong = how different the two extreme frames look at phone size; lowVsHigh: the concrete visible difference between the frame furthest down the axis and the frame furthest up, written as landmarks and proportions. ${NEUTRAL_WORDS} If nothing changes or there are no source frames: axis "", levers [], magnitude "none", lowVsHigh "". ${input.variable === 'concept' || input.variable === 'slides'
+      // The tested variable IS the storyline: arm B may retell it without the source's change (SLA-809).
+      ? `This change is part of arm A's story. Arm B tests a different storyline ("${input.variable}"), so its slides show this change only if its own story keeps that progression; when they do, at the same scale.`
+      : `This change is part of the story, not a tested variable: arm A and arm B both show it, and only "${input.variable}" differs between them.`}`,
+    arcAxis: 'the story axis in a few words if the direction states a progression (before/after, low to high, week 1 to week 4), or if sourceArc shows one and the direction keeps the source format without asking to drop it; otherwise ""',
     'slides[].arcLevel': 'position on the arc axis (low, mid or high); none for every slide when arcAxis is ""',
     'slides[].overlayText': 'the exact on-image text for that slide ("" for none). The first slide\'s text is the hook.',
     'slides[].scene': 'what is in the image, concrete, from the direction. On an arc the LOW slide must show the low state unmistakably, described with the same landmarks as the HIGH slide.',
     'slides[].composition': 'layout and framing',
-    'slides[].visibleChange': 'for slides after the first: the concrete physical difference from the FIRST slide (the image model only sees the first image), written as visible landmarks and proportions, not percentages (for example "X now as wide as Y", "Z clearly visible"), big enough to read at phone size. The composition of every slide must keep the feature that changes fully visible, nothing covering it. "" for the first slide or when nothing changes.',
+    'slides[].visibleChange': 'for slides after the first: the concrete physical difference from the FIRST slide (the image model only sees the first image), written as visible landmarks and proportions, not percentages (for example "X now as wide as Y", "Z clearly visible"), big enough to read at phone size. On an arc that sourceArc also shows, use sourceArc.levers and match the source\'s magnitude: the slide furthest from the first on the axis differs from it at least as much as sourceArc.lowVsHigh, a slide halfway differs about half as much. Drop a lever only when the direction or a lock keeps that property fixed or forbids it (for example the same hair, expression, head angle, framing, outfit or background); every lever they do not name follows the source. A variable that is not being tested (character, style, hook...) stays the same between arm A and arm B; that never stops the subject changing along the arc inside one deck. Identity wording ("the same man", "same bone structure", "recognisably the same", "an edit of the same base face") keeps WHO the subject is, not how much they change: the source keeps one subject while changing these levers, so the deck does too. Wording asking for small, subtle, ordinary or non-extreme changes never makes the change smaller than the source shows. Do not write "unchanged" or "same as the first slide" for a lever sourceArc lists. ' + NEUTRAL_WORDS + ' The composition of every slide must keep the feature that changes fully visible, nothing covering it. "" for the first slide or when nothing changes.',
     sourceFrameLevels: 'rank EVERY attached source frame (index from 0) on YOUR arcAxis (low/mid/high, none if it does not show the axis) by looking at the images, and set showsPerson=true if a person or character is visible in it',
     variantB: `arm B differs from arm A ONLY in the variable "${input.variable}". Return variable="${input.variable}". value: for hook, a different first-slide overlay text that tests a different hook while keeping the same story; for caption or cta, the alternative text; for character, an alternative identitySheet; for visualStyle, an alternative medium; for concept or slides, "" and give the alternative storyline in variantB.slides (${input.slideCount} slides). In every other case variantB.slides is [].`,
   };
@@ -193,6 +212,8 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
   for (let i = 0; i < input.frameCount; i++) if (!frames.has(i)) frames.set(i, { index: i, level: 'none', showsPerson: true });
 
   const sourceFrames = [...frames.values()].sort((a, b) => a.index - b.index);
+  const sourceArc = normalizeSourceArc(raw.sourceArc, sourceless);
+  if (!arcOn && sourceArc.magnitude !== 'none') issues.push(`The source frames show "${sourceArc.axis}", but the direction does not ask for a progression, so the slides do not follow it.`);
   const framing = { keepSourceImage, borrowSourceLook: borrowSourceLook && !keepSourceImage, identity, sourceFrames, arcAxis };
   const framed = onlyFramedSlides(framing, slides);
   if (!framed.length) throw new ContractError('contract_no_matching_frame', 'No source frame matches any slide, and the source images are kept.');
@@ -205,10 +226,20 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
   return {
     version: 1, subject: raw.subject, identity, identitySheet, medium: raw.medium.trim(),
     keepSourceImage: framing.keepSourceImage, borrowSourceLook: framing.borrowSourceLook, arcAxis,
-    sourceFrames,
+    sourceFrames, sourceArc,
     hardLocks, keptSourceDefaults, droppedSourceDefaults, droppedLocks,
     slides, hook: slides[0]!.overlayText, variantB, issues,
   };
+}
+
+function normalizeSourceArc(a: RawContractT['sourceArc'], sourceless: boolean): SourceArc {
+  if (!a) return { ...NO_SOURCE_ARC, levers: [] };
+  const axis = a.axis.trim();
+  const levers = uniq(a.levers.map(l => l.trim()).filter(Boolean), norm).slice(0, 8);
+  const lowVsHigh = a.lowVsHigh.trim();
+  // A change nobody can name is not a change the renderer can be held to.
+  if (sourceless || !axis || a.magnitude === 'none' || (!levers.length && !lowVsHigh)) return { ...NO_SOURCE_ARC, levers: [] };
+  return { axis, levers, magnitude: a.magnitude, lowVsHigh };
 }
 
 function normalizeVariantB(b: RawContractT['variantB'], input: ContractInput, arcOn: boolean, framing: Parameters<typeof onlyFramedSlides>[0]): VariantB {
@@ -283,6 +314,28 @@ export function arcLine(c: Pick<ResolvedContract, 'arcAxis'>, s: ContractSlide):
     : '';
 }
 
+const LEVEL_RANK: Record<Exclude<ArcLevel, 'none'>, number> = { low: 0, mid: 1, high: 2 };
+
+/** Steps between a slide and the first slide on the arc: 0 (same point or no arc), 1 (halfway), 2 (the other end). */
+export function arcDistance(c: Pick<ResolvedContract, 'arcAxis' | 'slides'>, s: ContractSlide): number {
+  const first = c.slides[0];
+  if (!c.arcAxis || !first || s.arcLevel === 'none' || first.arcLevel === 'none') return 0;
+  return Math.abs(LEVEL_RANK[s.arcLevel] - LEVEL_RANK[first.arcLevel]);
+}
+
+/** SLA-809: the source's own change, so the image model is told how far the subject moves, not only which way. */
+export function sourceArcLine(c: Pick<ResolvedContract, 'arcAxis' | 'slides' | 'sourceArc'>, s: ContractSlide, role: SlideRole): string {
+  const a = c.sourceArc;
+  if (!a || a.magnitude === 'none' || !c.arcAxis || s.arcLevel === 'none') return '';
+  const what = `SOURCE CHANGE: the source carousel moves its subject along "${a.axis}"${a.levers.length ? ` by changing ${a.levers.join(', ')}` : ''}${a.lowVsHigh ? `; between its two extremes: ${a.lowVsHigh}` : ''} (a ${a.magnitude} change).`;
+  if (role === 'anchor-edit') {
+    const d = arcDistance(c, s);
+    if (d === 0) return '';
+    return `${what} This image is ${d === 2 ? 'at the other end of the axis from the attached first image: show at least that whole difference' : 'halfway along the axis from the attached first image: show about half of that difference'}, as clearly as the source does.`;
+  }
+  return role === 'fresh' ? `${what} This image is the ${ARC_WORDS[s.arcLevel]} point: show the subject in that state at the source's scale.` : '';
+}
+
 export function feedbackLine(feedback: string): string {
   return feedback
     ? `USER FEEDBACK on the previous version of this image (highest priority, make the change clearly visible at phone size; keep everything the feedback does not mention): ${feedback}`
@@ -299,20 +352,27 @@ export function compileSlidePrompt(c: ResolvedContract, index: number, role: Sli
     'Edit the attached image. Keep the photograph itself identical: same person, face, hair, makeup, jewelry, hands, clothing INCLUDING any print or graphic on clothing, objects and background. Do not re-shoot, reframe or restyle.',
     'Remove only caption text that was overlaid on top of the photo (if any). Do not remove text or graphics that belong to the scene (clothing prints, labels, signs).',
     text, fixLine].filter(Boolean).join('\n');
+  const source = sourceArcLine(c, s, role);
+  const hard = c.hardLocks.map(l => l.text);
+  const hardLine = hard.length ? `HARD RULES (they win over the change and the source change above):\n- ${hard.join('\n- ')}` : '';
   if (role === 'anchor-edit') return [
-    `Edit the attached image, which is the first image of this carousel. Keep the same ${c.subject === 'character' ? 'character design and art style' : 'person: face, hair, skin, jewelry, build'}, the same outfit, the same medium, the same background and framing unless the scene below says otherwise.`,
+    arcDistance(c, s) > 0
+      // SLA-809: "keep the same face and build" froze exactly what an arc changes. On an arc only the identity is kept.
+      ? `Edit the attached image, which is the first image of this carousel. Show the SAME ${c.subject === 'character' ? 'character at a later point of the story: keep the character recognisable and the art style' : 'person at a different point of the story: keep them recognisable (ethnicity, eye colour, hair colour, age, unless the change below names one)'}, the same outfit, the same medium, the same background and framing unless the scene below says otherwise. The change below alters the ${c.subject === 'character' ? 'character' : 'person\'s face and body'} itself: do not hold shape, proportions, fullness, definition or texture fixed where the change names them.`
+      : `Edit the attached image, which is the first image of this carousel. Keep the same ${c.subject === 'character' ? 'character design and art style' : 'person: face, hair, skin, jewelry, build'}, the same outfit, the same medium, the same background and framing unless the scene below says otherwise.`,
     `Change ONLY this: ${s.visibleChange || s.scene}. Make the change clearly visible at phone size.`,
-    `SCENE for this image: ${s.scene}`, arc,
+    `SCENE for this image: ${s.scene}`, arc, source,
+    // The form's locked constraints bind every slide, the identity chain included (SLA-809).
+    arcDistance(c, s) > 0 ? hardLine : '',
     'Remove the attached image\'s caption and any card or overlay it has.',
     text, fixLine].filter(Boolean).join('\n');
   const subject = c.identity === 'invented-consistent' ? `SUBJECT: ${c.identitySheet}`
     : c.identity === 'none' ? 'SUBJECT: only what the scene describes. No faces unless the scene asks for one.' : '';
-  const hard = c.hardLocks.map(l => l.text);
   return [
     'Create one new 9:16 social carousel image. Do not print slide numbers, page dots or progress labels.',
     referenceUse === 'style-only' ? 'The attached image is a STYLE reference only: copy its drawing technique, line quality, shading and palette. Do NOT copy its layout, grid, subjects, faces or any of its text.' : '',
     `MEDIUM: ${c.medium}.`, subject,
-    `SCENE: ${s.scene}`, s.composition ? `COMPOSITION: ${s.composition}` : '', arc,
+    `SCENE: ${s.scene}`, s.composition ? `COMPOSITION: ${s.composition}` : '', arc, source,
     hard.length ? `HARD RULES:\n- ${hard.join('\n- ')}` : '',
     c.keptSourceDefaults.length ? `PREFERENCES (follow only if they do not conflict with anything above): ${c.keptSourceDefaults.join('; ')}` : '',
     text, fixLine].filter(Boolean).join('\n');
@@ -351,13 +411,17 @@ export function compileQaPrompt(c: ResolvedContract, opts: { slideCount: number;
   const edit = opts.referenceUse === 'edit';
   const hard = c.hardLocks.map(l => l.text);
   const n = opts.slideCount;
+  const a = c.sourceArc;
+  const scale = c.arcAxis && a && a.magnitude !== 'none' && !c.keepSourceImage
+    ? ` Answer false also when the change is clearly smaller than the source's, which is a ${a.magnitude} change${a.lowVsHigh ? ` between its extremes: ${a.lowVsHigh}` : ''}.`
+    : '';
   const sources = opts.sourceImages
     ? `Image ${n + 1}${opts.sourceImages > 1 ? `..${n + opts.sourceImages}` : ''} = source reference${edit ? ' frame(s) the slides were edited from, in slide order' : ' (only to judge likeness: the slides must NOT show this person)'}.`
     : '';
   return `Images 1..${n} are the slides of one carousel, in order. ${sources}
 Contract: ${JSON.stringify({ medium: c.medium, identity: c.identity, identitySheet: c.identitySheet, arcAxis: c.arcAxis, slides: c.slides.map((s, i) => ({ index: i, overlayText: s.overlayText, arcLevel: s.arcLevel, scene: s.scene })) })}
 For every slide: textSeen (all caption text you can read), overlayExact (the caption equals overlayText, ignoring case and punctuation; text inside an app screen is not a caption), sceneMatches (the scene is recognisably what the contract describes${edit ? '; for edited slides the photo is unchanged from its source frame apart from the caption, including clothing prints' : ''}), stateLevel (the visible state on the arc axis judged from the PICTURE ONLY, ignoring captions, labels and app-screen numbers: low, mid, high, or none), mediumMatches, and lockResults for EACH of these locks: ${JSON.stringify(hard)}.
-deck.identityConsistent: ${c.identity === 'invented-consistent' ? 'the same person or character on every slide' : 'true if not applicable'}. deck.arcVisibleWithoutText: ${c.arcAxis ? `cover all text with your hand: does the picture itself clearly progress along "${c.arcAxis}" from the first to the last slide?` : 'true if not applicable'}. deck.sourceLikeness: ${c.identity.startsWith('invented') ? 'true if any slide shows the source person' : 'false if not applicable'}.`;
+deck.identityConsistent: ${c.identity === 'invented-consistent' ? `the same person or character on every slide${c.arcAxis ? ` (changing along "${c.arcAxis}" is expected: they stay the same person while they remain recognisable)` : ''}` : 'true if not applicable'}. deck.arcVisibleWithoutText: ${c.arcAxis ? `cover all text with your hand: does the picture itself clearly progress along "${c.arcAxis}" from the first to the last slide?${scale}` : 'true if not applicable'}. deck.sourceLikeness: ${c.identity.startsWith('invented') ? 'true if any slide shows the source person' : 'false if not applicable'}.`;
 }
 
 export interface QaVerdict {
