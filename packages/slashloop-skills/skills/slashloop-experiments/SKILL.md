@@ -146,8 +146,8 @@ Drive every experiment all the way to `completed`; do not leave drafts or
    `approvedCredits` as above.
 4. **generating**: wait.
 5. **completed**: read the image URLs from `get_experiment`
-   (`progress`), post them (and the experiment ID, variants and credits spent) on
-   the task, and close the task. Do not re-run a completed experiment.
+   (`progress`), record them on the test's case (see State below), post them
+   (and the experiment ID, variants and credits spent) on the task, and close the task. Do not re-run a completed experiment.
 6. **paused** or **failed**: get the `retryableJobs` from `get_experiment`,
    price them with `estimate_experiment(taskIds)` (or `variantIds`/`stage`),
    and `retry_experiment` with `approvedCredits` as above. Completed images are
@@ -249,6 +249,69 @@ If the monitor fires instead, check the experiment once with `get_experiment`:
 a terminal status means act on it; a non-terminal status means re-arm with a
 later `nextCheckAt`. An issue holds one monitor: with several experiments, set
 `externalRef` to a comma-separated list of their IDs and check each on a wake.
+
+## State: one Paperclip case per test (Paperclip agents)
+
+Comments and monitors are not state: a wake that re-reads the thread loses the
+spend so far, and a failed run gets re-created as an unrelated experiment. Keep
+the state of each test in a Paperclip case (`references/cases.md` in the
+paperclip skill) and read it first on every wake.
+
+One case is one **test** (the hypothesis), not one slashloop experiment. A
+re-created run after a failure is a new attempt on the same case.
+
+- `caseType`: `slashloop_experiment`
+- `key`: `slashloop:<workspaceId>:<test-slug>`, a stable slug you choose
+  (e.g. `tier-ladder-mewing`). Upserting the same key never duplicates.
+- `status`: from the current attempt: `draft` → `draft`; `planning`,
+  `generating`, `failed`, `paused` → `in_progress`; `review` → `in_review`;
+  `completed` → `done`; `cancelled` → `cancelled`.
+- `summary`: first line `attempts: <experimentId> <experimentId> ...`, then the
+  goal. Case search (`q`) reads key and summary, not `fields`, so this line is
+  how an experiment id finds its case.
+- `parentCaseId`: the `content_cell` case when the test belongs to a matrix.
+- `fields` (replaced whole on every write; send all of it):
+
+```json
+{
+  "schema": "slashloop_experiment/v1",
+  "workspace_id": "<workspaceId>", "test_slug": "<slug>", "goal": "<goal>",
+  "source_mode": "videos|brief", "source_video_ids": [], "ran_by": "agent:<name>",
+  "current_experiment_id": "<id>", "current_status": "<slashloop status>",
+  "attempts": [{"experiment_id": "<id>", "status": "failed", "credits_charged": 96,
+                "max_credits": 620, "error": "<first 300 chars or null>",
+                "created_at": "<ISO>"}],
+  "credits_charged_total": 182, "approved_credits": 600,
+  "paperclip_issue_id": "<issue UUID>", "next_action": "<one line>",
+  "last_synced_at": "<ISO>"
+}
+```
+
+Rules:
+
+1. **Before `create_experiment`**, upsert the case and read it. If
+   `current_status` is not `failed`/`cancelled`, continue that experiment
+   instead of creating one. If it failed, create the new run with the fix
+   (e.g. `overlayMode:"script"`) and append it to `attempts`.
+2. **Budget.** `approved_credits` is the cap for the whole test, across
+   attempts. Pass `approved_credits - credits_charged_total` as the remaining
+   cap; stop and ask when an estimate exceeds it.
+3. **After every slashloop call that changes status or spend** (create, plan,
+   generate, retry, a `get_experiment` on wake), upsert the case with fresh
+   `status`, `attempts`, `credits_charged_total`, `next_action` and
+   `last_synced_at`.
+4. **On wake** (child task `Slashloop experiment <id> <status>` or monitor):
+   find the case with
+   `GET /api/companies/<companyId>/cases?type=slashloop_experiment&q=<experimentId>`,
+   run `get_experiment` once, upsert, then act on `next_action`. To find every
+   open test: `?type=slashloop_experiment&status=active`; for one task:
+   `GET /api/issues/<issueId>/cases`.
+5. **Completed**: put the image URLs per variant in the case document
+   `results` (`PUT /api/cases/<id>/documents/results`, markdown), and still post
+   them on the task.
+
+The issue monitor's `externalRef` can then be built from the active cases'
+`current_experiment_id` values instead of being kept by hand.
 
 ## List
 
