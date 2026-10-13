@@ -13,7 +13,10 @@ import {
 
 export const isContractPipeline = (e: Pick<Experiment, 'pipeline'>): boolean => e.pipeline === 'contract';
 
-const FALLBACK_HOOK = 'No caption';
+export const FALLBACK_HOOK = 'No caption';
+
+/** The hook a contract brief carries for a given first-slide caption: the caption itself, or the placeholder when it is blank. */
+export const hookForOverlay = (overlay: string | undefined): string => overlay || FALLBACK_HOOK;
 const variantOf = (e: Experiment, id?: string) => e.variants.find(v => v.id === id);
 const newTask = (kind: Task['kind'], target?: string, index?: number, fix?: string): Task =>
   ({ id: randomUUID(), kind, target, index, status: 'pending', attempts: 0, charged: 0, ...(fix ? { fix } : {}) });
