@@ -29,16 +29,17 @@ const qaPass = (n = 3) => ({
 });
 const qaFailSlide = (bad: number, n = 3) => { const q = qaPass(n); q.slides[bad]!.overlayExact = false; return q; };
 
-interface Script { contract: unknown; contracts?: unknown[]; qa: Array<(armSlides: number) => unknown>; rejectImage?: (prompt: string) => boolean }
+interface Script { contract: unknown; contracts?: unknown[]; qa: Array<(armSlides: number) => unknown>; rejectImage?: (prompt: string) => boolean; composeFails?: boolean }
 const FILTER_400 = 'OpenRouter image error 400: {"error":{"message":"The response was filtered due to the prompt triggering our content management policy"}}';
 
 function world(script: Script, overrides: Partial<Experiment['instructions']> = {}) {
-  const calls = { contract: 0, contractUsers: [] as string[], images: [] as Array<{ prompt: string; referenceUrl?: string }>, qa: [] as Array<{ images: number; user: string }> };
+  const calls = { contract: 0, contractUsers: [] as string[], images: [] as Array<{ prompt: string; referenceUrl?: string }>, qa: [] as Array<{ images: number; user: string }>, composed: [] as Array<{ text: string; index: number }> };
   const files = new Map<string, Buffer>();
   const render: RenderDeps = {
     findSources: async () => [video('src')],
     generateImage: async o => { calls.images.push({ prompt: o.prompt, referenceUrl: o.referenceUrl }); if (script.rejectImage?.(o.prompt)) throw new Error(FILTER_400); return { buffer: Buffer.from(`img${calls.images.length}`), contentType: 'image/jpeg', costUsd: 0.01 }; },
     upload: async ({ path, body }) => { files.set(path, body); },
+    composeOverlay: async o => { if (script.composeFails) throw new Error('sharp missing'); calls.composed.push({ text: o.text, index: o.slideIndex }); return { buffer: Buffer.concat([o.buffer, Buffer.from(`+${o.text}`)]), contentType: 'image/jpeg', font: 'Inter Bold', fontSize: 10, lines: [o.text], skipped: [] }; },
     readReference: async ({ path }) => files.get(path) ?? Buffer.from(`src:${path}`),
     describeCandidates: async () => { throw new Error('describe is removed'); },
     classify: async () => { throw new Error('no judge'); },
@@ -506,5 +507,50 @@ describe('SLA-797: human feedback regenerates a rendered slideshow', () => {
     expect(code(() => applyFeedback({ ...e(), pipeline: null }, { variantId: a!.id, feedback: 'x' }))).toBe('feedback_unsupported');
     const stuck = e(); stuck.status = 'paused'; stuck.tasks.push({ id: 'u', kind: 'slide', target: a!.id, index: 1, status: 'unknown', attempts: 4, charged: 0 });
     expect(code(() => applyFeedback(stuck, { variantId: a!.id, feedback: 'x' }))).toBe('variant_in_flight');
+  });
+});
+
+describe('SLA-787: overlayMode "script" on the contract pipeline', () => {
+  const script = () => ({ contract: rawContract(), qa: [() => qaPass(), () => qaPass()] });
+
+  test('no overlay word reaches any image prompt, and the composed bytes carry the words', async () => {
+    const w = world(script(), { overlayMode: 'script' });
+    await w.plan();
+    await w.generate();
+    expect(w.row.status).toBe('completed');
+    for (const { prompt } of w.calls.images) expect(prompt).not.toMatch(/Hook A|Hook B|\btwo\b|\bthree\b/);
+    expect(w.calls.images[0]!.prompt).toContain('no caption, no words');
+    const [a] = w.row.variants;
+    expect(w.files.get(a!.slides[0]!.path!)!.toString()).toContain('+Hook A');
+    expect(w.files.get(a!.slides[0]!.path!.replace(/\.jpg$/, '.base.jpg'))!.toString()).not.toContain('+');
+  });
+
+  test('arm B caption edit composes onto the text-free base with no model call', async () => {
+    const w = world(script(), { overlayMode: 'script' });
+    await w.plan();
+    await w.generate();
+    const [a, b] = w.row.variants;
+    expect(w.providerCalls['caption-edit']).toBeUndefined();
+    expect(w.calls.images).toHaveLength(3);
+    const bytes = w.files.get(b!.slides[0]!.path!)!.toString();
+    expect(bytes).toContain('+Hook B');
+    expect(bytes).not.toContain('Hook A');
+    expect(w.files.get(a!.slides[0]!.path!)!.toString()).toContain('+Hook A');
+  });
+
+  test('a compositor failure fails the slide closed with overlay_compose_failed', async () => {
+    const w = world({ ...script(), composeFails: true }, { overlayMode: 'script' });
+    await w.plan();
+    await w.generate().catch(() => {});
+    expect(JSON.stringify(w.row.tasks)).toContain('overlay_compose_failed');
+    expect(w.row.variants.every(v => v.slides.every(x => x.status !== 'done'))).toBe(true);
+  });
+
+  test('model mode is unchanged: the caption is in the prompt and nothing is composed', async () => {
+    const w = world(script());
+    await w.plan();
+    await w.generate();
+    expect(w.calls.composed).toHaveLength(0);
+    expect(w.calls.images[0]!.prompt).toContain('Hook A');
   });
 });

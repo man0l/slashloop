@@ -11,6 +11,7 @@ import { contractView, proposalsFromContract, slideFeedback, slideWorkFor } from
 import { validateVariants, type Experiment, type Task } from './schema.js';
 import { CONTENT_FILTER_PATTERN, SafeFailure, SlideMeter, logAiCost, type ExecuteContext, type Prepared, type RenderDeps } from './providers.js';
 import { storySlideCount } from './slide-count.js';
+import { redactOverlayCopy } from './render-prompt.js';
 
 /** One source image the contract, the renderer and QA all index the same way. */
 export interface SourceFrame { index: number; videoId: string; slideIndex: number | null; path: string; url: string; kind: 'slide' | 'thumb' }
@@ -148,9 +149,27 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
   const path = `experiments/retained/${e.workspaceId}/${e.id}/${v.id}/r${v.revision}/${t.id}.jpg`;
   const upload = async (body: Buffer, contentType: string) => { await render.upload({ bucket: thumbBucket(), path, body, contentType, upsert: false }); };
   const base = v.baselineId ? e.variants.find(x => x.id === v.baselineId) : undefined;
-  const work = slideWorkFor(e, v, index, t.fix);
+  let work = slideWorkFor(e, v, index, t.fix);
   const human = slideFeedback(v, index);
   const baseSlide = base?.slides[index];
+  // SLA-787: in script mode the model only ever sees a text-free contract; the words are drawn onto the verified-blank
+  // bytes in code, so a word that trips the provider's content filter never reaches it.
+  const scriptMode = e.instructions.overlayMode === 'script';
+  const scriptText = scriptMode ? (view.slides[index]?.overlayText ?? '') : '';
+  const copy = scriptMode ? [view.hook, ...view.slides.map(x => x.overlayText), ...(base?.frozenBrief?.slides.map(x => x.overlayText ?? '') ?? [])].filter(x => x.trim().length > 1) : [];
+  const promptView: ResolvedContract = scriptMode ? { ...view, hook: '', slides: view.slides.map(x => ({ ...x, overlayText: '' })) } : view;
+  const guard = (p: string) => (scriptMode ? redactOverlayCopy(p, copy) : p);
+  const basePathOf = (p: string) => p.replace(/\.jpg$/, '.base.jpg');
+  const compose = async (bytes: Buffer): Promise<{ body: Buffer; contentType: string; audit: unknown }> => {
+    if (!scriptText) return { body: bytes, contentType: 'image/jpeg', audit: null };
+    if (!render.composeOverlay) throw new SafeFailure('overlay_compose_failed: compositor unavailable');
+    try {
+      const c = await render.composeOverlay({ buffer: bytes, text: scriptText, slideIndex: index });
+      return { body: c.buffer, contentType: c.contentType, audit: { mode: 'script', font: c.font, fontSize: c.fontSize, lines: c.lines, skipped: c.skipped } };
+    } catch (err) {
+      throw new SafeFailure(`overlay_compose_failed: ${(err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').slice(0, 100)}`);
+    }
+  };
 
   if (work === 'reuse') {
     if (!baseSlide?.path) throw new SafeFailure('baseline_slide_missing');
@@ -171,6 +190,26 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
   let referenceUrl: string | undefined;
   let referenceNote: { kind: string; videoId: string; index: number | null; path: string } | null = null;
   let prompt: string;
+  if (work === 'caption-edit' && scriptMode) {
+    // The baseline's picture is text-free by construction; only the words differ, so nothing needs the model.
+    const readBase = need(render.readReference, 'render_deps_incomplete');
+    const baseBytes = baseSlide?.path
+      ? (await readBase({ bucket: thumbBucket(), path: basePathOf(baseSlide.path) }))
+        ?? ((base?.frozenBrief?.slides[index]?.overlayText ?? '').trim() ? null : await readBase({ bucket: thumbBucket(), path: baseSlide.path }))
+      : null;
+    if (baseBytes) {
+      return {
+        free: true, units: 0,
+        execute: async () => {
+          const composed = await compose(baseBytes);
+          await render.upload({ bucket: thumbBucket(), path: basePathOf(path), body: baseBytes, contentType: 'image/jpeg', upsert: false });
+          await upload(composed.body, composed.contentType);
+          return { path, url: publicUrl(thumbBucket(), path), provider: 'script-overlay', costUsd: 0, prompt: '', reference: { kind: 'baseline', videoId: base!.id, index, path: baseSlide!.path ?? '' }, overlay: composed.audit, fanout: { requested: 0, rendered: 0, chosen: 0, judge: [] }, calls: {} };
+        },
+      };
+    }
+    work = 'render';
+  }
   if (work === 'caption-edit') {
     if (!baseSlide?.url || !base?.frozenBrief) throw new SafeFailure('baseline_slide_missing');
     referenceUrl = baseSlide.url;
@@ -190,7 +229,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
       const f = frames[pick.frameIndex ?? -1];
       if (f) { referenceUrl = f.url; referenceNote = { kind: f.kind, videoId: f.videoId, index: f.slideIndex, path: f.path }; }
     }
-    prompt = compileSlidePrompt(view, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse, t.fix ?? '', human);
+    prompt = guard(compileSlidePrompt(promptView, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse, t.fix ?? '', guard(human)));
   }
 
   const callKind = t.fix || human ? 'render-extra' : work === 'caption-edit' ? 'caption-edit' : 'render';
@@ -218,15 +257,21 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
           if (!FILTERED.test(msg)) renderFailure(err);
           // A filter hit gets one plain retry: without the repair text or human feedback, and an edit of slide 1 asks
           // for the slide's own scene instead of the face comparison. A second refusal is terminal (renderFailure).
-          const plain = comparative ? { ...view, slides: view.slides.map((s, i) => i === index ? { ...s, visibleChange: '' } : s) } : view;
+          const plain = comparative ? { ...promptView, slides: promptView.slides.map((s, i) => i === index ? { ...s, visibleChange: '' } : s) } : promptView;
           usedPrompt = work === 'caption-edit' && base?.frozenBrief
             ? captionEditPrompt(base.frozenBrief.slides[index]?.overlayText ?? '', view.slides[index]!.overlayText)
-            : compileSlidePrompt(plain, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse);
+            : guard(compileSlidePrompt(plain, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse));
           try { image = await once(usedPrompt); } catch (err2) { renderFailure(err2); }
         }
-        await upload(image!.buffer, image!.contentType);
+        let overlay: unknown = null;
+        if (scriptMode) {
+          const composed = await compose(image!.buffer);
+          overlay = composed.audit;
+          if (scriptText) await render.upload({ bucket: thumbBucket(), path: basePathOf(path), body: image!.buffer, contentType: image!.contentType, upsert: false });
+          await upload(composed.body, composed.contentType);
+        } else await upload(image!.buffer, image!.contentType);
         return {
-          path, url: publicUrl(thumbBucket(), path), model, provider: 'openrouter', costUsd, prompt: usedPrompt, reference: referenceNote,
+          path, url: publicUrl(thumbBucket(), path), model, provider: 'openrouter', costUsd, prompt: usedPrompt, reference: referenceNote, ...(overlay ? { overlay } : {}),
           fanout: { requested: 1, rendered: 1, chosen: 0, judge: [] }, calls: { [callKind]: calls },
         };
       } finally { meter.flush(e.workspaceId, ref, write); }
