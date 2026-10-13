@@ -40,7 +40,11 @@ async function handle(request:Request):Promise<Response> {
         response={experiments:rows.slice(0,limit).map(serialize),nextOffset};
       }
     }
-    else if(request.method==='POST'&&!id)response={experiment:serialize(isExactEditRequest(b)?await createExactEdit(b):await createExperiment(b))};
+    else if(request.method==='POST'&&!id){
+      // {"mode":"brief"} marks a brief-only create (no source video); the marker is not part of the Create schema.
+      const {mode,...brief}=(b??{}) as Record<string,unknown>;
+      response={experiment:serialize(mode==='brief'?await createExperiment(brief,undefined,{sourceless:true}):isExactEditRequest(b)?await createExactEdit(b):await createExperiment(b))};
+    }
     else if(request.method==='POST'&&id&&action==='estimate'){
       const parsed=Estimate.parse(b);response={estimate:await estimate(await load(workspaceId,id),parsed.stage,parsed.variantIds,parsed.taskIds)};
     }else if(request.method==='POST'&&id&&action)response={experiment:serialize(await mutate(workspaceId,id,action,b))};

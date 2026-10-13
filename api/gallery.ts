@@ -164,14 +164,16 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const body = await readSurveyBody(request);
     const survey = (body.survey ?? body) as Record<string, unknown>;
-    // surveyMode is a UI-only marker (edit vs create steps) — not part of Create.
-    const { surveyMode: _mode, ...fields } = survey;
+    // surveyMode is a UI-only marker (edit/create/brief steps) — not part of Create.
+    // "brief" is the no-source-video path: the draft is created sourceless.
+    const { surveyMode, ...fields } = survey;
+    const sourceless = surveyMode === 'brief';
     const created = await runWithUser(userId, async () => {
       const workspace = await requireWorkspace();
       // Stable key from the submitted survey: a resubmit after a lost response
       // (or a double click) returns the same draft instead of a duplicate.
       const idempotencyKey = `gallery:${fingerprint({ workspaceId: workspace.id, fields }).slice(0, 48)}`;
-      return createExperiment({ ...fields, workspaceId: workspace.id, idempotencyKey });
+      return createExperiment({ ...fields, workspaceId: workspace.id, idempotencyKey }, undefined, sourceless ? { sourceless: true } : {});
     });
     const plan = await estimate(created, 'plan');
     return jsonResponse(200, {
