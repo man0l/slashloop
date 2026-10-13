@@ -197,7 +197,29 @@ export const Command = WorkspaceBody.extend({ idempotencyKey: Key });
 export const Plan = Command.extend({ allowPartial: z.boolean().optional() });
 export const Retry = Command.extend({ variantIds: z.array(Id).min(1).max(12).optional(), taskIds: z.array(z.string().min(1)).min(1).max(150).optional() });
 export const Generate = Command.extend({ variants: z.array(z.object({ id: Id, revision: z.number().int().positive() }).strict()).min(1).max(12) });
-export const Estimate = WorkspaceBody.extend({ stage: z.enum(['plan', 'generate']), variantIds: z.array(Id).min(1).max(12).optional(), taskIds: z.array(z.string().min(1)).min(1).max(150).optional() });
+/* SLA-797: human feedback on a generated slideshow. `feedback` is about the whole
+ * deck and re-renders every slide; `slides` names single slides (0-based index)
+ * and re-renders only those (plus the identity chain they anchor). Either or both. */
+export const FEEDBACK_MAX = 1000;
+const feedbackText = z.string().trim().min(1).max(FEEDBACK_MAX);
+const feedbackFields = {
+  variantId: Id,
+  feedback: feedbackText.optional(),
+  slides: z.array(z.object({ index: z.number().int().min(0).max(7), feedback: feedbackText }).strict()).min(1).max(8).optional(),
+};
+const feedbackRefine = (v: { feedback?: string; slides?: Array<{ index: number }> }, ctx: z.RefinementCtx) => {
+  if (!v.feedback && !v.slides?.length) ctx.addIssue({ code: 'custom', message: 'Give feedback for the slideshow, for at least one slide, or both.' });
+  if (v.slides && new Set(v.slides.map(s => s.index)).size !== v.slides.length) ctx.addIssue({ code: 'custom', message: 'One feedback entry per slide.' });
+};
+export const FeedbackRequest = z.object(feedbackFields).strict().superRefine(feedbackRefine);
+export type FeedbackRequestData = z.infer<typeof FeedbackRequest>;
+export const Feedback = Command.extend(feedbackFields).superRefine(feedbackRefine);
+/** Feedback rounds kept per variant, and feedback notes kept per slide (newest last). */
+export const FEEDBACK_HISTORY_LIMIT = 5;
+export const SLIDE_FEEDBACK_LIMIT = 3;
+export const Estimate = WorkspaceBody.extend({ stage: z.enum(['plan', 'generate', 'feedback']), variantIds: z.array(Id).min(1).max(12).optional(), taskIds: z.array(z.string().min(1)).min(1).max(150).optional(),
+  // stage "feedback" only: the same fields the feedback action takes.
+  variantId: Id.optional(), feedback: feedbackText.optional(), slides: feedbackFields.slides });
 export const EditBrief = WorkspaceBody.extend({ revision: z.number().int().positive(), brief: Brief, title: z.string().trim().min(1).max(160).optional(), hypothesis: text.min(1).optional() });
 
 /* ------------------------------------------------------------------------- *
@@ -586,6 +608,8 @@ export interface Variant extends Proposal { id: string; revision: number; status
   jev?: { score: number; confidence?: number };
   /** SLA-700: the one deck-level QA verdict for this arm (contract pipeline). */
   qaDeck?: DeckQaRecord | null;
+  /** SLA-797: human feedback rounds on this rendered slideshow, oldest first. */
+  feedback?: FeedbackRound[] | null;
   frozenBrief: BriefData | null; slides: Array<{ index: number; status: string; url: string | null; path: string | null; error: string | null; overlayText: string;
     prompt?: string; provider?: string; fanout?: { requested: number; rendered: number; chosen: number; judge: unknown; styleViolation?: boolean }; reference?: { kind: string; videoId: string; index?: number | null; path: string } | null;
     /** QA audit for THIS attempt. Present on success AND on failure/unverified,
@@ -596,7 +620,11 @@ export interface Variant extends Proposal { id: string; revision: number; status
     /** QA audits of earlier attempts, oldest first (SLA-511). Explicit history,
      *  so requeuing a slide keeps its prior evidence without leaving the live
      *  fields carrying a stale failure for work that has not run yet. */
-    qaHistory?: SlideQaRecord[] | null }>; error: string | null; }
+    qaHistory?: SlideQaRecord[] | null;
+    /** SLA-797: human feedback in force for this slide, newest last. Every later render of it carries these notes. */
+    feedback?: string[] | null }>; error: string | null; }
+/** One human feedback round: what was asked, which slides it re-rendered, and the QA verdict it replaced. */
+export interface FeedbackRound { at: string; feedback: string | null; slides: Array<{ index: number; feedback: string }>; redo: number[]; previousQa: DeckQaRecord['verdict'] | null }
 export interface Experiment {
   id: string; workspaceId: string; status: string; createdAt: string; updatedAt: string; instructions: InstructionsData;
   /** Who ran it: "user" or "agent:<name>" (any "on behalf of <user>" suffix is dropped). Mirrors the indexed `ranBy` column; absent/null on legacy rows. */

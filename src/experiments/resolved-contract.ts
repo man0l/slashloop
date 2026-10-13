@@ -283,12 +283,18 @@ export function arcLine(c: Pick<ResolvedContract, 'arcAxis'>, s: ContractSlide):
     : '';
 }
 
-export function compileSlidePrompt(c: ResolvedContract, index: number, role: SlideRole, referenceUse: ReferenceUse, fix = ''): string {
+export function feedbackLine(feedback: string): string {
+  return feedback
+    ? `USER FEEDBACK on the previous version of this image (highest priority, make the change clearly visible at phone size; keep everything the feedback does not mention): ${feedback}`
+    : '';
+}
+
+export function compileSlidePrompt(c: ResolvedContract, index: number, role: SlideRole, referenceUse: ReferenceUse, fix = '', feedback = ''): string {
   const s = c.slides[index];
   if (!s) throw new RangeError('Slide index is outside the contract.');
   const text = textLine(s.overlayText);
   const arc = arcLine(c, s);
-  const fixLine = fix ? `FIX FROM QA: ${fix}` : '';
+  const fixLine = [feedbackLine(feedback), fix ? `FIX FROM QA: ${fix}` : ''].filter(Boolean).join('\n');
   if (role === 'edit') return [
     'Edit the attached image. Keep the photograph itself identical: same person, face, hair, makeup, jewelry, hands, clothing INCLUDING any print or graphic on clothing, objects and background. Do not re-shoot, reframe or restyle.',
     'Remove only caption text that was overlaid on top of the photo (if any). Do not remove text or graphics that belong to the scene (clothing prints, labels, signs).',

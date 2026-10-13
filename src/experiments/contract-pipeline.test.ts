@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { Video } from '@prisma/client';
 import { step, type EngineDeps } from './engine.js';
 import { prepare, type RenderDeps } from './providers.js';
-import { generationTasks, reapContractQa } from './contract-flow.js';
+import { applyFeedback, generationTasks, reapContractQa } from './contract-flow.js';
 import { droppedSourceCta, listSourceFrames } from './contract-pipeline.js';
 import type { Experiment } from './schema.js';
 
@@ -83,6 +83,7 @@ function world(script: Script, overrides: Partial<Experiment['instructions']> = 
       });
       await api.drain();
     },
+    async feedback(req: Parameters<typeof applyFeedback>[1]) { api.update(e => { applyFeedback(e, req, new Date(0)); }); await api.drain(); },
     get providerCalls() { return current.providerCalls ?? {}; },
     get totalCalls() { return Object.values(current.providerCalls ?? {}).reduce((n, x) => n + x, 0); },
   };
@@ -343,5 +344,141 @@ describe('a dead slide cannot strand its QA task', () => {
     const changed = reapContractQa(w.row);
     expect(changed).toBe(true);
     expect(w.row.tasks.find(t => t.kind === 'qa')).toMatchObject({ status: 'failed', error: 'deck_incomplete' });
+  });
+});
+
+describe('SLA-797: human feedback regenerates a rendered slideshow', () => {
+  const invented = (o: Record<string, unknown> = {}) => rawContract({
+    identity: 'invented-consistent', identitySheet: 'one adult man, black tee', keepSourceImage: false, borrowSourceLook: true, medium: 'studio photo',
+    sourceFrameLevels: [0, 1, 2].map(index => ({ index, level: 'none', showsPerson: true })),
+    slides: [slide({ overlayText: 'Where do you rank?' }), slide({ overlayText: 'MTN', visibleChange: 'softer jaw' }), slide({ overlayText: 'LTN', visibleChange: 'softer jaw, fuller face' })],
+    ...o,
+  });
+  async function rendered(contract = invented(), qa: Script['qa'] = [() => qaPass(), () => qaPass(), () => qaPass(), () => qaPass()]) {
+    const w = world({ contract, qa });
+    await w.plan();
+    await w.generate([w.row.variants[0]!.id]);
+    expect(w.row.variants[0]!.qaDeck?.verdict).toBe('passed');
+    return w;
+  }
+
+  test('slide feedback re-renders only that slide, from the same anchor, with the note in the prompt, then re-QAs', async () => {
+    const w = await rendered();
+    const a = w.row.variants[0]!;
+    const before = w.calls.images.length;
+    const oldPath = a.slides[2]!.path;
+    await w.feedback({ variantId: a.id, slides: [{ index: 2, feedback: 'LTN still looks like MTN: make the jaw clearly softer' }] });
+    const v = w.row.variants[0]!;
+    expect(v.status).toBe('done');
+    expect(w.row.status).toBe('review');
+    const redo = w.calls.images.slice(before);
+    expect(redo).toHaveLength(1);
+    expect(redo[0]!.prompt).toContain('USER FEEDBACK');
+    expect(redo[0]!.prompt).toContain('LTN still looks like MTN');
+    expect(redo[0]!.referenceUrl).toBe(v.slides[0]!.url!);
+    expect(v.slides[2]!.path).not.toBe(oldPath);
+    expect(v.slides[2]!.feedback).toEqual(['This slide: LTN still looks like MTN: make the jaw clearly softer']);
+    expect(v.slides[1]!.feedback ?? null).toBeNull();
+    expect(w.calls.qa).toHaveLength(2);
+    expect(v.qaDeck).toMatchObject({ verdict: 'passed', attempts: 1 });
+    expect(v.feedback).toEqual([{ at: new Date(0).toISOString(), feedback: null, slides: [{ index: 2, feedback: 'LTN still looks like MTN: make the jaw clearly softer' }], redo: [2], previousQa: 'passed' }]);
+    expect(w.providerCalls['render-extra']).toBe(1);
+  });
+
+  test('slideshow feedback re-renders every slide with the note', async () => {
+    const w = await rendered();
+    const before = w.calls.images.length;
+    await w.feedback({ variantId: w.row.variants[0]!.id, feedback: 'push the downgrade much harder on every tier' });
+    const redo = w.calls.images.slice(before);
+    expect(redo).toHaveLength(3);
+    for (const r of redo) expect(r.prompt).toContain('Whole slideshow: push the downgrade much harder');
+    expect(w.row.variants[0]!.feedback?.[0]?.redo).toEqual([0, 1, 2]);
+  });
+
+  test('feedback on the anchor slide of an identity chain takes the later slides with it', async () => {
+    const w = await rendered();
+    const before = w.calls.images.length;
+    await w.feedback({ variantId: w.row.variants[0]!.id, slides: [{ index: 0, feedback: 'sharper jaw on the top tier' }] });
+    const redo = w.calls.images.slice(before);
+    expect(redo).toHaveLength(3);
+    expect(redo[0]!.prompt).toContain('sharper jaw on the top tier');
+    expect(redo[1]!.prompt).not.toContain('sharper jaw on the top tier');
+    expect(redo[1]!.referenceUrl).toBe(w.row.variants[0]!.slides[0]!.url!);
+  });
+
+  test('the note survives into a QA repair of the same slide', async () => {
+    const w = await rendered(invented(), [() => qaPass(), () => qaFailSlide(1), () => qaPass()]);
+    await w.feedback({ variantId: w.row.variants[0]!.id, slides: [{ index: 1, feedback: 'fuller face' }] });
+    const repair = w.calls.images.find(i => i.prompt.includes('FIX FROM QA'))!;
+    expect(repair.prompt).toContain('USER FEEDBACK');
+    expect(repair.prompt).toContain('fuller face');
+    expect(w.row.variants[0]!.qaDeck).toMatchObject({ verdict: 'passed', attempts: 2 });
+  });
+
+  test('a second round keeps the earlier note, newest last', async () => {
+    const w = await rendered();
+    const id = w.row.variants[0]!.id;
+    await w.feedback({ variantId: id, slides: [{ index: 2, feedback: 'softer jaw' }] });
+    await w.feedback({ variantId: id, slides: [{ index: 2, feedback: 'now hair too flat, keep jaw' }] });
+    const last = w.calls.images.at(-1)!.prompt;
+    expect(last).toContain('(1) This slide: softer jaw (2) This slide: now hair too flat, keep jaw');
+    expect(last).toContain('the last one wins');
+    expect(w.row.variants[0]!.feedback).toHaveLength(2);
+  });
+
+  test('a failed arm can be regenerated from feedback: its failed jobs are replaced, and it completes', async () => {
+    const w = world({ contract: invented(), qa: [() => qaFailSlide(1), () => qaFailSlide(1), () => qaPass()] });
+    await w.plan();
+    await w.generate([w.row.variants[0]!.id]);
+    expect(w.row.status).toBe('failed');
+    await w.feedback({ variantId: w.row.variants[0]!.id, slides: [{ index: 1, feedback: 'make MTN clearly softer than HTN' }] });
+    expect(w.row.status).toBe('review');
+    expect(w.row.variants[0]!.status).toBe('done');
+    expect(w.row.tasks.some(t => t.status === 'failed')).toBe(false);
+    expect(w.row.variants[0]!.feedback?.[0]?.previousQa).toBe('failed');
+  });
+
+  test('feedback on a slide arm B reused from A renders it instead of copying A again', async () => {
+    const w = world({ contract: rawContract(), qa: [() => qaPass(), () => qaPass(), () => qaPass()] });
+    await w.plan();
+    await w.generate();
+    const [a, b] = w.row.variants;
+    expect(w.files.get(b!.slides[1]!.path!)).toEqual(w.files.get(a!.slides[1]!.path!));
+    await w.feedback({ variantId: b!.id, slides: [{ index: 1, feedback: 'brighter light' }] });
+    const nb = w.row.variants[1]!;
+    expect(nb.slides[1]!.provider).toBe('openrouter');
+    expect(w.files.get(nb.slides[1]!.path!)).not.toEqual(w.files.get(a!.slides[1]!.path!));
+    expect(w.row.status).toBe('completed');
+  });
+
+  test('feedback on arm B\'s anchor re-renders its identity chain from B\'s new anchor, never A\'s copies', async () => {
+    const w = world({ contract: invented(), qa: [() => qaPass(), () => qaPass(), () => qaPass()] });
+    await w.plan();
+    await w.generate();
+    const before = w.calls.images.length;
+    await w.feedback({ variantId: w.row.variants[1]!.id, slides: [{ index: 0, feedback: 'older looking man' }] });
+    const [a, b] = w.row.variants;
+    const redo = w.calls.images.slice(before);
+    expect(redo).toHaveLength(3);
+    expect(redo[1]!.referenceUrl).toBe(b!.slides[0]!.url!);
+    expect(b!.slides.every(s => s.provider === 'openrouter')).toBe(true);
+    expect(w.files.get(b!.slides[2]!.path!)).not.toEqual(w.files.get(a!.slides[2]!.path!));
+  });
+
+  test('refusals: active run, ungenerated variant, unknown slide, legacy pipeline, job in flight', async () => {
+    const w = world({ contract: invented(), qa: [() => qaPass()] });
+    await w.plan();
+    const [a, b] = w.row.variants;
+    const code = (fn: () => void) => { try { fn(); return null; } catch (err) { return (err as { code?: string }).code; } };
+    const e = () => structuredClone(w.row);
+    expect(code(() => applyFeedback(e(), { variantId: a!.id, feedback: 'x' }))).toBe('variant_not_generated');
+    await w.generate([a!.id]);
+    expect(code(() => applyFeedback(e(), { variantId: b!.id, feedback: 'x' }))).toBe('variant_not_generated');
+    expect(code(() => applyFeedback(e(), { variantId: 'nope', feedback: 'x' }))).toBe('variant_not_found');
+    expect(code(() => applyFeedback(e(), { variantId: a!.id, slides: [{ index: 5, feedback: 'x' }] }))).toBe('invalid_slide');
+    expect(code(() => applyFeedback({ ...e(), status: 'generating' }, { variantId: a!.id, feedback: 'x' }))).toBe('experiment_active');
+    expect(code(() => applyFeedback({ ...e(), pipeline: null }, { variantId: a!.id, feedback: 'x' }))).toBe('feedback_unsupported');
+    const stuck = e(); stuck.status = 'paused'; stuck.tasks.push({ id: 'u', kind: 'slide', target: a!.id, index: 1, status: 'unknown', attempts: 4, charged: 0 });
+    expect(code(() => applyFeedback(stuck, { variantId: a!.id, feedback: 'x' }))).toBe('variant_in_flight');
   });
 });

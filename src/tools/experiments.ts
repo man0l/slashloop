@@ -28,14 +28,14 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { withNextSteps, type NextStep } from '../lib/next-steps.js';
 import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload } from '../lib/credits.js';
-import { createExperiment, dedupeSourcePosts, estimate, mutate, fingerprint } from '../experiments/service.js';
+import { createExperiment, dedupeSourcePosts, estimate, mutate, fingerprint, estimateFeedback } from '../experiments/service.js';
 import { SOURCE_FORMATS } from '../experiments/source-format.js';
 import { ARC_LEVELS } from '../experiments/resolved-contract.js';
 import { load, list, serialize } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
 import {
-  CopyOverrides, DIRECTION_MAX, ExperimentError, Id, Instructions, MAX_MANUAL_ATTEMPTS, slideFanout, VARIABLE_FIELDS, type Experiment, type InstructionsData,
+  CopyOverrides, DIRECTION_MAX, ExperimentError, FEEDBACK_MAX, Id, Instructions, MAX_MANUAL_ATTEMPTS, slideFanout, VARIABLE_FIELDS, type Experiment, type InstructionsData,
 } from '../experiments/schema.js';
 
 // ---- dependencies ----------------------------------------------------------
@@ -54,9 +54,11 @@ export interface ExperimentToolDeps {
   deleteExperiments: typeof deleteExperiments;
   /** Optional so a caller that supplies its own deps keeps the old pass-through. */
   dedupeSourcePosts?: typeof dedupeSourcePosts;
+  /** Optional for the same reason; submit_experiment_feedback refuses without it. */
+  estimateFeedback?: typeof estimateFeedback;
 }
 export const defaultExperimentToolDeps: ExperimentToolDeps = {
-  resolveWorkspace: resolveToolWorkspace, createExperiment, dedupeSourcePosts, estimate, mutate, load, list, serialize, deleteExperiment, deleteExperiments,
+  resolveWorkspace: resolveToolWorkspace, createExperiment, dedupeSourcePosts, estimate, estimateFeedback, mutate, load, list, serialize, deleteExperiment, deleteExperiments,
 };
 
 // ---- helpers ---------------------------------------------------------------
@@ -181,6 +183,10 @@ const ERROR_HINTS: Record<string, string> = {
   experiment_not_found: 'No experiment with that id in this workspace. list_experiments shows the ids.',
   unapproved_variable: 'Variants may differ only in the experiment\'s chosen variables (instructions.variables on get_experiment). Shared fields you change are applied to the other draft variants automatically; this fires when a sibling is frozen or rendered, or when the variants would no longer differ in a chosen variable. The message names the fields.',
   locked_constraints: 'A brief must keep the experiment slide count and lockedConstraints exactly.',
+  feedback_unsupported: 'This experiment predates the slide-contract pipeline, so it cannot be regenerated from feedback. Create a new experiment from the same slideshow.',
+  variant_not_generated: 'Feedback applies to rendered slides. Generate the variant first (generate_experiment).',
+  variant_not_found: 'No variant with that id in this experiment. get_experiment lists experiment.variants[].id.',
+  invalid_slide: 'Slide indexes are 0-based and must exist on the variant (slide 1 = index 0).',
 };
 
 export function experimentToolError(err: unknown): ToolResult {
@@ -800,6 +806,51 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         ...(taskIds ? { taskIds } : {}), ...(variantIds ? { variantIds } : {}),
       });
       return mutationResult(d, next, 'Retry queued in the background.', gate.estimate);
+    }));
+
+  // ---- submit_experiment_feedback ----
+  server.tool('submit_experiment_feedback',
+    'Give human feedback on a GENERATED slideshow (one variant) and regenerate it. `feedback` is about the whole slideshow and '
+    + 're-renders every slide; `slides` gives feedback for single slides (0-based index: slide 1 = 0) and re-renders only those '
+    + '(re-rendering the first slide of a one-person identity chain re-renders the later slides too, so the face stays the same). '
+    + 'Pass either or both. Write what should change in the picture, e.g. "LTN still looks like MTN: make the jaw clearly softer '
+    + 'and the face fuller". The notes stay attached to the slide, so later QA repairs of it keep them. The variant is then '
+    + 'QA-checked again like a fresh render. SPENDS CREDITS: one slide render per re-rendered slide plus one QA call. '
+    + 'Call it with estimateOnly:true first (free) to get the price and the slides it would redo; approvedCredits is the amount '
+    + 'the user approved (or the remaining standing cap). Allowed when the experiment is completed, failed, paused or in review and '
+    + 'no job of the variant is pending, running or unknown. Track progress with get_experiment.',
+    {
+      workspaceId: workspaceIdField,
+      experimentId: experimentIdField,
+      variantId: Id.describe('The generated variant (slideshow) the feedback is about: experiment.variants[].id.'),
+      feedback: z.string().trim().min(1).max(FEEDBACK_MAX).optional().describe('Feedback on the whole slideshow. Regenerates every slide.'),
+      slides: z.array(z.object({
+        index: z.number().int().min(0).max(7).describe('0-based slide index (slide 1 = 0).'),
+        feedback: z.string().trim().min(1).max(FEEDBACK_MAX).describe('What should change on this slide.'),
+      })).min(1).max(8).optional().describe('Per-slide feedback. Regenerates only these slides (plus the identity chain they anchor).'),
+      estimateOnly: z.boolean().default(false).describe('Free: return the price and the slides that would be re-rendered, start nothing.'),
+      approvedCredits: approvedCreditsField.optional().describe('Required unless estimateOnly. The credits the user approved for this regeneration.'),
+      idempotencyKey: idempotencyKeyField,
+    },
+    { readOnlyHint: false },
+    ({ workspaceId, experimentId, variantId, feedback, slides, estimateOnly, approvedCredits, idempotencyKey }) => guarded(async () => {
+      if (!d.estimateFeedback) return text({ error: 'feedback_unavailable', message: 'Feedback regeneration is not available on this server.' }, true);
+      const workspace = await d.resolveWorkspace({ workspaceId });
+      const e = await d.load(workspace.id, experimentId);
+      const req = { variantId, ...(feedback === undefined ? {} : { feedback }), ...(slides === undefined ? {} : { slides }) };
+      const estimate = await d.estimateFeedback(e, req);
+      if (estimateOnly) {
+        return text({ estimate, redoSlides: estimate.redo, affordable: estimate.totalCredits <= estimate.workspaceCredits,
+          note: 'Nothing was started. Within a standing credit cap this is already approved; otherwise get the user\'s OK on totalCredits, then call again with approvedCredits.' });
+      }
+      if (approvedCredits === undefined) return text({ error: 'invalid_request', message: 'Pass approvedCredits (or estimateOnly:true to price it first).', estimate }, true);
+      if (estimate.totalCredits > approvedCredits) {
+        return text({ error: 'estimate_exceeds_approval', message: `The current estimate is ${estimate.totalCredits} credits, above the ${approvedCredits} the user approved. Nothing was started. Show the user this estimate and ask again.`, estimate }, true);
+      }
+      // A second round with the same words is a deliberate re-ask: rounds already applied are part of the key.
+      const key = idempotencyKey ?? derivedKey('feedback', { experimentId, req, round: e.variants.find(v => v.id === variantId)?.feedback?.length ?? 0 });
+      const next = await d.mutate(workspace.id, experimentId, 'feedback', { workspaceId: workspace.id, idempotencyKey: key, ...req });
+      return mutationResult(d, next, `Regenerating ${estimate.redo.length} slide${estimate.redo.length === 1 ? '' : 's'} (${estimate.redo.map(i => i + 1).join(', ')}) with your feedback, then QA. Check back with get_experiment in a few minutes.`, estimate);
     }));
 
   // ---- cancel_experiment ----
