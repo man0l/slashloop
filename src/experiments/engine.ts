@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { prepare, SafeFailure, TerminalFailure, ContentFilterFailure, HydrationPending, locksToBaselineVisual, type ExecuteContext, type Prepared } from './providers.js';
 import { experimentVisualLock } from './render-prompt.js';
 import { taskCost } from './service.js';
-import { contractEligible, isContractPipeline, mergeCalls, reapContractQa, settleContractSlide, settleQa, settleRevise, type QaTaskResult } from './contract-flow.js';
+import { contractEligible, isContractPipeline, mergeCalls, settleStrandedContract, settleContractSlide, settleQa, settleRevise, type QaTaskResult } from './contract-flow.js';
 import { ExperimentError, MAX_TASK_ATTEMPTS, PARALLEL_SLIDES, qaMaxAttempts, retryBackoffMs, slideTaskRequestCap, type Experiment, type SlideQaRecord, type StepStatus, type Task, type Input, type ReportData, type Proposal } from './schema.js';
 export interface EngineDeps {
   load: typeof store.load; save: typeof store.save;
@@ -97,8 +97,8 @@ export function settle(e:Experiment,t:Task,result:unknown) {
  *  (`unknown` pauses for review, anything else fails) so it stops being a zombie
  *  candidate. Returns true when the row was changed. */
 export function reapNoActionable(e:Experiment):boolean {
-  if(isActive(e)&&isContractPipeline(e))reapContractQa(e);
-  if(!isActive(e)||e.tasks.some(t=>t.status==='pending'||t.status==='running'))return false;
+  const settled=isActive(e)&&isContractPipeline(e)&&settleStrandedContract(e);
+  if(!isActive(e)||e.tasks.some(t=>t.status==='pending'||t.status==='running'))return settled;
   const dead=e.tasks.filter(t=>t.status==='failed'||t.status==='unknown');
   if(!dead.length)return false;
   const paused=dead.some(t=>t.status==='unknown');
@@ -130,7 +130,7 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
     await deps.save(e);return false;
   }
   // Nothing left that could ever run: terminate the row instead of idling forever.
-  if(reapNoActionable(e)){await deps.save(e);return false;}
+  if(reapNoActionable(e)){const saved=await deps.save(e);return saved&&isActive(e);}
   if(running.length>=PARALLEL_SLIDES)return false;
   for(let pick=0;pick<PARALLEL_SLIDES;pick++){
     if(pick>0){e=await deps.load(workspaceId,id);if(!isActive(e))return false;}

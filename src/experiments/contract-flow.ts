@@ -99,8 +99,9 @@ export function slideWorkFor(e: Experiment, v: Variant, index: number, fix?: str
   if (slideFeedback(v, index) || (index > 0 && slideFeedback(v, 0) && isAnchorEdit(e, v, index))) return 'render';
   const base = variantOf(e, v.baselineId);
   if (!base?.frozenBrief) return 'render';
-  // The baseline must be producing (or have produced) the slide this one copies.
-  if (base.status !== 'generating' && !base.slides[index]?.path) return 'render';
+  // The baseline must be producing (or have produced) the slide this one copies. A baseline slide that died is not "never
+  // produced": rendering it here would send the same request that already failed, so it stays a dependency (see baselineDependency).
+  if (base.status !== 'generating' && !base.slides[index]?.path && baselineSlideState(e, base, index) !== 'dead') return 'render';
   const work = slideWork(briefToArm(base.frozenBrief), briefToArm(v.frozenBrief), index);
   return work === 'reuse' && fix ? 'render' : work;
 }
@@ -113,6 +114,31 @@ export function isAnchorEdit(e: Experiment, v: Variant, index: number): boolean 
 }
 
 const open = (t: Task) => t.status === 'pending' || t.status === 'running';
+const dead = (t: Task) => t.status === 'failed' || t.status === 'unknown';
+
+type BaselineSlide = 'done' | 'open' | 'dead' | 'absent';
+
+/** Where one baseline slide stands: a picture to copy, still being produced, or lost with no picture to fall back on. */
+function baselineSlideState(e: Experiment, base: Variant, index: number): BaselineSlide {
+  const mine = e.tasks.filter(t => t.kind === 'slide' && t.target === base.id && t.index === index);
+  if (mine.some(open)) return 'open';
+  const slide = base.slides[index];
+  if (slide?.path) return 'done';
+  return slide?.status === 'failed' || slide?.status === 'unknown' || mine.some(dead) ? 'dead' : 'absent';
+}
+
+/** Whether a slide that copies the baseline's can be made now. `waiting` while the baseline may still change that picture;
+ *  `dead` when the baseline slide has no picture and none is coming. */
+export function baselineDependency(e: Experiment, base: Variant, index: number): 'ready' | 'waiting' | 'dead' {
+  const state = baselineSlideState(e, base, index);
+  if (state === 'dead') return 'dead';
+  if (base.status !== 'generating') return 'ready';
+  if (state !== 'done') return 'waiting';
+  // A QA verdict can re-render any baseline slide, so a copy waits for it - unless a dead slide means the verdict can never be asked for.
+  const verdictPending = e.tasks.some(t => t.kind === 'qa' && t.target === base.id && open(t));
+  const deckDoomed = base.slides.some((_, i) => baselineSlideState(e, base, i) === 'dead');
+  return verdictPending && !deckDoomed ? 'waiting' : 'ready';
+}
 
 /** Called by the engine for slide and qa tasks of a contract experiment, after the briefs have settled. */
 export function contractEligible(e: Experiment, t: Task): boolean {
@@ -121,7 +147,7 @@ export function contractEligible(e: Experiment, t: Task): boolean {
   if (!v) return true;
   const index = t.index ?? 0;
   const base = v.baselineId ? variantOf(e, v.baselineId) : undefined;
-  if (base?.frozenBrief && base.status === 'generating' && slideWorkFor(e, v, index, t.fix) !== 'render') return false;
+  if (base?.frozenBrief && slideWorkFor(e, v, index, t.fix) !== 'render' && baselineDependency(e, base, index) !== 'ready') return false;
   if (isAnchorEdit(e, v, index) && e.tasks.some(s => s.kind === 'slide' && s.target === v.id && s.index === 0 && s !== t && open(s))) return false;
   return true;
 }
@@ -133,11 +159,57 @@ export function reapContractQa(e: Experiment): boolean {
     if (t.kind !== 'qa' || t.status !== 'pending') continue;
     const mine = e.tasks.filter(s => s.kind === 'slide' && s.target === t.target);
     if (mine.some(open)) continue;
-    const dead = mine.find(s => s.status === 'failed' || s.status === 'unknown');
-    if (!dead) continue;
+    const gone = mine.find(dead);
+    if (!gone) continue;
     t.status = 'failed'; t.error = 'deck_incomplete'; changed = true;
   }
   return changed;
+}
+
+/** A queued slide that only copies a baseline slide which failed has nothing to copy and must not be rendered instead:
+ *  that would send the failed request again. It fails closed, unbilled, with the reason on the job and the slide. */
+function failDeadDependencies(e: Experiment): boolean {
+  let changed = false;
+  for (const t of e.tasks) {
+    if (t.kind !== 'slide' || t.status !== 'pending') continue;
+    const v = variantOf(e, t.target);
+    const base = v?.baselineId ? variantOf(e, v.baselineId) : undefined;
+    if (!v || !base?.frozenBrief) continue;
+    const index = t.index ?? 0;
+    if (slideWorkFor(e, v, index, t.fix) === 'render' || baselineDependency(e, base, index) !== 'dead') continue;
+    t.status = 'failed';
+    t.error = `baseline_slide_unavailable: this slide is an unchanged copy of baseline slide ${index + 1}, which failed and has no picture to copy. It is not re-rendered, because that would send the failed request again.`;
+    const slide = v.slides[index];
+    if (slide) { slide.status = 'failed'; slide.error = t.error; }
+    changed = true;
+  }
+  return changed;
+}
+
+/** An arm with nothing left to run and a dead job will never finish: it settles as failed (or paused for an unknown outcome),
+ *  while the other arm keeps going. */
+function settleDeadArms(e: Experiment): boolean {
+  let changed = false;
+  for (const v of e.variants) {
+    if (v.status !== 'generating' || !v.frozenBrief) continue;
+    const mine = e.tasks.filter(t => (t.kind === 'slide' || t.kind === 'qa') && t.target === v.id);
+    if (mine.some(open)) continue;
+    const gone = mine.filter(dead);
+    if (!gone.length) continue;
+    v.status = gone.some(t => t.status === 'unknown') ? 'paused' : 'failed';
+    v.error = (gone.find(t => t.kind === 'slide' && t.error) ?? gone.find(t => t.error))?.error ?? 'deck_incomplete';
+    changed = true;
+  }
+  return changed;
+}
+
+/** Settles contract work that can never run, in the order that lets each step see the last: dead copies, then the QA that
+ *  waited on them, then the arms. True when anything changed and must be saved. */
+export function settleStrandedContract(e: Experiment): boolean {
+  const copies = failDeadDependencies(e);
+  const qa = reapContractQa(e);
+  const arms = settleDeadArms(e);
+  return copies || qa || arms;
 }
 
 // ---- settlement ----------------------------------------------------------------

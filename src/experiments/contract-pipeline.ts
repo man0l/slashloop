@@ -209,6 +209,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
   let prompt: string;
   if (work === 'caption-edit' && scriptMode) {
     // The baseline's picture is text-free by construction; only the words differ, so nothing needs the model.
+    if (!baseSlide?.path) throw new SafeFailure('baseline_slide_missing');
     const readBase = need(render.readReference, 'render_deps_incomplete');
     const baseBytes = baseSlide?.path
       ? (await readBase({ bucket: thumbBucket(), path: basePathOf(baseSlide.path) }))

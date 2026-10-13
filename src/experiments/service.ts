@@ -383,6 +383,28 @@ export function applyRetry(e:S.Experiment,retryTasks:readonly S.Task[]):void{
     }
   }
 }
+/** The `retry` command: requeue the named jobs (or every failed one) and reopen the run. Pure with respect to `e`. */
+export function retryJobs(e:S.Experiment,body:unknown):void{
+  if(e.status!=='failed' && e.status!=='paused') throw new S.ExperimentError(409,'not_retryable');
+  // Only genuinely in-flight leases block a retry; exhausted/unknown jobs are retryable
+  // on demand (each retry re-charges, so a lost provider delivery costs at most one more).
+  if(e.tasks.some(t=>t.status==='running')) throw new S.ExperimentError(409,'provider_outcome_unknown','A provider request is still in flight. Refresh and retry in a moment.');
+  const {variantIds:ids,taskIds:wantedTaskIds}=S.Retry.parse(body);
+  let retryTasks: S.Task[];
+  if (wantedTaskIds) {
+    const wanted = new Set(wantedTaskIds);
+    // 'pending' included so an experiment paused by a transient guard can resume named work.
+    retryTasks = e.tasks.filter(t=>wanted.has(t.id)&&(t.status==='failed'||t.status==='unknown'||t.status==='pending'));
+    if (!retryTasks.length) throw new S.ExperimentError(409,'nothing_to_retry');
+  } else {
+    retryTasks = e.tasks.filter(t=>t.status==='failed' && (!ids || (t.kind==='slide' && ids.includes(t.target!))));
+    if(!retryTasks.length) throw new S.ExperimentError(409,'nothing_to_retry');
+    if(ids) selected(e,ids);
+  }
+  if(retryTasks.some(t=>t.attempts>=S.MAX_MANUAL_ATTEMPTS)) throw new S.ExperimentError(409,'retry_limit');
+  applyRetry(e,retryTasks);
+  e.error=null;e.status=(isContractPipeline(e)||e.report)&&e.variants.length?'generating':'planning';
+}
 /**
  * Brief-edit matrix for `update_experiment_variant`. Throws unless the variant's brief may be rewritten.
  *   review            draft variant        edit
@@ -549,25 +571,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     }
     e.status='generating';
   } else if(action==='retry') {
-    if(e.status!=='failed' && e.status!=='paused') throw new S.ExperimentError(409,'not_retryable');
-    // Only genuinely in-flight leases block a retry; exhausted/unknown jobs are retryable
-    // on demand (each retry re-charges, so a lost provider delivery costs at most one more).
-    if(e.tasks.some(t=>t.status==='running')) throw new S.ExperimentError(409,'provider_outcome_unknown','A provider request is still in flight. Refresh and retry in a moment.');
-    const ids=S.Retry.parse(b).variantIds; const wantedTaskIds=S.Retry.parse(b).taskIds;
-    let retryTasks: S.Task[];
-    if (wantedTaskIds) {
-      const wanted = new Set(wantedTaskIds);
-      // 'pending' included so an experiment paused by a transient guard can resume named work.
-      retryTasks = e.tasks.filter(t=>wanted.has(t.id)&&(t.status==='failed'||t.status==='unknown'||t.status==='pending'));
-      if (!retryTasks.length) throw new S.ExperimentError(409,'nothing_to_retry');
-    } else {
-      retryTasks = e.tasks.filter(t=>t.status==='failed' && (!ids || (t.kind==='slide' && ids.includes(t.target!))));
-      if(!retryTasks.length) throw new S.ExperimentError(409,'nothing_to_retry');
-      if(ids) selected(e,ids);
-    }
-    if(retryTasks.some(t=>t.attempts>=S.MAX_MANUAL_ATTEMPTS)) throw new S.ExperimentError(409,'retry_limit');
-    applyRetry(e,retryTasks);
-    e.error=null;e.status=(isContractPipeline(e)||e.report)&&e.variants.length?'generating':'planning';
+    retryJobs(e,b);
   } else if(action==='revise') {
     // A QA-failed experiment: the model rewrites the brief against the QA failures, then every arm is rendered and checked again.
     const est=await estimateRevise(e);
