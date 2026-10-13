@@ -289,7 +289,7 @@ populating the env vars above from a real Stripe account.
 
 Experiments are the agent-facing twin of the site's `/experiments` page and
 wrap the same service as `api/experiments.ts` (`src/experiments/service.ts`):
-`create_experiment` (free draft, one experiment per source slideshow) →
+`create_experiment` (free draft, one experiment per source slideshow, or `mode:"brief"` for a single draft with no source video) →
 `estimate_experiment` stage `plan` → user approves → `plan_experiment`
 (background analysis + pattern report + variant briefs) → status `review` →
 optional `update_experiment_variant` → `estimate_experiment` stage `generate`
