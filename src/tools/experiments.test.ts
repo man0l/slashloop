@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { Command, Create, CreateBriefRequest, CreateRequest, EditBrief, Generate, Plan, Retry, ExperimentError, Key, validateVariants, type Experiment } from '../experiments/schema.js';
+import { Command, Create, CreateBriefRequest, CreateRequest, EditBrief, Feedback, Generate, Plan, Retry, ExperimentError, Key, validateVariants, type Experiment } from '../experiments/schema.js';
 import { normalizeBriefCandidates } from '../experiments/providers.js';
 import { renderContract } from '../experiments/render-prompt.js';
 import {
@@ -18,6 +18,7 @@ import {
 const TOOLS = [
   'list_experiments', 'get_experiment', 'create_experiment', 'estimate_experiment', 'plan_experiment',
   'update_experiment_variant', 'generate_experiment', 'retry_experiment', 'cancel_experiment', 'delete_experiment',
+  'submit_experiment_feedback',
 ];
 
 function exp(id: string, over: Partial<Experiment> = {}): Experiment {
@@ -80,6 +81,10 @@ function fakes(): ExperimentToolDeps {
     serialize: ((e: Experiment) => ({ ...e, projected: true })) as unknown as ExperimentToolDeps['serialize'],
     deleteExperiment: async (ws: string, id: string) => { record('deleteExperiment', [ws, id]); return { deleted: true as const }; },
     deleteExperiments: async (ws: string, ids: string[]) => { record('deleteExperiments', [ws, ids]); return { deleted: ids.length, failed: [] }; },
+    estimateFeedback: (async (e: Experiment, req: unknown) => {
+      record('estimateFeedback', [e.id, req]);
+      return { analysisCredits: 0, planningCredits: 0, generationCredits: estimateTotal, totalCredits: estimateTotal, correctionCredits: estimateTotal, maxTotalCredits: 2 * estimateTotal, remainingCredits: e.maxCredits, workspaceCredits: 1000, maxCredits: e.maxCredits, generationBasis: e.generationBasis, exactProviderUsdCap: false, maxProviderRequests: 4, pricing: { analysis: 5, planningCall: 2, slide: 10 }, redo: [4, 5] };
+    }) as unknown as ExperimentToolDeps['estimateFeedback'],
   };
 }
 
@@ -1013,5 +1018,54 @@ describe('notify (SLA-617)', () => {
     const created = await call('create_experiment', { videoIds: ['vid1'], instructions });
     expect('notify' in (callsOf('createExperiment')[0]![0] as object)).toBe(false);
     expect('notify' in created.body.experiments[0]).toBe(false);
+  });
+});
+
+describe('submit_experiment_feedback (SLA-797)', () => {
+  const slides = [{ index: 4, feedback: 'LTN must look clearly worse than MTN' }, { index: 5, feedback: 'SUB 5 needs a much weaker jaw' }];
+  beforeEach(() => { store.set('e1', exp('e1', { status: 'completed', pipeline: 'contract' })); });
+
+  test('estimateOnly prices the round and starts nothing', async () => {
+    const r = await call('submit_experiment_feedback', { experimentId: 'e1', variantId: 'v1', slides, estimateOnly: true });
+    expect(r.isError).toBe(false);
+    expect(r.body.redoSlides).toEqual([4, 5]);
+    expect(r.body.estimate.totalCredits).toBe(9);
+    expect(callsOf('mutate')).toHaveLength(0);
+    expect(callsOf('estimateFeedback')[0]).toEqual(['e1', { variantId: 'v1', slides }]);
+  });
+
+  test('refuses above the approval and without one', async () => {
+    estimateTotal = 50;
+    const over = await call('submit_experiment_feedback', { experimentId: 'e1', variantId: 'v1', feedback: 'harder downgrade', approvedCredits: 20 });
+    expect(over.isError).toBe(true);
+    expect(over.body.error).toBe('estimate_exceeds_approval');
+    const none = await call('submit_experiment_feedback', { experimentId: 'e1', variantId: 'v1', feedback: 'harder downgrade' });
+    expect(none.isError).toBe(true);
+    expect(callsOf('mutate')).toHaveLength(0);
+  });
+
+  test('within the approval it runs the feedback action with a stable derived key', async () => {
+    const r = await call('submit_experiment_feedback', { experimentId: 'e1', variantId: 'v1', feedback: 'harder downgrade', slides, approvedCredits: 20 });
+    expect(r.isError).toBe(false);
+    expect(r.body.message).toContain('slides (5, 6)');
+    const [[ws, id, action, body]] = callsOf('mutate') as [[string, string, string, Record<string, unknown>]];
+    expect([ws, id, action]).toEqual(['w1', 'e1', 'feedback']);
+    expect(body).toMatchObject({ workspaceId: 'w1', variantId: 'v1', feedback: 'harder downgrade', slides });
+    expect(String(body.idempotencyKey)).toStartWith('mcp:feedback:');
+    await call('submit_experiment_feedback', { experimentId: 'e1', variantId: 'v1', feedback: 'harder downgrade', slides, approvedCredits: 20 });
+    expect((callsOf('mutate')[1]![3] as Record<string, unknown>).idempotencyKey).toBe(body.idempotencyKey);
+  });
+
+  test('service refusals carry a hint', async () => {
+    mutateError = new ExperimentError(409, 'feedback_unsupported');
+    const r = await call('submit_experiment_feedback', { experimentId: 'e1', variantId: 'v1', feedback: 'x', approvedCredits: 20 });
+    expect(r.isError).toBe(true);
+    expect(r.body.hint).toMatch(/new experiment/);
+  });
+
+  test('the request matches the service Feedback schema', () => {
+    expect(Feedback.parse({ workspaceId: 'w1', idempotencyKey: 'mcp:feedback:abc', variantId: 'v1', slides })).toBeTruthy();
+    expect(() => Feedback.parse({ workspaceId: 'w1', idempotencyKey: 'mcp:feedback:abc', variantId: 'v1' })).toThrow();
+    expect(() => Feedback.parse({ workspaceId: 'w1', idempotencyKey: 'mcp:feedback:abc', variantId: 'v1', slides: [slides[0], slides[0]] })).toThrow();
   });
 });

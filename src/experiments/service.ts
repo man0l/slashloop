@@ -11,7 +11,7 @@ import { persistedOverlayText } from './render-prompt.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { applyApprovedEstimate } from './budget.js';
 import { compileExactEdit } from './exact-edit.js';
-import { briefToArm, generationTasks, isContractPipeline } from './contract-flow.js';
+import { applyFeedback, briefToArm, generationTasks, isContractPipeline } from './contract-flow.js';
 import { slideWork } from './resolved-contract.js';
 import { postKey } from '../lib/post-key.js';
 import { expandPreset, inferSharedFormat } from './source-format.js';
@@ -262,7 +262,6 @@ function contractRenderCount(e: S.Experiment, v: S.Experiment['variants'][number
   return v.brief.slides.filter((_, i) => slideWork(a, b, i) !== 'reuse').length;
 }
 async function contractEstimate(e: S.Experiment, stage: 'plan'|'generate', variants: S.Experiment['variants'], taskIds?: string[]) {
-  const AN = CREDIT_COSTS.analyzeVideo, PL = CREDIT_COSTS.experimentPlanningCall, SL = CREDIT_COSTS.experimentSlide;
   let analyses = 0, planningCalls = 0, renders = 0, qas = 0;
   if (taskIds) {
     const jobs = e.tasks.filter(t => new Set(taskIds).has(t.id) && t.status !== 'done');
@@ -273,15 +272,27 @@ async function contractEstimate(e: S.Experiment, stage: 'plan'|'generate', varia
   } else {
     for (const v of variants) { renders += v.slides.length ? v.slides.filter(s => s.status !== 'done').length : contractRenderCount(e, v, variants); qas++; }
   }
+  return contractPrice(e, { analyses, planningCalls, renders, qas, corrections: stage === 'generate' || !!taskIds });
+}
+async function contractPrice(e: S.Experiment, n: { analyses: number; planningCalls: number; renders: number; qas: number; corrections: boolean }) {
+  const AN = CREDIT_COSTS.analyzeVideo, PL = CREDIT_COSTS.experimentPlanningCall, SL = CREDIT_COSTS.experimentSlide;
+  const { analyses, planningCalls, renders, qas } = n;
   const analysisCredits = analyses * AN, planningCredits = planningCalls * PL, generationCredits = renders * SL + qas * PL;
   // One repair round can re-render every slide of an arm and re-check it; those are new tasks, charged like any other.
-  const correctionCredits = stage === 'generate' || taskIds ? generationCredits : 0;
+  const correctionCredits = n.corrections ? generationCredits : 0;
   return { analysisCredits, planningCredits, generationCredits, totalCredits: analysisCredits + planningCredits + generationCredits,
     correctionCredits, maxTotalCredits: analysisCredits + planningCredits + generationCredits + correctionCredits,
     remainingCredits: e.maxCredits - e.creditsCharged, workspaceCredits: (await creditBalance(e.workspaceId)).total,
     maxCredits: e.maxCredits, generationBasis: e.generationBasis, exactProviderUsdCap: false,
     maxProviderRequests: analyses + planningCalls + (renders + qas) * (correctionCredits ? 2 : 1),
     pricing: { analysis: AN, planningCall: PL, slide: SL } };
+}
+/** SLA-797: price one human feedback round — the slides it re-renders plus one QA of the arm, and the repair round QA may buy. */
+export async function estimateFeedback(e: S.Experiment, raw: unknown) {
+  const req = S.FeedbackRequest.parse(raw);
+  // Price exactly what applyFeedback would queue, refusals included, on a scratch copy.
+  const { redo } = applyFeedback(structuredClone(e), req);
+  return { ...(await contractPrice(e, { analyses: 0, planningCalls: 0, renders: redo.length, qas: 1, corrections: true })), redo };
 }
 export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: string[], taskIds?: string[]) {
   if (stage === 'plan' && ids) throw new S.ExperimentError(400,'variantIds_only_for_generation');
@@ -432,7 +443,8 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
   if (EXACT_EDIT_ACTIONS.has(action) && !isExactEditRequest(raw))
     throw new S.ExperimentError(409,'exact_edit_not_requested','This action is only available to an explicit exact_edit request.');
   const schema = action==='exact-edit' ? S.ExactEditRequest
-    : action==='plan' ? S.Plan : action==='generate' ? S.Generate : action==='retry' ? S.Retry : action==='edit' ? S.EditBrief : S.Command;
+    : action==='plan' ? S.Plan : action==='generate' ? S.Generate : action==='retry' ? S.Retry : action==='edit' ? S.EditBrief
+    : action==='feedback' ? S.Feedback : S.Command;
   const b = schema.parse(raw);
   const e = await store.load(workspaceId,id);
   if (EXACT_EDIT_ACTIONS.has(action) && e.operation?.kind !== S.EXACT_EDIT_OPERATION)
@@ -511,6 +523,12 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     if(retryTasks.some(t=>t.attempts>=S.MAX_MANUAL_ATTEMPTS)) throw new S.ExperimentError(409,'retry_limit');
     applyRetry(e,retryTasks);
     e.error=null;e.status=(isContractPipeline(e)||e.report)&&e.variants.length?'generating':'planning';
+  } else if(action==='feedback') {
+    // SLA-797: re-render the slideshow (or the named slides) against the user's notes, then QA it again.
+    const {workspaceId:_w,idempotencyKey:_k,...req}=S.Feedback.parse(b);
+    const est=await estimateFeedback(e,req);
+    applyApprovedEstimate(e,{...est,totalCredits:Math.max(est.totalCredits,Math.min(est.maxTotalCredits,est.workspaceCredits))});
+    applyFeedback(e,req);
   } else throw new S.ExperimentError(404,'action_not_found');
   if(key)e.commands[key]=hash;
   if(!await store.save(e)) throw new S.ExperimentError(409,'concurrent_update');

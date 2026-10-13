@@ -3,7 +3,10 @@ import {
   assertArmsDifferOnly, buildArmB, fixText, repairSlides, slideRole, pickFramesByArc, slideWork,
   type ArmBrief, type ArmField, type ContractSlide, type ResolvedContract, type SlideWork,
 } from './resolved-contract.js';
-import { ExperimentError, type BriefData, type Experiment, type Proposal, type Task, type Variant } from './schema.js';
+import {
+  ExperimentError, FEEDBACK_HISTORY_LIMIT, SLIDE_FEEDBACK_LIMIT,
+  type BriefData, type Experiment, type FeedbackRequestData, type Proposal, type Task, type Variant,
+} from './schema.js';
 
 // Pure parts of the resolved-contract pipeline: the contract as the renderer and QA see it,
 // the two arms, scheduling rules and how finished tasks fold into the experiment. No I/O.
@@ -87,6 +90,9 @@ export function proposalsFromContract(e: Pick<Experiment, 'instructions' | 'slid
 
 export function slideWorkFor(e: Experiment, v: Variant, index: number, fix?: string): SlideWork {
   if (!v.baselineId || !v.frozenBrief) return 'render';
+  // Human feedback asks for a different picture: never a copy or a caption-only edit of the baseline's.
+  // Nor may a slide that edits this arm's own re-rendered anchor copy the baseline's face.
+  if (slideFeedback(v, index) || (index > 0 && slideFeedback(v, 0) && isAnchorEdit(e, v, index))) return 'render';
   const base = variantOf(e, v.baselineId);
   if (!base?.frozenBrief) return 'render';
   // The baseline must be producing (or have produced) the slide this one copies.
@@ -209,4 +215,68 @@ export function settleQa(e: Experiment, t: Task, rawResult: QaTaskResult): void 
 /** Tasks one arm needs when it is sent to rendering: its slides, then one QA over the whole arm. */
 export function generationTasks(v: Variant): Task[] {
   return [...v.slides.map(s => newTask('slide', v.id, s.index)), newTask('qa', v.id)];
+}
+
+// ---- human feedback (SLA-797) ----------------------------------------------------
+
+/** The human notes in force for one slide, oldest first, as one prompt line. Empty when there are none. */
+export function slideFeedback(v: Pick<Variant, 'slides'>, index: number): string {
+  const notes = v.slides[index]?.feedback ?? [];
+  if (!notes.length) return '';
+  return notes.length === 1 ? notes[0]! : notes.map((n, i) => `(${i + 1}) ${n}`).join(' ') + ' — where these conflict, the last one wins.';
+}
+
+/** Which slides one feedback round re-renders. Deck feedback redoes the whole slideshow; slide feedback redoes those
+ *  slides, and an anchor slide of an invented identity chain takes every later slide with it, as a QA repair does. */
+export function feedbackRedo(e: Experiment, v: Variant, req: Pick<FeedbackRequestData, 'feedback' | 'slides'>): number[] {
+  const n = v.slides.length;
+  if (req.feedback) return v.slides.map((_, i) => i);
+  const failures: Record<string, string[]> = Object.fromEntries((req.slides ?? []).map(s => [String(s.index), [s.feedback]]));
+  const chain = !!v.frozenBrief && !!e.contract && contractView(e, v.frozenBrief).identity === 'invented-consistent' && !e.contract.keepSourceImage;
+  return repairSlides(failures, n, { chainFromAnchor: chain });
+}
+
+/**
+ * Apply one human feedback round to a rendered arm. Pure with respect to `e`, like `settleQa`.
+ *
+ * The notes are stored on the slides, not on the tasks, so a QA repair of the same slide re-renders
+ * against them too. The arm then gets a fresh QA round (a new repair allowance): the verdict it had is
+ * kept in the round's record. Failed jobs of this arm are dropped — they are settled and refunded, and
+ * left in place they would fail the new QA (`deck_incomplete`) or keep the experiment from completing.
+ */
+export function applyFeedback(e: Experiment, req: FeedbackRequestData, now = new Date()): { variant: Variant; redo: number[] } {
+  if (!isContractPipeline(e)) throw new ExperimentError(409, 'feedback_unsupported', 'Feedback regeneration needs an experiment on the slide-contract pipeline. Re-run the slideshow as a new experiment.');
+  switch (e.status) {
+    case 'planning': case 'generating': throw new ExperimentError(409, 'experiment_active');
+    case 'cancelled': throw new ExperimentError(409, 'experiment_cancelled');
+    case 'draft': throw new ExperimentError(409, 'variant_not_generated');
+  }
+  const v = variantOf(e, req.variantId);
+  if (!v) throw new ExperimentError(404, 'variant_not_found');
+  if (!v.frozenBrief || !v.slides.length) throw new ExperimentError(409, 'variant_not_generated', 'Generate this variant before giving feedback on its slides.');
+  if (e.tasks.some(t => t.target === v.id && (t.status === 'running' || t.status === 'unknown' || t.status === 'pending')))
+    throw new ExperimentError(409, 'variant_in_flight');
+  for (const s of req.slides ?? []) {
+    if (!v.slides[s.index]) throw new ExperimentError(400, 'invalid_slide', `Slide index ${s.index} is outside this ${v.slides.length}-slide variant (indexes are 0-based).`);
+  }
+  const redo = feedbackRedo(e, v, req);
+  const perSlide = new Map((req.slides ?? []).map(s => [s.index, s.feedback]));
+  e.tasks = e.tasks.filter(t => !(t.target === v.id && (t.kind === 'slide' || t.kind === 'qa') && t.status === 'failed'));
+  for (const i of redo) {
+    const slide = v.slides[i]!;
+    const note = [req.feedback ? `Whole slideshow: ${req.feedback}` : '', perSlide.get(i) ? `This slide: ${perSlide.get(i)}` : ''].filter(Boolean).join(' ');
+    if (note) slide.feedback = [...(slide.feedback ?? []), note].slice(-SLIDE_FEEDBACK_LIMIT);
+    slide.status = 'pending'; slide.error = null;
+    e.tasks.push(newTask('slide', v.id, i));
+  }
+  e.tasks.push(newTask('qa', v.id));
+  v.feedback = [...(v.feedback ?? []), {
+    at: now.toISOString(), feedback: req.feedback ?? null,
+    slides: (req.slides ?? []).map(s => ({ index: s.index, feedback: s.feedback })),
+    redo, previousQa: v.qaDeck?.verdict ?? null,
+  }].slice(-FEEDBACK_HISTORY_LIMIT);
+  v.qaDeck = null;
+  v.status = 'generating'; v.error = null;
+  e.status = 'generating'; e.error = null;
+  return { variant: v, redo };
 }
