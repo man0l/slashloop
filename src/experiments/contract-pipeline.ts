@@ -92,7 +92,8 @@ export async function prepareContractBriefs(e: Experiment, render: RenderDeps): 
         sourceDefaults: e.instructions.sourceDefaults ?? [], slideCount: e.slideCount, frameCount: frames.length, variable,
       };
       const sources = e.inputs.filter(i => i.status === 'ready').map((i, ix) => ({
-        source: `s${ix}`, observations: i.evidence.slice(0, 6).map(v => v.observation).join(' | ').slice(0, 1200),
+        // SLA-809: every observed slide, each trimmed, so a ladder's last frames (where the change peaks) are never cut off.
+        source: `s${ix}`, observations: i.evidence.slice(0, MAX_CONTRACT_FRAMES + 4).map(v => `${v.location}: ${v.observation.slice(0, 240)}`).join(' | ').slice(0, 3000),
       }));
       const meter = new SlideMeter();
       let contract: ResolvedContract | undefined;
@@ -257,7 +258,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
           if (!FILTERED.test(msg)) renderFailure(err);
           // A filter hit gets one plain retry: without the repair text or human feedback, and an edit of slide 1 asks
           // for the slide's own scene instead of the face comparison. A second refusal is terminal (renderFailure).
-          const plain = comparative ? { ...promptView, slides: promptView.slides.map((s, i) => i === index ? { ...s, visibleChange: '' } : s) } : promptView;
+          const plain = comparative ? { ...promptView, sourceArc: undefined, slides: promptView.slides.map((s, i) => i === index ? { ...s, visibleChange: '' } : s) } : promptView;
           usedPrompt = work === 'caption-edit' && base?.frozenBrief
             ? captionEditPrompt(base.frozenBrief.slides[index]?.overlayText ?? '', view.slides[index]!.overlayText)
             : guard(compileSlidePrompt(plain, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse));
