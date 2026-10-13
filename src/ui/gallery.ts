@@ -179,7 +179,10 @@ function cardHtml(c: GalleryCard): string {
            data-video-id="${esc(c.id)}"
            data-is-slideshow="${c.experimentEligible ? '1' : '0'}"
            data-slide-count="${slideCount}">
-    <span class="index-badge" title="Reference this as &quot;video ${c.index}&quot;">${c.index}</span>
+    <div class="index-tag">
+      <span class="index-badge" title="Reference this as &quot;video ${c.index}&quot;">${c.index}</span>
+      <button type="button" class="copy-id" data-copy-id="${esc(c.id)}" title="Copy video ID ${esc(c.id)}" aria-label="Copy ID of video ${c.index}">Copy ID</button>
+    </div>
     ${c.experimentEligible
       ? `<label class="select-wrap" title="Select for experiment"><input type="checkbox" class="select-box" data-select-video="${esc(c.id)}" aria-label="Select video ${c.index} for experiment"/></label>`
       : ''}
@@ -318,10 +321,16 @@ export function renderGallery(
   .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
   .card { position: relative; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
   .card[hidden] { display: none !important; }
-  .index-badge { position: absolute; top: 6px; left: 6px; z-index: 1; min-width: 18px; height: 18px;
+  .index-tag { position: absolute; top: 6px; left: 6px; z-index: 1; display: flex; gap: 4px; align-items: center; }
+  .index-badge { min-width: 18px; height: 18px;
     padding: 0 5px; border-radius: 999px; background: rgba(0,0,0,.65); color: #fff; font-size: 10px;
     font-weight: 700; display: flex; align-items: center; justify-content: center; line-height: 1; }
-  .density-list .index-badge { position: static; margin-left: 6px; align-self: center; }
+  .copy-id { font: inherit; height: 18px; padding: 0 7px; border: none; border-radius: 999px;
+    background: rgba(0,0,0,.65); color: #fff; font-size: 10px; font-weight: 600; line-height: 1;
+    cursor: pointer; white-space: nowrap; }
+  .copy-id:hover { background: rgba(0,0,0,.85); }
+  .copy-id:focus { outline: 2px solid #fff; outline-offset: 1px; }
+  .density-list .index-tag { position: static; margin-left: 6px; align-self: center; flex-direction: column; }
   .thumb { width: 100%; aspect-ratio: 9/16; object-fit: cover; display: block; background: var(--line); }
   .thumb.placeholder { display: grid; place-items: center; }
   .body { padding: 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
@@ -1376,6 +1385,41 @@ ${cards.length ? toolbarHtml(filters) : ''}
 
   MCP.ready().then(function (ok) {
     if (ok && MCP.canReadResources()) activateHostMode();
+  });
+
+  // Copy ID: puts the raw video id on the clipboard so it can be pasted into
+  // an agent chat. The host iframe may deny the async Clipboard API, so fall
+  // back to execCommand on a throwaway textarea, then to a prompt() box.
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('[data-copy-id]') : null;
+    if (!btn) return;
+    var id = btn.dataset.copyId;
+    var flash = function (label) {
+      btn.textContent = label;
+      clearTimeout(btn._copyTimer);
+      btn._copyTimer = setTimeout(function () { btn.textContent = 'Copy ID'; }, 1500);
+    };
+    var legacy = function () {
+      var ta = document.createElement('textarea');
+      ta.value = id;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (err) {}
+      document.body.removeChild(ta);
+      if (ok) flash('Copied');
+      else { try { window.prompt('Copy this video ID:', id); } catch (err) {} flash('Copy ID'); }
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(id).then(function () { flash('Copied'); }, legacy);
+        return;
+      }
+    } catch (err) {}
+    legacy();
   });
 
   // Key-moment seek: one source per video, seek without re-fetch. In host
