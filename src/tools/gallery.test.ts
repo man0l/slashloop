@@ -140,6 +140,13 @@ describe('renderGallery media wiring', () => {
     expect(html).toContain('poster="https://thumbs.example.com/w/vid-1.jpg"');
   });
 
+  test('every card carries a Copy ID button next to its index badge (SLA-827)', () => {
+    const html = renderGallery([fakeCard({ id: 'vid-"x', index: 4 })], undefined, {});
+    expect(html).toMatch(/<div class="index-tag">\s*<span class="index-badge"[^>]*>4<\/span>\s*<button type="button" class="copy-id" data-copy-id="vid-&quot;x"/);
+    // The click handler reads the same attribute the card emits.
+    expect(html).toContain("closest('[data-copy-id]')");
+  });
+
   test('cover-less cards expose the placeholder as the blob-read target', () => {
     const html = renderGallery([fakeCard({ thumbUrl: null })], undefined, {});
     expect(html).toContain('<div class="thumb placeholder" data-cover-uri="covers://slashloop/vid-1">');
