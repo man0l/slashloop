@@ -99,7 +99,12 @@ async function refusedBaseline() {
     }
     e.status = 'generating';
   });
-  await w.drain();
+  // Step only until the refusal lands. Since SLA-820 the engine keeps rendering after one arm fails; the row below is the one
+  // production's earlier engine stopped on, which retry must still recover.
+  for (let i = 0; i < 20; i++) {
+    await step('w', 'e', w.deps);
+    if ((await w.load()).tasks.some(t => t.kind === 'slide' && t.status === 'failed')) break;
+  }
   // Baseline slide 2 had already landed when slide 1 was refused, as in production; slides 3-5 were still queued. Stepping it here
   // would also fail the alternate's copy of slide 1 before the retry, which production's stopped run had not yet done.
   await w.update(e => {

@@ -255,7 +255,8 @@ function countJobs(e: Experiment): Record<string, JobCounts> {
  *  contract, not about one render: a retry re-asks the identical questions and
  *  pays for the render fan-out and QA calls again. A checker that failed to
  *  answer (`story_check_error`) is infrastructure and stays an ordinary retry. */
-const TERMINAL_QA_ERROR = /(?:^|:)story_(?:check_failed|unverified):(?!story_check_error)/;
+// A slide's story check, or an arm's deck verdict after its repair round (`qa_failed:`, SLA-820): both need a brief change, not a retry.
+const TERMINAL_QA_ERROR = /(?:^|:)story_(?:check_failed|unverified):(?!story_check_error)|^qa_failed:/;
 export const isTerminalQaError = (error: string | undefined | null): boolean => TERMINAL_QA_ERROR.test(error ?? '');
 /** A content-filter refusal (SLA-787/816) is deterministic for the request that was refused. It is refunded and never auto-retried. */
 export const isContentFilterError = (error: string | undefined | null): boolean => /(?:^|:)provider_content_filtered/.test(error ?? '');

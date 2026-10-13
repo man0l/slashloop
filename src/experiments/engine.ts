@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { prepare, SafeFailure, TerminalFailure, ContentFilterFailure, HydrationPending, locksToBaselineVisual, type ExecuteContext, type Prepared } from './providers.js';
 import { experimentVisualLock } from './render-prompt.js';
 import { taskCost } from './service.js';
-import { contractEligible, isContractPipeline, mergeCalls, settleStrandedContract, settleContractSlide, settleQa, settleRevise, type QaTaskResult } from './contract-flow.js';
+import { contractEligible, isContractPipeline, mergeCalls, settleContractCompletion, settleStrandedContract, settleContractSlide, settleQa, settleRevise, type QaTaskResult } from './contract-flow.js';
 import { ExperimentError, MAX_TASK_ATTEMPTS, PARALLEL_SLIDES, qaMaxAttempts, retryBackoffMs, slideTaskRequestCap, type Experiment, type SlideQaRecord, type StepStatus, type Task, type Input, type ReportData, type Proposal } from './schema.js';
 export interface EngineDeps {
   load: typeof store.load; save: typeof store.save;
@@ -98,6 +98,7 @@ export function settle(e:Experiment,t:Task,result:unknown) {
  *  candidate. Returns true when the row was changed. */
 export function reapNoActionable(e:Experiment):boolean {
   const settled=isActive(e)&&isContractPipeline(e)&&settleStrandedContract(e);
+  if(settled)settleContractCompletion(e);
   if(!isActive(e)||e.tasks.some(t=>t.status==='pending'||t.status==='running'))return settled;
   const dead=e.tasks.filter(t=>t.status==='failed'||t.status==='unknown');
   if(!dead.length)return false;
@@ -188,6 +189,12 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
       // or every non-SafeFailure reads as the generic preparation_failed.
       if(!(err instanceof SafeFailure))console.error(`[experiments] prepare ${t.kind}${t.index!==undefined?`#${t.index}`:''} for ${e.id} failed`,err);
       const input=e.inputs.find(i=>i.videoId===t.target);if(input){input.status='failed';input.error=t.error;}
+      if(isContractPipeline(e)&&(t.kind==='slide'||t.kind==='qa')){
+        // One arm's dead job does not stop the other (SLA-820); the run fails once every arm has settled.
+        const slide=t.kind==='slide'?e.variants.find(v=>v.id===t.target)?.slides[t.index!]:undefined;if(slide){slide.status='failed';slide.error=t.error;}
+        e.error=t.error;settleStrandedContract(e);settleContractCompletion(e);
+        await deps.save(e);return isActive(e);
+      }
       if(t.kind!=='analysis'||!e.allowPartial){e.status='failed';e.error=t.error;}
       await deps.save(e);return e.status==='planning';
     }
@@ -310,7 +317,9 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
           receipt.status=outcome;
           if(t.kind==='analysis'&&input){input.status='failed';input.error=receipt.error;}
           if(v){v.status=outcome==='unknown'?'paused':'failed';v.error=receipt.error;if(t.index!==undefined){v.slides[t.index]!.status=outcome;v.slides[t.index]!.error=receipt.error;v.slides[t.index]!.diagnostic=receipt.diagnostic??null;}}
-          if(isActive(latest)&&!(known&&t.kind==='analysis'&&latest.allowPartial)) {latest.status=outcome==='unknown'?'paused':'failed';latest.error=receipt.error;}
+          // A contract arm that failed settles on its own; the other arm keeps rendering and the run fails once every arm has (SLA-820).
+          if(outcome==='failed'&&isContractPipeline(latest)&&(t.kind==='slide'||t.kind==='qa'))settleContractCompletion(latest);
+          else if(isActive(latest)&&!(known&&t.kind==='analysis'&&latest.allowPartial)) {latest.status=outcome==='unknown'?'paused':'failed';latest.error=receipt.error;}
         }
       }else settle(latest,receipt,result);
       // The batch is all-or-nothing, so a transient failure leaves nothing half-settled and is safe to retry.
