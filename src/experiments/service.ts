@@ -354,7 +354,7 @@ export function applyRetry(e:S.Experiment,retryTasks:readonly S.Task[]):void{
   // a merely paused (pending) task keeps what it has left.
   for(const t of retryTasks){
     if(t.kind==='slide'&&t.status!=='pending')t.requestCap=(t.requests??0)+S.slideTaskRequestCap();
-    t.status='pending';t.error=undefined;t.nextAttemptAt=undefined;
+    t.status='pending';t.error=undefined;t.diagnostic=undefined;t.nextAttemptAt=undefined;
   }
   for(const v of e.variants){
     const vt=retryTasks.filter(t=>t.target===v.id);
@@ -363,7 +363,7 @@ export function applyRetry(e:S.Experiment,retryTasks:readonly S.Task[]):void{
     for(const t of vt) if(t.index!==undefined){
       const slide=v.slides[t.index];if(!slide) continue;
       slide.status='pending';
-      slide.error=null;
+      slide.error=null;slide.diagnostic=null;
       if(slide.qa){
         const {prompt:_prompt,...record}=slide.qa;
         slide.qaHistory=[...(slide.qaHistory??[]),record].slice(-S.QA_HISTORY_LIMIT);

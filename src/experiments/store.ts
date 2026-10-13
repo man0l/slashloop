@@ -230,7 +230,7 @@ export function maxProviderRequests(e: Experiment): number {
 export function serialize(e: Experiment) {
   const { tasks, commands, createFingerprint, version, allowPartial, ...publicData } = e;
   // Compact per-job projection so the UI can offer manual retry on a single failed job.
-  const jobs = tasks.map(({ id, kind, target, index, status, error, attempts, nextAttemptAt, startedAt }) => ({ id, kind, target, index, status, error, attempts, nextAttemptAt, startedAt }));
+  const jobs = tasks.map(({ id, kind, target, index, status, error, attempts, nextAttemptAt, startedAt, diagnostic }) => ({ id, kind, target, index, status, error, attempts, nextAttemptAt, startedAt, ...(diagnostic ? { diagnostic } : {}) }));
   return { ...publicData, jobs, inputs: e.inputs.map(({ evidence, ...input }) => input), variants: e.variants.map(({ history, frozenBrief, ...v }) => v),
     providerBudget: { maxRequests: maxProviderRequests(e), requestsStarted: tasks.reduce((n,t) => n+(t.requests ?? t.attempts),0), exactUsdCap: false } };
 }

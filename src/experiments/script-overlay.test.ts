@@ -1,6 +1,6 @@
 // SLA-787: overlayMode "script" renders the slide text-free and draws the copy in code.
 import { describe, expect, test } from 'bun:test';
-import { prepare, SafeFailure, TerminalFailure, CONTENT_FILTER_PATTERN } from './providers.js';
+import { prepare, SafeFailure, TerminalFailure, ContentFilterFailure, CONTENT_FILTER_PATTERN } from './providers.js';
 import { slideFanout } from './schema.js';
 import type { Experiment, SlideVerification, Task } from './schema.js';
 import type { SlideContract } from './render-prompt.js';
@@ -151,6 +151,18 @@ describe('content-filter classification', () => {
     const err = await run(fixture('script'), render).catch(e => e);
     expect((err as Error).message).toStartWith('provider_content_filtered');
     expect((err as Error).message).not.toContain('Re-create');
+  });
+
+  test('both modes keep the provider status, message and request count verbatim', async () => {
+    const message = `The response was filtered due to the prompt triggering our content management policy. ${'detail '.repeat(60).trim()}`;
+    const raw = `OpenRouter image error 400: ${JSON.stringify({ error: { message } })}`;
+    for (const mode of [undefined, 'script'] as const) {
+      const render = deps({ generateImage: async () => { throw new Error(raw); } });
+      const err = await run(fixture(mode), render).catch(e => e);
+      expect(err).toBeInstanceOf(ContentFilterFailure);
+      expect((err as ContentFilterFailure).diagnostic).toEqual({ kind: 'content_filter', status: 400, message, raw, truncated: false, invocations: slideFanout(), plainPromptRetry: false, overlayMode: mode ?? 'model' });
+      expect((err as Error).message).not.toContain('detail detail');
+    }
   });
 
   test('an unrecognised provider refusal keeps its own wording instead of a 60-char stub', async () => {

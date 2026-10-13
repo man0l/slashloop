@@ -609,8 +609,27 @@ export interface SlideQaRecord {
 }
 /** SLA-700: one vision call per arm, compiled from the resolved contract. Hard failures are never softened. */
 export interface DeckQaRecord { verdict: 'passed' | 'failed' | 'repairing' | 'unverified'; attempts: number; failures: Record<string, string[]>; warnings: string[]; repaired: number[]; judgedSlides: number[]; prompt?: string }
+/** What the image provider said when it refused a slide, kept whole so a refusal can be read back exactly (SLA-816). */
+export interface ContentFilterDiagnostic {
+  kind: 'content_filter';
+  /** HTTP status the provider answered with, when its error text carried one. */
+  status: number | null;
+  /** The provider's own message: the JSON error.message when the body parses, else the full error text. */
+  message: string;
+  /** The error text exactly as thrown by the provider client (bounded by DIAGNOSTIC_TEXT_MAX). */
+  raw: string;
+  /** True when message or raw was cut at DIAGNOSTIC_TEXT_MAX. */
+  truncated: boolean;
+  /** Provider image requests made before giving up on this slide, the plain-prompt retry included. */
+  invocations: number;
+  /** True when the final request was the second, plain-prompt attempt after a first refusal. */
+  plainPromptRetry: boolean;
+  overlayMode: 'model' | 'script';
+}
 export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'slide' | 'qa'; target?: string; index?: number;
   status: StepStatus; attempts: number; charged: number; chargeRef?: string; startedAt?: number; error?: string; path?: string; nextAttemptAt?: number;
+  /** Structured provider refusal behind `error`; `error` itself stays a short stable code. Cleared when the job is retried or succeeds. */
+  diagnostic?: ContentFilterDiagnostic;
   /** Provider requests started, internal QA correction waves included. Absent on tasks that predate it (then `attempts`). */
   requests?: number;
   /** SLA-700: the arm QA's failure text this slide task re-renders against (a render-extra). */
@@ -638,6 +657,8 @@ export interface Variant extends Proposal { id: string; revision: number; status
     /** QA audit for THIS attempt. Present on success AND on failure/unverified,
      *  cleared when a retry requeues the slide (see qaHistory). */
     qa?: SlideQaRecord | null;
+    /** SLA-816: the provider's refusal behind a content-filter failure on THIS attempt; cleared on retry. */
+    diagnostic?: ContentFilterDiagnostic | null;
     /** SLA-787: how the overlay text was drawn when `instructions.overlayMode` is "script". */
     overlay?: { mode: 'script'; text?: string; font?: string; fontSize?: number; lines?: string[]; skipped?: string[] } | null;
     /** QA audits of earlier attempts, oldest first (SLA-511). Explicit history,

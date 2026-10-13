@@ -6,6 +6,9 @@ import { step, type EngineDeps } from './engine.js';
 import { prepare, type RenderDeps } from './providers.js';
 import { applyFeedback, generationTasks, reapContractQa } from './contract-flow.js';
 import { droppedSourceCta, listSourceFrames } from './contract-pipeline.js';
+import { applyRetry } from './service.js';
+import { experimentProgress } from '../tools/experiments.js';
+import { serialize } from './store.js';
 import type { Experiment } from './schema.js';
 
 const originalEnv = { ...process.env };
@@ -29,7 +32,7 @@ const qaPass = (n = 3) => ({
 });
 const qaFailSlide = (bad: number, n = 3) => { const q = qaPass(n); q.slides[bad]!.overlayExact = false; return q; };
 
-interface Script { contract: unknown; contracts?: unknown[]; qa: Array<(armSlides: number) => unknown>; rejectImage?: (prompt: string) => boolean; composeFails?: boolean }
+interface Script { contract: unknown; contracts?: unknown[]; qa: Array<(armSlides: number) => unknown>; rejectImage?: (prompt: string) => boolean; refusal?: string; composeFails?: boolean }
 const FILTER_400 = 'OpenRouter image error 400: {"error":{"message":"The response was filtered due to the prompt triggering our content management policy"}}';
 
 function world(script: Script, overrides: Partial<Experiment['instructions']> = {}) {
@@ -37,7 +40,7 @@ function world(script: Script, overrides: Partial<Experiment['instructions']> = 
   const files = new Map<string, Buffer>();
   const render: RenderDeps = {
     findSources: async () => [video('src')],
-    generateImage: async o => { calls.images.push({ prompt: o.prompt, referenceUrl: o.referenceUrl }); if (script.rejectImage?.(o.prompt)) throw new Error(FILTER_400); return { buffer: Buffer.from(`img${calls.images.length}`), contentType: 'image/jpeg', costUsd: 0.01 }; },
+    generateImage: async o => { calls.images.push({ prompt: o.prompt, referenceUrl: o.referenceUrl }); if (script.rejectImage?.(o.prompt)) throw new Error(script.refusal ?? FILTER_400); return { buffer: Buffer.from(`img${calls.images.length}`), contentType: 'image/jpeg', costUsd: 0.01 }; },
     upload: async ({ path, body }) => { files.set(path, body); },
     composeOverlay: async o => { if (script.composeFails) throw new Error('sharp missing'); calls.composed.push({ text: o.text, index: o.slideIndex }); return { buffer: Buffer.concat([o.buffer, Buffer.from(`+${o.text}`)]), contentType: 'image/jpeg', font: 'Inter Bold', fontSize: 10, lines: [o.text], skipped: [] }; },
     readReference: async ({ path }) => files.get(path) ?? Buffer.from(`src:${path}`),
@@ -335,6 +338,129 @@ describe('invented identity', () => {
     expect(task.attempts).toBe(1);
     expect(task.charged).toBe(0);
     expect(w.row.variants[0]!.status).not.toBe('done');
+  });
+});
+
+describe('content-filter refusals keep the provider\'s own words (SLA-816)', () => {
+  // Synthetic, actual-shaped body: the production wording is unavailable, so only the envelope is real. Longer than every old cut (60/120/200).
+  const detail = Array.from({ length: 24 }, (_, i) => `synthetic-detail-${i}`).join(' ');
+  const providerMessage = `The response was filtered due to the prompt triggering our content management policy. ${detail}`;
+  const RAW = `OpenRouter image error 400: ${JSON.stringify({ error: { message: providerMessage, code: 400 } })}`;
+  const invented = () => rawContract({
+    identity: 'invented-consistent', identitySheet: 'a woman with a red braid, 30s, cartoon style', keepSourceImage: false, borrowSourceLook: true, medium: 'cartoon',
+    sourceFrameLevels: [0, 1, 2].map(index => ({ index, level: 'none', showsPerson: true })),
+    slides: [slide({ overlayText: 'Hook A' }), slide({ overlayText: 'two', visibleChange: 'braid now reaches the waist' }), slide({ overlayText: 'three', visibleChange: 'braid now reaches the knee' })],
+  });
+  const refusedWorld = (overrides: Partial<Experiment['instructions']> = {}, refusal = RAW) =>
+    world({ contract: invented(), qa: [() => qaPass()], rejectImage: p => p.includes('Create one new'), refusal }, overrides);
+
+  test('model mode: status, full message, raw text and the plain-prompt retry survive on the job and the slide; terminal and refunded', async () => {
+    const w = refusedWorld();
+    await w.plan();
+    await w.generate([w.row.variants[0]!.id]).catch(() => undefined);
+    const task = w.row.tasks.find(t => t.kind === 'slide' && t.status === 'failed')!;
+    const slideDiag = w.row.variants[0]!.slides[task.index!]!.diagnostic;
+    const expected = { kind: 'content_filter', status: 400, message: providerMessage, raw: RAW, truncated: false, invocations: 2, plainPromptRetry: true, overlayMode: 'model' };
+    expect(providerMessage.length).toBeGreaterThan(200);
+    expect(task.diagnostic).toEqual(expected as never);
+    expect(slideDiag).toEqual(expected as never);
+    expect(task.error).toStartWith('provider_result_rejected:provider_content_filtered');
+    expect(task.error).toContain('overlayMode "script"');
+    expect(task.error).not.toContain('synthetic-detail');
+    expect(w.calls.images.filter(c => c.prompt.includes('Create one new'))).toHaveLength(2);
+    expect(task.attempts).toBe(1);
+    expect(task.charged).toBe(0);
+    expect(w.row.variants[0]!.slides[task.index!]!.status).toBe('failed');
+    expect(serialize(w.row).jobs.find(j => j.id === task.id)!.diagnostic).toEqual(expected as never);
+    expect(w.row.status).toBe('failed');
+  });
+
+  test('script mode: the advice does not point back at script and does not blame a word', async () => {
+    const w = refusedWorld({ overlayMode: 'script' });
+    await w.plan();
+    await w.generate([w.row.variants[0]!.id]).catch(() => undefined);
+    const task = w.row.tasks.find(t => t.kind === 'slide' && t.status === 'failed')!;
+    expect(task.error).toStartWith('provider_result_rejected:provider_content_filtered');
+    expect(task.error).not.toMatch(/Re-create|overlayMode "script" to draw/);
+    expect(task.error).toMatch(/scene|reference/);
+    expect(task.error).toContain('not a particular word');
+    expect(task.diagnostic).toMatchObject({ status: 400, message: providerMessage, raw: RAW, overlayMode: 'script', invocations: 2, plainPromptRetry: true });
+    expect(task.charged).toBe(0);
+    expect(task.attempts).toBe(1);
+    expect(w.calls.composed).toHaveLength(0);
+  });
+
+  test('a body that is not JSON is kept whole, and an over-long one is cut at the documented bound and says so', async () => {
+    const plain = 'OpenRouter image error 422: content policy violation ' + 'x'.repeat(2500);
+    const w = refusedWorld({}, plain);
+    await w.plan();
+    await w.generate([w.row.variants[0]!.id]).catch(() => undefined);
+    const diag = w.row.tasks.find(t => t.kind === 'slide' && t.status === 'failed')!.diagnostic!;
+    expect(diag.status).toBe(422);
+    expect(diag.truncated).toBe(true);
+    expect(diag.raw).toBe(plain.slice(0, 2000));
+    expect(diag.message).toBe(plain.slice(0, 2000));
+  });
+
+  test('the job list marks the refusal, carries the diagnostic, and never suggests resending it', async () => {
+    const w = refusedWorld();
+    await w.plan();
+    await w.generate([w.row.variants[0]!.id]).catch(() => undefined);
+    const job = experimentProgress(w.row).retryableJobs.find(j => j.status === 'failed')!;
+    expect(job).toMatchObject({ contentFiltered: true, terminalQa: false, diagnostic: { status: 400, message: providerMessage } });
+    expect(job.advice).toContain('Change the brief or the reference first');
+  });
+
+  test('a manual retry requeues the job and clears the previous refusal until the new attempt answers', async () => {
+    const w = refusedWorld();
+    await w.plan();
+    await w.generate([w.row.variants[0]!.id]).catch(() => undefined);
+    w.update(e => { applyRetry(e, e.tasks.filter(t => t.status === 'failed')); });
+    const task = w.row.tasks.find(t => t.kind === 'slide' && t.status === 'pending' && t.attempts === 1)!;
+    expect(task.diagnostic).toBeUndefined();
+    expect(w.row.variants[0]!.slides[task.index!]!.diagnostic).toBeNull();
+  });
+
+  test('ordinary provider failures are not content-filter failures: no diagnostic, no plain-prompt retry', async () => {
+    const w = refusedWorld({}, 'OpenRouter image error 500: upstream exploded');
+    await w.plan();
+    await w.generate([w.row.variants[0]!.id]).catch(() => undefined);
+    expect(w.row.tasks.every(t => !t.diagnostic)).toBe(true);
+    expect(w.row.variants[0]!.slides.every(s => !s.diagnostic)).toBe(true);
+    expect(w.row.tasks.some(t => /provider_content_filtered/.test(t.error ?? ''))).toBe(false);
+    expect(w.calls.images.filter(c => c.prompt.includes('Create one new'))).toHaveLength(w.row.tasks.filter(t => t.kind === 'slide' && t.attempts > 0).length);
+  });
+});
+
+describe('SLA-816: continuing the independent hook after a refused baseline slide', () => {
+  test('retrying only the queued hook job finishes it without replaying the refused slide', async () => {
+    const contract = rawContract({
+      identity: 'invented-consistent', identitySheet: 'a woman, cartoon', keepSourceImage: false, borrowSourceLook: true, medium: 'cartoon',
+      sourceFrameLevels: [0, 1, 2].map(index => ({ index, level: 'none', showsPerson: true })),
+    });
+    let image = 0; let refused = 0;
+    // Image calls 2 and 3 are the baseline's slide 1 and its single plain-prompt retry.
+    const w = world({ contract, qa: [() => qaPass(), () => qaPass()], rejectImage: () => { image++; if (image === 2 || image === 3) { refused++; return true; } return false; } }, { overlayMode: 'script' });
+    await w.plan();
+    await w.generate();
+    const [base, alt] = w.row.variants;
+    const refusedTask = w.row.tasks.find(t => t.kind === 'slide' && t.target === base!.id && t.index === 1)!;
+    expect(w.row.status).toBe('failed');
+    expect(refusedTask).toMatchObject({ status: 'failed', attempts: 1, diagnostic: { invocations: 2, plainPromptRetry: true, overlayMode: 'script' } });
+    expect(base!.slides[0]!.status).toBe('done');
+    const hook = w.row.tasks.find(t => t.kind === 'slide' && t.target === alt!.id && t.index === 0)!;
+    expect(hook.status).toBe('pending');
+
+    // The supported path: retry_experiment { taskIds: [hook] } accepts a pending job and reopens the run (service.ts action 'retry').
+    w.update(e => { applyRetry(e, e.tasks.filter(t => t.id === hook.id)); e.status = 'generating'; e.error = null; });
+    await w.drain();
+
+    const after = w.row.tasks.find(t => t.id === refusedTask.id)!;
+    expect(after).toMatchObject({ status: 'failed', attempts: 1, diagnostic: refusedTask.diagnostic });
+    expect(refused).toBe(2);
+    expect(w.row.tasks.find(t => t.id === hook.id)!.status).toBe('done');
+    expect(w.row.variants[1]!.slides[0]).toMatchObject({ status: 'done', overlay: { mode: 'script' } });
+    expect(w.calls.composed).toContainEqual({ text: 'Hook B', index: 0 });
   });
 });
 
