@@ -57,6 +57,18 @@ describe('the contract reads the source change from the frames', () => {
     expect(sourceless.sourceArc).toEqual(none as never);
   });
 
+  test('every form variable is respected: a non-story variable keeps the change in both arms, angle/slide structure may retell without it', () => {
+    for (const variable of ['hook', 'character', 'visualStyle', 'caption', 'cta']) {
+      const guide = JSON.parse(contractPromptPayload(input({ variable }))).fieldGuide as Record<string, string>;
+      expect(guide.sourceArc).toContain(`arm A and arm B both show it, and only "${variable}" differs`);
+    }
+    for (const variable of ['concept', 'slides']) {
+      const guide = JSON.parse(contractPromptPayload(input({ variable }))).fieldGuide as Record<string, string>;
+      expect(guide.sourceArc).not.toContain('arm A and arm B both show it');
+      expect(guide.sourceArc).toContain('only if its own story keeps that progression');
+    }
+  });
+
   test('a source change the direction does not follow is reported, not silently lost', () => {
     const c = normalizeContract(raw({ arcAxis: '', slides: [slide({ overlayText: 'a' }), slide(), slide()] }), input());
     expect(c.issues.join(' ')).toContain('The source frames show "tier from top to bottom"');
