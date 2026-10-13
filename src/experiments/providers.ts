@@ -1137,12 +1137,12 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
   // render path. Legacy actions are already refused in mutate(); this catches a
   // task that somehow exists on a row whose contract was not prepared.
   if (e.operation?.kind === EXACT_EDIT_OPERATION) {
-    if (t.kind === 'briefs' || t.kind === 'report') throw new SafeFailure('exact_edit_no_planning');
+    if (t.kind === 'briefs' || t.kind === 'report' || t.kind === 'revise') throw new SafeFailure('exact_edit_no_planning');
     if (t.kind !== 'slide') throw new SafeFailure('exact_edit_unexpected_task');
     const plan = prepareExactEditSlide(e, t.index ?? 0);
     return { free: true, units: 0, execute: async () => plan };
   }
-  if(e.pipeline==='contract'&&(t.kind==='briefs'||t.kind==='slide'||t.kind==='qa'))return prepareContractTask(e,t,render);
+  if(e.pipeline==='contract'&&(t.kind==='briefs'||t.kind==='slide'||t.kind==='qa'||t.kind==='revise'))return prepareContractTask(e,t,render);
   if(t.kind==='analysis'){
     const video=await db.video.findFirst({where:{id:t.target,source:{workspaceId:e.workspaceId}}});
     if(!video)throw new SafeFailure('source_not_found');

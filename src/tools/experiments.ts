@@ -188,6 +188,10 @@ const ERROR_HINTS: Record<string, string> = {
   feedback_unsupported: 'This experiment predates the slide-contract pipeline, so it cannot be regenerated from feedback. Create a new experiment from the same slideshow.',
   variant_not_generated: 'Feedback applies to rendered slides. Generate the variant first (generate_experiment).',
   variant_not_found: 'No variant with that id in this experiment. get_experiment lists experiment.variants[].id.',
+  revise_unsupported: 'This experiment predates the slide-contract pipeline, so its brief cannot be revised. Create a new experiment from the same slideshow.',
+  not_revisable: 'Only a failed experiment can have its brief revised. get_experiment shows the status; retry_experiment handles paused ones.',
+  no_qa_failure: 'No variant failed QA, so there is nothing to revise the brief with. Use retry_experiment for the failed jobs.',
+  revise_limit: 'The brief was already revised the maximum number of times and still failed QA. Create a new experiment with a changed direction.',
   invalid_slide: 'Slide indexes are 0-based and must exist on the variant (slide 1 = index 0).',
 };
 
@@ -229,7 +233,7 @@ const STATUS_HINTS: Record<string, string> = {
   review: 'Variant briefs are ready. Review them (optionally edit with update_experiment_variant), then estimate_experiment(stage="generate", variantIds) and generate_experiment for the chosen variants.',
   generating: 'Rendering slide images in the background. Check back with get_experiment in a few minutes — do not poll rapidly.',
   completed: 'All selected variants are rendered. Image URLs are in progress.variants[].imageUrls.',
-  failed: 'A step failed. See error / progress.retryableJobs, then estimate and retry_experiment. Jobs marked terminalQa are verdicts on the slide contract: do not retry them until the brief or contract changes.',
+  failed: 'A step failed. See error / progress.retryableJobs, then estimate and retry_experiment. Jobs marked terminalQa are verdicts on the slide contract: do not retry them, call revise_experiment instead (estimate_experiment stage="revise" first): the model rewrites the brief from the QA failures and re-renders.',
   paused: 'Paused (budget guard or provider outcome unknown). See error; retry_experiment resumes named jobs.',
   cancelled: 'Cancelled — terminal. delete_experiment removes it and its images.',
 };
@@ -347,6 +351,10 @@ function lifecycleSteps(e: Experiment): NextStep[] {
     case 'paused': {
       const all = experimentProgress(e).retryableJobs;
       const jobs = all.filter(j => !j.terminalQa && !j.contentFiltered).map(j => j.id);
+      const revisable = e.status === 'failed' && e.pipeline === 'contract' && e.variants.some(v => v.qaDeck?.verdict === 'failed');
+      if (revisable && !jobs.length) {
+        return [{ label: 'Price a revision: the model rewrites the brief from the QA failures, then every arm is re-rendered', tool: 'estimate_experiment', args: { experimentId: id, stage: 'revise' }, why: 'Free. ' + TERMINAL_QA_ADVICE }];
+      }
       if (all.length && !jobs.length) {
         const filteredOnly = all.every(j => j.contentFiltered);
         return [{ label: filteredOnly ? 'Do not resend: every failed slide was refused by the provider content filter' : 'Do not retry: every failed slide is a terminal verdict', tool: 'get_experiment', args: { experimentId: id }, why: filteredOnly ? CONTENT_FILTER_ADVICE : TERMINAL_QA_ADVICE }];
@@ -371,7 +379,7 @@ function lifecycleSteps(e: Experiment): NextStep[] {
  */
 type Gate = { refusal: ToolResult | null; estimate: Awaited<ReturnType<ExperimentToolDeps['estimate']>> };
 async function approvalGate(
-  d: ExperimentToolDeps, e: Experiment, stage: 'plan' | 'generate', approvedCredits: number, variantIds?: string[], taskIds?: string[],
+  d: ExperimentToolDeps, e: Experiment, stage: 'plan' | 'generate' | 'revise', approvedCredits: number, variantIds?: string[], taskIds?: string[],
 ): Promise<Gate> {
   const estimate = await d.estimate(e, stage, variantIds, taskIds);
   if (estimate.totalCredits <= approvedCredits) return { refusal: null, estimate };
@@ -684,14 +692,15 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
   server.tool('estimate_experiment',
     'Price the next step of an experiment before spending. Free. stage="plan" prices source analysis + planning (draft '
     + 'experiments); stage="generate" prices slide rendering for variantIds (default: all variants). Pass taskIds (from '
-    + 'get_experiment progress.retryableJobs) to price retrying exactly those jobs. Returns totalCredits, the workspace '
+    + 'get_experiment progress.retryableJobs) to price retrying exactly those jobs. stage="revise" prices revise_experiment (the model rewrites '
+    + 'the brief from the QA failures, then every arm is re-rendered). Returns totalCredits, the workspace '
     + 'wallet (workspaceCredits) and the experiment cap. If totalCredits is within a standing credit cap the user granted, it is '
     + 'already approved: pass the cap (or totalCredits) as approvedCredits to plan_experiment / generate_experiment / retry_experiment. '
     + 'Otherwise show totalCredits to the user and get a yes first (one request covering all experiments and both stages).',
     {
       workspaceId: workspaceIdField,
       experimentId: experimentIdField,
-      stage: z.enum(['plan', 'generate']),
+      stage: z.enum(['plan', 'generate', 'revise']),
       variantIds: z.array(Id).min(1).max(12).optional().describe('generate stage only: the variants to render.'),
       taskIds: z.array(z.string().min(1)).min(1).max(150).optional().describe('Job ids to price a retry of.'),
     },
@@ -835,6 +844,40 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         ...(taskIds ? { taskIds } : {}), ...(variantIds ? { variantIds } : {}),
       });
       return mutationResult(d, next, 'Retry queued in the background.', gate.estimate);
+    }));
+
+  // ---- revise_experiment ----
+  server.tool('revise_experiment',
+    'Retry an experiment that FAILED QA by letting the model rewrite the brief. Use it when the experiment is failed and its '
+    + 'slides were judged terminal QA failures (retry_experiment cannot fix those: it would only re-judge the same images). '
+    + 'The QA failures of every arm are fed back to the contract model, which writes a corrected contract and briefs (the one '
+    + 'tested variable stays the only difference between the arms); then all arms are re-rendered and QA-checked. '
+    + 'SPENDS CREDITS: one planning call, a full re-render and QA of every arm. Call with estimateOnly:true first (free); '
+    + 'approvedCredits is the amount the user approved (or the remaining standing cap). At most a few revisions per experiment. '
+    + 'Track progress with get_experiment.',
+    {
+      workspaceId: workspaceIdField,
+      experimentId: experimentIdField,
+      estimateOnly: z.boolean().default(false).describe('Free: return the price, start nothing.'),
+      approvedCredits: approvedCreditsField.optional().describe('Required unless estimateOnly. The credits the user approved for this revision.'),
+      idempotencyKey: idempotencyKeyField,
+    },
+    { readOnlyHint: false },
+    ({ workspaceId, experimentId, estimateOnly, approvedCredits, idempotencyKey }) => guarded(async () => {
+      const workspace = await d.resolveWorkspace({ workspaceId });
+      const e = await d.load(workspace.id, experimentId);
+      if (estimateOnly) {
+        const est = await d.estimate(e, 'revise');
+        return text({ estimate: est, affordable: est.totalCredits <= est.workspaceCredits,
+          note: 'Nothing was started. Within a standing credit cap this is already approved; otherwise get the user\'s OK on totalCredits, then call again with approvedCredits.' });
+      }
+      if (approvedCredits === undefined) return text({ error: 'invalid_request', message: 'Pass approvedCredits (or estimateOnly:true to price it first).' }, true);
+      const gate = await approvalGate(d, e, 'revise', approvedCredits);
+      if (gate.refusal) return gate.refusal;
+      // Revisions already applied are part of the key: a lost response replays, a genuine second revision does not.
+      const key = idempotencyKey ?? derivedKey('revise', { experimentId, round: e.revisions?.length ?? 0 });
+      const next = await d.mutate(workspace.id, experimentId, 'revise', { workspaceId: workspace.id, idempotencyKey: key });
+      return mutationResult(d, next, 'Rewriting the brief from the QA failures, then re-rendering every arm. Check back with get_experiment in a few minutes.', gate.estimate);
     }));
 
   // ---- submit_experiment_feedback ----

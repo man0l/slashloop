@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { Video } from '@prisma/client';
 import { step, type EngineDeps } from './engine.js';
 import { prepare, type RenderDeps } from './providers.js';
-import { applyFeedback, generationTasks, reapContractQa } from './contract-flow.js';
+import { applyFeedback, applyRevise, generationTasks, reapContractQa, reviseTargets } from './contract-flow.js';
 import { droppedSourceCta, listSourceFrames } from './contract-pipeline.js';
 import { applyRetry } from './service.js';
 import { experimentProgress } from '../tools/experiments.js';
@@ -87,6 +87,7 @@ function world(script: Script, overrides: Partial<Experiment['instructions']> = 
       });
       await api.drain();
     },
+    async revise() { api.update(e => { applyRevise(e, new Date(0)); }); await api.drain(); },
     async feedback(req: Parameters<typeof applyFeedback>[1]) { api.update(e => { applyFeedback(e, req, new Date(0)); }); await api.drain(); },
     get providerCalls() { return current.providerCalls ?? {}; },
     get totalCalls() { return Object.values(current.providerCalls ?? {}).reduce((n, x) => n + x, 0); },
@@ -678,5 +679,67 @@ describe('SLA-787: overlayMode "script" on the contract pipeline', () => {
     await w.generate();
     expect(w.calls.composed).toHaveLength(0);
     expect(w.calls.images[0]!.prompt).toContain('Hook A');
+  });
+});
+
+describe('SLA-811: a QA-failed experiment is retried with a model-revised brief', () => {
+  const FAIL = () => qaFailSlide(1);
+  const revisedContract = () => rawContract({
+    slides: [slide({ overlayText: 'Hook A' }), slide({ overlayText: 'two', scene: 'a clearer scene' }), slide({ overlayText: 'three' })],
+  });
+  async function failed(qa: Script['qa'] = [FAIL, FAIL, () => qaPass(), () => qaPass(), () => qaPass()]) {
+    const w = world({ contract: rawContract(), contracts: [rawContract(), revisedContract()], qa });
+    await w.plan();
+    await w.generate();
+    expect(w.row.status).toBe('failed');
+    return w;
+  }
+
+  test('the contract model is called again with the failures and the rejected briefs, and the arms are re-rendered and re-checked', async () => {
+    const w = await failed();
+    const before = w.calls.images.length;
+    await w.revise();
+    expect(w.calls.contract).toBe(2);
+    const sent = JSON.parse(w.calls.contractUsers[1]!);
+    expect(sent.revision.why).toMatch(/FAILED the quality check/);
+    expect(sent.revision.arms[0].failures).toBeDefined();
+    expect(JSON.stringify(sent.revision.arms[0].failures)).toMatch(/slide 2|1/);
+    expect(sent.revision.arms[0].slides).toHaveLength(3);
+    expect(w.calls.contractUsers[0]).not.toContain('FAILED the quality check');
+    expect(w.calls.images.length).toBeGreaterThan(before);
+    expect(w.row.status).toBe('completed');
+    expect(w.row.variants.map(v => v.qaDeck?.verdict)).toEqual(['passed', 'passed']);
+    expect(w.row.variants[0]!.brief.slides[1]!.scene).toBe('a clearer scene');
+    expect(w.row.revisions).toHaveLength(1);
+    expect(w.row.tasks.filter(t => t.kind === 'revise')).toHaveLength(1);
+  });
+
+  test('still failing after the revision leaves the experiment failed and revisable until the limit', async () => {
+    const w = await failed([FAIL, FAIL, FAIL, FAIL, FAIL, FAIL, FAIL, FAIL, FAIL, FAIL]);
+    await w.revise();
+    expect(w.row.status).toBe('failed');
+    await w.revise();
+    expect(w.row.status).toBe('failed');
+    expect(w.row.revisions).toHaveLength(2);
+    expect(() => reviseTargets(w.row)).toThrow(/revised 2 times/);
+  });
+
+  test('refuses what cannot be revised', () => {
+    const code = (fn: () => unknown) => { try { fn(); } catch (err) { return (err as { code?: string }).code; } return null; };
+    const base = { pipeline: 'contract', status: 'failed', tasks: [], variants: [{ id: 'a', qaDeck: { verdict: 'failed', failures: {} } }], revisions: [] } as unknown as Experiment;
+    expect(code(() => reviseTargets({ ...base, pipeline: null } as Experiment))).toBe('revise_unsupported');
+    expect(code(() => reviseTargets({ ...base, status: 'completed' } as Experiment))).toBe('not_revisable');
+    expect(code(() => reviseTargets({ ...base, status: 'generating' } as Experiment))).toBe('experiment_active');
+    expect(code(() => reviseTargets({ ...base, tasks: [{ id: 't', kind: 'slide', status: 'pending', attempts: 0, charged: 0 }] } as unknown as Experiment))).toBeNull();
+    expect(code(() => reviseTargets({ ...base, tasks: [{ id: 't', kind: 'slide', status: 'running', attempts: 1, charged: 0 }] } as unknown as Experiment))).toBe('provider_outcome_unknown');
+    expect(code(() => reviseTargets({ ...base, variants: [{ id: 'a', qaDeck: { verdict: 'passed', failures: {} } }] } as unknown as Experiment))).toBe('no_qa_failure');
+    expect(reviseTargets(base)).toHaveLength(1);
+  });
+
+  test('the experiment does not complete while the revise task is open', async () => {
+    const w = await failed();
+    w.update(e => { applyRevise(e, new Date(0)); });
+    expect(w.row.status).toBe('generating');
+    expect(w.row.tasks.some(t => t.kind === 'revise' && t.status === 'pending')).toBe(true);
   });
 });

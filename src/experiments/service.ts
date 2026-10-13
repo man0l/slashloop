@@ -11,7 +11,7 @@ import { persistedOverlayText } from './render-prompt.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { applyApprovedEstimate } from './budget.js';
 import { compileExactEdit } from './exact-edit.js';
-import { applyFeedback, briefToArm, FALLBACK_HOOK, generationTasks, hookForOverlay, isContractPipeline } from './contract-flow.js';
+import { applyFeedback, applyRevise, briefToArm, FALLBACK_HOOK, generationTasks, hookForOverlay, isContractPipeline, reviseTargets } from './contract-flow.js';
 import { slideWork } from './resolved-contract.js';
 import { postKey } from '../lib/post-key.js';
 import { expandPreset, inferSharedFormat } from './source-format.js';
@@ -297,7 +297,18 @@ export async function estimateFeedback(e: S.Experiment, raw: unknown) {
   const { redo } = applyFeedback(structuredClone(e), req);
   return { ...(await contractPrice(e, { analyses: 0, planningCalls: 0, renders: redo.length, qas: 1, corrections: true })), redo };
 }
-export async function estimate(e: S.Experiment, stage: 'plan'|'generate', ids?: string[], taskIds?: string[]) {
+/** Price one brief revision: the rewrite call, then every arm rendered and QA-checked again (plus the repair round QA may buy). */
+export async function estimateRevise(e: S.Experiment) {
+  reviseTargets(e);
+  const arms = e.variants;
+  const renders = arms.reduce((n, v) => n + contractRenderCount(e, v, arms), 0);
+  return contractPrice(e, { analyses: 0, planningCalls: 1, renders, qas: arms.length, corrections: true });
+}
+export async function estimate(e: S.Experiment, stage: 'plan'|'generate'|'revise', ids?: string[], taskIds?: string[]) {
+  if (stage === 'revise') {
+    if (ids || taskIds) throw new S.ExperimentError(400,'revise_takes_no_scope');
+    return estimateRevise(e);
+  }
   if (stage === 'plan' && ids) throw new S.ExperimentError(400,'variantIds_only_for_generation');
   const variants = selected(e,ids);
   if (isContractPipeline(e)) return contractEstimate(e, stage, variants, taskIds);
@@ -475,7 +486,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
   if (EXACT_EDIT_ACTIONS.has(action) && !isExactEditRequest(raw))
     throw new S.ExperimentError(409,'exact_edit_not_requested','This action is only available to an explicit exact_edit request.');
   const schema = action==='exact-edit' ? S.ExactEditRequest
-    : action==='plan' ? S.Plan : action==='generate' ? S.Generate : action==='retry' ? S.Retry : action==='edit' ? S.EditBrief
+    : action==='plan' ? S.Plan : action==='generate' ? S.Generate : action==='retry' ? S.Retry : action==='revise' ? S.Revise : action==='edit' ? S.EditBrief
     : action==='feedback' ? S.Feedback : S.Command;
   const b = schema.parse(raw);
   const e = await store.load(workspaceId,id);
@@ -557,6 +568,12 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     if(retryTasks.some(t=>t.attempts>=S.MAX_MANUAL_ATTEMPTS)) throw new S.ExperimentError(409,'retry_limit');
     applyRetry(e,retryTasks);
     e.error=null;e.status=(isContractPipeline(e)||e.report)&&e.variants.length?'generating':'planning';
+  } else if(action==='revise') {
+    // A QA-failed experiment: the model rewrites the brief against the QA failures, then every arm is rendered and checked again.
+    const est=await estimateRevise(e);
+    await assertTestBudget(e, est.totalCredits);
+    applyApprovedEstimate(e,{...est,totalCredits:Math.max(est.totalCredits,Math.min(est.maxTotalCredits,est.workspaceCredits))});
+    applyRevise(e);
   } else if(action==='feedback') {
     // SLA-797: re-render the slideshow (or the named slides) against the user's notes, then QA it again.
     const {workspaceId:_w,idempotencyKey:_k,...req}=S.Feedback.parse(b);

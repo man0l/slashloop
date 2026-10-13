@@ -3,8 +3,9 @@ import {
   assertArmsDifferOnly, buildArmB, fixText, repairSlides, slideRole, pickFramesByArc, slideWork,
   type ArmBrief, type ArmField, type ContractSlide, type ResolvedContract, type SlideWork,
 } from './resolved-contract.js';
+import { persistedOverlayText } from './render-prompt.js';
 import {
-  ExperimentError, FEEDBACK_HISTORY_LIMIT, SLIDE_FEEDBACK_LIMIT,
+  ExperimentError, FEEDBACK_HISTORY_LIMIT, MAX_BRIEF_REVISIONS, SLIDE_FEEDBACK_LIMIT,
   type BriefData, type Experiment, type FeedbackRequestData, type Proposal, type Task, type Variant,
 } from './schema.js';
 
@@ -161,6 +162,7 @@ export function settleContractSlide(e: Experiment, t: Task, result: unknown): vo
 
 export function settleContractCompletion(e: Experiment): void {
   if (!['planning', 'generating'].includes(e.status)) return;
+  if (e.tasks.some(t => t.kind === 'revise' && open(t))) return;
   if (!e.tasks.filter(x => x.kind === 'slide' || x.kind === 'qa').every(x => x.status === 'done')) return;
   e.status = e.variants.some(v => v.status === 'draft') ? 'review' : 'completed';
 }
@@ -282,4 +284,56 @@ export function applyFeedback(e: Experiment, req: FeedbackRequestData, now = new
   v.status = 'generating'; v.error = null;
   e.status = 'generating'; e.error = null;
   return { variant: v, redo };
+}
+
+// ---- QA-driven brief revision --------------------------------------------------
+
+const reviseAsk = (code: string, message: string) => new ExperimentError(409, code, message);
+
+/** The arms whose final QA verdict was a hard failure, or an ExperimentError naming why a revision cannot start. */
+export function reviseTargets(e: Experiment): Variant[] {
+  if (!isContractPipeline(e)) throw reviseAsk('revise_unsupported', 'Brief revision needs an experiment on the slide-contract pipeline. Re-create the slideshow as a new experiment.');
+  if (e.status === 'planning' || e.status === 'generating') throw new ExperimentError(409, 'experiment_active');
+  if (e.status !== 'failed') throw reviseAsk('not_revisable', 'Only a failed experiment can have its brief revised.');
+  // A failed experiment is never stepped, so the other arm's untouched pending tasks are stale; only a call in flight blocks.
+  if (e.tasks.some(t => t.status === 'running' || t.status === 'unknown')) throw new ExperimentError(409, 'provider_outcome_unknown', 'A job is still in flight. Refresh and retry in a moment.');
+  const failed = e.variants.filter(v => v.qaDeck?.verdict === 'failed');
+  if (!failed.length) throw reviseAsk('no_qa_failure', 'No variant failed QA, so there is no QA feedback to revise the brief with. Retry the failed jobs instead.');
+  if ((e.revisions?.length ?? 0) >= MAX_BRIEF_REVISIONS) throw reviseAsk('revise_limit', `The brief was already revised ${MAX_BRIEF_REVISIONS} times and still failed QA. Re-create the experiment with a changed direction.`);
+  return failed;
+}
+
+/** Queue one brief rewrite for the whole experiment. The previous briefs and the QA text that rejected them are kept in `revisions`
+ *  and sent to the model; the arms are rebuilt together so they still differ only in the declared variable. */
+export function applyRevise(e: Experiment, now = new Date()): Variant[] {
+  const failed = reviseTargets(e);
+  e.revisions = [...(e.revisions ?? []), {
+    at: now.toISOString(), error: e.error,
+    arms: failed.map(v => ({ title: v.title, failures: v.qaDeck?.failures ?? {} })),
+  }];
+  e.tasks = e.tasks.filter(t => !(t.status !== 'done' && (t.kind === 'slide' || t.kind === 'qa')));
+  e.tasks.push(newTask('revise'));
+  e.status = 'generating'; e.error = null;
+  return failed;
+}
+
+/** The revision's contract and arms replace the rejected ones and go straight to rendering: the approved estimate already priced it. */
+export function settleRevise(e: Experiment, _t: Task, result: unknown): void {
+  const { proposals, contract, notices, calls } = result as { proposals: Proposal[]; contract: Experiment['contract']; notices?: string[]; calls?: Record<string, number> };
+  mergeCalls(e, calls);
+  if (contract) e.contract = contract;
+  if (notices?.length) e.notices = notices; else delete e.notices;
+  const retired = new Set(e.variants.map(v => v.id));
+  e.tasks = e.tasks.filter(t => !((t.kind === 'slide' || t.kind === 'qa') && retired.has(t.target ?? '')));
+  const baselineId = randomUUID();
+  e.variants = proposals.map((p, i) => {
+    const v: Variant = {
+      ...p, id: i === 0 ? baselineId : randomUUID(), baselineId: i === 0 ? null : baselineId, revision: 1, status: 'generating',
+      generationBasis: e.generationBasis, history: [], frozenBrief: structuredClone(p.brief), error: null,
+      slides: p.brief.slides.map((_s, index) => ({ index, status: 'pending', url: null, path: null, error: null, overlayText: persistedOverlayText(p.brief, index) })),
+    };
+    return v;
+  });
+  for (const v of e.variants) e.tasks.push(...generationTasks(v));
+  e.status = 'generating'; e.error = null;
 }

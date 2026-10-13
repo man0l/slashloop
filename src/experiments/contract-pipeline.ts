@@ -79,7 +79,22 @@ async function sourcesOf(e: Experiment, render: RenderDeps): Promise<Video[]> {
 
 // ---- briefs: one contract call replaces brief candidates + judge -------------------
 
-export async function prepareContractBriefs(e: Experiment, render: RenderDeps): Promise<Prepared> {
+/** What the model is told when it rewrites a deck's brief after QA rejected it. The failed arms' briefs are the ones that were actually rendered. */
+export function revisionContext(e: Experiment): Record<string, unknown> {
+  const latest = e.revisions?.[e.revisions.length - 1];
+  const failuresOf = (title: string) => latest?.arms.find(a => a.title === title)?.failures ?? {};
+  return {
+    revision: {
+      why: 'The slideshow built from the previous slide contract FAILED the quality check after its one repair round. Return a revised contract in which every problem listed under failures cannot recur: change the scene, composition, visibleChange and overlayText of the slides concerned so the image model can show what the check asked for, and keep everything the check did not object to. Do not weaken the direction, the locks or the story arc to dodge a check.',
+      arms: e.variants.map(v => ({
+        title: v.title, qaVerdict: v.qaDeck?.verdict ?? null, failures: failuresOf(v.title),
+        slides: (v.frozenBrief ?? v.brief).slides.map((s, i) => ({ slide: i + 1, overlayText: s.overlayText ?? '', scene: s.scene, composition: s.composition ?? '', visibleChange: s.visibleChange ?? '' })),
+      })),
+    },
+  };
+}
+
+export async function prepareContractBriefs(e: Experiment, render: RenderDeps, revise = false): Promise<Prepared> {
   const contractCall = need(render.generateContract, 'render_deps_incomplete');
   const variable = e.instructions.variables[0];
   if (!variable) throw new SafeFailure('no_variable');
@@ -99,12 +114,13 @@ export async function prepareContractBriefs(e: Experiment, render: RenderDeps): 
       let contract: ResolvedContract | undefined;
       let calls = 0;
       let repair: string | undefined;
+      const revision = revise ? revisionContext(e) : {};
       try {
         // A short or empty variantB gets one in-call repair that names the missing field; any other contract error is final.
         while (!contract) {
           calls++;
           const raw = await contractCall({
-            system: CONTRACT_SYSTEM, user: contractPromptPayload(input, repair ? { sources, repair } : { sources }),
+            system: CONTRACT_SYSTEM, user: contractPromptPayload(input, repair ? { sources, ...revision, repair } : { sources, ...revision }),
             images: bytes.map((b, i) => jpeg(b, `Source frame ${i}:`)), meter: meter.sink,
           });
           try { contract = normalizeContract(raw, input); }
@@ -326,6 +342,7 @@ export async function prepareContractQa(e: Experiment, t: Task, render: RenderDe
 
 export function prepareContractTask(e: Experiment, t: Task, render: RenderDeps): Promise<Prepared> {
   if (t.kind === 'briefs') return prepareContractBriefs(e, render);
+  if (t.kind === 'revise') return prepareContractBriefs(e, render, true);
   if (t.kind === 'qa') return prepareContractQa(e, t, render);
   if (t.kind === 'slide') return prepareContractSlide(e, t, render);
   throw new SafeFailure('unexpected_task');

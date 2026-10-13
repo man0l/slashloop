@@ -146,4 +146,16 @@ describe('experiments endpoint', () => {
     expect((await POST(req('POST', 'https://x.test/api/experiments', { ...plain, instructions: instr }))).status).toBe(400);
     expect(created).toHaveLength(0);
   });
+
+  test('SLA-811: /revise and estimate stage "revise" are routed and refuse an experiment that did not fail QA', async () => {
+    experiments.set('e1', { ...exp('e1', 'completed'), pipeline: 'contract' });
+    const revise = await POST(req('POST', 'https://x.test/api/experiments/e1/revise', { workspaceId: 'w', idempotencyKey: 'revise-key-12345' }));
+    expect(revise.status).toBe(409);
+    expect(((await revise.json()) as any).error).toBe('not_revisable');
+    const priced = await POST(req('POST', 'https://x.test/api/experiments/e1/estimate', { workspaceId: 'w', stage: 'revise' }));
+    expect(priced.status).toBe(409);
+    expect(((await priced.json()) as any).error).toBe('not_revisable');
+    const scoped = await POST(req('POST', 'https://x.test/api/experiments/e1/estimate', { workspaceId: 'w', stage: 'revise', taskIds: ['t'] }));
+    expect(scoped.status).toBe(400);
+  });
 });

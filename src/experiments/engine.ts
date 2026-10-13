@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { prepare, SafeFailure, TerminalFailure, ContentFilterFailure, HydrationPending, locksToBaselineVisual, type ExecuteContext, type Prepared } from './providers.js';
 import { experimentVisualLock } from './render-prompt.js';
 import { taskCost } from './service.js';
-import { contractEligible, isContractPipeline, mergeCalls, reapContractQa, settleContractSlide, settleQa, type QaTaskResult } from './contract-flow.js';
+import { contractEligible, isContractPipeline, mergeCalls, reapContractQa, settleContractSlide, settleQa, settleRevise, type QaTaskResult } from './contract-flow.js';
 import { ExperimentError, MAX_TASK_ATTEMPTS, PARALLEL_SLIDES, qaMaxAttempts, retryBackoffMs, slideTaskRequestCap, type Experiment, type SlideQaRecord, type StepStatus, type Task, type Input, type ReportData, type Proposal } from './schema.js';
 export interface EngineDeps {
   load: typeof store.load; save: typeof store.save;
@@ -78,6 +78,8 @@ export function settle(e:Experiment,t:Task,result:unknown) {
     e.variants=proposals.map((v,i)=>({...v,id:i===0?baselineId:randomUUID(),baselineId:i===0?null:baselineId,revision:1,status:'draft',generationBasis:e.generationBasis,history:[],frozenBrief:null,slides:[],error:null}));
     // Report (Gemini) and briefs (OpenRouter) may finish in either order.
     if(isActive(e)&&e.tasks.filter(x=>x.kind==='report').every(x=>x.status==='done'))e.status='review';
+  } else if(t.kind==='revise') {
+    settleRevise(e,t,result);
   } else if(t.kind==='qa') {
     settleQa(e,t,result as QaTaskResult);
   } else if(isContractPipeline(e)) {
