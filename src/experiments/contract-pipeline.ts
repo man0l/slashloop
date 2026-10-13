@@ -9,7 +9,7 @@ import {
 } from './resolved-contract.js';
 import { contractView, proposalsFromContract, slideFeedback, slideWorkFor } from './contract-flow.js';
 import { validateVariants, type Experiment, type Task } from './schema.js';
-import { CONTENT_FILTER_PATTERN, SafeFailure, SlideMeter, logAiCost, type ExecuteContext, type Prepared, type RenderDeps } from './providers.js';
+import { CONTENT_FILTER_PATTERN, SafeFailure, contentFilterFailure, SlideMeter, logAiCost, type ExecuteContext, type Prepared, type RenderDeps } from './providers.js';
 import { storySlideCount } from './slide-count.js';
 import { redactOverlayCopy } from './render-prompt.js';
 
@@ -146,11 +146,11 @@ export async function prepareContractBriefs(e: Experiment, render: RenderDeps, r
 // OpenRouter words it "The response was filtered due to the prompt triggering our content management policy".
 const FILTERED = /moderat|content.?(polic|filter|manag)|\bfiltered\b|safety|blocked|refus/i;
 
-function renderFailure(err: unknown): never {
+function renderFailure(err: unknown, refusal: { overlayMode: 'model' | 'script'; invocations: number; plainPromptRetry: boolean }): never {
   const message = err instanceof Error ? err.message : String(err);
   const flat = message.replace(/\s+/g, ' ');
   if (err instanceof SafeFailure) throw err;
-  if (CONTENT_FILTER_PATTERN.test(flat)) throw new SafeFailure('provider_content_filtered: the image provider refused the prompt on a content filter. Re-create with overlayMode "script" to draw the overlay text in code');
+  if (CONTENT_FILTER_PATTERN.test(flat)) throw contentFilterFailure(message, refusal);
   if (/in_flight_budget_exhausted/i.test(flat) && !/insufficient credits/i.test(flat)) throw new SafeFailure(`in_flight_budget retry_after=${/retry_after=(\d+)/i.exec(flat)?.[1] ?? 20}`);
   if (/\b402\b|insufficient credits/i.test(flat)) throw new SafeFailure('credits_exhausted_402');
   if (/\b429\b|rate.?limit/i.test(flat)) throw new SafeFailure(`rate_limited_429 retry_after=${/retry_after=(\d+)/i.exec(flat)?.[1] ?? 30}`);
@@ -271,14 +271,15 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
         catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           const comparative = work !== 'caption-edit' && role === 'anchor-edit' && !!view.slides[index]?.visibleChange;
-          if (!FILTERED.test(msg)) renderFailure(err);
+          const refusal = { overlayMode: scriptMode ? 'script' : 'model', invocations: calls, plainPromptRetry: false } as const;
+          if (!FILTERED.test(msg)) renderFailure(err, refusal);
           // A filter hit gets one plain retry: without the repair text or human feedback, and an edit of slide 1 asks
           // for the slide's own scene instead of the face comparison. A second refusal is terminal (renderFailure).
           const plain = comparative ? { ...promptView, sourceArc: undefined, slides: promptView.slides.map((s, i) => i === index ? { ...s, visibleChange: '' } : s) } : promptView;
           usedPrompt = work === 'caption-edit' && base?.frozenBrief
             ? captionEditPrompt(base.frozenBrief.slides[index]?.overlayText ?? '', view.slides[index]!.overlayText)
             : guard(compileSlidePrompt(plain, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse));
-          try { image = await once(usedPrompt); } catch (err2) { renderFailure(err2); }
+          try { image = await once(usedPrompt); } catch (err2) { renderFailure(err2, { ...refusal, invocations: calls, plainPromptRetry: true }); }
         }
         let overlay: unknown = null;
         if (scriptMode) {

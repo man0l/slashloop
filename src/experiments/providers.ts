@@ -9,7 +9,7 @@ import { callOpenRouterText, classifyOpenRouterError, extractFirstJson, generate
 import { buildVariantSlidePrompt, redactOverlayCopy, compileSlideContract, contractCheckPlan, styleOwnsComposition, contractChecks, contractQaBlock, effectiveOverlayText, experimentVisualLock, labelPolicy, lockCarouselIdentity, overlayDecision, renderContract, type ObservedCopy, type SlideContract } from './render-prompt.js';
 import { jevPick, jevAsk, type JevQuestion, type JevAnswer } from '../lib/typesafe.js';
 import { putObject, getObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
-import { ExperimentError, qaMaxAttempts, Report, VariantProposal, BriefStoryboard, BriefDelta, briefCandidateCount, EXACT_EDIT_OPERATION, VARIABLE_FIELDS, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type QaCheck, type SlideVerification, type Task } from './schema.js';
+import { ExperimentError, qaMaxAttempts, Report, VariantProposal, BriefStoryboard, BriefDelta, briefCandidateCount, EXACT_EDIT_OPERATION, VARIABLE_FIELDS, validateReport, validateVariants, type BriefData, type ContentFilterDiagnostic, type Proposal, type Input, type Experiment, type QaCheck, type SlideVerification, type Task } from './schema.js';
 import { candidateSlides, jevEvidence } from './jev-evidence.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { assertExactEditContractIntact, assertSingleVariant, exactEditChecks } from './exact-edit.js';
@@ -58,6 +58,31 @@ export class SlideMeter {
 export class SafeFailure extends Error {}
 /** Provider wording for a content-guardrail refusal (SLA-787). Deliberately narrow: a false positive here would turn a retryable error into a terminal one. */
 export const CONTENT_FILTER_PATTERN=/response was filtered|content[ _-]?(?:management|filter|policy)|content_filter|safety system/i;
+/** Upper bound for a provider refusal kept verbatim in a durable diagnostic. */
+export const DIAGNOSTIC_TEXT_MAX=2000;
+/** Terminal: a content-guardrail refusal is deterministic for this request, so it is refunded and never auto-retried. Carries the provider's own words. */
+export class ContentFilterFailure extends SafeFailure {
+  constructor(message: string, public diagnostic: ContentFilterDiagnostic) { super(message); }
+}
+/** Short, stable cause for the job error. The provider's own text lives in the diagnostic, not here. */
+export function contentFilterCause(overlayMode:'model'|'script'):string{
+  return overlayMode==='script'
+    ?'provider_content_filtered: the image provider refused this slide although its prompt carried no overlay text (script mode). The scene or the reference image can be what it objects to, not a particular word. Resending the same request will not help; change the brief or the reference.'
+    :'provider_content_filtered: the image provider refused the prompt on a content filter. Re-create with overlayMode "script" to draw the overlay text in code; a refusal of the scene or reference can still happen in that mode.';
+}
+export function contentFilterFailure(rawError:unknown,o:{overlayMode:'model'|'script';invocations:number;plainPromptRetry:boolean}):ContentFilterFailure{
+  const text=rawError instanceof Error?rawError.message:String(rawError);
+  const status=/\berror (\d{3})\b/i.exec(text)?.[1];
+  let message=text;
+  const json=/\{[\s\S]*\}/.exec(text)?.[0];
+  if(json){try{const m=(JSON.parse(json) as {error?:{message?:unknown}|string}).error;const inner=typeof m==='string'?m:m?.message;if(typeof inner==='string'&&inner)message=inner;}catch{/* keep the whole text */}}
+  const cut=(v:string)=>v.length>DIAGNOSTIC_TEXT_MAX?v.slice(0,DIAGNOSTIC_TEXT_MAX):v;
+  return new ContentFilterFailure(contentFilterCause(o.overlayMode),{
+    kind:'content_filter',status:status?Number(status):null,message:cut(message),raw:cut(text),
+    truncated:message.length>DIAGNOSTIC_TEXT_MAX||text.length>DIAGNOSTIC_TEXT_MAX,
+    invocations:o.invocations,plainPromptRetry:o.plainPromptRetry,overlayMode:o.overlayMode,
+  });
+}
 /** A verified-negative or unverifiable slide outcome (SLA-430 D8). Terminal by
  *  design: it must never self-heal into a pass, and it never uploads a
  *  deliverable. `audit` carries the QA record so the failure stays auditable. */
@@ -1481,9 +1506,8 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
         // (and paying for) the same request cannot help. Matched on the full provider text,
         // before the 60-character truncation above.
         const refusals=results.map(r=>r.status==='rejected'?(r.reason instanceof Error?r.reason.message:String(r.reason)):'');
-        if(refusals.some(m=>CONTENT_FILTER_PATTERN.test(m)))throw new SafeFailure(scriptMode
-          ?'provider_content_filtered: the image provider refused this slide even with the overlay text removed; the scene itself may trigger it'
-          :'provider_content_filtered: the image provider refused the prompt on a content filter. Re-create with overlayMode "script" to draw the overlay text in code');
+        const refused=refusals.find(m=>CONTENT_FILTER_PATTERN.test(m));
+        if(refused!==undefined)throw contentFilterFailure(refused,{overlayMode:scriptMode?'script':'model',invocations:results.length,plainPromptRetry:false});
         // An empty OpenRouter balance 402s every candidate — terminal quota
         // (refund + no futile retries). A transient in-flight-budget 402 or a
         // 429 throttles us: retryable causes that wait out Retry-After.

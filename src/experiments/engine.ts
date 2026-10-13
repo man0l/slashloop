@@ -4,7 +4,7 @@ import { ZodError } from 'zod/v4';
 import { InsufficientCreditsError } from '../lib/credits.js';
 import { classifyOpenRouterError } from '../lib/openrouter.js';
 import * as store from './store.js';
-import { prepare, SafeFailure, TerminalFailure, HydrationPending, locksToBaselineVisual, type ExecuteContext, type Prepared } from './providers.js';
+import { prepare, SafeFailure, TerminalFailure, ContentFilterFailure, HydrationPending, locksToBaselineVisual, type ExecuteContext, type Prepared } from './providers.js';
 import { experimentVisualLock } from './render-prompt.js';
 import { taskCost } from './service.js';
 import { contractEligible, isContractPipeline, mergeCalls, reapContractQa, settleContractSlide, settleQa, settleRevise, type QaTaskResult } from './contract-flow.js';
@@ -21,6 +21,7 @@ function rejectionCause(failure:unknown):string|null {
   if(failure instanceof ExperimentError)return failure.code;
   // A terminal QA message carries the failing check labels (SLA-528), so it gets room for them.
   if(failure instanceof TerminalFailure)return failure.message.slice(0,400);
+  if(failure instanceof ContentFilterFailure)return failure.message.slice(0,400);
   if(failure instanceof SafeFailure)return failure.message.slice(0,200);
   if(failure instanceof ZodError)return 'invalid_schema';
   if(failure instanceof Error)return providerCause(failure.message);
@@ -51,7 +52,7 @@ function jobError(known:boolean,cause:string|null):string {
  *  everything but `e` and `t`, so tests can drive the briefs settlement — where
  *  the planning notices a caller needs to see are recorded — without a database. */
 export function settle(e:Experiment,t:Task,result:unknown) {
-  t.status='done';t.error=undefined;if(isActive(e))e.error=null;
+  t.status='done';t.error=undefined;t.diagnostic=undefined;if(isActive(e))e.error=null;
   if(t.kind==='analysis') {
     const input=result as Input; e.inputs[e.inputs.findIndex(i=>i.videoId===t.target)]=input;
   } else if(t.kind==='report') {
@@ -85,7 +86,7 @@ export function settle(e:Experiment,t:Task,result:unknown) {
     settleContractSlide(e,t,result);
   } else {
     const v=e.variants.find(v=>v.id===t.target)!;const slide=v.slides[t.index!]!;
-    Object.assign(slide,result,{status:'done',error:null}); t.path=(result as {path:string}).path;
+    Object.assign(slide,result,{status:'done',error:null,diagnostic:null}); t.path=(result as {path:string}).path;
     if(v.slides.every(s=>s.status==='done'))v.status='done';
     if(isActive(e)&&e.tasks.filter(t=>t.kind==='slide').every(t=>t.status==='done'))e.status=e.variants.some(v=>v.status==='draft')?'review':'completed';
   }
@@ -276,6 +277,7 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
         // variant or experiment as completed.
         const verdict=failure instanceof TerminalFailure?failure.verdict:null;
         receipt.error=jobError(known,cause);
+        receipt.diagnostic=failure instanceof ContentFilterFailure?failure.diagnostic:undefined;
         if(isActive(latest))latest.error=receipt.error;
         if(known && receipt.chargeRef && charge) {
           // The first wave and every paid correction wave of this attempt are returned in the SAME
@@ -307,7 +309,7 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
           const outcome:StepStatus=verdict?(verdict==='unverified'?'unknown':'failed'):(known?'failed':'unknown');
           receipt.status=outcome;
           if(t.kind==='analysis'&&input){input.status='failed';input.error=receipt.error;}
-          if(v){v.status=outcome==='unknown'?'paused':'failed';v.error=receipt.error;if(t.index!==undefined){v.slides[t.index]!.status=outcome;v.slides[t.index]!.error=receipt.error;}}
+          if(v){v.status=outcome==='unknown'?'paused':'failed';v.error=receipt.error;if(t.index!==undefined){v.slides[t.index]!.status=outcome;v.slides[t.index]!.error=receipt.error;v.slides[t.index]!.diagnostic=receipt.diagnostic??null;}}
           if(isActive(latest)&&!(known&&t.kind==='analysis'&&latest.allowPartial)) {latest.status=outcome==='unknown'?'paused':'failed';latest.error=receipt.error;}
         }
       }else settle(latest,receipt,result);

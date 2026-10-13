@@ -257,6 +257,9 @@ function countJobs(e: Experiment): Record<string, JobCounts> {
  *  answer (`story_check_error`) is infrastructure and stays an ordinary retry. */
 const TERMINAL_QA_ERROR = /(?:^|:)story_(?:check_failed|unverified):(?!story_check_error)/;
 export const isTerminalQaError = (error: string | undefined | null): boolean => TERMINAL_QA_ERROR.test(error ?? '');
+/** A content-filter refusal (SLA-787/816) is deterministic for the request that was refused. It is refunded and never auto-retried. */
+export const isContentFilterError = (error: string | undefined | null): boolean => /(?:^|:)provider_content_filtered/.test(error ?? '');
+const CONTENT_FILTER_ADVICE = 'The image provider refused this slide on a content filter; the diagnostic carries its status and message. Resending the same request is unlikely to help and pays again. Change the brief or the reference first; overlayMode "script" only helps when the refusal came from the overlay copy.';
 const TERMINAL_QA_ADVICE = 'Terminal QA verdict on this slide\'s contract. Not retryable as-is: a retry re-asks the same checks and pays again. Read the failing checks in the error, change the brief or fix the contract first.';
 
 /** "brief" = created from a brief with no source video; "videos" = created from Gallery slideshows. */
@@ -279,9 +282,14 @@ export function experimentProgress(e: Experiment) {
     })),
     retryableJobs: e.tasks
       .filter(t => (t.status === 'failed' || t.status === 'unknown') && t.attempts < MAX_MANUAL_ATTEMPTS)
-      .map(({ id, kind, target, index, status, error, attempts }) => {
+      .map(({ id, kind, target, index, status, error, attempts, diagnostic }) => {
         const terminalQa = isTerminalQaError(error);
-        return { id, kind, target, index, status, error, attempts, terminalQa, ...(terminalQa ? { advice: TERMINAL_QA_ADVICE } : {}) };
+        const contentFiltered = isContentFilterError(error);
+        return {
+          id, kind, target, index, status, error, attempts, terminalQa, contentFiltered,
+          ...(diagnostic ? { diagnostic } : {}),
+          ...(terminalQa ? { advice: TERMINAL_QA_ADVICE } : contentFiltered ? { advice: CONTENT_FILTER_ADVICE } : {}),
+        };
       }),
     variants: e.variants.map((v, i) => {
       const done = v.slides.filter(s => s.status === 'done' && s.url);
@@ -342,15 +350,16 @@ function lifecycleSteps(e: Experiment): NextStep[] {
     case 'failed':
     case 'paused': {
       const all = experimentProgress(e).retryableJobs;
-      const jobs = all.filter(j => !j.terminalQa).map(j => j.id);
+      const jobs = all.filter(j => !j.terminalQa && !j.contentFiltered).map(j => j.id);
       const revisable = e.status === 'failed' && e.pipeline === 'contract' && e.variants.some(v => v.qaDeck?.verdict === 'failed');
       if (revisable && !jobs.length) {
         return [{ label: 'Price a revision: the model rewrites the brief from the QA failures, then every arm is re-rendered', tool: 'estimate_experiment', args: { experimentId: id, stage: 'revise' }, why: 'Free. ' + TERMINAL_QA_ADVICE }];
       }
       if (all.length && !jobs.length) {
-        return [{ label: 'Do not retry: every failed slide is a terminal QA verdict', tool: 'get_experiment', args: { experimentId: id }, why: TERMINAL_QA_ADVICE }];
+        const filteredOnly = all.every(j => j.contentFiltered);
+        return [{ label: filteredOnly ? 'Do not resend: every failed slide was refused by the provider content filter' : 'Do not retry: every failed slide is a terminal verdict', tool: 'get_experiment', args: { experimentId: id }, why: filteredOnly ? CONTENT_FILTER_ADVICE : TERMINAL_QA_ADVICE }];
       }
-      return [{ label: 'Price a retry of the failed jobs', tool: 'estimate_experiment', args: jobs.length ? { experimentId: id, stage: 'generate', taskIds: jobs } : { experimentId: id, stage: (e.report || e.pipeline === 'contract') && e.variants.length ? 'generate' : 'plan' }, why: all.length > jobs.length ? 'Free. Retries re-charge the retried jobs. Slides marked terminalQa are left out: they cannot pass without a contract or brief change.' : 'Free. Retries re-charge the retried jobs.' }];
+      return [{ label: 'Price a retry of the failed jobs', tool: 'estimate_experiment', args: jobs.length ? { experimentId: id, stage: 'generate', taskIds: jobs } : { experimentId: id, stage: (e.report || e.pipeline === 'contract') && e.variants.length ? 'generate' : 'plan' }, why: all.length > jobs.length ? 'Free. Retries re-charge the retried jobs. Slides marked terminalQa or contentFiltered are left out: they cannot pass without a contract, brief or reference change.' : 'Free. Retries re-charge the retried jobs.' }];
     }
     case 'cancelled':
       return [{ label: 'Delete the cancelled experiment', tool: 'delete_experiment', args: { experimentId: id }, why: 'Free. Removes the record and its retained images.' }];
@@ -454,7 +463,7 @@ const instructionsInput = z.object({
     'controlled (default without a preset): each alternate changes one of the selected variables vs the baseline. exploration (SaaS Explore combinations): an alternate may change several selected variables together, including hook + character + visualStyle; concept/slides are allowed.',
   ),
   varySupportingOverlays: z.boolean().optional().describe('Hook tests only (controlled, variables=["hook"]): variants may also retell slide 2+ overlay text while scenes stay identical.'),
-  overlayMode: z.enum(['model', 'script']).optional().describe('Who draws the overlay text. "model" (default): the image model renders it. "script": slides are rendered text-free and the text is composed in code afterwards — use it when the image provider rejects slides with a content-filter error caused by the copy.'),
+  overlayMode: z.enum(['model', 'script']).optional().describe('Who draws the overlay text. "model" (default): the image model renders it. "script": slides are rendered text-free and the text is composed in code afterwards — use it when the image provider rejects slides with a content-filter error caused by the copy. It cannot help when the scene or reference image is what the provider refuses.'),
   preserveSourceCtaSlide: z.boolean().optional().describe('Keep the source deck\'s own closing call-to-action slide in the deck instead of subtracting it from the slide count (default false, which drops a detected final CTA slide).'),
 });
 const briefSlideInput = z.object({ role: z.string().min(1).max(80), scene: z.string().min(1).max(2000), overlayText: z.string().max(2000).default(''),
