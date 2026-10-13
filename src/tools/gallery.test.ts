@@ -285,6 +285,51 @@ describe('edit-mode payload emission (source guards)', () => {
   });
 });
 
+// ── SLA-787: the wizard's "draw overlay text with code" checkbox ────────────
+describe('wizard script-overlay checkbox (SLA-787)', () => {
+  const html = renderGallery([fakeCard({ isSlideshow: true, experimentEligible: true })], undefined, {});
+  const script = html.match(/<script>([\s\S]*)<\/script>/)![1]!;
+  const build = script.slice(script.indexOf('function forceScriptOverlay()'), script.indexOf('// sourceSlides is display-only'));
+  const conversion = script.slice(script.indexOf('var chatPayload;'), script.indexOf("document.getElementById('exp-host-payload').textContent"));
+
+  test('renders one checkbox per step-2 form, unchecked by default', () => {
+    expect(html).toMatch(/<input type="checkbox" id="edit-script-overlay"\/>/);
+    expect(html).toMatch(/<input type="checkbox" id="create-script-overlay"\/>/);
+  });
+
+  function emit(mode: 'edit' | 'create', checkedIds: string[]) {
+    const fields: Record<string, string> = {
+      'edit-hook': 'New hook', 'edit-lang': 'English', 'create-goal': 'Beat the hook', 'edit-variable': 'hook',
+    };
+    const str = (id: string) => fields[id] ?? '';
+    const doc = { getElementById: (id: string) => ({ checked: checkedIds.includes(id), dataset: { slides: '3' } }) };
+    const touched = (id: string) => id === 'edit-hook';
+    const payload = new Function('selCards', 'selected', 'mode', 'str', 'checkedVars', 'num', 'touched', 'document', build + '; return buildSurveyPayload();')(
+      () => [{ getAttribute: () => '3' }], ['vid-1'], mode, str, () => ['hook'], (_id: string, d: number) => d, touched, doc,
+    );
+    const chat = new Function('mode', 'p', 'str', conversion + '; return chatPayload;')(mode, payload, str);
+    return { payload, chat };
+  }
+
+  test.each([['edit', 'edit-script-overlay'], ['create', 'create-script-overlay']] as const)('%s: checked forces overlayMode script, unchecked leaves the key out', (mode, id) => {
+    const on = emit(mode, [id]);
+    expect(on.payload.instructions.overlayMode).toBe('script');
+    const { surveyMode, ...rest } = on.payload;
+    expect(Create.safeParse({ workspaceId: 'w1', idempotencyKey: 'gallery:overlay', ...rest }).success).toBe(true);
+    const off = emit(mode, []);
+    expect(off.payload.instructions).not.toHaveProperty('overlayMode');
+    expect(off.chat).not.toHaveProperty('overlayMode');
+    // The other mode's box must not leak into this mode's payload.
+    const other = emit(mode, [mode === 'edit' ? 'create-script-overlay' : 'edit-script-overlay']);
+    expect(other.payload.instructions).not.toHaveProperty('overlayMode');
+  });
+
+  test('the host/chat call carries it where create_experiment reads it', () => {
+    expect(emit('edit', ['edit-script-overlay']).chat).toMatchObject({ mode: 'edit', overlayMode: 'script' });
+    expect(emit('create', ['create-script-overlay']).chat.instructions).toMatchObject({ overlayMode: 'script' });
+  });
+});
+
 // ── SLA-458: "never touched" and "deliberately cleared" must not share a wire value ──
 //
 // Run the SERVED script's buildPayload()/conversion against stubbed inputs and

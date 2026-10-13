@@ -417,6 +417,8 @@ export function renderGallery(
     border-radius: 8px; background: transparent; color: inherit; width: 100%; }
   .field-row textarea { min-height: 56px; resize: vertical; }
   .field-row .hint { font-weight: 400; font-size: 11px; opacity: .65; }
+  .check-row > span:first-child { display: flex; gap: 7px; align-items: center; cursor: pointer; }
+  .check-row input { accent-color: #FF4D00; }
   .check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .check-grid label { display: flex; gap: 7px; align-items: center; font-size: 13px; }
   .check-grid input { accent-color: #FF4D00; }
@@ -492,6 +494,8 @@ ${cards.length ? toolbarHtml(filters) : ''}
        </div>
        <div class="field-row"><span>Language</span>
          <input type="text" id="edit-lang" value="English" maxlength="80"/></div>
+       <label class="field-row check-row"><span><input type="checkbox" id="edit-script-overlay"/> Draw the overlay text with code, not the AI model</span>
+         <span class="hint">Slides are generated without any text and the words are added afterwards. Use it when slides are rejected for triggering the image provider's content filter. Text uses one standard style.</span></label>
      </div>
      <div class="step" id="step-2-create">
        <div class="field-row"><span>Goal</span>
@@ -525,6 +529,8 @@ ${cards.length ? toolbarHtml(filters) : ''}
          <div class="field-row"><span>Slides each</span><input type="number" id="create-slides" value="5" min="3" max="8"/></div>
          <div class="field-row"><span>Max credits</span><input type="number" id="create-credits" value="200" min="1" max="10000"/></div>
        </div>
+       <label class="field-row check-row"><span><input type="checkbox" id="create-script-overlay"/> Draw the overlay text with code, not the AI model</span>
+         <span class="hint">Slides are generated without any text and the words are added afterwards. Use it when slides are rejected for triggering the image provider's content filter. Text uses one standard style.</span></label>
      </div>
      <div class="step" id="step-3">
        <dl class="review-box" id="exp-review"></dl>
@@ -816,6 +822,17 @@ ${cards.length ? toolbarHtml(filters) : ''}
       return Math.min(max, Math.max(min, v));
     }
     function str(id) { return ((document.getElementById(id) || {}).value || '').trim(); }
+    function forceScriptOverlay() {
+      var box = document.getElementById(mode === 'edit' ? 'edit-script-overlay' : 'create-script-overlay');
+      return !!(box && box.checked);
+    }
+    // Wraps buildPayload() so the per-mode builders stay unchanged: the box only
+    // ever adds instructions.overlayMode = "script"; unchecked leaves the key out.
+    function buildSurveyPayload() {
+      var p = buildPayload();
+      if (forceScriptOverlay()) p.instructions.overlayMode = 'script';
+      return p;
+    }
     // A box the user never typed in means "omitted": no override is emitted, so
     // the slide keeps its original text. A touched-then-emptied box is an
     // explicit blank and still strips. The two must never share a wire value.
@@ -957,6 +974,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
             + ' of this deck will not be rendered, so copy typed there is ignored.']);
         }
       }
+      rows.push(['Overlay text', p.instructions.overlayMode === 'script' ? 'Drawn by code after the image is generated' : 'Drawn by the image model']);
       rows.push(['Max credits', String(p.maxCredits)]);
       rows.push(['Cost now', 'Nothing — this creates a draft. Planning and rendering spend credits later.']);
       return rows.map(function (r) {
@@ -1009,7 +1027,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
       if (step === 2) {
         var problem = validate();
         if (problem) { err(problem); return; }
-        var p = buildPayload();
+        var p = buildSurveyPayload();
         var srcSlides = parseInt(document.getElementById('edit-overlays').dataset.slides || '0', 10) || 0;
         document.getElementById('exp-review').innerHTML = reviewHtml(p, srcSlides);
         document.getElementById('exp-host-payload-wrap').hidden = !inHost;
@@ -1020,6 +1038,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
               mode: 'edit', videoIds: p.videoIds, variables: ['character'], character: str('edit-character'),
               language: p.instructions.language, slideCount: p.slideCount, maxCredits: p.maxCredits,
             };
+            if (p.instructions.overlayMode) chatPayload.overlayMode = p.instructions.overlayMode;
           } else if (mode === 'edit') {
             // An edit must be pasted as mode:"edit" with hook/overlayTexts.
             // Dropping surveyMode alone left the call with no mode at all, so it
@@ -1037,6 +1056,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
             chatPayload.language = p.instructions.language;
             chatPayload.slideCount = p.slideCount;
             chatPayload.maxCredits = p.maxCredits;
+            if (p.instructions.overlayMode) chatPayload.overlayMode = p.instructions.overlayMode;
           } else {
             chatPayload = Object.assign({}, p);
             delete chatPayload.surveyMode;
@@ -1053,7 +1073,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
         return;
       }
       // Step 3: submit (browser) or copy (host).
-      var payload = buildPayload();
+      var payload = buildSurveyPayload();
       if (inHost) {
         var ta = document.getElementById('exp-host-payload');
         try {
