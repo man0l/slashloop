@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildVariantSlidePrompt, compileSlideContract, effectiveOverlayText, labelPolicy, visualLockForChanges, renderContract, identitySubject, lockCarouselIdentity, styleContract } from './render-prompt.js';
+import { buildVariantSlidePrompt, redactOverlayCopy, REDACTED_COPY, compileSlideContract, effectiveOverlayText, labelPolicy, visualLockForChanges, renderContract, identitySubject, lockCarouselIdentity, styleContract } from './render-prompt.js';
 import { slideFanout } from './schema.js';
 import type { BriefData } from './schema.js';
 
@@ -103,5 +103,44 @@ describe('variant slide rendering', () => {
     const prompt = buildVariantSlidePrompt(baseline, 0, { language: 'English', brand: '', audience: '', styleFormula: { medium: 'collage', density: 'rich' }, unlocked: ['hook'] }, 'hook-text');
     expect(prompt).toContain('collage grammar');
     expect(prompt.toLowerCase()).not.toContain('same face');
+  });
+});
+
+describe('script overlay prompt (SLA-787)', () => {
+  const context = { language: 'English', brand: 'Studio', audience: 'Artists', direction: 'Say "Make room for focus" in a bold headline' };
+  test('redactOverlayCopy replaces verbatim, case-insensitive and JSON-escaped occurrences', () => {
+    const out = redactOverlayCopy('say "Make  room for focus" or {\\"t\\":\\"say \\\\\\"hi\\\\\\" now\\"} MAKE ROOM FOR FOCUS', ['Make room for focus', 'say "hi" now', 'x']);
+    expect(out).not.toMatch(/make\s+room/i);
+    expect(out).toContain(REDACTED_COPY);
+  });
+  test('regex metacharacters in copy are matched literally', () => {
+    expect(redactOverlayCopy('cost: $5 (50% off?) [now]', ['$5 (50% off?) [now]'])).toBe(`cost: ${REDACTED_COPY}`);
+  });
+  test('short or blank copy is never redacted', () => {
+    expect(redactOverlayCopy('a b c', ['', ' ', 'a'])).toBe('a b c');
+  });
+  test('script mode drops the copy, the quoted direction and the copy-override carrier', () => {
+    const variant = structuredClone(baseline);
+    variant.copyOverrides = { '1': 'Make room for focus' };
+    const prompt = buildVariantSlidePrompt(variant, 1, { ...context, scriptOverlay: { redact: ['Make room for focus', 'Try it today', 'A caption for the post'] } }, 'open');
+    expect(prompt).not.toContain('Make room for focus');
+    expect(prompt).toContain(REDACTED_COPY);
+    expect(prompt).toContain('TEXT-FREE RENDER');
+    expect(prompt).toContain('FINAL RULE: the image contains no added text at all.');
+    expect(prompt).not.toContain('the only ADDED text');
+  });
+  test('a copy-only contract drops the free-text direction entirely', () => {
+    const prompt = buildVariantSlidePrompt(baseline, 1, { ...context, scriptOverlay: { redact: [] } }, 'hook-text');
+    expect(prompt).toContain('"creativeDirection":""');
+    expect(prompt).not.toContain('bold headline');
+  });
+  test('without script mode the same brief still renders its copy', () => {
+    const prompt = buildVariantSlidePrompt(baseline, 1, context, 'open');
+    expect(prompt).toContain('Make room for focus');
+    expect(prompt).not.toContain('TEXT-FREE RENDER');
+  });
+  test('script mode keeps the creative direction when it casts a new subject', () => {
+    const prompt = buildVariantSlidePrompt(baseline, 1, { ...context, direction: 'a red-haired woman', scriptOverlay: { redact: [] } }, 'character');
+    expect(prompt).toContain('a red-haired woman');
   });
 });

@@ -68,6 +68,17 @@ describe('durable experiment steps',()=>{
   expect(h.row.tasks[0]?.error).toBe('provider_result_rejected:credits_exhausted_402');
   expect(h.charges).toBe(0);
  });
+ test('a content-filter refusal is terminal: refunded, labelled and never retried (SLA-787)',async()=>{
+  let calls=0;
+  const h=harness(async()=>({execute:async()=>{calls++;throw new SafeFailure('provider_content_filtered: the image provider refused the prompt on a content filter. Re-create with overlayMode "script" to draw the overlay text in code');}}));
+  h.set({...fixture(),tasks:[{id:'t',kind:'analysis',target:'v',status:'pending',attempts:0,charged:0}]});
+  await step('w','e',h.deps);
+  expect(calls).toBe(1);
+  expect(h.row.status).toBe('failed');
+  expect(h.row.tasks[0]?.status).toBe('failed');
+  expect(h.row.tasks[0]?.error).toStartWith('provider_result_rejected:provider_content_filtered');
+  expect(h.charges).toBe(0);
+ });
  test('backing-off job is skipped until its nextAttemptAt passes',async()=>{let calls=0;const h=harness(async()=>({execute:async()=>{calls++;throw new Error('x');}}));h.set({...fixture(),tasks:[{id:'t',kind:'analysis',target:'v',status:'pending',attempts:1,charged:0,nextAttemptAt:5000}]});expect(await step('w','e',h.deps)).toBe(false);expect(calls).toBe(0);expect(h.charges).toBe(0);});
  test('preparation failures also consume the retry budget',async()=>{let calls=0;let clock=1000;const h=harness(async()=>{calls++;throw new SafeFailure('media_unavailable_403');});h.deps.now=()=>clock;
   for(const delay of [0,60_000,60_000,60_000]){clock+=delay;await step('w','e',h.deps);}

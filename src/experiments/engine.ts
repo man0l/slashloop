@@ -252,7 +252,7 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
     try{result=await prepared.execute(ctx);}catch(err){failure=err;}
     if(failure){
       const cause=rejectionCause(failure);
-      const known=failure instanceof SafeFailure || failure instanceof ZodError || failure instanceof ExperimentError || /^(credits_exhausted|auth)/.test(cause??'');
+      const known=failure instanceof SafeFailure || failure instanceof ZodError || failure instanceof ExperimentError || /^(credits_exhausted|auth|provider_content_filtered)/.test(cause??'');
       // Codes + short provider status only — briefs payloads and source evidence must not land in logs.
       console.error(`[experiments] ${t.kind}${t.index!==undefined?`#${t.index}`:''} ${e.id} ${jobError(known,cause)} ${shortFailure(failure)}`);
     }
@@ -267,8 +267,8 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
       let refund = 0;let extraRefunds:Array<{ref:string;amount:number}>=[];
       if(failure){
         const cause=rejectionCause(failure);
-        const terminalQuota=/^(credits_exhausted|auth)/.test(cause??'');
-        const known=failure instanceof SafeFailure || failure instanceof ZodError || failure instanceof ExperimentError || terminalQuota;
+        const terminalCause=/^(credits_exhausted|auth|provider_content_filtered)/.test(cause??'');
+        const known=failure instanceof SafeFailure || failure instanceof ZodError || failure instanceof ExperimentError || terminalCause;
         // SLA-430 D8: a verified QA failure or an unverifiable check is terminal.
         // It is never requeued into a pass, and it never settles the slide,
         // variant or experiment as completed.
@@ -291,7 +291,7 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
         if(verdict&&failure instanceof TerminalFailure&&failure.audit!==undefined&&v&&t.index!==undefined&&v.slides[t.index!]){
           v.slides[t.index!]!.qa=failure.audit as SlideQaRecord;
         }
-        if(receipt.attempts<MAX_TASK_ATTEMPTS && !terminalQuota && !verdict){
+        if(receipt.attempts<MAX_TASK_ATTEMPTS && !terminalCause && !verdict){
           // Self-heal: requeue with backoff, keep the experiment running. Known failures
           // are refunded above; unknown receipts keep their retained charge.
           // Provider throttles (429 / in-flight budget) carry retry_after=N — honor it.

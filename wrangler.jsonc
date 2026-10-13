@@ -79,7 +79,8 @@
     "playwright-extra": "./src/cf/node-only-stub.ts",
     "puppeteer-extra-plugin-stealth": "./src/cf/node-only-stub.ts",
     "impit": "./src/cf/node-only-stub.ts",
-    "xbogus": "./src/cf/node-only-stub.ts"
+    "xbogus": "./src/cf/node-only-stub.ts",
+    "sharp": "./src/cf/node-only-stub.ts"
   },
   "vars": {
     // Dialect flag for the raw-SQL branch points (src/store.ts). The Worker is

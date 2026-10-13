@@ -6,7 +6,7 @@ import { GeminiNativeAnalyzer } from '../analysis/gemini-native.js';
 import { liveGeminiFile } from '../analysis/index.js';
 import { experimentSourceKeys, isPhotoPost, resolveExperimentSourceUrls, signedMediaUrl } from '../lib/media.js';
 import { callOpenRouterText, classifyOpenRouterError, extractFirstJson, generateOpenRouterImage, RECREATE_IMAGE_MODEL, requestIdOf } from '../lib/openrouter.js';
-import { buildVariantSlidePrompt, compileSlideContract, contractCheckPlan, styleOwnsComposition, contractChecks, contractQaBlock, effectiveOverlayText, experimentVisualLock, labelPolicy, lockCarouselIdentity, overlayDecision, renderContract, type ObservedCopy, type SlideContract } from './render-prompt.js';
+import { buildVariantSlidePrompt, redactOverlayCopy, compileSlideContract, contractCheckPlan, styleOwnsComposition, contractChecks, contractQaBlock, effectiveOverlayText, experimentVisualLock, labelPolicy, lockCarouselIdentity, overlayDecision, renderContract, type ObservedCopy, type SlideContract } from './render-prompt.js';
 import { jevPick, jevAsk, type JevQuestion, type JevAnswer } from '../lib/typesafe.js';
 import { putObject, getObject, thumbBucket, publicUrl, thumbPath } from '../lib/storage.js';
 import { ExperimentError, qaMaxAttempts, Report, VariantProposal, BriefStoryboard, BriefDelta, briefCandidateCount, EXACT_EDIT_OPERATION, VARIABLE_FIELDS, validateReport, validateVariants, type BriefData, type Proposal, type Input, type Experiment, type QaCheck, type SlideVerification, type Task } from './schema.js';
@@ -56,6 +56,8 @@ export class SlideMeter {
   }
 }
 export class SafeFailure extends Error {}
+/** Provider wording for a content-guardrail refusal (SLA-787). Deliberately narrow: a false positive here would turn a retryable error into a terminal one. */
+export const CONTENT_FILTER_PATTERN=/response was filtered|content[ _-]?(?:management|filter|policy)|content_filter|safety system/i;
 /** A verified-negative or unverifiable slide outcome (SLA-430 D8). Terminal by
  *  design: it must never self-heal into a pass, and it never uploads a
  *  deliverable. `audit` carries the QA record so the failure stays auditable. */
@@ -213,6 +215,8 @@ export interface RenderDeps {
    *  bucket+path the render's reference resolved to. `null` when the frame is
    *  unavailable — never a substituted, similar or inferred frame. */
   readReference?(opts:{bucket:string;path:string}):Promise<Buffer|null>;
+  /** SLA-787: draws the overlay text onto a text-free render (`overlayMode: "script"`). Loaded lazily so the native image library stays out of the edge bundle. */
+  composeOverlay?(opts:{buffer:Buffer;text:string;slideIndex:number}):Promise<{buffer:Buffer;contentType:string;font:string;fontSize:number;lines:string[];skipped:string[]}>;
   /** Ledger writer for metered calls; defaults to the usage-log row. A seam so a suite can observe the rows without a store. */
   recordAiCost?:AiCostWriter;
   /** SLA-700: the one contract call (direction + tagged locks + source defaults + small source thumbnails). Returns the model's raw JSON. */
@@ -877,6 +881,7 @@ export const renderDeps:RenderDeps={
     return object&&object.length>0?Buffer.from(object):null;
   },
   upload:putObject,
+  composeOverlay:async opts=>(await import('./overlay-compose.js')).composeOverlay(opts),
   generateContract:async({system,user,images,meter})=>{
     const model=process.env.EXPERIMENT_ANALYSIS_MODEL?.trim()||'x-ai/grok-4.6';
     const result=await callOpenRouterText(system,user,model,{images,maxTokens:12000,timeoutMs:240_000,reasoningEffort:'medium',jsonSchema:{name:'slide_contract',schema:CONTRACT_JSON_SCHEMA}});
@@ -1383,6 +1388,18 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     hasOverride,overrideText:hasOverride?String(overrides![String(t.index!)]):null,
     briefText:briefOverlay,copyUnlocked,
   });
+  // SLA-787: in script mode the image is rendered text-free and the words are
+  // drawn in code afterwards. The contract the renderer and QA see is the blank
+  // one; the real copy only travels as `scriptText`.
+  const scriptMode=e.instructions.overlayMode==='script';
+  const scriptText=scriptMode&&overlay.mode!=='clear'?overlay.text:'';
+  const contractOverlay:typeof overlay=scriptMode?{mode:'clear',text:'',origin:overlay.origin}:overlay;
+  const redactCopy:string[]=scriptMode?[
+    ...brief.slides.flatMap((_s,i)=>[effectiveOverlayText(brief,i)]),
+    brief.hook,brief.cta,brief.caption,overlay.text,
+    ...Object.values(brief.copyOverrides??{}).filter((x):x is string=>typeof x==='string'),
+    ...(mappedInput?.copy??[]).map(r=>r.text??''),
+  ].filter(x=>x.trim().length>1):[];
   const characterChange=(v.changedVariables??[]).find(c=>c.name==='character');
   const castingRequest=slideContract.changeFaces?(characterChange?characterChange.value:brief.character):null;
   const perSlide:SlideContract=compileSlideContract({
@@ -1390,7 +1407,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     // One contract: a text-edit of the attached frame is judged against that
     // frame's own description, never the exploration board's new layout.
     scene:(copyLock?sourceObservation:null)??slide.scene,
-    overlay,observedCopy:mapped?mapped.row:null,
+    overlay:contractOverlay,observedCopy:mapped?mapped.row:null,
     // SLA-510: the character field is deck-level, so hand it over as the roster
     // it is and let the contract resolve it against THIS slide's subject. The
     // single-subject case resolves exactly as the old castingRequest path did.
@@ -1424,7 +1441,8 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
   async function executeSlide(meter:SlideMeter,renderCosts:{total:number;chosen:number},slideRef:string,write:AiCostWriter,ctx?:ExecuteContext){
     const executeStarted=Date.now();
     const model=process.env.EXPERIMENT_IMAGE_MODEL?.trim() || RECREATE_IMAGE_MODEL;
-    const basePrompt=buildVariantSlidePrompt(brief,t.index!,{...e.instructions,styleFormula:e.styleFormula??null,unlocked:e.instructions.variables},slideContract,perSlide);
+    const basePrompt=buildVariantSlidePrompt(brief,t.index!,{...e.instructions,styleFormula:e.styleFormula??null,unlocked:e.instructions.variables,...(scriptMode?{scriptOverlay:{redact:redactCopy}}:{})},slideContract,perSlide);
+    const redactPrompt=(p:string)=>scriptMode?redactOverlayCopy(p,redactCopy):p;
     const referenceLine=reference
       ? reference.kind==='baseline'
         ? styleComposes&&reference.videoId===variantId
@@ -1459,6 +1477,13 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
         // provider refused content, throttled, or 500'd — keep each reason.
         const reasons=results.map((r)=>r.status==='fulfilled'?'ok':String(r.status==='rejected'?(r.reason instanceof Error?r.reason.message:r.reason):'unknown').replace(/\s+/g,' ').slice(0,60));
         const joined=reasons.join(' | ');
+        // SLA-787: a content-guardrail refusal is deterministic for this prompt, so retrying
+        // (and paying for) the same request cannot help. Matched on the full provider text,
+        // before the 60-character truncation above.
+        const refusals=results.map(r=>r.status==='rejected'?(r.reason instanceof Error?r.reason.message:String(r.reason)):'');
+        if(refusals.some(m=>CONTENT_FILTER_PATTERN.test(m)))throw new SafeFailure(scriptMode
+          ?'provider_content_filtered: the image provider refused this slide even with the overlay text removed; the scene itself may trigger it'
+          :'provider_content_filtered: the image provider refused the prompt on a content filter. Re-create with overlayMode "script" to draw the overlay text in code');
         // An empty OpenRouter balance 402s every candidate — terminal quota
         // (refund + no futile retries). A transient in-flight-budget 402 or a
         // 429 throttles us: retryable causes that wait out Retry-After.
@@ -1482,7 +1507,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
       const ids=bounded.map(d=>d.id);
       try{
         const answer=await render.classify(
-          {brief:{hook:brief.hook,concept:brief.concept,visualStyle:brief.visualStyle,role:brief.slides[t.index!]!.role,overlayText:effectiveOverlayText(brief,t.index!)},candidates:bounded},
+          {brief:{hook:brief.hook,concept:brief.concept,visualStyle:brief.visualStyle,role:brief.slides[t.index!]!.role,overlayText:scriptMode?'':effectiveOverlayText(brief,t.index!)},candidates:bounded},
           'Which candidate image has the highest viral potential for short-form video platforms, while staying truest to the brief and looking native rather than over-designed?',
           Object.fromEntries(bounded.map(d=>[d.id,d.description])),
         );
@@ -1600,10 +1625,10 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
           +story.reasons.map(r=>'\n- '+r).join('')
           +'\nFix exactly these problems. Keep every preserved lock, the medium and the exact overlay text.':'')
         +`\nThis is attempt ${attempt} of at most ${attemptLimit()} for this slide.`;
-      lastPrompt=corrective;
+      lastPrompt=redactPrompt(corrective);
       const before={wave,pick,described,describeError,winner,chosen};
       try{
-        const wave2=await renderWave(corrective);
+        const wave2=await renderWave(lastPrompt);
         const second=wave2.length>1?await describeSafe(wave2):{described:[{id:'c0',description:'single-render'}],error:null as string|null};
         const pick2=wave2.length>1?await chooseSafe(second.described):{winner:0,judge:{choice:'c0',index:0,note:'single-render'}};
         pick=pick2;described=second.described;describeError=second.error;
@@ -1616,7 +1641,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
         if(retry){
           // Only a VERIFIED pass replaces the previous attempt. Fewer reasons is
           // not a pass, and a failed or unverified correction never ships.
-          if(retry.verdict==='pass'){finalPrompt=corrective;styleViolation=styleViolationOf();}
+          if(retry.verdict==='pass'){finalPrompt=lastPrompt;styleViolation=styleViolationOf();}
           story={...retry,corrected:true,attempts:attempt};
         }else{({wave,pick,described,describeError,winner,chosen}=before);story={...story,attempts:attempt};break;}
       }catch(err){
@@ -1656,7 +1681,24 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
     if(chosen.buffer.length<512 || chosen.buffer.length>12*1024*1024)throw new SafeFailure('invalid_image_size');
     renderCosts.chosen=chosen.costUsd??0;
     write(e.workspaceId,`slide:${slideRef}`,chosen.costUsd);
-    await render.upload({bucket:thumbBucket(),path,body:chosen.buffer,contentType:chosen.contentType,upsert:false});
-    return {path,url:publicUrl(thumbBucket(),path),model,provider:'openrouter',costUsd:chosen.costUsd,prompt:finalPrompt,reference:reference?{kind:reference.kind,videoId:reference.videoId,index:reference.index,path:reference.path}:null,fanout:{requested:fanout,rendered:wave.length,chosen:winner,judge:judgeTrail,styleViolation},story:audit,qa:audit};
+    // SLA-787: the verified text-free render gets its words drawn here, after QA, so the
+    // shipped bytes are the QA-checked picture plus exactly the requested copy.
+    let shipped:{buffer:Buffer;contentType:string}=chosen;
+    let overlayAudit:Record<string,unknown>|null=null;
+    if(scriptMode){
+      overlayAudit={mode:'script',text:scriptText};
+      if(scriptText){
+        try{
+          if(!render.composeOverlay)throw new Error('compositor_unavailable');
+          const composed=await render.composeOverlay({buffer:chosen.buffer,text:scriptText,slideIndex:t.index!});
+          shipped={buffer:composed.buffer,contentType:composed.contentType};
+          overlayAudit={mode:'script',font:composed.font,fontSize:composed.fontSize,lines:composed.lines,...(composed.skipped.length?{skipped:composed.skipped}:{})};
+        }catch(err){
+          throw new TerminalFailure(`overlay_compose_failed:${String(err instanceof Error?err.message:err).replace(/\s+/g,' ').slice(0,120)}`,'failed',{...audit,overlay:overlayAudit});
+        }
+      }
+    }
+    await render.upload({bucket:thumbBucket(),path,body:shipped.buffer,contentType:shipped.contentType,upsert:false});
+    return {path,url:publicUrl(thumbBucket(),path),model,provider:'openrouter',costUsd:chosen.costUsd,prompt:finalPrompt,reference:reference?{kind:reference.kind,videoId:reference.videoId,index:reference.index,path:reference.path}:null,fanout:{requested:fanout,rendered:wave.length,chosen:winner,judge:judgeTrail,styleViolation},story:audit,qa:audit,...(overlayAudit?{overlay:overlayAudit}:{})};
   }
 }

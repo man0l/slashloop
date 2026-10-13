@@ -49,6 +49,10 @@ const instructionsShape = {
   // and the planning boundary. True keeps every source slide (still clamped to
   // 3-8). Optional so experiments stored before it resolve exactly as before.
   preserveSourceCtaSlide: z.boolean().optional(),
+  // SLA-787: who draws the overlay text. "model" (absent = default) lets the image
+  // model render it. "script" renders the slide text-free and composes the text in
+  // code afterwards, so copy never reaches the provider's content filter.
+  overlayMode: z.enum(['model', 'script']).optional(),
 };
 export const Instructions = z.object(instructionsShape).strict().superRefine((v, ctx) => {
   if (new Set(v.variables).size !== v.variables.length) ctx.addIssue({ code: 'custom', message: 'Duplicate variables' });
@@ -575,6 +579,8 @@ export interface Variant extends Proposal { id: string; revision: number; status
     /** QA audit for THIS attempt. Present on success AND on failure/unverified,
      *  cleared when a retry requeues the slide (see qaHistory). */
     qa?: SlideQaRecord | null;
+    /** SLA-787: how the overlay text was drawn when `instructions.overlayMode` is "script". */
+    overlay?: { mode: 'script'; text?: string; font?: string; fontSize?: number; lines?: string[]; skipped?: string[] } | null;
     /** QA audits of earlier attempts, oldest first (SLA-511). Explicit history,
      *  so requeuing a slide keeps its prior evidence without leaving the live
      *  fields carrying a stale failure for work that has not run yet. */
