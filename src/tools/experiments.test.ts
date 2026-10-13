@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { Command, Create, CreateRequest, EditBrief, Generate, Plan, Retry, ExperimentError, Key, validateVariants, type Experiment } from '../experiments/schema.js';
+import { Command, Create, CreateBriefRequest, CreateRequest, EditBrief, Feedback, Generate, Plan, Retry, ExperimentError, Key, validateVariants, type Experiment } from '../experiments/schema.js';
 import { normalizeBriefCandidates } from '../experiments/providers.js';
 import { renderContract } from '../experiments/render-prompt.js';
 import {
@@ -18,6 +18,7 @@ import {
 const TOOLS = [
   'list_experiments', 'get_experiment', 'create_experiment', 'estimate_experiment', 'plan_experiment',
   'update_experiment_variant', 'generate_experiment', 'retry_experiment', 'cancel_experiment', 'delete_experiment',
+  'submit_experiment_feedback',
 ];
 
 function exp(id: string, over: Partial<Experiment> = {}): Experiment {
@@ -48,10 +49,10 @@ function fakes(): ExperimentToolDeps {
     },
     createExperiment: (async (raw: any, _deps?: unknown, options?: unknown) => {
       record('createExperiment', [raw, options]);
-      const failure = createFailures[raw.videoIds[0]];
+      const failure = createFailures[raw.videoIds?.[0]];
       if (failure) throw failure;
       const id = `e-${raw.idempotencyKey.replace(/[^a-zA-Z0-9]/g, '').slice(-10)}`;
-      const e = store.get(id) ?? exp(id, { maxCredits: raw.maxCredits, ranBy: typeof raw.ran_by === 'string' ? raw.ran_by.trim() || null : null, inputs: [{ ...exp(id).inputs[0]!, videoId: raw.videoIds[0] }] });
+      const e = store.get(id) ?? exp(id, { maxCredits: raw.maxCredits, ranBy: typeof raw.ran_by === 'string' ? raw.ran_by.trim() || null : null, inputs: raw.videoIds?.length ? [{ ...exp(id).inputs[0]!, videoId: raw.videoIds[0] }] : [], instructions: { ...exp(id).instructions, ...(raw.instructions ?? {}) }, variantCount: raw.variantCount, slideCount: raw.slideCount });
       store.set(id, e);
       return e;
     }) as ExperimentToolDeps['createExperiment'],
@@ -80,6 +81,10 @@ function fakes(): ExperimentToolDeps {
     serialize: ((e: Experiment) => ({ ...e, projected: true })) as unknown as ExperimentToolDeps['serialize'],
     deleteExperiment: async (ws: string, id: string) => { record('deleteExperiment', [ws, id]); return { deleted: true as const }; },
     deleteExperiments: async (ws: string, ids: string[]) => { record('deleteExperiments', [ws, ids]); return { deleted: ids.length, failed: [] }; },
+    estimateFeedback: (async (e: Experiment, req: unknown) => {
+      record('estimateFeedback', [e.id, req]);
+      return { analysisCredits: 0, planningCredits: 0, generationCredits: estimateTotal, totalCredits: estimateTotal, correctionCredits: estimateTotal, maxTotalCredits: 2 * estimateTotal, remainingCredits: e.maxCredits, workspaceCredits: 1000, maxCredits: e.maxCredits, generationBasis: e.generationBasis, exactProviderUsdCap: false, maxProviderRequests: 4, pricing: { analysis: 5, planningCall: 2, slide: 10 }, redo: [4, 5] };
+    }) as unknown as ExperimentToolDeps['estimateFeedback'],
   };
 }
 
@@ -900,6 +905,104 @@ describe('helpers', () => {
   });
 });
 
+describe('brief mode: no source video (SLA-802)', () => {
+  const direction = 'Slide 1: a kitchen counter, overlay "Stop scrolling". Slide 2: a hand holding a jar, overlay "Try this".';
+  const brief = { mode: 'brief', instructions: { goal: 'Test a hook', variables: ['hook'], direction }, variantCount: 2, slideCount: 6 };
+
+  test('the catalog lists brief and no longer requires videoIds', async () => {
+    const { tools } = await (await connect()).listTools();
+    const tool = tools.find(t => t.name === 'create_experiment')!;
+    const props = tool.inputSchema.properties as Record<string, any>;
+    expect(props.mode.enum).toEqual(['edit', 'create', 'brief']);
+    expect(tool.inputSchema.required ?? []).not.toContain('videoIds');
+    expect(tool.description).toContain('mode "brief"');
+  });
+
+  test('creates one sourceless draft with a planEstimate and a plan next step', async () => {
+    const { isError, body } = await call('create_experiment', brief);
+    expect(isError).toBe(false);
+    const [raw, options] = callsOf('createExperiment')[0]! as [any, any];
+    expect(options).toEqual({ sourceless: true });
+    expect('videoIds' in raw).toBe(false);
+    expect(raw).toMatchObject({ workspaceId: 'w1', variantCount: 2, slideCount: 6, maxCredits: defaultExperimentCap(2, 6, false) });
+    expect(raw.instructions.direction).toBe(direction);
+    expect(Key.safeParse(raw.idempotencyKey).success).toBe(true);
+    expect(CreateBriefRequest.safeParse({ ...raw, videoIds: [] }).success).toBe(true);
+    expect(body.experiments).toHaveLength(1);
+    expect(body.experiments[0]).toMatchObject({ status: 'draft', sourceMode: 'brief', videoIds: [], variantCount: 2, slideCount: 6, planEstimate: { totalCredits: 9 } });
+    expect(callsOf('estimate')[0]).toEqual([body.experiments[0].id, 'plan', undefined, undefined]);
+    expect(body.nextSteps[0]).toMatchObject({ tool: 'plan_experiment', args: { experimentId: body.experiments[0].id, approvedCredits: 9 }, spendsMoney: true });
+    expect(body.failed).toEqual([]);
+  });
+
+  test('is idempotent: the same call derives the same key and returns the same draft', async () => {
+    const a = await call('create_experiment', brief);
+    const b = await call('create_experiment', brief);
+    expect(b.body.experiments[0].id).toBe(a.body.experiments[0].id);
+    expect(store.size).toBe(1);
+  });
+
+  test('a brief draft costs less to cap than a source draft (no analysis)', () => {
+    expect(defaultExperimentCap(2, 6, false)).toBeLessThanOrEqual(defaultExperimentCap(2, 6));
+  });
+
+  test('direction up to 8000 characters is accepted, longer is refused by the schema', async () => {
+    const long = 'Slide copy. '.repeat(400);
+    expect(long.length).toBeGreaterThan(2000);
+    const ok = await call('create_experiment', { ...brief, instructions: { ...brief.instructions, direction: long } });
+    expect(ok.isError).toBe(false);
+    expect((callsOf('createExperiment')[0]![0] as any).instructions.direction).toBe(long);
+    const client = await connect();
+    const res = await client.callTool({ name: 'create_experiment', arguments: { ...brief, instructions: { ...brief.instructions, direction: 'x'.repeat(8001) } } }) as { isError?: boolean };
+    expect(res.isError).toBe(true);
+  });
+
+  test('refuses videoIds, a missing brief, an empty direction and edit-only fields', async () => {
+    const withVideo = await call('create_experiment', { ...brief, videoIds: ['vid1'] });
+    expect(withVideo.isError).toBe(true);
+    expect(withVideo.body.error).toBe('invalid_request');
+    const noInstructions = await call('create_experiment', { mode: 'brief' });
+    expect(noInstructions.body.error).toBe('invalid_request');
+    const noDirection = await call('create_experiment', { ...brief, instructions: { goal: 'g', variables: ['hook'], direction: '   ' } });
+    expect(noDirection.body.error).toBe('invalid_request');
+    const editOnly = await call('create_experiment', { ...brief, hook: 'Hello' });
+    expect(editOnly.body.error).toBe('invalid_request');
+    expect(callsOf('createExperiment')).toHaveLength(0);
+  });
+
+  test('create and edit modes still need videoIds and point at brief mode', async () => {
+    for (const mode of ['create', 'edit']) {
+      const { isError, body } = await call('create_experiment', { mode, instructions });
+      expect(isError).toBe(true);
+      expect(body.error).toBe('invalid_request');
+      expect(body.message).toContain('"brief"');
+    }
+    expect(callsOf('createExperiment')).toHaveLength(0);
+  });
+
+  test('get_experiment and list_experiments read a sourceless draft like any other', async () => {
+    const created = await call('create_experiment', brief);
+    const id = created.body.experiments[0].id;
+    const got = await call('get_experiment', { experimentId: id });
+    expect(got.isError).toBe(false);
+    expect(got.body.progress).toMatchObject({ status: 'draft', sourceMode: 'brief', sources: { total: 0, ready: 0 } });
+    expect(got.body.experiment).toMatchObject({ variantCount: 2, slideCount: 6 });
+    const listed = await call('list_experiments', {});
+    expect(listed.body.experiments[0]).toMatchObject({ id, sourceMode: 'brief', videoIds: [], status: 'draft' });
+    store.set('src', exp('src'));
+    const withSource = await call('get_experiment', { experimentId: 'src' });
+    expect(withSource.body.progress.sourceMode).toBe('videos');
+  });
+
+  test('estimate_experiment and plan_experiment accept a sourceless draft id', async () => {
+    const created = await call('create_experiment', brief);
+    const id = created.body.experiments[0].id;
+    const est = await call('estimate_experiment', { experimentId: id, stage: 'plan' });
+    expect(est.isError).toBe(false);
+    expect(callsOf('estimate').at(-1)![1]).toBe('plan');
+  });
+});
+
 describe('notify (SLA-617)', () => {
   test('create_experiment advertises notify and forwards it to createExperiment', async () => {
     const { tools } = await (await connect()).listTools();
@@ -915,5 +1018,54 @@ describe('notify (SLA-617)', () => {
     const created = await call('create_experiment', { videoIds: ['vid1'], instructions });
     expect('notify' in (callsOf('createExperiment')[0]![0] as object)).toBe(false);
     expect('notify' in created.body.experiments[0]).toBe(false);
+  });
+});
+
+describe('submit_experiment_feedback (SLA-797)', () => {
+  const slides = [{ index: 4, feedback: 'LTN must look clearly worse than MTN' }, { index: 5, feedback: 'SUB 5 needs a much weaker jaw' }];
+  beforeEach(() => { store.set('e1', exp('e1', { status: 'completed', pipeline: 'contract' })); });
+
+  test('estimateOnly prices the round and starts nothing', async () => {
+    const r = await call('submit_experiment_feedback', { experimentId: 'e1', variantId: 'v1', slides, estimateOnly: true });
+    expect(r.isError).toBe(false);
+    expect(r.body.redoSlides).toEqual([4, 5]);
+    expect(r.body.estimate.totalCredits).toBe(9);
+    expect(callsOf('mutate')).toHaveLength(0);
+    expect(callsOf('estimateFeedback')[0]).toEqual(['e1', { variantId: 'v1', slides }]);
+  });
+
+  test('refuses above the approval and without one', async () => {
+    estimateTotal = 50;
+    const over = await call('submit_experiment_feedback', { experimentId: 'e1', variantId: 'v1', feedback: 'harder downgrade', approvedCredits: 20 });
+    expect(over.isError).toBe(true);
+    expect(over.body.error).toBe('estimate_exceeds_approval');
+    const none = await call('submit_experiment_feedback', { experimentId: 'e1', variantId: 'v1', feedback: 'harder downgrade' });
+    expect(none.isError).toBe(true);
+    expect(callsOf('mutate')).toHaveLength(0);
+  });
+
+  test('within the approval it runs the feedback action with a stable derived key', async () => {
+    const r = await call('submit_experiment_feedback', { experimentId: 'e1', variantId: 'v1', feedback: 'harder downgrade', slides, approvedCredits: 20 });
+    expect(r.isError).toBe(false);
+    expect(r.body.message).toContain('slides (5, 6)');
+    const [[ws, id, action, body]] = callsOf('mutate') as [[string, string, string, Record<string, unknown>]];
+    expect([ws, id, action]).toEqual(['w1', 'e1', 'feedback']);
+    expect(body).toMatchObject({ workspaceId: 'w1', variantId: 'v1', feedback: 'harder downgrade', slides });
+    expect(String(body.idempotencyKey)).toStartWith('mcp:feedback:');
+    await call('submit_experiment_feedback', { experimentId: 'e1', variantId: 'v1', feedback: 'harder downgrade', slides, approvedCredits: 20 });
+    expect((callsOf('mutate')[1]![3] as Record<string, unknown>).idempotencyKey).toBe(body.idempotencyKey);
+  });
+
+  test('service refusals carry a hint', async () => {
+    mutateError = new ExperimentError(409, 'feedback_unsupported');
+    const r = await call('submit_experiment_feedback', { experimentId: 'e1', variantId: 'v1', feedback: 'x', approvedCredits: 20 });
+    expect(r.isError).toBe(true);
+    expect(r.body.hint).toMatch(/new experiment/);
+  });
+
+  test('the request matches the service Feedback schema', () => {
+    expect(Feedback.parse({ workspaceId: 'w1', idempotencyKey: 'mcp:feedback:abc', variantId: 'v1', slides })).toBeTruthy();
+    expect(() => Feedback.parse({ workspaceId: 'w1', idempotencyKey: 'mcp:feedback:abc', variantId: 'v1' })).toThrow();
+    expect(() => Feedback.parse({ workspaceId: 'w1', idempotencyKey: 'mcp:feedback:abc', variantId: 'v1', slides: [slides[0], slides[0]] })).toThrow();
   });
 });

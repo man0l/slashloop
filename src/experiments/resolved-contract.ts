@@ -126,7 +126,8 @@ export function contractFieldGuide(input: ContractInput): Record<string, string>
 
 export function contractPromptPayload(input: ContractInput, extra: Record<string, unknown> = {}): string {
   return JSON.stringify({
-    ...extra, direction: input.direction, locks: input.locks.map(l => ({ lock: l.text, origin: l.origin })),
+    ...extra, ...(input.frameCount === 0 ? { sourceNote: 'There is no source video and no source frames. The direction is the complete brief: build every slide, its scene and its exact overlay text from it. keepSourceImage and borrowSourceLook must be false and sourceFrameLevels must be [].' } : {}),
+    direction: input.direction, locks: input.locks.map(l => ({ lock: l.text, origin: l.origin })),
     sourceDefaults: input.sourceDefaults, slideCount: input.slideCount, sourceFrameCount: input.frameCount,
     fieldGuide: contractFieldGuide(input),
   });
@@ -169,8 +170,14 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
   }
   const keptSourceDefaults = input.sourceDefaults.filter(s => !droppedSourceDefaults.some(d => norm(d.default) === norm(s)));
 
+  // A brief-only experiment has no source frames: nothing can be kept or borrowed, so those flags and the "source" identity are void whatever the model says.
+  const sourceless = input.frameCount === 0;
+  const keepSourceImage = raw.keepSourceImage && !sourceless;
+  const borrowSourceLook = raw.borrowSourceLook && !sourceless;
+  if (sourceless && (raw.keepSourceImage || raw.borrowSourceLook)) issues.push('There is no source video, so there are no source images to keep or borrow a look from; every slide is created new from the brief.');
   let identity = raw.identity;
-  if (raw.keepSourceImage && identity !== 'source' && identity !== 'none') {
+  if (sourceless && identity === 'source') identity = 'invented-per-slide';
+  if (keepSourceImage && identity !== 'source' && identity !== 'none') {
     issues.push('Editing the source images keeps the source subject, so the identity is "source".');
     identity = 'source';
   }
@@ -186,7 +193,7 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
   for (let i = 0; i < input.frameCount; i++) if (!frames.has(i)) frames.set(i, { index: i, level: 'none', showsPerson: true });
 
   const sourceFrames = [...frames.values()].sort((a, b) => a.index - b.index);
-  const framing = { keepSourceImage: raw.keepSourceImage, borrowSourceLook: raw.borrowSourceLook && !raw.keepSourceImage, identity, sourceFrames, arcAxis };
+  const framing = { keepSourceImage, borrowSourceLook: borrowSourceLook && !keepSourceImage, identity, sourceFrames, arcAxis };
   const framed = onlyFramedSlides(framing, slides);
   if (!framed.length) throw new ContractError('contract_no_matching_frame', 'No source frame matches any slide, and the source images are kept.');
   if (framed.length < slides.length) {
@@ -276,12 +283,18 @@ export function arcLine(c: Pick<ResolvedContract, 'arcAxis'>, s: ContractSlide):
     : '';
 }
 
-export function compileSlidePrompt(c: ResolvedContract, index: number, role: SlideRole, referenceUse: ReferenceUse, fix = ''): string {
+export function feedbackLine(feedback: string): string {
+  return feedback
+    ? `USER FEEDBACK on the previous version of this image (highest priority, make the change clearly visible at phone size; keep everything the feedback does not mention): ${feedback}`
+    : '';
+}
+
+export function compileSlidePrompt(c: ResolvedContract, index: number, role: SlideRole, referenceUse: ReferenceUse, fix = '', feedback = ''): string {
   const s = c.slides[index];
   if (!s) throw new RangeError('Slide index is outside the contract.');
   const text = textLine(s.overlayText);
   const arc = arcLine(c, s);
-  const fixLine = fix ? `FIX FROM QA: ${fix}` : '';
+  const fixLine = [feedbackLine(feedback), fix ? `FIX FROM QA: ${fix}` : ''].filter(Boolean).join('\n');
   if (role === 'edit') return [
     'Edit the attached image. Keep the photograph itself identical: same person, face, hair, makeup, jewelry, hands, clothing INCLUDING any print or graphic on clothing, objects and background. Do not re-shoot, reframe or restyle.',
     'Remove only caption text that was overlaid on top of the photo (if any). Do not remove text or graphics that belong to the scene (clothing prints, labels, signs).',

@@ -7,7 +7,7 @@ import {
   contractPromptPayload, normalizeContract, pickFramesByArc, qaVerdict, slideRole, tagLocks,
   type ContractInput, type ResolvedContract,
 } from './resolved-contract.js';
-import { contractView, proposalsFromContract, slideWorkFor } from './contract-flow.js';
+import { contractView, proposalsFromContract, slideFeedback, slideWorkFor } from './contract-flow.js';
 import { validateVariants, type Experiment, type Task } from './schema.js';
 import { CONTENT_FILTER_PATTERN, SafeFailure, SlideMeter, logAiCost, type ExecuteContext, type Prepared, type RenderDeps } from './providers.js';
 import { storySlideCount } from './slide-count.js';
@@ -149,6 +149,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
   const upload = async (body: Buffer, contentType: string) => { await render.upload({ bucket: thumbBucket(), path, body, contentType, upsert: false }); };
   const base = v.baselineId ? e.variants.find(x => x.id === v.baselineId) : undefined;
   const work = slideWorkFor(e, v, index, t.fix);
+  const human = slideFeedback(v, index);
   const baseSlide = base?.slides[index];
 
   if (work === 'reuse') {
@@ -189,10 +190,10 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
       const f = frames[pick.frameIndex ?? -1];
       if (f) { referenceUrl = f.url; referenceNote = { kind: f.kind, videoId: f.videoId, index: f.slideIndex, path: f.path }; }
     }
-    prompt = compileSlidePrompt(view, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse, t.fix ?? '');
+    prompt = compileSlidePrompt(view, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse, t.fix ?? '', human);
   }
 
-  const callKind = t.fix ? 'render-extra' : work === 'caption-edit' ? 'caption-edit' : 'render';
+  const callKind = t.fix || human ? 'render-extra' : work === 'caption-edit' ? 'caption-edit' : 'render';
   const model = process.env.EXPERIMENT_IMAGE_MODEL?.trim() || 'meta/muse-image';
   return {
     units: 1,
@@ -215,8 +216,8 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
           const msg = err instanceof Error ? err.message : String(err);
           const comparative = work !== 'caption-edit' && role === 'anchor-edit' && !!view.slides[index]?.visibleChange;
           if (!FILTERED.test(msg)) renderFailure(err);
-          // A filter hit gets one plain retry: without the repair text, and an edit of slide 1 asks for the
-          // slide's own scene instead of the face comparison. A second refusal is terminal (renderFailure).
+          // A filter hit gets one plain retry: without the repair text or human feedback, and an edit of slide 1 asks
+          // for the slide's own scene instead of the face comparison. A second refusal is terminal (renderFailure).
           const plain = comparative ? { ...view, slides: view.slides.map((s, i) => i === index ? { ...s, visibleChange: '' } : s) } : view;
           usedPrompt = work === 'caption-edit' && base?.frozenBrief
             ? captionEditPrompt(base.frozenBrief.slides[index]?.overlayText ?? '', view.slides[index]!.overlayText)

@@ -96,6 +96,13 @@ Copy edits default to `variables:["hook"]`. Use create mode with
 `instructions.variables:["character"]` and `instructions.direction` when you
 need custom goals or counts. Never put create instructions into edit mode.
 
+With no source video at all, call `create_experiment` with `mode:"brief"` and no
+`videoIds`: `instructions` (goal, variables, language, brand, audience,
+lockedConstraints) plus a `direction` that is the whole spec (per-slide scene and
+exact overlay copy, up to 8000 characters; required), `slideCount` (3-8, the real
+output length), `variantCount` and `maxCredits`. It creates one free draft with a
+`planEstimate`; planning skips source analysis, and the same approval gates apply.
+
 ## Approval and lifecycle
 
 ### Approval: a standing budget is the approval
@@ -145,6 +152,13 @@ Drive every experiment all the way to `completed`; do not leave drafts or
    price them with `estimate_experiment(taskIds)` (or `variantIds`/`stage`),
    and `retry_experiment` with `approvedCredits` as above. Completed images are
    kept.
+7. **Human feedback on rendered slides**: when the user says what is wrong with
+   a generated slideshow ("LTN still looks like MTN"), call
+   `submit_experiment_feedback` with the variant id and `feedback` (whole
+   slideshow, re-renders every slide) and/or `slides: [{index, feedback}]`
+   (0-based, re-renders only those slides). Price it with `estimateOnly: true`
+   first, then pass `approvedCredits`. The notes stay on the slides and the
+   variant is QA-checked again.
 
 **Edit, don't cancel.** If a brief is wrong, or the task changed mid-run (new
 guardrails, a different angle), fix the briefs with `update_experiment_variant`

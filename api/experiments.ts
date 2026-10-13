@@ -4,7 +4,7 @@ import { requireWorkspaceAccess, jsonResponse } from '../src/lib/authz.js';
 import { corsPreflight } from '../src/lib/cors.js';
 import { InsufficientCreditsError } from '../src/lib/credits.js';
 import { ExperimentError, Id, Estimate } from '../src/experiments/schema.js';
-import { createExactEdit, createExperiment, estimate, isExactEditRequest, mutate } from '../src/experiments/service.js';
+import { createExactEdit, createExperiment, estimate, estimateFeedback, isExactEditRequest, mutate } from '../src/experiments/service.js';
 import { load, list, serialize } from '../src/experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../src/experiments/delete.js';
 
@@ -21,7 +21,7 @@ async function body(request:Request):Promise<Record<string,unknown>> {
 async function handle(request:Request):Promise<Response> {
   try{
     const url=new URL(request.url);
-    const match=/^\/api\/experiments(?:\/([^/]+))?(?:\/(estimate|plan|generate|cancel|retry|exact-edit)|\/variants\/([^/]+))?$/.exec(url.pathname);
+    const match=/^\/api\/experiments(?:\/([^/]+))?(?:\/(estimate|plan|generate|cancel|retry|exact-edit|feedback)|\/variants\/([^/]+))?$/.exec(url.pathname);
     if(!match)return jsonResponse(404,{error:'not_found'},request);
     const id=match[1]?Id.parse(match[1]):null;const action=match[2];const variantId=match[3]?Id.parse(match[3]):undefined;
     const b=request.method==='GET'?null:await body(request);
@@ -40,9 +40,17 @@ async function handle(request:Request):Promise<Response> {
         response={experiments:rows.slice(0,limit).map(serialize),nextOffset};
       }
     }
-    else if(request.method==='POST'&&!id)response={experiment:serialize(isExactEditRequest(b)?await createExactEdit(b):await createExperiment(b))};
+    else if(request.method==='POST'&&!id){
+      // {"mode":"brief"} marks a brief-only create (no source video); the marker is not part of the Create schema.
+      const {mode,...brief}=(b??{}) as Record<string,unknown>;
+      response={experiment:serialize(mode==='brief'?await createExperiment(brief,undefined,{sourceless:true}):isExactEditRequest(b)?await createExactEdit(b):await createExperiment(b))};
+    }
     else if(request.method==='POST'&&id&&action==='estimate'){
-      const parsed=Estimate.parse(b);response={estimate:await estimate(await load(workspaceId,id),parsed.stage,parsed.variantIds,parsed.taskIds)};
+      const parsed=Estimate.parse(b);const e=await load(workspaceId,id);
+      if(parsed.stage==='feedback'){
+        const {variantId,feedback,slides}=parsed;
+        response={estimate:await estimateFeedback(e,{variantId,...(feedback===undefined?{}:{feedback}),...(slides===undefined?{}:{slides})})};
+      }else response={estimate:await estimate(e,parsed.stage,parsed.variantIds,parsed.taskIds)};
     }else if(request.method==='POST'&&id&&action)response={experiment:serialize(await mutate(workspaceId,id,action,b))};
     else if(request.method==='PATCH'&&id&&variantId)response={experiment:serialize(await mutate(workspaceId,id,'edit',b,variantId))};
     else if(request.method==='DELETE'&&!id){

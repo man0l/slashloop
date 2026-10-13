@@ -85,6 +85,13 @@ Copy edits default to `variables:["hook"]`. Use create mode with
 `instructions.variables:["character"]` and `instructions.direction` when you
 need custom goals or counts. Never put create instructions into edit mode.
 
+With no source video at all, call `create_experiment` with `mode:"brief"` and no
+`videoIds`: `instructions` (goal, variables, language, brand, audience,
+lockedConstraints) plus a `direction` that is the whole spec (per-slide scene and
+exact overlay copy, up to 8000 characters; required), `slideCount` (3-8, the real
+output length), `variantCount` and `maxCredits`. It creates one free draft with a
+`planEstimate`; planning skips source analysis, and the same approval gates apply.
+
 ## Approval and lifecycle
 
 ### Approval: a standing budget is the approval

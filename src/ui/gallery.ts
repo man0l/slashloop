@@ -407,6 +407,10 @@ export function renderGallery(
   .step.on { display: block; }
   .mode-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .mode-card { border: 1px solid var(--line); border-radius: 10px; padding: 12px; cursor: pointer; }
+  .mode-card.wide { grid-column: 1 / -1; }
+  .brief-start { display: flex; justify-content: flex-end; margin: 0 0 10px; }
+  .brief-start button { font: inherit; font-size: 13px; font-weight: 600; padding: 7px 14px; border-radius: 8px;
+                        border: 1px solid var(--line); background: none; color: inherit; cursor: pointer; }
   .mode-card input { accent-color: #FF4D00; }
   .mode-card strong { display: block; font-size: 14px; margin: 4px 0; }
   .mode-card p { margin: 0; font-size: 12px; opacity: .75; }
@@ -456,6 +460,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
   <strong><span class="fetch-count">0</span> outliers ≥50× have no stored video.</strong>
   To play &amp; scrub them here, ask: “fetch videos for outliers ≥50×”.
 </div>
+ <div class="brief-start"><button type="button" id="exp-brief-start">New experiment from a brief — no source video</button></div>
  <div class="grid" id="grid">${body}</div>
  <p class="empty-filter" id="empty-filter">No videos match these filters. Lower the outlier threshold or min views.</p>
  <div class="exp-bar" id="exp-bar" role="region" aria-label="Experiment selection">
@@ -476,6 +481,9 @@ ${cards.length ? toolbarHtml(filters) : ''}
          <label class="mode-card"><input type="radio" name="exp-mode" value="create"/>
            <strong>Create variations</strong>
            <p>Generate new versions: new hook, character, style or angle, picked by variable.</p></label>
+         <label class="mode-card wide"><input type="radio" name="exp-mode" value="brief"/>
+           <strong>Start from a brief — no source video</strong>
+           <p>Write the goal and the per-slide direction yourself. Nothing is selected or analyzed; the brief is the spec.</p></label>
        </div>
      </div>
      <div class="step" id="step-2-edit">
@@ -515,8 +523,14 @@ ${cards.length ? toolbarHtml(filters) : ''}
            <label><input type="checkbox" value="slides"/> slide structure</label>
          </div>
          <span class="hint">Angle retells the copy; slide structure changes the story. Both use exploration. Other variables follow your selected test mode.</span></div>
-       <div class="field-row"><span>Creative direction</span>
-         <textarea id="create-direction" maxlength="2000" placeholder="e.g. Same person and room, only the copy changes"></textarea></div>
+       <div class="field-row"><span id="create-direction-label">Creative direction</span>
+         <textarea id="create-direction" maxlength="8000" placeholder="e.g. Same person and room, only the copy changes"></textarea>
+         <span class="hint" id="create-direction-hint" hidden>Required. With no source video this is the whole spec: for each slide, the scene and the exact on-image text (up to 8000 characters).</span></div>
+       <div id="brief-only-fields" hidden>
+         <div class="field-row"><span>Locked constraints</span>
+           <textarea id="create-locks" placeholder="One rule per line, e.g. No faces on any slide"></textarea>
+           <span class="hint">Rules every variant must keep. One per line, up to 20.</span></div>
+       </div>
        <div class="two-col">
          <div class="field-row"><span>Audience</span><input type="text" id="create-audience" maxlength="500"/></div>
          <div class="field-row"><span>Brand</span><input type="text" id="create-brand" maxlength="500"/></div>
@@ -718,7 +732,8 @@ ${cards.length ? toolbarHtml(filters) : ''}
 
   // ── Experiment survey: select slideshow cards, stepped wizard ──
   // Edit mode = one slideshow, exact overlay copy per slide (pixels locked).
-  // Create mode = up to 20 slideshows, full variable survey. Browser route
+  // Create mode = up to 20 slideshows, full variable survey. Brief mode = no
+  // source video: the same survey fields plus a required direction, no selection. Browser route
   // POSTs the survey to this same page URL (the ?t= token authorises it);
   // inside an MCP host there is no fetch, so step 3 shows a payload the
   // caller pastes into chat instead.
@@ -771,18 +786,28 @@ ${cards.length ? toolbarHtml(filters) : ''}
       });
       document.getElementById('step-1').className = 'step' + (n === 1 ? ' on' : '');
       document.getElementById('step-2-edit').className = 'step' + (n === 2 && mode === 'edit' ? ' on' : '');
-      document.getElementById('step-2-create').className = 'step' + (n === 2 && mode === 'create' ? ' on' : '');
+      document.getElementById('step-2-create').className = 'step' + (n === 2 && (mode === 'create' || mode === 'brief') ? ' on' : '');
       document.getElementById('step-3').className = 'step' + (n === 3 ? ' on' : '');
       document.getElementById('exp-back').disabled = n === 1;
       document.getElementById('exp-next').textContent = n === 3 ? (inHost ? 'Copy payload' : 'Create draft') : 'Next →';
       err('');
     }
-    function openModal() {
-      var cards = selCards();
-      document.getElementById('exp-sub').textContent =
-        cards.length + ' slideshow' + (cards.length === 1 ? '' : 's') + ' selected. Your copy seeds the planner — the plan step may rephrase it.';
+    function applyBriefCopy() {
+      var brief = mode === 'brief';
+      document.getElementById('brief-only-fields').hidden = !brief;
+      document.getElementById('create-direction-hint').hidden = !brief;
+      document.getElementById('create-direction-label').textContent = brief ? 'Direction (per-slide scene and copy)' : 'Creative direction';
+      document.getElementById('exp-sub').textContent = brief
+        ? 'No source video. The brief you write here is the spec — the plan step turns it into variants.'
+        : selCards().length + ' slideshow' + (selCards().length === 1 ? '' : 's') + ' selected. Your copy seeds the planner — the plan step may rephrase it.';
+    }
+    function openModal(startMode) {
+      var radio = document.querySelector('input[name=exp-mode][value=' + (startMode === 'brief' ? 'brief' : 'edit') + ']');
+      if (radio) radio.checked = true;
+      mode = startMode === 'brief' ? 'brief' : 'edit';
+      applyBriefCopy();
       buildEditOverlays();
-      setStep(1);
+      setStep(startMode === 'brief' ? 2 : 1);
       modal.classList.add('show');
     }
     function buildEditOverlays() {
@@ -918,6 +943,22 @@ ${cards.length ? toolbarHtml(filters) : ''}
       }
       var vars = checkedVars();
       var exploratory = str('create-test-mode') === 'exploration' || vars.indexOf('concept') !== -1 || vars.indexOf('slides') !== -1;
+      if (mode === 'brief') {
+        return {
+          surveyMode: 'brief',
+          instructions: {
+            goal: str('create-goal'),
+            brand: str('create-brand'), audience: str('create-audience'),
+            language: str('create-lang') || 'English',
+            direction: str('create-direction'),
+            lockedConstraints: str('create-locks').split('\\n').map(function (l) { return l.trim(); }).filter(Boolean).slice(0, 20),
+            variables: vars, mode: exploratory ? 'exploration' : 'controlled',
+          },
+          variantCount: num('create-count', 3, 1, 12),
+          slideCount: num('create-slides', 5, 3, 8),
+          maxCredits: num('create-credits', 200, 1, 10000),
+        };
+      }
       return {
         videoIds: selected.slice(0, 20),
         surveyMode: 'create',
@@ -939,6 +980,22 @@ ${cards.length ? toolbarHtml(filters) : ''}
     // the payload: create mode copies the whole object into the host/chat box,
     // so a property here would be pasted as a parameter that does not exist.
     function reviewHtml(p, sourceSlides) {
+      if (p.surveyMode === 'brief') {
+        return [
+          ['Mode', 'Start from a brief (no source video)'],
+          ['Goal', p.instructions.goal || '—'],
+          ['Variables', p.instructions.variables.join(', ')],
+          ['Test mode', p.instructions.mode === 'exploration' ? 'Explore combinations' : 'One-variable comparison'],
+          ['Variants', String(p.variantCount)],
+          ['Slides each', String(p.slideCount)],
+          ['Direction', p.instructions.direction || '—'],
+          ['Overlay text', p.instructions.overlayMode === 'script' ? 'Drawn by code after the image is generated' : 'Drawn by the image model'],
+          ['Max credits', String(p.maxCredits)],
+          ['Cost now', 'Nothing — this creates a draft. Planning and rendering spend credits later.'],
+        ].map(function (r) {
+          return '<dt>' + r[0] + '</dt><dd>' + String(r[1]).replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</dd>';
+        }).join('');
+      }
       var rows = [
         ['Mode', p.surveyMode === 'edit' ? (p.instructions.variables[0] === 'character' ? 'Edit slideshow (new character, original text)' : 'Edit slideshow (same images, new text)') : 'Create variations'],
         ['Videos', p.videoIds.length + ' slideshow' + (p.videoIds.length === 1 ? '' : 's')],
@@ -983,6 +1040,12 @@ ${cards.length ? toolbarHtml(filters) : ''}
     }
 
     function validate() {
+      if (mode === 'brief') {
+        if (!str('create-goal')) return 'Describe the goal — what should the experiment find out?';
+        if (!str('create-direction')) return 'Write the direction — with no source video it is the whole spec (per-slide scene and copy).';
+        if (!checkedVars().length) return 'Pick at least one variable to test.';
+        return '';
+      }
       if (!selected.length) return 'Select at least one slideshow first.';
       if (mode === 'edit') {
         if (selected.length !== 1) return 'Edit mode works on exactly one slideshow — deselect down to one, or switch to Create.';
@@ -995,7 +1058,8 @@ ${cards.length ? toolbarHtml(filters) : ''}
       return '';
     }
 
-    document.getElementById('exp-start').addEventListener('click', openModal);
+    document.getElementById('exp-start').addEventListener('click', function () { openModal('edit'); });
+    document.getElementById('exp-brief-start').addEventListener('click', function () { openModal('brief'); });
     document.getElementById('edit-hook').addEventListener('input', markTouched);
     document.getElementById('edit-variable').addEventListener('change', function () {
       var characterEdit = str('edit-variable') === 'character';
@@ -1009,13 +1073,14 @@ ${cards.length ? toolbarHtml(filters) : ''}
       if (step > 1) setStep(step - 1);
     });
     Array.prototype.forEach.call(document.querySelectorAll('input[name=exp-mode]'), function (r) {
-      r.addEventListener('change', function () { mode = r.value; });
+      r.addEventListener('change', function () { mode = r.value; applyBriefCopy(); });
     });
     document.getElementById('exp-next').addEventListener('click', function () {
       var res = document.getElementById('exp-result');
       res.textContent = '';
       if (step === 1) {
         mode = (document.querySelector('input[name=exp-mode]:checked') || {}).value || 'edit';
+        applyBriefCopy();
         if (mode === 'edit' && selected.length !== 1) {
           err('Edit mode needs exactly one selected slideshow (you have ' + selected.length + ').');
           return;
@@ -1060,6 +1125,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
           } else {
             chatPayload = Object.assign({}, p);
             delete chatPayload.surveyMode;
+            if (mode === 'brief') chatPayload.mode = 'brief';
           }
           document.getElementById('exp-host-payload').textContent =
             // The separator is written as an escaped backslash-n, not a real

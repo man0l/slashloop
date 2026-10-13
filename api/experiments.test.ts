@@ -5,6 +5,7 @@ import { ExperimentError } from '../src/experiments/schema.js';
 
 const experiments = new Map<string, any>();
 const deletedObjects: string[] = [];
+const created: any[] = [];
 
 // Snapshot by value: Bun patches a loaded module's exports in place when it is mocked.
 const realStore = { ...(await import('../src/experiments/store.js')) };
@@ -25,6 +26,7 @@ mock.module('../src/experiments/store.js', () => ({
     return had;
   },
   serialize: (e: any) => ({ ...e, serialized: true }),
+  create: async (e: any, key: string) => { created.push({ e, key }); return e; },
 }));
 const realStorage = { ...(await import('../src/lib/storage.js')) };
 mock.module('../src/lib/storage.js', () => ({
@@ -38,7 +40,7 @@ mock.module('../src/lib/authz.js', () => ({
   requireWorkspaceAccess: async () => ({ ok: true }),
 }));
 
-const { DELETE, GET } = await import('./experiments.js');
+const { DELETE, GET, POST } = await import('./experiments.js');
 
 // mock.module is process-global: hand later files the real modules back by value, serializer included.
 afterAll(() => {
@@ -60,7 +62,7 @@ function req(method: string, url: string, body?: unknown) {
   return new Request(url, { method, body: body === undefined ? undefined : JSON.stringify(body), headers: body === undefined ? {} : { 'Content-Type': 'application/json' } });
 }
 
-beforeEach(() => { experiments.clear(); deletedObjects.length = 0; });
+beforeEach(() => { experiments.clear(); deletedObjects.length = 0; created.length = 0; });
 
 describe('experiments endpoint', () => {
   test('bulk DELETE cascades rows and R2 paths and reports per-id failures', async () => {
@@ -111,5 +113,29 @@ describe('experiments endpoint', () => {
     expect(page2.nextOffset).toBeNull();
     const unfiltered = await (await GET(req('GET', 'https://x.test/api/experiments?workspaceId=w&limit=50'))).json() as any;
     expect(unfiltered.experiments).toHaveLength(5);
+  });
+
+  test('POST {mode:"brief"} creates a sourceless draft with no videoIds (SLA-802)', async () => {
+    const body = {
+      mode: 'brief', workspaceId: 'w', idempotencyKey: 'brief-key-12345', variantCount: 2, slideCount: 6, maxCredits: 200,
+      instructions: { goal: 'Test a hook', brand: '', audience: '', language: 'English', variables: ['hook'], direction: 'Slide 1 overlay "Stop scrolling".' },
+    };
+    const res = await POST(req('POST', 'https://x.test/api/experiments', body));
+    expect(res.status).toBe(200);
+    expect(created).toHaveLength(1);
+    const e = created[0].e;
+    expect(e).toMatchObject({ status: 'draft', variantCount: 2, slideCount: 6, inputs: [], generationBasis: 'text-directed' });
+    expect(e.instructions.direction).toBe(body.instructions.direction);
+    expect(((await res.json()) as any).experiment.serialized).toBe(true);
+  });
+
+  test('POST {mode:"brief"} refuses videoIds and a missing direction; plain create still needs videoIds', async () => {
+    const base = { mode: 'brief', workspaceId: 'w', idempotencyKey: 'brief-key-12345', variantCount: 2, slideCount: 6, maxCredits: 200 };
+    const instr = { goal: 'g', brand: '', audience: '', language: 'English', variables: ['hook'], direction: 'd' };
+    expect((await POST(req('POST', 'https://x.test/api/experiments', { ...base, videoIds: ['v1'], instructions: instr }))).status).toBe(400);
+    expect((await POST(req('POST', 'https://x.test/api/experiments', { ...base, instructions: { ...instr, direction: '' } }))).status).toBe(400);
+    const { mode, ...plain } = base;
+    expect((await POST(req('POST', 'https://x.test/api/experiments', { ...plain, instructions: instr }))).status).toBe(400);
+    expect(created).toHaveLength(0);
   });
 });
