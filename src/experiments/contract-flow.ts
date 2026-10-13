@@ -186,6 +186,25 @@ function failDeadDependencies(e: Experiment): boolean {
   return changed;
 }
 
+/** A queued slide that edits its arm's first slide has nothing to edit once that slide died with no picture. While the run was
+ *  stopped by the first failure this never came up; now the other arm keeps going (SLA-820), so it fails closed, unbilled. */
+function failDeadAnchors(e: Experiment): boolean {
+  let changed = false;
+  for (const t of e.tasks) {
+    if (t.kind !== 'slide' || t.status !== 'pending' || !t.index) continue;
+    const v = variantOf(e, t.target);
+    if (!v || v.slides[0]?.path || !isAnchorEdit(e, v, t.index)) continue;
+    const anchor = e.tasks.filter(s => s.kind === 'slide' && s.target === v.id && s.index === 0);
+    if (anchor.some(open) || !anchor.some(dead)) continue;
+    t.status = 'failed';
+    t.error = 'anchor_slide_unavailable: this slide edits slide 1 of its own variant, which failed and has no picture to edit. Retry slide 1 first.';
+    const slide = v.slides[t.index];
+    if (slide) { slide.status = 'failed'; slide.error = t.error; }
+    changed = true;
+  }
+  return changed;
+}
+
 /** An arm with nothing left to run and a dead job will never finish: it settles as failed (or paused for an unknown outcome),
  *  while the other arm keeps going. */
 function settleDeadArms(e: Experiment): boolean {
@@ -203,13 +222,14 @@ function settleDeadArms(e: Experiment): boolean {
   return changed;
 }
 
-/** Settles contract work that can never run, in the order that lets each step see the last: dead copies, then the QA that
+/** Settles contract work that can never run, in the order that lets each step see the last: dead copies and anchor edits, then the QA that
  *  waited on them, then the arms. True when anything changed and must be saved. */
 export function settleStrandedContract(e: Experiment): boolean {
   const copies = failDeadDependencies(e);
+  const anchors = failDeadAnchors(e);
   const qa = reapContractQa(e);
   const arms = settleDeadArms(e);
-  return copies || qa || arms;
+  return copies || anchors || qa || arms;
 }
 
 // ---- settlement ----------------------------------------------------------------
@@ -232,11 +252,18 @@ export function settleContractSlide(e: Experiment, t: Task, result: unknown): vo
   settleContractCompletion(e);
 }
 
+/** Settles the experiment once every arm has: completed when all work is done, failed when an arm failed. One arm failing never
+ *  stops the others (SLA-820): the run stays active until nothing is open, so every arm reaches a verdict the A/B can compare.
+ *  An unknown outcome is left to the reaper, which pauses for review. */
 export function settleContractCompletion(e: Experiment): void {
   if (!['planning', 'generating'].includes(e.status)) return;
   if (e.tasks.some(t => t.kind === 'revise' && open(t))) return;
-  if (!e.tasks.filter(x => x.kind === 'slide' || x.kind === 'qa').every(x => x.status === 'done')) return;
-  e.status = e.variants.some(v => v.status === 'draft') ? 'review' : 'completed';
+  const work = e.tasks.filter(x => x.kind === 'slide' || x.kind === 'qa');
+  if (work.some(open)) return;
+  if (work.every(x => x.status === 'done')) { e.status = e.variants.some(v => v.status === 'draft') ? 'review' : 'completed'; return; }
+  if (work.some(x => x.status === 'unknown')) return;
+  e.status = 'failed';
+  e.error = e.variants.find(v => v.qaDeck?.verdict === 'failed')?.error ?? work.find(x => x.status === 'failed' && x.error)?.error ?? 'deck_incomplete';
 }
 
 export const QA_REPAIR_ROUNDS = 1;
@@ -286,7 +313,7 @@ export function settleQa(e: Experiment, t: Task, rawResult: QaTaskResult): void 
   v.qaDeck = { ...record, verdict: 'failed', repaired: v.qaDeck?.repaired ?? [] };
   v.status = 'failed'; v.error = message;
   t.status = 'failed'; t.error = message;
-  if (['planning', 'generating'].includes(e.status)) { e.status = 'failed'; e.error = message; }
+  settleContractCompletion(e);
 }
 
 /** Tasks one arm needs when it is sent to rendering: its slides, then one QA over the whole arm. */

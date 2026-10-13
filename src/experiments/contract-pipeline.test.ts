@@ -219,7 +219,7 @@ describe('QA: hard failures get one repair and one re-QA, never downgraded', () 
   });
 
   test('a failure that survives the repair round fails the arm and the experiment', async () => {
-    const w = world({ contract: rawContract(), qa: [() => qaFailSlide(1), () => qaFailSlide(1)] });
+    const w = world({ contract: rawContract(), qa: [() => qaFailSlide(1), () => qaFailSlide(1), () => qaPass()] });
     await w.plan();
     await w.generate();
     expect(w.row.status).toBe('failed');
@@ -228,6 +228,27 @@ describe('QA: hard failures get one repair and one re-QA, never downgraded', () 
     expect(a.qaDeck).toMatchObject({ verdict: 'failed', attempts: 2 });
     expect(a.error).toMatch(/qa_failed/);
     expect(a.error).toMatch(/slide 2/);
+    expect(w.row.error).toBe(a.error);
+  });
+
+  test('SLA-820: the baseline failing QA terminally does not strand the other arm; its QA job is a terminal verdict', async () => {
+    const w = world({ contract: rawContract(), qa: [() => qaFailSlide(1), () => qaFailSlide(1), () => qaPass()] });
+    await w.plan();
+    await w.generate();
+    const [a, b] = w.row.variants;
+    expect(a!.qaDeck?.verdict).toBe('failed');
+    // Arm B still rendered and was judged, so the A/B can be compared.
+    expect(b!.status).toBe('done');
+    expect(b!.qaDeck?.verdict).toBe('passed');
+    expect(b!.slides.every(s => s.status === 'done' && s.path)).toBe(true);
+    expect(w.row.tasks.some(t => t.status === 'pending' || t.status === 'running')).toBe(false);
+    expect(w.calls.qa).toHaveLength(3);
+    // The run fails only once every arm has settled, with the QA verdict as its reason.
+    expect(w.row.status).toBe('failed');
+    expect(w.row.error).toMatch(/^qa_failed:/);
+    const qaJob = experimentProgress(w.row).retryableJobs.find(j => j.kind === 'qa' && j.status === 'failed')!;
+    expect(qaJob).toMatchObject({ terminalQa: true, contentFiltered: false });
+    expect(qaJob.advice).toContain('Terminal QA verdict');
   });
 
   test('in edit mode a missing arc is a warning, not a block', async () => {
@@ -434,7 +455,7 @@ describe('content-filter refusals keep the provider\'s own words (SLA-816)', () 
 });
 
 describe('SLA-816: continuing the independent hook after a refused baseline slide', () => {
-  test('retrying only the queued hook job finishes it without replaying the refused slide', async () => {
+  test('the hook arm finishes in the same run without replaying the refused slide (SLA-820: no retry needed)', async () => {
     const contract = rawContract({
       identity: 'invented-consistent', identitySheet: 'a woman, cartoon', keepSourceImage: false, borrowSourceLook: true, medium: 'cartoon',
       sourceFrameLevels: [0, 1, 2].map(index => ({ index, level: 'none', showsPerson: true })),
@@ -446,22 +467,31 @@ describe('SLA-816: continuing the independent hook after a refused baseline slid
     await w.generate();
     const [base, alt] = w.row.variants;
     const refusedTask = w.row.tasks.find(t => t.kind === 'slide' && t.target === base!.id && t.index === 1)!;
-    expect(w.row.status).toBe('failed');
     expect(refusedTask).toMatchObject({ status: 'failed', attempts: 1, diagnostic: { invocations: 2, plainPromptRetry: true, overlayMode: 'script' } });
     expect(base!.slides[0]!.status).toBe('done');
-    const hook = w.row.tasks.find(t => t.kind === 'slide' && t.target === alt!.id && t.index === 0)!;
-    expect(hook.status).toBe('pending');
-
-    // The supported path: retry_experiment { taskIds: [hook] } accepts a pending job and reopens the run (service.ts action 'retry').
-    w.update(e => { applyRetry(e, e.tasks.filter(t => t.id === hook.id)); e.status = 'generating'; e.error = null; });
-    await w.drain();
-
-    const after = w.row.tasks.find(t => t.id === refusedTask.id)!;
-    expect(after).toMatchObject({ status: 'failed', attempts: 1, diagnostic: refusedTask.diagnostic });
     expect(refused).toBe(2);
-    expect(w.row.tasks.find(t => t.id === hook.id)!.status).toBe('done');
-    expect(w.row.variants[1]!.slides[0]).toMatchObject({ status: 'done', overlay: { mode: 'script' } });
+    const hook = w.row.tasks.find(t => t.kind === 'slide' && t.target === alt!.id && t.index === 0)!;
+    expect(hook.status).toBe('done');
+    expect(alt!.slides[0]).toMatchObject({ status: 'done', overlay: { mode: 'script' } });
     expect(w.calls.composed).toContainEqual({ text: 'Hook B', index: 0 });
+    // The alternate's copy of the refused slide fails closed instead of resending it.
+    expect(w.row.tasks.find(t => t.kind === 'slide' && t.target === alt!.id && t.index === 1)!.error).toStartWith('baseline_slide_unavailable');
+    expect(w.row.tasks.some(t => t.status === 'pending' || t.status === 'running')).toBe(false);
+    expect(w.row.status).toBe('failed');
+  });
+
+  test('a refused anchor fails the slides that edit it closed, instead of retrying anchor_slide_missing', async () => {
+    const contract = rawContract({
+      identity: 'invented-consistent', identitySheet: 'a woman, cartoon', keepSourceImage: false, borrowSourceLook: true, medium: 'cartoon',
+      sourceFrameLevels: [0, 1, 2].map(index => ({ index, level: 'none', showsPerson: true })),
+    });
+    const w = world({ contract, qa: [], rejectImage: p => p.includes('Hook A') });
+    await w.plan();
+    await w.generate([w.row.variants[0]!.id]);
+    const mine = w.row.tasks.filter(t => t.kind === 'slide');
+    expect(mine.map(t => t.status)).toEqual(['failed', 'failed', 'failed']);
+    expect(mine.slice(1).every(t => t.attempts === 0 && t.error?.startsWith('anchor_slide_unavailable'))).toBe(true);
+    expect(w.row.status).toBe('failed');
   });
 });
 
