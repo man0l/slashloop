@@ -29,11 +29,11 @@ const qaPass = (n = 3) => ({
 });
 const qaFailSlide = (bad: number, n = 3) => { const q = qaPass(n); q.slides[bad]!.overlayExact = false; return q; };
 
-interface Script { contract: unknown; qa: Array<(armSlides: number) => unknown>; rejectImage?: (prompt: string) => boolean }
+interface Script { contract: unknown; contracts?: unknown[]; qa: Array<(armSlides: number) => unknown>; rejectImage?: (prompt: string) => boolean }
 const FILTER_400 = 'OpenRouter image error 400: {"error":{"message":"The response was filtered due to the prompt triggering our content management policy"}}';
 
 function world(script: Script, overrides: Partial<Experiment['instructions']> = {}) {
-  const calls = { contract: 0, images: [] as Array<{ prompt: string; referenceUrl?: string }>, qa: [] as Array<{ images: number; user: string }> };
+  const calls = { contract: 0, contractUsers: [] as string[], images: [] as Array<{ prompt: string; referenceUrl?: string }>, qa: [] as Array<{ images: number; user: string }> };
   const files = new Map<string, Buffer>();
   const render: RenderDeps = {
     findSources: async () => [video('src')],
@@ -44,7 +44,7 @@ function world(script: Script, overrides: Partial<Experiment['instructions']> = 
     classify: async () => { throw new Error('no judge'); },
     generateBriefCandidates: async () => { throw new Error('no brief candidates'); },
     jevScores: async () => ({}),
-    generateContract: async () => { calls.contract++; return script.contract; },
+    generateContract: async ({ user }) => { calls.contractUsers.push(user); calls.contract++; return script.contracts ? script.contracts[Math.min(calls.contract, script.contracts.length) - 1] : script.contract; },
     verifyDeck: async ({ user, images }) => { const next = script.qa[calls.qa.length]; calls.qa.push({ images: images.length, user }); if (!next) throw new Error('unexpected qa call'); return next(images.length); },
   };
   let current = {
@@ -114,6 +114,28 @@ describe('briefs: one contract call', () => {
     expect(w.row.contract?.droppedSourceDefaults).toEqual([{ default: 'Keep the subject exactly as in the source frame', reason: 'the direction changes the subject' }]);
     expect(w.row.contract?.keptSourceDefaults).toEqual([]);
     expect(w.row.contract?.hardLocks.every(l => l.text !== 'Keep the subject exactly as in the source frame')).toBe(true);
+  });
+});
+
+describe('briefs: a short variantB gets one repair', () => {
+  const shortB = rawContract({ variantB: { variable: 'hook', value: '', slides: [] } });
+
+  test('the model is re-prompted with the missing field and the repaired contract is used', async () => {
+    const w = world({ contract: null, contracts: [shortB, rawContract()], qa: [] });
+    await w.plan();
+    expect(w.calls.contract).toBe(2);
+    expect(w.calls.contractUsers[0]).not.toContain('"repair"');
+    expect(w.calls.contractUsers[1]).toContain('Arm B needs a value for');
+    expect(w.row.status).toBe('review');
+    expect(w.row.variants[1]!.brief.hook).toBe('Hook B');
+    expect(w.providerCalls).toEqual({ contract: 2 });
+  });
+
+  test('a second short variantB fails with contract_variant_missing after exactly one repair', async () => {
+    const w = world({ contract: shortB, qa: [] });
+    await w.plan().catch(() => undefined);
+    expect(w.calls.contract).toBe(2);
+    expect(w.row.tasks.find(t => t.kind === 'briefs')!.error).toContain('contract_variant_missing');
   });
 });
 
@@ -301,12 +323,16 @@ describe('invented identity', () => {
     expect(w.providerCalls.render).toBe(4);
   });
 
-  test('a filtered render that is not an edit of slide 1 is not retried in the same attempt', async () => {
+  test('a filtered render is retried once with the plain prompt, then fails terminally with a refund and no requeue', async () => {
     const w = world({ contract: invented(), qa: [() => qaPass()], rejectImage: p => p.includes('Create one new') });
     await w.plan();
     await w.generate([w.row.variants[0]!.id]).catch(() => undefined);
-    expect(w.calls.images.length).toBeGreaterThan(0);
-    expect(new Set(w.calls.images.map(c => c.prompt)).size).toBe(1);
+    const filtered = w.calls.images.filter(c => c.prompt.includes('Create one new'));
+    expect(filtered).toHaveLength(2);
+    const task = w.row.tasks.find(t => t.kind === 'slide' && t.status === 'failed')!;
+    expect(task.error).toMatch(/^provider_result_rejected:provider_content_filtered/);
+    expect(task.attempts).toBe(1);
+    expect(task.charged).toBe(0);
     expect(w.row.variants[0]!.status).not.toBe('done');
   });
 });

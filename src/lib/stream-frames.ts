@@ -186,7 +186,10 @@ export async function fetchStreamThumbnail(
   const base = baseThumbnailUrl || `https://customer-${config.accountId}.cloudflarestream.com/${uid}/thumbnails/thumbnail.jpg`;
   const url = `${base}${base.includes('?') ? '&' : '?'}time=${tSec}s&height=1080`;
   const res = await fetchImpl(url, { signal: AbortSignal.timeout(60_000) });
-  if (!res.ok) throw new Error(`Stream thumbnail ${tSec}s failed (${res.status})`);
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`Stream thumbnail ${tSec}s failed (${res.status})`);
+  }
   const buf = new Uint8Array(await res.arrayBuffer());
   if (buf.byteLength < 1024) throw new Error(`Stream thumbnail ${tSec}s too small (${buf.byteLength}b)`);
   return buf;

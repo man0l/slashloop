@@ -9,7 +9,7 @@ import {
 } from './resolved-contract.js';
 import { contractView, proposalsFromContract, slideFeedback, slideWorkFor } from './contract-flow.js';
 import { validateVariants, type Experiment, type Task } from './schema.js';
-import { SafeFailure, SlideMeter, logAiCost, type ExecuteContext, type Prepared, type RenderDeps } from './providers.js';
+import { CONTENT_FILTER_PATTERN, SafeFailure, SlideMeter, logAiCost, type ExecuteContext, type Prepared, type RenderDeps } from './providers.js';
 import { storySlideCount } from './slide-count.js';
 
 /** One source image the contract, the renderer and QA all index the same way. */
@@ -94,19 +94,31 @@ export async function prepareContractBriefs(e: Experiment, render: RenderDeps): 
         source: `s${ix}`, observations: i.evidence.slice(0, 6).map(v => v.observation).join(' | ').slice(0, 1200),
       }));
       const meter = new SlideMeter();
-      let raw: unknown;
+      let contract: ResolvedContract | undefined;
+      let calls = 0;
+      let repair: string | undefined;
       try {
-        raw = await contractCall({
-          system: CONTRACT_SYSTEM, user: contractPromptPayload(input, { sources }),
-          images: bytes.map((b, i) => jpeg(b, `Source frame ${i}:`)), meter: meter.sink,
-        });
+        // A short or empty variantB gets one in-call repair that names the missing field; any other contract error is final.
+        while (!contract) {
+          calls++;
+          const raw = await contractCall({
+            system: CONTRACT_SYSTEM, user: contractPromptPayload(input, repair ? { sources, repair } : { sources }),
+            images: bytes.map((b, i) => jpeg(b, `Source frame ${i}:`)), meter: meter.sink,
+          });
+          try { contract = normalizeContract(raw, input); }
+          catch (err) {
+            if (!(err instanceof ContractError)) throw err;
+            if (err.code === 'contract_variant_missing' && calls === 1) {
+              repair = `Your previous answer was rejected: ${err.message} Return the complete contract again with variantB filled in.`;
+              continue;
+            }
+            throw new SafeFailure(err.code);
+          }
+        }
       } finally { meter.flush(e.workspaceId, `${e.id}#contract`, render.recordAiCost ?? logAiCost); }
-      let contract: ResolvedContract;
-      try { contract = normalizeContract(raw, input); }
-      catch (err) { if (err instanceof ContractError) throw new SafeFailure(err.code); throw err; }
       const { proposals, notices } = proposalsFromContract(e, contract);
       validateVariants(e, proposals);
-      return { proposals, contract, slideCount: e.slideCount, notices, calls: { contract: 1 } };
+      return { proposals, contract, slideCount: e.slideCount, notices, calls: { contract: calls } };
     },
   };
 }
@@ -120,6 +132,7 @@ function renderFailure(err: unknown): never {
   const message = err instanceof Error ? err.message : String(err);
   const flat = message.replace(/\s+/g, ' ');
   if (err instanceof SafeFailure) throw err;
+  if (CONTENT_FILTER_PATTERN.test(flat)) throw new SafeFailure('provider_content_filtered: the image provider refused the prompt on a content filter. Re-create with overlayMode "script" to draw the overlay text in code');
   if (/in_flight_budget_exhausted/i.test(flat) && !/insufficient credits/i.test(flat)) throw new SafeFailure(`in_flight_budget retry_after=${/retry_after=(\d+)/i.exec(flat)?.[1] ?? 20}`);
   if (/\b402\b|insufficient credits/i.test(flat)) throw new SafeFailure('credits_exhausted_402');
   if (/\b429\b|rate.?limit/i.test(flat)) throw new SafeFailure(`rate_limited_429 retry_after=${/retry_after=(\d+)/i.exec(flat)?.[1] ?? 30}`);
@@ -202,9 +215,9 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
         catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           const comparative = work !== 'caption-edit' && role === 'anchor-edit' && !!view.slides[index]?.visibleChange;
-          if (!FILTERED.test(msg) || !(t.fix || human || comparative)) renderFailure(err);
-          // The repair text, human feedback, or a visibleChange that compares a face with slide 1, can trip a content
-          // filter: retry once with the plain prompt, and an edit of slide 1 asks for the slide's own scene instead.
+          if (!FILTERED.test(msg)) renderFailure(err);
+          // A filter hit gets one plain retry: without the repair text or human feedback, and an edit of slide 1 asks
+          // for the slide's own scene instead of the face comparison. A second refusal is terminal (renderFailure).
           const plain = comparative ? { ...view, slides: view.slides.map((s, i) => i === index ? { ...s, visibleChange: '' } : s) } : view;
           usedPrompt = work === 'caption-edit' && base?.frozenBrief
             ? captionEditPrompt(base.frozenBrief.slides[index]?.overlayText ?? '', view.slides[index]!.overlayText)
