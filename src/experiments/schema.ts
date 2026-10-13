@@ -144,6 +144,29 @@ export function takeRanBy(raw: unknown): { body: unknown; ranBy: string | null }
   const { ran_by, ranBy, ...body } = raw as Record<string, unknown>;
   return { body, ranBy: normalizeRanBy(ran_by ?? ranBy) };
 }
+/** SLA-806: a test is one hypothesis; every experiment run for it (a re-create after a failure, a fixed retry) carries the same key. */
+export const TEST_KEY_MAX = 80;
+const TEST_KEY = /^[a-z0-9][a-z0-9._:-]*$/;
+/** Test key: trimmed and lower-cased slug (a-z, 0-9, . _ : -). Blank/non-string means none (null); anything else malformed is refused. */
+export function normalizeTestKey(v: unknown): string | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== 'string') throw new ExperimentError(400, 'invalid_test_key', 'test_key must be a string.');
+  const t = v.trim().toLowerCase();
+  if (!t) return null;
+  if (t.length > TEST_KEY_MAX || !TEST_KEY.test(t)) throw new ExperimentError(400, 'invalid_test_key', `test_key must be a slug of at most ${TEST_KEY_MAX} characters: a-z, 0-9, ".", "_", ":" or "-", e.g. "tier-ladder-mewing".`);
+  return t;
+}
+/** Splits the optional test key and test-wide credit cap off a create body so they never reach the strict schemas or the idempotency fingerprint. */
+export function takeTest(raw: unknown): { body: unknown; testKey: string | null; testMaxCredits: number | null } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { body: raw, testKey: null, testMaxCredits: null };
+  const { test_key, testKey, test_max_credits, testMaxCredits, ...body } = raw as Record<string, unknown>;
+  const key = normalizeTestKey(test_key ?? testKey);
+  const capRaw = test_max_credits ?? testMaxCredits;
+  if (capRaw === undefined || capRaw === null) return { body, testKey: key, testMaxCredits: null };
+  if (!key) throw new ExperimentError(400, 'invalid_test_max_credits', 'test_max_credits caps a test, so it needs a test_key.');
+  if (typeof capRaw !== 'number' || !Number.isInteger(capRaw) || capRaw < 1 || capRaw > 100_000) throw new ExperimentError(400, 'invalid_test_max_credits', 'test_max_credits must be an integer from 1 to 100000.');
+  return { body, testKey: key, testMaxCredits: capRaw };
+}
 /** Statuses an experiment can rest in until a human or agent acts. Entering one from outside this set is the completion event. */
 export const TERMINAL_STATUSES = ['completed', 'review', 'failed', 'paused', 'cancelled'] as const;
 export const NOTIFY_METADATA_MAX_BYTES = 4096;
@@ -629,6 +652,10 @@ export interface Experiment {
   id: string; workspaceId: string; status: string; createdAt: string; updatedAt: string; instructions: InstructionsData;
   /** Who ran it: "user" or "agent:<name>" (any "on behalf of <user>" suffix is dropped). Mirrors the indexed `ranBy` column; absent/null on legacy rows. */
   ranBy?: string | null;
+  /** SLA-806: the test this experiment is an attempt of. Mirrors the indexed `testKey` column; absent/null when the caller gave none. */
+  testKey?: string | null;
+  /** SLA-806: credit cap for the whole test (every experiment with this testKey, together). Charges and approved estimates past it are refused. */
+  testMaxCredits?: number | null;
   /** Create response only: where completion is delivered. Never persisted in dataJson. */
   notify?: NotifyReceipt;
   /** Absent on every legacy row. Set only when the caller explicitly selected the

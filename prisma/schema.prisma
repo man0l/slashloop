@@ -306,23 +306,26 @@ model Video {
 /// Experiments own resumable paid-step receipts in dataJson. Version is a CAS fence.
 /// Deck/revision history is retained; no automatic output deletion.
 model Experiment {
-  id           String @id
-  workspaceId  String
-  status       String
-  version      Int @default(0)
-  dataJson     String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  createKey    String
+  id          String   @id
+  workspaceId String
+  status      String
+  version     Int      @default(0)
+  dataJson    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createKey   String
   /// Free-text runner: "user" or "agent:<name>". Null on legacy rows.
-  ranBy        String?
+  ranBy       String?
   /// SLA-617: JSON {url, secret, secretGenerated, metadata} for the completion webhook. A column, not dataJson, so the secret never rides serialize(). Null = no webhook.
-  notifyJson   String?
+  notifyJson  String?
+  /// SLA-806: the test (one hypothesis) this experiment is an attempt of. A column so "every attempt of this test" is an index seek. Null = no test key.
+  testKey     String?
 
   @@unique([workspaceId, createKey])
   @@index([workspaceId, createdAt])
   @@index([status, updatedAt])
   @@index([workspaceId, ranBy, createdAt])
+  @@index([workspaceId, testKey, createdAt])
 }
 
 /// SLA-617: one row per non-terminal -> terminal experiment transition that asked for a webhook, written in the same batch as the status change and delivered by the VPS worker.

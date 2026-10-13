@@ -13342,6 +13342,7 @@ export namespace Prisma {
     createKey: string | null
     ranBy: string | null
     notifyJson: string | null
+    testKey: string | null
   }
 
   export type ExperimentMaxAggregateOutputType = {
@@ -13355,6 +13356,7 @@ export namespace Prisma {
     createKey: string | null
     ranBy: string | null
     notifyJson: string | null
+    testKey: string | null
   }
 
   export type ExperimentCountAggregateOutputType = {
@@ -13368,6 +13370,7 @@ export namespace Prisma {
     createKey: number
     ranBy: number
     notifyJson: number
+    testKey: number
     _all: number
   }
 
@@ -13391,6 +13394,7 @@ export namespace Prisma {
     createKey?: true
     ranBy?: true
     notifyJson?: true
+    testKey?: true
   }
 
   export type ExperimentMaxAggregateInputType = {
@@ -13404,6 +13408,7 @@ export namespace Prisma {
     createKey?: true
     ranBy?: true
     notifyJson?: true
+    testKey?: true
   }
 
   export type ExperimentCountAggregateInputType = {
@@ -13417,6 +13422,7 @@ export namespace Prisma {
     createKey?: true
     ranBy?: true
     notifyJson?: true
+    testKey?: true
     _all?: true
   }
 
@@ -13517,6 +13523,7 @@ export namespace Prisma {
     createKey: string
     ranBy: string | null
     notifyJson: string | null
+    testKey: string | null
     _count: ExperimentCountAggregateOutputType | null
     _avg: ExperimentAvgAggregateOutputType | null
     _sum: ExperimentSumAggregateOutputType | null
@@ -13549,6 +13556,7 @@ export namespace Prisma {
     createKey?: boolean
     ranBy?: boolean
     notifyJson?: boolean
+    testKey?: boolean
   }, ExtArgs["result"]["experiment"]>
 
   export type ExperimentSelectCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
@@ -13562,6 +13570,7 @@ export namespace Prisma {
     createKey?: boolean
     ranBy?: boolean
     notifyJson?: boolean
+    testKey?: boolean
   }, ExtArgs["result"]["experiment"]>
 
   export type ExperimentSelectUpdateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
@@ -13575,6 +13584,7 @@ export namespace Prisma {
     createKey?: boolean
     ranBy?: boolean
     notifyJson?: boolean
+    testKey?: boolean
   }, ExtArgs["result"]["experiment"]>
 
   export type ExperimentSelectScalar = {
@@ -13588,9 +13598,10 @@ export namespace Prisma {
     createKey?: boolean
     ranBy?: boolean
     notifyJson?: boolean
+    testKey?: boolean
   }
 
-  export type ExperimentOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "status" | "version" | "dataJson" | "createdAt" | "updatedAt" | "createKey" | "ranBy" | "notifyJson", ExtArgs["result"]["experiment"]>
+  export type ExperimentOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "status" | "version" | "dataJson" | "createdAt" | "updatedAt" | "createKey" | "ranBy" | "notifyJson" | "testKey", ExtArgs["result"]["experiment"]>
 
   export type $ExperimentPayload<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
     name: "Experiment"
@@ -13605,13 +13616,17 @@ export namespace Prisma {
       updatedAt: Date
       createKey: string
       /**
-       * Free-text runner: "user" or "agent:<name> on behalf of <user>". Null on legacy rows.
+       * Free-text runner: "user" or "agent:<name>". Null on legacy rows.
        */
       ranBy: string | null
       /**
        * SLA-617: JSON {url, secret, secretGenerated, metadata} for the completion webhook. A column, not dataJson, so the secret never rides serialize(). Null = no webhook.
        */
       notifyJson: string | null
+      /**
+       * SLA-806: the test (one hypothesis) this experiment is an attempt of. A column so "every attempt of this test" is an index seek. Null = no test key.
+       */
+      testKey: string | null
     }, ExtArgs["result"]["experiment"]>
     composites: {}
   }
@@ -14045,6 +14060,7 @@ export namespace Prisma {
     readonly createKey: FieldRef<"Experiment", 'String'>
     readonly ranBy: FieldRef<"Experiment", 'String'>
     readonly notifyJson: FieldRef<"Experiment", 'String'>
+    readonly testKey: FieldRef<"Experiment", 'String'>
   }
     
 
@@ -33424,7 +33440,8 @@ export namespace Prisma {
     updatedAt: 'updatedAt',
     createKey: 'createKey',
     ranBy: 'ranBy',
-    notifyJson: 'notifyJson'
+    notifyJson: 'notifyJson',
+    testKey: 'testKey'
   };
 
   export type ExperimentScalarFieldEnum = (typeof ExperimentScalarFieldEnum)[keyof typeof ExperimentScalarFieldEnum]
@@ -34525,6 +34542,7 @@ export namespace Prisma {
     createKey?: StringFilter<"Experiment"> | string
     ranBy?: StringNullableFilter<"Experiment"> | string | null
     notifyJson?: StringNullableFilter<"Experiment"> | string | null
+    testKey?: StringNullableFilter<"Experiment"> | string | null
   }
 
   export type ExperimentOrderByWithRelationInput = {
@@ -34538,6 +34556,7 @@ export namespace Prisma {
     createKey?: SortOrder
     ranBy?: SortOrderInput | SortOrder
     notifyJson?: SortOrderInput | SortOrder
+    testKey?: SortOrderInput | SortOrder
   }
 
   export type ExperimentWhereUniqueInput = Prisma.AtLeast<{
@@ -34555,6 +34574,7 @@ export namespace Prisma {
     createKey?: StringFilter<"Experiment"> | string
     ranBy?: StringNullableFilter<"Experiment"> | string | null
     notifyJson?: StringNullableFilter<"Experiment"> | string | null
+    testKey?: StringNullableFilter<"Experiment"> | string | null
   }, "id" | "workspaceId_createKey">
 
   export type ExperimentOrderByWithAggregationInput = {
@@ -34568,6 +34588,7 @@ export namespace Prisma {
     createKey?: SortOrder
     ranBy?: SortOrderInput | SortOrder
     notifyJson?: SortOrderInput | SortOrder
+    testKey?: SortOrderInput | SortOrder
     _count?: ExperimentCountOrderByAggregateInput
     _avg?: ExperimentAvgOrderByAggregateInput
     _max?: ExperimentMaxOrderByAggregateInput
@@ -34589,6 +34610,7 @@ export namespace Prisma {
     createKey?: StringWithAggregatesFilter<"Experiment"> | string
     ranBy?: StringNullableWithAggregatesFilter<"Experiment"> | string | null
     notifyJson?: StringNullableWithAggregatesFilter<"Experiment"> | string | null
+    testKey?: StringNullableWithAggregatesFilter<"Experiment"> | string | null
   }
 
   export type ExperimentWebhookOutboxWhereInput = {
@@ -36710,6 +36732,7 @@ export namespace Prisma {
     createKey: string
     ranBy?: string | null
     notifyJson?: string | null
+    testKey?: string | null
   }
 
   export type ExperimentUncheckedCreateInput = {
@@ -36723,6 +36746,7 @@ export namespace Prisma {
     createKey: string
     ranBy?: string | null
     notifyJson?: string | null
+    testKey?: string | null
   }
 
   export type ExperimentUpdateInput = {
@@ -36736,6 +36760,7 @@ export namespace Prisma {
     createKey?: StringFieldUpdateOperationsInput | string
     ranBy?: NullableStringFieldUpdateOperationsInput | string | null
     notifyJson?: NullableStringFieldUpdateOperationsInput | string | null
+    testKey?: NullableStringFieldUpdateOperationsInput | string | null
   }
 
   export type ExperimentUncheckedUpdateInput = {
@@ -36749,6 +36774,7 @@ export namespace Prisma {
     createKey?: StringFieldUpdateOperationsInput | string
     ranBy?: NullableStringFieldUpdateOperationsInput | string | null
     notifyJson?: NullableStringFieldUpdateOperationsInput | string | null
+    testKey?: NullableStringFieldUpdateOperationsInput | string | null
   }
 
   export type ExperimentCreateManyInput = {
@@ -36762,6 +36788,7 @@ export namespace Prisma {
     createKey: string
     ranBy?: string | null
     notifyJson?: string | null
+    testKey?: string | null
   }
 
   export type ExperimentUpdateManyMutationInput = {
@@ -36775,6 +36802,7 @@ export namespace Prisma {
     createKey?: StringFieldUpdateOperationsInput | string
     ranBy?: NullableStringFieldUpdateOperationsInput | string | null
     notifyJson?: NullableStringFieldUpdateOperationsInput | string | null
+    testKey?: NullableStringFieldUpdateOperationsInput | string | null
   }
 
   export type ExperimentUncheckedUpdateManyInput = {
@@ -36788,6 +36816,7 @@ export namespace Prisma {
     createKey?: StringFieldUpdateOperationsInput | string
     ranBy?: NullableStringFieldUpdateOperationsInput | string | null
     notifyJson?: NullableStringFieldUpdateOperationsInput | string | null
+    testKey?: NullableStringFieldUpdateOperationsInput | string | null
   }
 
   export type ExperimentWebhookOutboxCreateInput = {
@@ -38854,6 +38883,7 @@ export namespace Prisma {
     createKey?: SortOrder
     ranBy?: SortOrder
     notifyJson?: SortOrder
+    testKey?: SortOrder
   }
 
   export type ExperimentAvgOrderByAggregateInput = {
@@ -38871,6 +38901,7 @@ export namespace Prisma {
     createKey?: SortOrder
     ranBy?: SortOrder
     notifyJson?: SortOrder
+    testKey?: SortOrder
   }
 
   export type ExperimentMinOrderByAggregateInput = {
@@ -38884,6 +38915,7 @@ export namespace Prisma {
     createKey?: SortOrder
     ranBy?: SortOrder
     notifyJson?: SortOrder
+    testKey?: SortOrder
   }
 
   export type ExperimentSumOrderByAggregateInput = {

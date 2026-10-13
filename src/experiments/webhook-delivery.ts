@@ -7,6 +7,7 @@ import https from 'node:https';
 import { isIP } from 'node:net';
 import { assertPublicHttpsUrl, isPrivateAddress, WebhookUrlError } from '../lib/webhook-url.js';
 import { paperclipIssueIdOf, type NotifyConfig } from './schema.js';
+import type { TestSummary } from './store.js';
 
 export interface DeliveryResult {
   ok: boolean;
@@ -368,5 +369,83 @@ export async function deliver(
     if (err instanceof WebhookUrlError) return fail(err.code, null, true);
     const code = (err as { code?: string }).code;
     return fail(`network_error:${code ?? (err as Error).message ?? 'unknown'}`.slice(0, 200));
+  }
+}
+
+// ---- SLA-806: Paperclip case mirror ----------------------------------------
+// The test's state lives in slashloop (Experiment.testKey). For Paperclip-mode
+// experiments that carry a test key, the worker also upserts one Paperclip case
+// per test so the board sees attempts and spend without asking an agent. Agents
+// never write it, and the skill never mentions it.
+
+export const PAPERCLIP_CASE_TYPE = 'slashloop_experiment';
+export const paperclipCaseKey = (workspaceId: string, testKey: string): string => `slashloop:${workspaceId}:${testKey}`;
+/** Case lifecycle for the newest attempt's status. */
+export function paperclipCaseStatus(status: string | null): 'draft' | 'in_progress' | 'in_review' | 'done' | 'cancelled' {
+  if (status === 'draft') return 'draft';
+  if (status === 'review') return 'in_review';
+  if (status === 'completed') return 'done';
+  if (status === 'cancelled') return 'cancelled';
+  return 'in_progress';
+}
+/** Upsert body: the whole `fields` object every time (Paperclip replaces it, never merges), built from slashloop's rows only. */
+export function paperclipCaseBody(workspaceId: string, t: TestSummary, issueId: string, now: Date): Record<string, unknown> {
+  const goal = t.goal.replace(/\s+/g, ' ').trim();
+  return {
+    caseType: PAPERCLIP_CASE_TYPE,
+    key: paperclipCaseKey(workspaceId, t.testKey),
+    title: `Experiment: ${t.testKey} (${t.attemptCount} attempt${t.attemptCount === 1 ? '' : 's'})`,
+    // Case search (q) reads the summary, not fields: the first line lets an experiment id find its test.
+    summary: `attempts: ${t.attempts.map(a => a.experimentId).join(' ')}\n${goal}`.slice(0, 4000),
+    status: paperclipCaseStatus(t.latestStatus),
+    fields: {
+      schema: 'slashloop_experiment/v2',
+      source: 'slashloop',
+      workspace_id: workspaceId,
+      test_slug: t.testKey,
+      goal,
+      source_mode: t.videoIds.length ? 'videos' : 'brief',
+      source_video_ids: t.videoIds,
+      ran_by: t.ranBy,
+      current_experiment_id: t.latestExperimentId,
+      current_status: t.latestStatus,
+      attempts: t.attempts.map(a => ({ experiment_id: a.experimentId, status: a.status, credits_charged: a.creditsCharged, max_credits: a.maxCredits, error: a.error, created_at: a.createdAt })),
+      credits_charged_total: t.creditsChargedTotal,
+      approved_credits: t.testMaxCredits,
+      credits_remaining: t.creditsRemaining,
+      paperclip_issue_id: issueId,
+      last_synced_at: now.toISOString(),
+    },
+  };
+}
+
+/** Upserts the test's case in the origin issue's company, with the same key the delivery used (board key, else the requesting agent's key). Never throws. */
+export async function mirrorPaperclipCase(
+  row: { workspaceId: string; notifyJson: string }, summary: TestSummary, deps: DeliverDeps = {},
+): Promise<DeliveryResult> {
+  const post = deps.post ?? guardedPost;
+  const get = deps.get ?? guardedGet;
+  const now = deps.now ?? Date.now;
+  try {
+    const notify = JSON.parse(row.notifyJson) as NotifyConfig;
+    const issueId = paperclipIssueIdOf(notify.metadata);
+    if (!issueId) return fail('no_paperclip_issue', null, true);
+    const resolved: PaperclipConfigResult = deps.paperclip ? { config: deps.paperclip, reason: null } : paperclipConfigFromEnv(deps.paperclipEnv);
+    if (!resolved.config) return fail(resolved.reason, null, true);
+    const config = resolved.config;
+    const agentId = typeof notify.metadata?.agentId === 'string' ? notify.metadata.agentId.trim() : '';
+    const apiKey = config.boardKey ?? (agentId && Object.hasOwn(config.keys, agentId) ? config.keys[agentId] : undefined);
+    if (!apiKey) return fail(agentId ? 'paperclip_agent_key_missing' : 'paperclip_agent_id_missing', null, true);
+    const headers = { authorization: `Bearer ${apiKey}`, 'user-agent': 'slashloop-webhooks/1' };
+    const origin = await get(new URL(`${config.baseUrl}/api/issues/${encodeURIComponent(issueId)}`), headers);
+    if (origin.status < 200 || origin.status >= 300) return classifyPaperclipStatus(origin.status, origin.body, [apiKey]);
+    let companyId: unknown;
+    try { companyId = (JSON.parse(origin.body ?? '') as { companyId?: unknown }).companyId; } catch { return fail('paperclip_origin_unreadable', origin.status, true); }
+    if (typeof companyId !== 'string' || !companyId) return fail('paperclip_origin_unreadable', origin.status, true);
+    const body = JSON.stringify(paperclipCaseBody(row.workspaceId, summary, issueId, new Date(now())));
+    const res = await post(new URL(`${config.baseUrl}/api/companies/${encodeURIComponent(companyId)}/cases`), { ...headers, 'content-type': 'application/json' }, body);
+    return classifyPaperclipStatus(res.status, res.body, [apiKey]);
+  } catch (err) {
+    return fail(`case_mirror_error:${(err as Error).message ?? 'unknown'}`.slice(0, 200), null, false);
   }
 }

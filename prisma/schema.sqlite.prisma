@@ -319,11 +319,14 @@ model Experiment {
   ranBy       String?
   /// SLA-617: JSON {url, secret, secretGenerated, metadata} for the completion webhook. A column, not dataJson, so the secret never rides serialize(). Null = no webhook.
   notifyJson  String?
+  /// SLA-806: the test (one hypothesis) this experiment is an attempt of. A column so "every attempt of this test" is an index seek. Null = no test key.
+  testKey     String?
 
   @@unique([workspaceId, createKey])
   @@index([workspaceId, createdAt])
   @@index([status, updatedAt])
   @@index([workspaceId, ranBy, createdAt])
+  @@index([workspaceId, testKey, createdAt])
 }
 
 /// SLA-617: one row per non-terminal -> terminal experiment transition that asked for a webhook, written in the same batch as the status change and delivered by the VPS worker.

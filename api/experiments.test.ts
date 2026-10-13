@@ -16,8 +16,9 @@ mock.module('../src/experiments/store.js', () => ({
     if (!e) throw new ExperimentError(404, 'experiment_not_found');
     return structuredClone(e);
   },
-  list: async (_ws: string, limit = 50, offset = 0, ranBy?: string | null) => {
-    const all = [...experiments.values()].filter(e => !ranBy || e.ranBy === ranBy).sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+  list: async (_ws: string, limit = 50, offset = 0, filter?: string | null | { ranBy?: string | null; testKey?: string | null }) => {
+    const { ranBy, testKey } = filter && typeof filter === 'object' ? filter : { ranBy: filter, testKey: null };
+    const all = [...experiments.values()].filter(e => (!ranBy || e.ranBy === ranBy) && (!testKey || e.testKey === testKey)).sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
     return all.slice(offset, offset + limit);
   },
   remove: async (_ws: string, id: string) => {
@@ -113,6 +114,13 @@ describe('experiments endpoint', () => {
     expect(page2.nextOffset).toBeNull();
     const unfiltered = await (await GET(req('GET', 'https://x.test/api/experiments?workspaceId=w&limit=50'))).json() as any;
     expect(unfiltered.experiments).toHaveLength(5);
+  });
+
+  test('GET list filters by test_key (SLA-806)', async () => {
+    experiments.set('t1', { ...exp('t1'), createdAt: '2026-09-01', testKey: 'tier-ladder-mewing' });
+    experiments.set('t2', { ...exp('t2'), createdAt: '2026-09-02', testKey: 'jawline' });
+    const res = await (await GET(req('GET', 'https://x.test/api/experiments?workspaceId=w&test_key=tier-ladder-mewing'))).json() as any;
+    expect(res.experiments.map((e: any) => e.id)).toEqual(['t1']);
   });
 
   test('POST {mode:"brief"} creates a sourceless draft with no videoIds (SLA-802)', async () => {

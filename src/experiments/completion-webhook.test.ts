@@ -24,7 +24,7 @@ const migration = (name: string) => readFileSync(new URL(`../../prisma/d1-migrat
 let db: Database;
 beforeEach(() => {
   db = new Database(':memory:');
-  for (const m of ['0008_experiments.sql', '0016_experiment_ran_by.sql', '0017_experiment_webhook_outbox.sql']) db.exec(migration(m));
+  for (const m of ['0008_experiments.sql', '0016_experiment_ran_by.sql', '0017_experiment_webhook_outbox.sql', '0019_experiment_test_key.sql']) db.exec(migration(m));
 });
 const run = async (statements: RawStatement[]) => statements.map(s => (
   db.query(s.sql).all(...((s.params ?? []).map(v => (v instanceof Date ? v.toISOString() : v)) as any[]))

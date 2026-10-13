@@ -48,7 +48,8 @@ export function isExactEditRequest(raw: unknown): boolean {
  * compiled BEFORE any row exists, so a preparation failure never leaves a
  * half-prepared experiment behind.
  */
-export async function createExactEdit(rawWithRunner: unknown) {
+export async function createExactEdit(rawWithRunnerAndTest: unknown) {
+  const { body: rawWithRunner, testKey, testMaxCredits } = S.takeTest(rawWithRunnerAndTest);
   const { body: raw, ranBy } = S.takeRanBy(rawWithRunner);
   const b = S.ExactEditRequest.parse(raw);
   const now = new Date().toISOString();
@@ -57,7 +58,7 @@ export async function createExactEdit(rawWithRunner: unknown) {
   if (!v) throw new S.ExperimentError(404,'video_not_found');
   if (!isPhotoPost(v) && !hasExperimentSlides(v.rawJson)) throw new S.ExperimentError(400,'video_not_slideshow','Only slideshows can be edited.');
   return store.create({
-    id: randomUUID(), workspaceId: b.workspaceId, status: 'review', createdAt: now, updatedAt: now, ranBy,
+    id: randomUUID(), workspaceId: b.workspaceId, status: 'review', createdAt: now, updatedAt: now, ranBy, testKey, testMaxCredits,
     instructions: {
       goal: `exact_edit: preserve the source deck and change only the approved ${contract.openerEdit ? 'opener overlay' : 'per-slide copy'}.`,
       brand: '', audience: '', language: 'English',
@@ -110,7 +111,9 @@ export interface CreateExperimentOptions {
 }
 export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: CreateExperimentDeps = createDeps, options: CreateExperimentOptions = {}) {
   const { body: rawWithRunner, notify: notifyRaw } = S.takeNotify(rawWithRunnerAndNotify);
-  const { body: raw, ranBy } = S.takeRanBy(rawWithRunner);
+  const { body: rawWithTest, ranBy } = S.takeRanBy(rawWithRunner);
+  // SLA-806: the test key and test-wide cap stay out of the fingerprint, like ran_by: a retry that adds them is the same request.
+  const { body: raw, testKey, testMaxCredits } = S.takeTest(rawWithTest);
   // Completion webhook target: refused before any source lookup or write so a bad URL never costs a row.
   const notify = S.parseNotify(notifyRaw, assertPublicHttpsUrl);
   // Legacy create: the two-variant planner path, unchanged. An exact_edit body
@@ -202,7 +205,7 @@ export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: Cr
       fields.instructions = { ...fields.instructions, goal: `${goal}${suffix}` };
     }
   }
-  const draft: S.Experiment = { id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,ranBy,
+  const draft: S.Experiment = { id: randomUUID(),workspaceId,...fields,slideCount,status:'draft',createdAt:now,updatedAt:now,ranBy,testKey,testMaxCredits,
     creditsCharged:0,report:null,inputs,variants:[],error:null,
     // Slideshow sources are attached as visual references during rendering; video-only stays text-directed.
     generationBasis:referenced?'source-referenced':'text-directed',
@@ -436,6 +439,12 @@ export function applyVariantEdit(e:S.Experiment,variantId:string|undefined,edit:
     return p;
   });
 }
+/** SLA-806: an approved estimate on a capped test must fit what the test's other attempts left. store.save() enforces the same cap on the actual charges. */
+async function assertTestBudget(e: S.Experiment, credits: number) {
+  if (!e.testKey || typeof e.testMaxCredits !== 'number' || credits <= 0) return;
+  const others = await store.siblingCharged(e);
+  if (others + e.creditsCharged + credits > e.testMaxCredits) throw store.testBudgetExceeded(e, others, credits);
+}
 export async function mutate(workspaceId:string,id:string,action:string,raw:unknown,variantId?:string) {
   // SLA-451: exact_edit is a separately selected operation. Its actions are
   // refused on a legacy experiment and legacy actions are refused on it, so a
@@ -481,6 +490,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
   } else if (action==='plan') {
     if (e.status!=='draft') throw new S.ExperimentError(409,'not_draft');
     const est = await estimate(e,'plan');
+    await assertTestBudget(e, est.totalCredits);
     applyApprovedEstimate(e, est);
     e.allowPartial=S.Plan.parse(b).allowPartial??false;
     e.status='planning';
@@ -494,6 +504,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     for(const v of vs) if(v.status!=='draft' || choices.find(x=>x.id===v.id)!.revision!==v.revision) throw new S.ExperimentError(409,'revision_conflict');
     S.validateVariants(e,e.variants);
     const est=await estimate(e,'generate',vs.map(x=>x.id));
+    await assertTestBudget(e, est.totalCredits);
     // Repair rounds are new paid tasks. Raise the cap to cover them when the wallet can, so a QA retry does not pause the run.
     applyApprovedEstimate(e, isContractPipeline(e) ? {...est,totalCredits:Math.max(est.totalCredits,Math.min(est.maxTotalCredits,est.workspaceCredits))} : est);
     for(const v of vs) {
@@ -527,6 +538,7 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     // SLA-797: re-render the slideshow (or the named slides) against the user's notes, then QA it again.
     const {workspaceId:_w,idempotencyKey:_k,...req}=S.Feedback.parse(b);
     const est=await estimateFeedback(e,req);
+    await assertTestBudget(e, est.totalCredits);
     applyApprovedEstimate(e,{...est,totalCredits:Math.max(est.totalCredits,Math.min(est.maxTotalCredits,est.workspaceCredits))});
     applyFeedback(e,req);
   } else throw new S.ExperimentError(404,'action_not_found');

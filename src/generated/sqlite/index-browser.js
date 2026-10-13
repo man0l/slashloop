@@ -253,7 +253,8 @@ exports.Prisma.ExperimentScalarFieldEnum = {
   updatedAt: 'updatedAt',
   createKey: 'createKey',
   ranBy: 'ranBy',
-  notifyJson: 'notifyJson'
+  notifyJson: 'notifyJson',
+  testKey: 'testKey'
 };
 
 exports.Prisma.ExperimentWebhookOutboxScalarFieldEnum = {
