@@ -9,7 +9,7 @@ import {
 } from './gallery.js';
 import { renderGallery, type GalleryCard } from '../ui/gallery.js';
 import { editInstructions } from './experiments.js';
-import { Create } from '../experiments/schema.js';
+import { Create, CreateBriefRequest } from '../experiments/schema.js';
 
 // ── env save/restore (media.test.ts pattern) ──────────────────────────────
 
@@ -237,6 +237,51 @@ test('served gallery supports combined exploration and emits the matching MCP cr
   expect(run().instructions.mode).toBe('controlled');
   selectedVars.push('slides');
   expect(run().instructions.mode).toBe('exploration');
+});
+
+// SLA-802: the wizard's third source choice. Runs the SERVED script, like the tests above.
+describe('brief (no source video) wizard', () => {
+  const html = renderGallery([fakeCard({ isSlideshow: true, experimentEligible: true })], undefined, {});
+  const script = html.match(/<script>([\s\S]*)<\/script>/)![1]!;
+  const build = script.slice(script.indexOf('function buildPayload()'), script.indexOf('// sourceSlides is display-only'));
+  const conversion = script.slice(script.indexOf('var chatPayload;'), script.indexOf("document.getElementById('exp-host-payload').textContent"));
+  const fields: Record<string, string> = {
+    'create-goal': 'Test a hook with no source', 'create-direction': 'Slide 1 overlay "Stop scrolling". '.repeat(100), 'create-lang': 'German',
+    'create-brand': 'Acme', 'create-audience': 'busy parents', 'create-locks': ' No faces \n\nNo logos\n',
+  };
+  const str = (id: string) => (fields[id] ?? '').trim();
+  const num = (id: string, fallback: number) => ({ 'create-slides': 6, 'create-count': 2, 'create-credits': 150 } as Record<string, number>)[id] ?? fallback;
+  const run = () => new Function('selCards', 'selected', 'mode', 'str', 'checkedVars', 'num', build + '; return buildPayload();')(
+    () => [], [], 'brief', str, () => ['hook'], num,
+  );
+
+  test('offers the third source choice and a standalone entry point', () => {
+    expect(html).toContain('value="brief"');
+    expect(html).toContain('Start from a brief');
+    expect(html).toContain('no source video');
+    expect(html).toContain('id="exp-brief-start"');
+    expect(html).toContain('id="create-locks"');
+    expect(() => new Function(script)).not.toThrow();
+  });
+
+  test('emits a payload with no videoIds that the brief request schema accepts', () => {
+    const payload = run();
+    expect(payload.surveyMode).toBe('brief');
+    expect(payload).not.toHaveProperty('videoIds');
+    expect(payload).toMatchObject({ variantCount: 2, slideCount: 6, maxCredits: 150 });
+    expect(payload.instructions).toMatchObject({ goal: fields['create-goal'], brand: 'Acme', audience: 'busy parents', language: 'German', variables: ['hook'], lockedConstraints: ['No faces', 'No logos'] });
+    expect(payload.instructions.direction.length).toBeGreaterThan(2000);
+    const { surveyMode, ...rest } = payload;
+    expect(CreateBriefRequest.safeParse({ workspaceId: 'w1', idempotencyKey: 'gallery:brief', ...rest }).success).toBe(true);
+  });
+
+  test('the chat/host conversion names the mode so create_experiment takes the brief path', () => {
+    const payload = run();
+    const chat = new Function('mode', 'p', 'str', conversion + '; return chatPayload;')('brief', payload, str);
+    expect(chat).toMatchObject({ mode: 'brief', slideCount: 6, variantCount: 2 });
+    expect(chat).not.toHaveProperty('surveyMode');
+    expect(chat).not.toHaveProperty('videoIds');
+  });
 });
 
 describe('edit-mode payload emission (source guards)', () => {

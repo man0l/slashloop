@@ -35,7 +35,7 @@ import { load, list, serialize } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
 import {
-  CopyOverrides, ExperimentError, Id, Instructions, MAX_MANUAL_ATTEMPTS, slideFanout, VARIABLE_FIELDS, type Experiment, type InstructionsData,
+  CopyOverrides, DIRECTION_MAX, ExperimentError, Id, Instructions, MAX_MANUAL_ATTEMPTS, slideFanout, VARIABLE_FIELDS, type Experiment, type InstructionsData,
 } from '../experiments/schema.js';
 
 // ---- dependencies ----------------------------------------------------------
@@ -209,14 +209,14 @@ export function derivedKey(scope: string, parts: unknown): string {
  * at least 30. Priced from the server's CREDIT_COSTS / slideFanout(). It is a
  * runaway guard only: an approved estimate may raise it (applyApprovedEstimate).
  */
-export function defaultExperimentCap(variantCount: number, slideCount: number): number {
-  const total = CREDIT_COSTS.analyzeVideo + 2 * CREDIT_COSTS.experimentPlanningCall
+export function defaultExperimentCap(variantCount: number, slideCount: number, withSource = true): number {
+  const total = (withSource ? CREDIT_COSTS.analyzeVideo : 0) + 2 * CREDIT_COSTS.experimentPlanningCall
     + variantCount * slideCount * CREDIT_COSTS.experimentSlide * slideFanout();
   return Math.min(MAX_EXPERIMENT_CREDITS, Math.max(30, Math.ceil((total * 2) / 10) * 10));
 }
 
 const STATUS_HINTS: Record<string, string> = {
-  draft: 'Draft — nothing spent yet. Next: estimate_experiment(stage="plan"), get the user\'s OK on totalCredits, then plan_experiment.',
+  draft: 'Draft — nothing spent yet (a brief-only draft has no source video: planning writes the variants straight from the brief). Next: estimate_experiment(stage="plan"), get the user\'s OK on totalCredits, then plan_experiment.',
   planning: 'Planning in the background: analyzing sources, writing the pattern report, then variant briefs. Check back with get_experiment in a minute or two — do not poll rapidly.',
   review: 'Variant briefs are ready. Review them (optionally edit with update_experiment_variant), then estimate_experiment(stage="generate", variantIds) and generate_experiment for the chosen variants.',
   generating: 'Rendering slide images in the background. Check back with get_experiment in a few minutes — do not poll rapidly.',
@@ -247,6 +247,9 @@ const TERMINAL_QA_ERROR = /(?:^|:)story_(?:check_failed|unverified):(?!story_che
 export const isTerminalQaError = (error: string | undefined | null): boolean => TERMINAL_QA_ERROR.test(error ?? '');
 const TERMINAL_QA_ADVICE = 'Terminal QA verdict on this slide\'s contract. Not retryable as-is: a retry re-asks the same checks and pays again. Read the failing checks in the error, change the brief or fix the contract first.';
 
+/** "brief" = created from a brief with no source video; "videos" = created from Gallery slideshows. */
+const sourceMode = (e: Pick<Experiment, 'inputs'>): 'brief' | 'videos' => e.inputs.length ? 'videos' : 'brief';
+
 /** Agent-sized view of where an experiment is. Reads only. */
 export function experimentProgress(e: Experiment) {
   return {
@@ -254,6 +257,7 @@ export function experimentProgress(e: Experiment) {
     hint: STATUS_HINTS[e.status] ?? null,
     error: e.error,
     credits: { charged: e.creditsCharged, max: e.maxCredits },
+    sourceMode: sourceMode(e),
     sources: { total: e.inputs.length, ready: e.inputs.filter(i => i.status === 'ready').length },
     reportReady: Boolean(e.report) || (e.pipeline === 'contract' && Boolean(e.contract)),
     jobs: countJobs(e),
@@ -293,6 +297,7 @@ function listRow(e: Experiment) {
     goal: e.instructions.goal,
     createdAt: e.createdAt,
     updatedAt: e.updatedAt,
+    sourceMode: sourceMode(e),
     videoIds: e.inputs.map(i => i.videoId),
     variantCount: e.variantCount,
     slideCount: e.slideCount,
@@ -407,7 +412,7 @@ const instructionsInput = z.object({
   brand: z.string().max(2000).default(''),
   audience: z.string().max(2000).default(''),
   language: z.string().min(1).max(80).default('English'),
-  direction: z.string().max(2000).optional().describe('Creative direction; add desired variable values here, e.g. "Desired variable values: a question versus a statement". Omit it to use the sourceFormat preset\'s direction.'),
+  direction: z.string().max(DIRECTION_MAX).optional().describe(`Creative direction (up to ${DIRECTION_MAX} characters); add desired variable values here, e.g. "Desired variable values: a question versus a statement". Omit it to use the sourceFormat preset's direction. Required in mode "brief": with no source video it is the whole spec, so write the per-slide scene and exact overlay copy here.`),
   lockedConstraints: z.array(z.string().min(1).max(2000)).max(20).optional().describe('Rules every variant must keep, one per entry. Added to the always-on and sourceFormat locks, never replacing them.'),
   sourceFormat: z.enum(SOURCE_FORMATS).optional().describe(
     'What kind of source this is: statue-collage, sprite-vs-real, annotated-face, ai-render, sketch, portrait-collage or photo-person. '
@@ -492,8 +497,12 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
 
   // ---- create_experiment ----
   server.tool('create_experiment',
-    'Create draft experiment(s) from Gallery slideshows. Free — a draft spends nothing. Two modes, matching the site\'s '
-    + 'experiment wizard:\n'
+    'Create draft experiment(s). Free — a draft spends nothing. Three modes, matching the site\'s '
+    + 'experiment wizard (source choices: Gallery slideshows, one slideshow to edit, or no source at all):\n'
+    + '• mode "brief" — NO source video. One experiment generated from a written brief. Do not pass videoIds. Give `instructions` '
+    + 'with goal, variables, language, brand, audience, lockedConstraints and a `direction` that is the whole spec (per-slide scene and exact overlay copy, up to '
+    + `${DIRECTION_MAX} characters; required), plus slideCount (3–8, the real output length, not clamped to any source), variantCount and maxCredits. `
+    + 'It still creates a free draft with a planEstimate and follows plan_experiment → review → generate_experiment with the same approval gates; planning skips source analysis.\n'
     + '• mode "create" (default) — one experiment PER source video, because briefs never mix sources, so N videoIds '
     + 'create N drafts. Give `instructions`: what to vary, the goal, optional creative direction. Pass '
     + '`instructions.preserveSourceCtaSlide: true` to keep a source deck\'s own closing call-to-action slide in the deck.\n'
@@ -509,11 +518,11 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     + `${CREDIT_COSTS.experimentSlide} per slide × ${slideFanout()} candidates at generation. ${LIFECYCLE}`,
     {
       workspaceId: workspaceIdField,
-      mode: z.enum(['edit', 'create']).default('create').describe(
-        '"create" (default) = new variations from instructions. "edit" = change overlay copy or character on one deck.',
+      mode: z.enum(['edit', 'create', 'brief']).default('create').describe(
+        '"create" (default) = new variations from source videos plus instructions. "edit" = change overlay copy or character on one deck. "brief" = no source video: generate from instructions alone.',
       ),
-      videoIds: z.array(Id).min(1).max(20).describe('1–20 distinct Gallery video ids; one experiment per video. Edit mode takes exactly one.'),
-      instructions: instructionsInput.optional().describe('CREATE mode only. Required in create mode; rejected in edit mode (use top-level variables and character or hook/overlayTexts).'),
+      videoIds: z.array(Id).min(1).max(20).optional().describe('Required in create and edit modes: 1–20 distinct Gallery video ids; one experiment per video. Edit mode takes exactly one. Must be omitted in brief mode.'),
+      instructions: instructionsInput.optional().describe('CREATE and BRIEF modes. Required in both; rejected in edit mode (use top-level variables and character or hook/overlayTexts). Brief mode also requires instructions.direction.'),
       variables: z.array(z.enum(['hook', 'character'])).length(1).optional().describe(
         'EDIT mode: ["hook"] for copy, or ["character"] for casting only. Defaults to character when character is supplied, otherwise hook.',
       ),
@@ -533,7 +542,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       language: z.string().trim().min(1).max(80).optional().describe('EDIT mode: output language for the copy (default English).'),
       overlayMode: z.enum(['model', 'script']).optional().describe('EDIT mode: "script" renders slides text-free and composes the copy in code (use when the image provider rejects slides with a content-filter error). Default "model". In create mode use instructions.overlayMode.'),
       variantCount: z.number().int().min(1).max(12).default(3).describe('CREATE mode: variants per experiment, including the baseline (1–12). Edit mode is always 2.'),
-      slideCount: z.number().int().min(3).max(8).default(5).describe('Slides per variant (3–8); overridden by the source deck length when known, minus a detected source CTA slide unless instructions.preserveSourceCtaSlide is true.'),
+      slideCount: z.number().int().min(3).max(8).default(5).describe('Slides per variant (3–8); overridden by the source deck length when known, minus a detected source CTA slide unless instructions.preserveSourceCtaSlide is true. Brief mode has no source deck, so this is exactly the output length.'),
       maxCredits: z.number().int().min(1).max(MAX_EXPERIMENT_CREDITS).optional().describe(
         'Per-experiment credit ceiling (runaway guard). Default: the site\'s automatic cap, 2× the estimate rounded up; 100 in edit mode. An approved estimate may raise it.',
       ),
@@ -547,6 +556,38 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, overlayMode, variantCount, slideCount, maxCredits, idempotencyKey, ran_by: ranByRaw, ranBy: ranByCamel, tagGoalWithSource, notify }) => guarded(async () => {
       const ran_by = ranByRaw ?? ranByCamel;
       const workspace = await d.resolveWorkspace({ workspaceId });
+      if (mode === 'brief') {
+        if (videoIds?.length) return text({ error: 'invalid_request', message: 'mode "brief" has no source video — omit videoIds, or use mode "create" to generate from slideshows.' }, true);
+        if (variables || character !== undefined || hook !== undefined || overlayTexts !== undefined || language !== undefined || overlayMode !== undefined) {
+          return text({ error: 'invalid_request', message: 'mode "brief" takes everything in instructions (variables, language, direction, instructions.overlayMode); top-level variables/character/hook/overlayTexts/language/overlayMode are edit-only.' }, true);
+        }
+        if (!instructions) return text({ error: 'invalid_request', message: 'mode "brief" needs instructions — at least a goal and a direction that spells out the slides.' }, true);
+        if (!instructions.direction?.trim()) return text({ error: 'invalid_request', message: 'mode "brief" has no source video, so instructions.direction is the spec: write the per-slide scene and exact overlay copy there.' }, true);
+        const cap = maxCredits ?? defaultExperimentCap(variantCount, slideCount, false);
+        const body = { workspaceId: workspace.id, instructions, variantCount, slideCount, maxCredits: cap };
+        const key = idempotencyKey ?? derivedKey('create', body);
+        try {
+          const e = await d.createExperiment({ ...body, idempotencyKey: key, ...(ran_by === undefined ? {} : { ran_by }), ...(notify === undefined ? {} : { notify }) }, undefined, { sourceless: true });
+          const planEstimate = await d.estimate(e, 'plan');
+          const row = { ...listRow(e), ...(e.notify ? { notify: e.notify } : {}), idempotencyKey: key, planEstimate };
+          return text(withNextSteps({
+            message: 'Created 1 draft experiment from a brief (no source video). Nothing was charged.',
+            experiments: [row],
+            failed: [],
+            note: 'Repeating this exact call returns the same draft. To deliberately create a duplicate, pass a new idempotencyKey.',
+          }, [{
+            label: `Plan experiment ${e.id.slice(0, 8)}`,
+            tool: 'plan_experiment',
+            args: { experimentId: e.id, approvedCredits: planEstimate.totalCredits },
+            cost: credits(planEstimate.totalCredits),
+            spendsMoney: true,
+            why: 'Writes the variant briefs straight from the brief (no source analysis) for review.',
+          }]));
+        } catch (err) {
+          return experimentToolError(err);
+        }
+      }
+      if (!videoIds?.length) return text({ error: 'invalid_request', message: `mode "${mode}" needs videoIds (1–20 Gallery videos). For no source video, use mode "brief".` }, true);
       if (new Set(videoIds).size !== videoIds.length) return text({ error: 'invalid_request', message: 'videoIds must be distinct.' }, true);
       if (mode === 'edit') {
         if (instructions) return text({ error: 'invalid_request', message: 'Edit mode uses top-level variables and character or hook/overlayTexts. Use create mode to pass instructions.' }, true);

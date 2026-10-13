@@ -105,6 +105,8 @@ export interface CreateExperimentOptions {
   expandFormat?: boolean;
   /** Append the source tag (handle, caption snippet, views) to the stored goal. Default true: the site's list titles rely on it; the MCP tool turns it off. */
   tagGoal?: boolean;
+  /** Brief-only experiment: no source video, the direction is the spec. Takes a body with no videoIds. */
+  sourceless?: boolean;
 }
 export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: CreateExperimentDeps = createDeps, options: CreateExperimentOptions = {}) {
   const { body: rawWithRunner, notify: notifyRaw } = S.takeNotify(rawWithRunnerAndNotify);
@@ -119,8 +121,9 @@ export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: Cr
   // so the strict instructions parse runs after the sources load. The idempotency
   // fingerprint is taken from the request as sent: an analysis that lands between
   // two identical calls must not turn the retry into an idempotency conflict.
+  const sourceless = options.sourceless === true;
   const expandFormat = options.expandFormat !== false;
-  const requested = expandFormat ? S.CreateRequest.parse(raw) : null;
+  const requested = sourceless ? S.CreateBriefRequest.parse(raw) : expandFormat ? S.CreateRequest.parse(raw) : null;
   const strict = requested ? null : S.Create.parse(raw);
   const head = requested ?? strict!;
   const requestFingerprint = fingerprint(head);
@@ -154,8 +157,19 @@ export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: Cr
     slideSources.push({ originalCount: originalCount || null, analysis, caption: (v as { caption?: string | null }).caption });
     inputs.push(await deps.buildInput(v));
   }
-  let b = strict!;
-  if (requested) {
+  let b: z.infer<typeof S.Create> = strict!;
+  if (sourceless) {
+    // No source to infer a format from: only an explicit sourceFormat expands a preset, and the brief's own variables default to the hook.
+    const ri = requested!.instructions;
+    const variables = ri.variables ?? ['hook' as const];
+    const expanded = expandPreset(ri.sourceFormat ?? null, {
+      variables, mode: ri.mode, direction: ri.direction, lockedConstraints: ri.lockedConstraints,
+    });
+    const mode = ri.mode ?? (variables.some(v => v === 'concept' || v === 'slides') ? 'exploration' : expanded.mode);
+    b = S.CreateBrief.parse({ ...requested, instructions: {
+      ...ri, ...expanded, mode, sourceDefaults: expanded.sourceDefaults, ...(ri.sourceFormat ? { sourceFormat: ri.sourceFormat } : {}),
+    } });
+  } else if (requested) {
     const ri = requested.instructions;
     const signal = inferSharedFormat(slideSources);
     const format = ri.sourceFormat ?? signal?.format ?? null;

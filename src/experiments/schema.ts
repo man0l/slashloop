@@ -8,6 +8,9 @@ export class ExperimentError extends Error {
 export const Id = z.string().min(1).max(128).regex(/^[a-zA-Z0-9_-]+$/);
 export const Key = z.string().min(8).max(128).regex(/^[a-zA-Z0-9_.:-]+$/);
 const text = z.string().trim().max(2000);
+/** Creative direction is the whole spec for a brief-only experiment (per-slide scene and copy), so it gets more room than the other free-text fields. */
+export const DIRECTION_MAX = 8000;
+const directionText = z.string().trim().max(DIRECTION_MAX);
 export const VARIABLE_FIELDS = ['hook', 'character', 'visualStyle', 'caption', 'cta', 'concept', 'slides'] as const;
 const constraints = z.union([z.array(text.min(1)).max(20), text]).transform(v => typeof v === 'string' ? (v ? [v] : []) : v);
 /** Explicit per-slide copy override (SLA-430 D3, SLA-431 request carrier). Keys are
@@ -24,7 +27,7 @@ export const CopyOverrides = z.record(z.string().regex(/^(?:0|[1-9]\d*)$/), z.st
   .refine(v => Object.keys(v).length <= 8, { message: 'At most 8 per-slide copy overrides: one per slide.' });
 const instructionsShape = {
   goal: text.min(1), brand: text, audience: text, language: z.string().trim().min(1).max(80),
-  direction: text, lockedConstraints: constraints,
+  direction: directionText, lockedConstraints: constraints,
   // SLA-700: traits the source format suggests. Soft preferences that yield to the direction and to every lock; never hard rules.
   sourceDefaults: z.array(text.min(1)).max(20).optional(),
   variables: z.array(z.union([z.enum(VARIABLE_FIELDS), z.literal('angle')]).transform(v => v === 'angle' ? 'concept' as const : v)).min(1).max(7), mode: z.enum(['controlled', 'exploration']),
@@ -110,7 +113,10 @@ export const BriefDelta = z.object({
   slides: z.array(BriefSlide).min(3).max(8).optional(),
   overlayTexts: z.array(text.default('')).min(3).max(8).optional(),
 });
-const createShape = <I extends z.ZodType>(instructions: I) => ({ workspaceId: Id, videoIds: z.array(Id).min(1).max(20), instructions,
+const sourceIds = z.array(Id).min(1).max(20);
+/** Brief-only experiments have no source video: the list is empty by definition, not by omission. */
+const noSourceIds = z.array(Id).max(0).default([]);
+const createShape = <I extends z.ZodType, V extends z.ZodType<string[]>>(instructions: I, videoIds: V = sourceIds as unknown as V) => ({ workspaceId: Id, videoIds, instructions,
   variantCount: z.number().int().min(1).max(12), slideCount: z.number().int().min(3).max(8),
   maxCredits: z.number().int().min(1).max(10000), idempotencyKey: Key,
 });
@@ -118,6 +124,12 @@ const noDuplicateVideoIds = (v: { videoIds: string[] }, c: z.RefinementCtx) => {
 export const Create = z.object(createShape(Instructions)).strict().superRefine(noDuplicateVideoIds);
 /** Same request with preset-fillable instructions; `Create` re-validates after expansion. */
 export const CreateRequest = z.object(createShape(InstructionsInput)).strict().superRefine(noDuplicateVideoIds);
+/** Brief-only create: same body, no source videos. The direction is the spec, so it must say something. */
+const briefDirection = (v: { instructions: { direction?: string } }, c: z.RefinementCtx) => {
+  if (!v.instructions.direction?.trim()) c.addIssue({ code: 'custom', path: ['instructions', 'direction'], message: 'A brief-only experiment has no source video; instructions.direction (per-slide scene and copy) is the spec and is required.' });
+};
+export const CreateBriefRequest = z.object(createShape(InstructionsInput, noSourceIds)).strict().superRefine(briefDirection);
+export const CreateBrief = z.object(createShape(Instructions, noSourceIds)).strict();
 export const RAN_BY_MAX = 120;
 const ON_BEHALF_OF = /^(agent:[\s\S]*?)\s+on\s+behalf\s+of\b[\s\S]*$/i;
 /** Runner label: trimmed, capped, and reduced to the bare agent name ("agent:X on behalf of Y" becomes "agent:X"). Blank/non-string means unknown (null). */
