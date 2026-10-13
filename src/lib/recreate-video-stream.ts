@@ -55,6 +55,8 @@ export interface VideoRecreatePayload {
   priced?: boolean;
   streamUid?: string;
   thumbBase?: string;
+  /** Duration of the transcoded Stream copy; thumbnail times past it 400. */
+  streamDurationSec?: number;
   slideIndex?: number;
   keys?: string[];
   /** 0-based plan indices whose generation failed (e.g. OpenAI safety
@@ -243,6 +245,12 @@ export async function takeVideoRecreateJob(): Promise<MediaJobRow | null> {
   return running as unknown as MediaJobRow;
 }
 
+/** Stream's thumbnail endpoint answers 400 for a `time` at or past the end of the video. */
+export function clampFrameTime(tSec: number, durationSec: number | null | undefined): number {
+  if (!durationSec || durationSec <= 0) return tSec;
+  return Number(Math.min(tSec, Math.max(durationSec - 0.3, 0)).toFixed(2));
+}
+
 /** Advance ONE phase of one job. Throws on step failure (caller fails the job). */
 export async function advanceRecreateVideoJob(
   job: Pick<MediaJobRow, 'id' | 'videoId' | 'workspaceId' | 'opId' | 'preAuthCredits' | 'payloadJson'>,
@@ -319,6 +327,7 @@ export async function advanceRecreateVideoJob(
     }
     if (!status.thumbnailUrl) throw new Error(`Stream video ${payload.streamUid} is ready but returned no thumbnail URL.`);
     payload.thumbBase = status.thumbnailUrl;
+    if (typeof status.durationSec === 'number' && status.durationSec > 0) payload.streamDurationSec = status.durationSec;
     payload.phase = 'slides';
     payload.slideIndex = 0;
     await deps.savePayload(job.id, payload);
@@ -337,7 +346,8 @@ export async function advanceRecreateVideoJob(
 
   const results = await Promise.all(remaining.map(async ({ meta, index }) => {
     try {
-      const frame = await deps.streamThumbnail(payload.streamUid!, meta.tSec, payload.thumbBase ?? '');
+      const frameSec = clampFrameTime(meta.tSec, payload.streamDurationSec ?? video.durationSec);
+      const frame = await deps.streamThumbnail(payload.streamUid!, frameSec, payload.thumbBase ?? '');
       const prompt = buildVideoSlidePrompt({
         slideIndex: index,
         slideCount: slides.length,

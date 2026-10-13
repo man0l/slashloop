@@ -112,6 +112,18 @@ describe('fetchStreamThumbnail', () => {
     expect(bytes.length).toBe(2048);
   });
 
+  test('cancels the body of a failed response so the runtime does not stall it', async () => {
+    let cancelled = false;
+    const body = new ReadableStream({ cancel() { cancelled = true; } });
+    await fetchStreamThumbnail(streamConfig(ENV)!, 'uid-9', 17.5, 'https://base/thumbnail.jpg', async () =>
+      new Response(body, { status: 400 }),
+    ).then(
+      () => { throw new Error('should have thrown'); },
+      (err: Error) => expect(err.message).toContain('failed (400)'),
+    );
+    expect(cancelled).toBe(true);
+  });
+
   test('rejects error pages masquerading as frames', async () => {
     await fetchStreamThumbnail(streamConfig(ENV)!, 'uid-9', 1, 'https://base/thumbnail.jpg', async () =>
       new Response('<html>oops</html>', { status: 200 }),

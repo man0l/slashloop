@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   advanceRecreateVideoJob, parseRecreatePayload,
   failRecreateVideoJob, driveVideoRecreateJob, RECREATE_STEP_LEASE_MS,
-  recreatePreAuthCredits, recreateTrueUpRefund,
+  recreatePreAuthCredits, recreateTrueUpRefund, clampFrameTime,
   type RecreateVideoDeps,
 } from './recreate-video-stream.js';
 import { CREDIT_COSTS } from './credits.js';
@@ -124,6 +124,19 @@ describe('advanceRecreateVideoJob', () => {
     expect(w.calls.streamDeleted).toEqual(['uid-9']); // billing stops
     // the recreation prompt demands overlay removal, never keeps text
     expect(w.calls.generate[0]).toContain('Remove every trace of burned-in text');
+  });
+
+  test('no thumbnail time requested from Stream exceeds the transcoded duration', async () => {
+    const w = makeWorld({
+      planSlides: async () => ({ ...PLAN, plan: { slides: [...PLAN.plan.slides, { tSec: 22.5, description: 'late', overlayText: null }] } }),
+      streamStatus: async () => ({ ready: true, state: 'ready', durationSec: 12, thumbnailUrl: 'https://customer-abc.cloudflarestream.com/uid-9/thumbnails/thumbnail.jpg' }),
+    });
+    await w.tick(); await w.tick(); await w.tick(); await w.tick();
+    expect(w.calls.completedPayload?.streamDurationSec).toBe(12);
+    expect(w.calls.streamThumbnails).toHaveLength(4);
+    expect(Math.max(...w.calls.streamThumbnails)).toBeLessThan(12);
+    expect(clampFrameTime(5, 12)).toBe(5);
+    expect(clampFrameTime(5, null)).toBe(5);
   });
 
   test('wait phase writes nothing while Stream is still processing', async () => {
