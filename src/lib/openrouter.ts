@@ -94,7 +94,7 @@ export function classifyOpenRouterError(err: unknown): {
   message: string;
 } {
   const message = err instanceof Error ? err.message : String(err);
-  const status = Number(/OpenRouter API error (\d{3})/.exec(message)?.[1] ?? 0);
+  const status = Number(/OpenRouter (?:API|image) error (\d{3})/.exec(message)?.[1] ?? 0);
   const errorType = /"error_type"\s*:\s*"([a-z_]+)"/.exec(message)?.[1];
   const bodyCode = Number(/"code"\s*:\s*(\d{3})/.exec(message)?.[1] ?? 0);
   const code = status || bodyCode;
