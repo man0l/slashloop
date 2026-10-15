@@ -32,7 +32,7 @@ const qaPass = (n = 3) => ({
 });
 const qaFailSlide = (bad: number, n = 3) => { const q = qaPass(n); q.slides[bad]!.overlayExact = false; return q; };
 
-interface Script { contract: unknown; contracts?: unknown[]; qa: Array<(armSlides: number) => unknown>; rejectImage?: (prompt: string) => boolean; refusal?: string; composeFails?: boolean }
+interface Script { contract: unknown; contracts?: unknown[]; qa: Array<(armSlides: number, user: string) => unknown>; rejectImage?: (prompt: string) => boolean; refusal?: string; composeFails?: boolean }
 const FILTER_400 = 'OpenRouter image error 400: {"error":{"message":"The response was filtered due to the prompt triggering our content management policy"}}';
 
 function world(script: Script, overrides: Partial<Experiment['instructions']> = {}) {
@@ -49,7 +49,7 @@ function world(script: Script, overrides: Partial<Experiment['instructions']> = 
     generateBriefCandidates: async () => { throw new Error('no brief candidates'); },
     jevScores: async () => ({}),
     generateContract: async ({ user }) => { calls.contractUsers.push(user); calls.contract++; return script.contracts ? script.contracts[Math.min(calls.contract, script.contracts.length) - 1] : script.contract; },
-    verifyDeck: async ({ user, images }) => { const next = script.qa[calls.qa.length]; calls.qa.push({ images: images.length, user }); if (!next) throw new Error('unexpected qa call'); return next(images.length); },
+    verifyDeck: async ({ user, images }) => { const next = script.qa[calls.qa.length]; calls.qa.push({ images: images.length, user }); if (!next) throw new Error('unexpected qa call'); return next(images.length, user); },
   };
   let current = {
     id: 'e', workspaceId: 'w', status: 'planning', version: 0, createdAt: '', updatedAt: '', pipeline: 'contract', generationBasis: 'source-referenced',
@@ -947,5 +947,63 @@ describe('scene variable: arm B edits every baseline slide into another setting'
       expect(est.totalCredits).toBe(charged);
       expect(est.pricing.slide).toBe(CREDIT_COSTS.experimentSlide);
     } finally { mock.module('../lib/credits.js', () => ({ ...real })); }
+  });
+});
+
+describe('SLA-867: a morph (ladder) deck end to end', () => {
+  const grade = (jaw: number, cheeks: number) => [{ attribute: 'jaw definition', grade: jaw }, { attribute: 'cheek fullness', grade: cheeks }];
+  const morphSlide = (overlayText: string, jaw: number, cheeks: number) => slide({ overlayText, scene: 'studio portrait, seamless gray backdrop, even light', morph: grade(jaw, cheeks) });
+  const contract = rawContract({
+    subject: 'person', identity: 'invented-consistent', identitySheet: 'an invented man, wavy black hair, hazel eyes, black t-shirt', keepSourceImage: false,
+    sourceFrameLevels: [0, 1, 2].map(index => ({ index, level: 'none', showsPerson: true })),
+    morph: { axis: 'face softens', attributes: ['jaw definition', 'cheek fullness'] },
+    slides: [morphSlide('CHAD\n2% of population', 4, 0), morphSlide('HTN\n20% of population', 2, 2), morphSlide('SUB 3\n12% of population', 0, 4)],
+    variantB: { variable: 'morph', value: 'stops halfway', slides: [morphSlide('', 4, 0), morphSlide('', 3, 1), morphSlide('', 2, 2)] },
+  });
+  // A judge that sees every listed morph check and passes it, as one that sees the change would.
+  const judge = (pass: boolean) => (n: number, user: string) => {
+    const q = qaPass(n) as unknown as { slides: Array<Record<string, unknown>> };
+    const listed = JSON.parse(user.match(/Checks: (\[.*\])\.\n/)![1]!) as Array<{ index: number; checks: string[] }>;
+    q.slides.forEach(x => { x.samePerson = true; x.morphChecks = []; });
+    for (const x of listed) q.slides[x.index]!.morphChecks = x.checks.map(check => ({ check, pass, note: pass ? '' : 'no visible change' }));
+    return q;
+  };
+  const morphWorld = (qa: Script['qa']) => world({ contract, qa }, { variables: ['morph'], direction: 'Reproduce the ladder with one invented man', lockedConstraints: [], sourceDefaults: [] });
+
+  test('labels are drawn in code, prompts carry no valuation word, and later slides edit the arm\'s own slide 1', async () => {
+    const w = morphWorld([judge(true), judge(true)]);
+    await w.plan();
+    expect(w.row.status).toBe('review');
+    expect(w.row.contract?.morph?.attributes).toEqual(['jaw definition', 'cheek fullness']);
+    const [a, b] = w.row.variants;
+    expect(b!.changedVariables.map(c => c.name)).toEqual(['morph']);
+    expect(b!.brief.slides.map(s => s.overlayText)).toEqual(a!.brief.slides.map(s => s.overlayText));
+    await w.generate();
+    expect(w.row.status).toBe('completed');
+    for (const { prompt } of w.calls.images) {
+      expect(prompt).not.toMatch(/chad|htn|sub 3|population|%/i);
+      expect(prompt).not.toMatch(/IGNORE/);
+    }
+    expect(w.calls.composed.map(c => c.text)).toContain('CHAD\n2% of population');
+    const later = w.calls.images.filter(i => i.prompt.includes('MORPH:'));
+    expect(later).toHaveLength(4);
+    // Slide N is an edit of its arm's slide 1 (the hero), never of slide N-1, and of its text-free base: no label as pixels.
+    // B's slide 1 is a copy of A's picture, base included.
+    const heroes = w.row.variants.map(v => `https://assets.example.test/${v.slides[0]!.path!.replace(/\.jpg$/, '.base.jpg')}`);
+    expect(later.every(i => heroes.includes(i.referenceUrl ?? ''))).toBe(true);
+    expect(new Set(later.map(i => i.referenceUrl)).size).toBe(2);
+    const [ha, hb] = w.row.variants.map(v => v.slides[0]!.path!.replace(/\.jpg$/, '.base.jpg'));
+    expect(w.files.get(hb!)!.equals(w.files.get(ha!)!)).toBe(true);
+    expect(w.files.get(ha!)!.toString()).not.toContain('+');
+    // Arm B reuses arm A's slide 1: 3 + 2 renders, one candidate each, and the QA prompt carried the morph checks.
+    expect(w.calls.images).toHaveLength(5);
+    expect(w.calls.qa[0]!.user).toContain('jaw definition has visibly changed from slide 1');
+  });
+
+  test('a morph check the judge does not see fails the arm', async () => {
+    const w = morphWorld([judge(false), judge(false), judge(false), judge(false)]);
+    await w.plan();
+    await w.generate();
+    expect(JSON.stringify(w.row.variants.map(v => v.qaDeck))).toContain('has visibly changed from slide 1');
   });
 });

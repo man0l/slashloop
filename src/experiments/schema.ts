@@ -1,6 +1,7 @@
 ﻿import { z } from 'zod/v4';
 import { SOURCE_FORMATS } from './source-format.js';
 import { ARC_LEVELS, type ResolvedContract } from './resolved-contract.js';
+import { MORPH_ATTRIBUTES, MORPH_MAX_GRADE } from './morph.js';
 
 export class ExperimentError extends Error {
   constructor(public statusCode: number, public code: string, message = code) { super(message); }
@@ -11,10 +12,13 @@ const text = z.string().trim().max(2000);
 /** Creative direction is the whole spec for a brief-only experiment (per-slide scene and copy), so it gets more room than the other free-text fields. */
 export const DIRECTION_MAX = 8000;
 const directionText = z.string().trim().max(DIRECTION_MAX);
-export const VARIABLE_FIELDS = ['hook', 'character', 'visualStyle', 'caption', 'cta', 'concept', 'slides'] as const;
+export const VARIABLE_FIELDS = ['hook', 'character', 'visualStyle', 'caption', 'cta', 'concept', 'slides', 'morph'] as const;
 /** What an experiment may vary. `scene` is not a brief field: it is the `scene` of every slide, tested on the contract pipeline only. */
 export const TESTED_VARIABLES = [...VARIABLE_FIELDS, 'scene'] as const;
 export type TestedVariable = (typeof TESTED_VARIABLES)[number];
+/** Input-only names: "angle" is the concept variable, "ladder" the morph variable (SLA-867). */
+export const VARIABLE_ALIASES = { angle: 'concept', ladder: 'morph' } as const;
+export const variableName = (v: TestedVariable | keyof typeof VARIABLE_ALIASES): TestedVariable => v in VARIABLE_ALIASES ? VARIABLE_ALIASES[v as keyof typeof VARIABLE_ALIASES] : v as TestedVariable;
 const constraints = z.union([z.array(text.min(1)).max(20), text]).transform(v => typeof v === 'string' ? (v ? [v] : []) : v);
 /** Explicit per-slide copy override (SLA-430 D3, SLA-431 request carrier). Keys are
  *  canonical 0-based slide indices — no leading zeros, because `'00'` and `'0'`
@@ -34,7 +38,7 @@ const instructionsShape = {
   direction: directionText, lockedConstraints: constraints,
   // SLA-700: traits the source format suggests. Soft preferences that yield to the direction and to every lock; never hard rules.
   sourceDefaults: z.array(text.min(1)).max(20).optional(),
-  variables: z.array(z.union([z.enum(TESTED_VARIABLES), z.literal('angle')]).transform(v => v === 'angle' ? 'concept' as const : v)).min(1).max(7), mode: z.enum(['controlled', 'exploration']),
+  variables: z.array(z.union([z.enum(TESTED_VARIABLES), z.literal('angle'), z.literal('ladder')]).transform(variableName)).min(1).max(7), mode: z.enum(['controlled', 'exploration']),
   // SLA-555: which kind of source this is. Expands to default variables, mode,
   // direction and locks (source-format.ts); stored resolved so a later reader
   // sees which preset shaped the locks. Optional: older experiments have none.
@@ -61,12 +65,16 @@ const instructionsShape = {
   // SLA-787: who draws the overlay text. "model" (absent = default) lets the image
   // model render it. "script" renders the slide text-free and composes the text in
   // code afterwards, so copy never reaches the provider's content filter.
+  // A morph experiment (SLA-867) is always "script": its labels never reach the image model.
   overlayMode: z.enum(['model', 'script']).optional(),
 };
 export const Instructions = z.object(instructionsShape).strict().superRefine((v, ctx) => {
   if (new Set(v.variables).size !== v.variables.length) ctx.addIssue({ code: 'custom', message: 'Duplicate variables' });
   if (v.mode === 'controlled' && v.variables.some(x => x === 'concept' || x === 'slides')) {
-    ctx.addIssue({ code: 'custom', message: 'Controlled variables: hook, character, visualStyle, caption, cta. Concept/slides require exploration.' });
+    ctx.addIssue({ code: 'custom', message: 'Controlled variables: hook, character, visualStyle, caption, cta, morph. Concept/slides require exploration.' });
+  }
+  if (v.variables.includes('morph') && v.overlayMode === 'model') {
+    ctx.addIssue({ code: 'custom', path: ['overlayMode'], message: 'A morph (ladder) experiment draws its labels in code: overlayMode must be "script" or omitted.' });
   }
   if (v.sceneOverrides && !v.variables.includes('scene')) ctx.addIssue({ code: 'custom', message: 'sceneOverrides needs the scene variable.' });
   if (v.variables.includes('scene') && v.mode === 'controlled' && v.variables.length > 1) ctx.addIssue({ code: 'custom', message: 'The scene variable is tested on its own: arm B moves every slide to another setting.' });
@@ -94,12 +102,16 @@ export const InstructionsInput = z.object({
 }).strict();
 export const BriefSlide = z.object({ role: z.string().min(1).max(80), scene: text.min(1), overlayText: text.default(''),
   // SLA-700: resolved slide contract fields. Absent on briefs from before the contract pipeline.
-  composition: text.optional(), visibleChange: text.optional(), arcLevel: z.enum(ARC_LEVELS).optional() });
+  composition: text.optional(), visibleChange: text.optional(), arcLevel: z.enum(ARC_LEVELS).optional(),
+  // SLA-867: morph decks only. The slide's grade (0..4) for each morph attribute.
+  morph: z.array(z.object({ attribute: z.enum(MORPH_ATTRIBUTES), grade: z.number().int().min(0).max(MORPH_MAX_GRADE) }).strict()).max(MORPH_ATTRIBUTES.length).optional() });
 export const Brief = z.object({
   concept: text.min(1), hook: text.min(1), character: text, visualStyle: text.min(1), caption: text,
   cta: text, lockedConstraints: z.array(text.min(1)).max(20),
   slides: z.array(BriefSlide).min(3).max(8),
   copyOverrides: CopyOverrides.optional(),
+  // SLA-867: a morph deck's progression in words; the morph variable's value.
+  morph: text.optional(),
 }).strict();
 /** One storyboard grok returns at the briefs fan-out. Candidates are deltas, not full carousels. */
 export const BriefStoryboard = z.object({
@@ -758,7 +770,11 @@ export function effectiveChangedFields(e: Experiment, baseline: BriefData, brief
     && brief.slides.length === baseline.slides.length
     && brief.slides.every((s, n) => same({ ...s, scene: '' }, { ...baseline.slides[n]!, scene: '' }) || (n === 0 && changed.includes('hook') && same({ ...s, scene: '', overlayText: '' }, { ...baseline.slides[0]!, scene: '', overlayText: '' })));
   if (sceneOnlyDiff) return [...changed.filter(k => k !== 'slides'), 'scene'];
-  return changed.includes('concept') || supportRetell || hookOnlyDiff ? changed.filter(k => k !== 'slides') : changed;
+  // SLA-867: the morph grades live on the slides, so a slides diff confined to them belongs to the morph variable.
+  const unmorphed = (s: BriefData['slides'][number]) => { const { morph: grades, visibleChange, ...rest } = s; return grades?.length ? rest : { ...rest, visibleChange }; };
+  const morphOnlyDiff = changed.includes('morph') && changed.includes('slides') && brief.slides.length === baseline.slides.length
+    && brief.slides.every((s, n) => same(unmorphed(s), unmorphed(baseline.slides[n]!)));
+  return changed.includes('concept') || supportRetell || hookOnlyDiff || morphOnlyDiff ? changed.filter(k => k !== 'slides') : changed;
 }
 /** The text recorded for a changed variable. Scene is the slides' own scenes. */
 export function changedValue(brief: BriefData, name: TestedVariable): string {

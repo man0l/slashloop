@@ -13,6 +13,8 @@ import {
 // the two arms, scheduling rules and how finished tasks fold into the experiment. No I/O.
 
 export const isContractPipeline = (e: Pick<Experiment, 'pipeline'>): boolean => e.pipeline === 'contract';
+/** SLA-867: a morph (ladder) experiment: one invented subject graded per slide, labels drawn in code. */
+export const isMorphExperiment = (e: Pick<Experiment, 'instructions'>): boolean => e.instructions.variables.includes('morph');
 
 export const FALLBACK_HOOK = 'No caption';
 
@@ -24,10 +26,10 @@ const newTask = (kind: Task['kind'], target?: string, index?: number, fix?: stri
 
 export function briefToArm(b: BriefData): ArmBrief {
   return {
-    character: b.character, visualStyle: b.visualStyle, caption: b.caption, cta: b.cta,
+    character: b.character, visualStyle: b.visualStyle, caption: b.caption, cta: b.cta, ...(b.morph ? { morph: b.morph } : {}),
     slides: b.slides.map(s => ({
       overlayText: s.overlayText ?? '', arcLevel: s.arcLevel ?? 'none', scene: s.scene,
-      composition: s.composition ?? '', visibleChange: s.visibleChange ?? '', role: s.role,
+      composition: s.composition ?? '', visibleChange: s.visibleChange ?? '', role: s.role, ...(s.morph?.length ? { morph: s.morph } : {}),
     })),
   };
 }
@@ -38,7 +40,7 @@ export function contractView(e: Pick<Experiment, 'contract'>, brief: BriefData):
   if (!c) throw new ExperimentError(409, 'missing_contract', 'This experiment has no resolved slide contract.');
   const slides: ContractSlide[] = brief.slides.map(s => ({
     overlayText: s.overlayText ?? '', arcLevel: c.arcAxis ? (s.arcLevel ?? 'none') : 'none', scene: s.scene,
-    composition: s.composition ?? '', visibleChange: s.visibleChange ?? '',
+    composition: s.composition ?? '', visibleChange: s.visibleChange ?? '', ...(c.morph && s.morph?.length ? { morph: s.morph } : {}),
   }));
   return {
     ...c, medium: brief.visualStyle || c.medium,
@@ -49,11 +51,11 @@ export function contractView(e: Pick<Experiment, 'contract'>, brief: BriefData):
 
 function armToBrief(arm: ArmBrief, base: BriefData, over: Partial<BriefData>): BriefData {
   return {
-    ...base, character: arm.character, visualStyle: arm.visualStyle, caption: arm.caption, cta: arm.cta,
+    ...base, character: arm.character, visualStyle: arm.visualStyle, caption: arm.caption, cta: arm.cta, ...(arm.morph ? { morph: arm.morph } : {}),
     slides: arm.slides.map((s, i) => ({
       role: s.role || (i === 0 ? 'hook' : 'beat'), scene: s.scene, overlayText: s.overlayText,
       ...(s.composition ? { composition: s.composition } : {}), ...(s.visibleChange ? { visibleChange: s.visibleChange } : {}),
-      arcLevel: s.arcLevel,
+      arcLevel: s.arcLevel, ...(s.morph?.length ? { morph: s.morph } : {}),
     })),
     ...over,
   };
@@ -64,8 +66,8 @@ export function proposalsFromContract(e: Pick<Experiment, 'instructions' | 'slid
   const variable = c.variantB.variable as ArmField;
   const concept = (e.instructions.direction || e.instructions.goal).slice(0, 400);
   const armA: ArmBrief = {
-    character: c.identitySheet, visualStyle: c.medium, caption: '', cta: '',
-    slides: c.slides.map((s, i) => ({ ...s, role: i === 0 ? 'hook' : s.arcLevel !== 'none' ? s.arcLevel : 'beat' })),
+    character: c.identitySheet, visualStyle: c.medium, caption: '', cta: '', ...(c.morph ? { morph: c.morph.axis } : {}),
+    slides: c.slides.map((s, i) => ({ ...s, role: i === 0 ? 'hook' : s.arcLevel !== 'none' ? s.arcLevel : c.morph ? `step ${i + 1}` : 'beat' })),
   };
   const baseBrief: BriefData = armToBrief(armA, {
     concept, hook: c.hook || FALLBACK_HOOK, character: '', visualStyle: c.medium, caption: '', cta: '',
@@ -77,7 +79,7 @@ export function proposalsFromContract(e: Pick<Experiment, 'instructions' | 'slid
     hook: variable === 'hook' ? (armB.slides[0]!.overlayText || FALLBACK_HOOK) : baseBrief.hook,
     concept: variable === 'concept' ? c.variantB.value : baseBrief.concept,
   });
-  const value = variable === 'slides' ? 'Alternative storyline' : variable === 'hook' ? briefB.hook : c.variantB.value;
+  const value = variable === 'slides' ? 'Alternative storyline' : variable === 'hook' ? briefB.hook : variable === 'morph' ? (briefB.morph ?? c.variantB.value) : c.variantB.value;
   const notices: string[] = [];
   if (c.slides.length < e.slideCount && c.keepSourceImage) notices.push(`Your source photos are kept unchanged, so the deck has ${c.slides.length} slides instead of ${e.slideCount}: only that many source frames match the story arc.`);
   if (e.variantCount < 2) notices.push(`The slide contract always compares the direction against one alternative, so this run has 2 variants instead of ${e.variantCount}.`);
