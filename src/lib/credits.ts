@@ -504,7 +504,7 @@ export function insufficientCreditsPayload(err: InsufficientCreditsError) {
     required: err.required,
     remaining: err.remaining,
     upgradeUrl,
-    message: `This action needs ${err.required} credits; the workspace has ${err.remaining} remaining. Buy more credits or upgrade at ${upgradeUrl}.`,
+    message: `This action needs ${err.required} credits; the workspace has ${err.remaining} credits remaining. Buy more credits or upgrade at ${upgradeUrl}.`,
   };
 }
 
