@@ -275,7 +275,13 @@ async function contractEstimate(e: S.Experiment, stage: 'plan'|'generate', varia
   } else {
     for (const v of variants) { renders += v.slides.length ? v.slides.filter(s => s.status !== 'done').length : contractRenderCount(e, v, variants); qas++; }
   }
-  return contractPrice(e, { analyses, planningCalls, renders, qas, corrections: stage === 'generate' || !!taskIds });
+  const quote = await contractPrice(e, { analyses, planningCalls, renders, qas, corrections: stage === 'generate' || !!taskIds });
+  // Before the plan exists nobody knows how many slides each alternate really re-renders, so quote the ceiling: every alternate rendered and checked in full.
+  if (stage === 'plan' && !taskIds && !e.variants.length) {
+    const SL = CREDIT_COSTS.experimentSlide, PL = CREDIT_COSTS.experimentPlanningCall;
+    return { ...quote, projectedGenerationCredits: e.variantCount * (e.slideCount * SL + PL), upperBound: true };
+  }
+  return quote;
 }
 async function contractPrice(e: S.Experiment, n: { analyses: number; planningCalls: number; renders: number; qas: number; corrections: boolean }) {
   const AN = CREDIT_COSTS.analyzeVideo, PL = CREDIT_COSTS.experimentPlanningCall, SL = CREDIT_COSTS.experimentSlide;

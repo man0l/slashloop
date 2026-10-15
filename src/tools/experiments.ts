@@ -577,7 +577,10 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     + 'The source deck\'s own slide count wins when it is known; pass slideCount only if you do not have it.\n'
     + 'Sources must be slideshows or videos with a finished Recreate deck (show_gallery marks them). '
     + `Credits: analysis ${CREDIT_COSTS.analyzeVideo}/source + ${CREDIT_COSTS.experimentPlanningCall} per planning call at plan time; `
-    + `${CREDIT_COSTS.experimentSlide} per slide render at generation: one render per slide, and slides the alternative shares with the baseline are free. `
+    + 'Multiplying one deck: in create mode, instructions.mode "exploration" with several variables (hook, character, concept, scene) and variantCount 6-12 returns the baseline plus variantCount-1 alternates, '
+    + 'each one a different combination of those variables (single-variable controls first, then mixes); "controlled" keeps each alternate to one variable. '
+    + `plan-stage estimates carry projectedGenerationCredits (upperBound: true), the ceiling if every alternate re-rendered every slide. `
+    + `${CREDIT_COSTS.experimentSlide} per slide render at generation: one render per slide, and slides an alternate shares with the baseline are free. `
     + `A QA check of each deck (${CREDIT_COSTS.experimentPlanningCall}) is added, and estimate_experiment(stage="generate") gives the exact total. ${LIFECYCLE}`,
     {
       workspaceId: workspaceIdField,
