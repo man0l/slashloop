@@ -406,6 +406,58 @@ describe('create_experiment', () => {
     expect((callsOf('createExperiment')[0]![0] as any).instructions.variables).toEqual(['character']);
   });
 
+  test('scene edit: variables ["scene"] with one description for every slide, priced and shaped like a character edit', async () => {
+    const request = { mode: 'edit', videoIds: ['vid1'], variables: ['scene'], scene: ' A rainy street at night ' };
+    expect((await call('create_experiment', request)).isError).toBe(false);
+    const body = callsOf('createExperiment')[0]![0] as any;
+    expect(Create.safeParse(body).success).toBe(true);
+    expect(body.instructions.variables).toEqual(['scene']);
+    expect(body.instructions.mode).toBe('controlled');
+    expect(body.instructions.sceneOverrides).toEqual(['A rainy street at night']);
+    expect(body.instructions.direction).toContain('Scene: A rainy street at night');
+    expect(body.instructions).not.toHaveProperty('copyOverrides');
+    expect(body.variantCount).toBe(2);
+    expect(body.maxCredits).toBe(100);
+  });
+
+  test('scene edit takes one description per slide, and infers its variable when omitted', async () => {
+    expect((await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], scene: ['A beach', 'A kitchen', 'A train'] })).isError).toBe(false);
+    const body = callsOf('createExperiment')[0]![0] as any;
+    expect(body.instructions.variables).toEqual(['scene']);
+    expect(body.instructions.sceneOverrides).toEqual(['A beach', 'A kitchen', 'A train']);
+    expect(body.instructions.direction).toContain('slide 2: A kitchen');
+  });
+
+  test('scene edit refuses missing or conflicting inputs instead of silently discarding them', async () => {
+    const client = await connect();
+    for (const fields of [
+      { variables: ['scene'] },
+      { variables: ['scene'], scene: '  ' },
+      { variables: ['scene'], scene: [] },
+      { variables: ['scene'], scene: 'A beach', hook: 'H' },
+      { variables: ['scene'], scene: 'A beach', overlayTexts: [''] },
+      { variables: ['scene'], scene: 'A beach', character: 'Short hair' },
+      { variables: ['hook'], scene: 'A beach', hook: 'H' },
+      { variables: ['scene', 'hook'], scene: 'A beach' },
+      { scene: 'x'.repeat(501) },
+    ]) {
+      const result = await client.callTool({ name: 'create_experiment', arguments: { mode: 'edit', videoIds: ['vid1'], ...fields } });
+      expect(result.isError).toBe(true);
+    }
+    expect((await client.callTool({ name: 'create_experiment', arguments: { mode: 'create', videoIds: ['vid1'], instructions, scene: 'A beach' } })).isError).toBe(true);
+    expect(callsOf('createExperiment')).toHaveLength(0);
+  });
+
+  test('cost text no longer promises N candidates per slide: a contract experiment renders one image per slide', async () => {
+    const { tools } = await (await connect()).listTools();
+    for (const name of ['create_experiment', 'generate_experiment']) {
+      const desc = tools.find(t => t.name === name)!.description!;
+      expect(desc).not.toMatch(/candidates/);
+      expect(desc).toContain('one render per slide');
+    }
+    expect(tools.find(t => t.name === 'create_experiment')!.description).toContain('variables:["scene"]');
+  });
+
   test('edit refuses missing or conflicting casting inputs instead of silently discarding them', async () => {
     const client = await connect();
     for (const fields of [

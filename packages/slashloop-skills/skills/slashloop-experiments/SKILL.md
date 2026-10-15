@@ -44,7 +44,7 @@ Build `instructions`:
   Do not paste source analysis text into `direction` or `lockedConstraints`
   (it names real people and the source's own brand).
 - `variables`: 1–7 values from `hook`, `character`, `visualStyle`, `caption`,
-  `cta`, `concept`/`angle`, or `slides`. Required unless a `sourceFormat` is
+  `cta`, `concept`/`angle`, or `slides`. Edit mode (below) also takes `scene`. Required unless a `sourceFormat` is
   given or inferred.
 - `mode`: `controlled` by default; each alternate changes one selected variable.
   `exploration` permits combined changes in a variant; `concept`/`slides` require it.
@@ -115,6 +115,15 @@ For a bounded character-only edit of one deck, call `create_experiment` with
 casting direction (up to 1000 characters). Omit `hook`, `overlayTexts`, and
 `instructions`: source text, style, setting and story stay locked. Edit mode
 creates two variants with a 100-credit ceiling; the same approval gates apply.
+For a bounded scene edit, call `create_experiment` with `mode:"edit"`,
+`variables:["scene"]` and `scene`: one description of the new setting, props and
+action for every slide, or an array with exactly one per slide (up to 500
+characters each; the count must equal the deck's slide count). Arm B edits each
+baseline slide: the same person, medium, lighting, camera and overlay text, only
+where it takes place changes. Omit `hook`, `overlayTexts` and `character`. It
+costs the same as a hook or character edit (one render per slide plus one QA
+check per deck), and QA fails a slide whose setting did not change. Scene is
+tested on its own: it cannot be combined with other variables.
 Copy edits default to `variables:["hook"]`. Use create mode with
 `instructions.variables:["character"]` and `instructions.direction` when you
 need custom goals or counts. Never put create instructions into edit mode.

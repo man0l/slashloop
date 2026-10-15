@@ -12,6 +12,9 @@ const text = z.string().trim().max(2000);
 export const DIRECTION_MAX = 8000;
 const directionText = z.string().trim().max(DIRECTION_MAX);
 export const VARIABLE_FIELDS = ['hook', 'character', 'visualStyle', 'caption', 'cta', 'concept', 'slides'] as const;
+/** What an experiment may vary. `scene` is not a brief field: it is the `scene` of every slide, tested on the contract pipeline only. */
+export const TESTED_VARIABLES = [...VARIABLE_FIELDS, 'scene'] as const;
+export type TestedVariable = (typeof TESTED_VARIABLES)[number];
 const constraints = z.union([z.array(text.min(1)).max(20), text]).transform(v => typeof v === 'string' ? (v ? [v] : []) : v);
 /** Explicit per-slide copy override (SLA-430 D3, SLA-431 request carrier). Keys are
  *  canonical 0-based slide indices — no leading zeros, because `'00'` and `'0'`
@@ -25,12 +28,13 @@ const constraints = z.union([z.array(text.min(1)).max(20), text]).transform(v =>
  *  where an oversized value would blow the prompt budget and fail a paid task. */
 export const CopyOverrides = z.record(z.string().regex(/^(?:0|[1-9]\d*)$/), z.string().max(2000))
   .refine(v => Object.keys(v).length <= 8, { message: 'At most 8 per-slide copy overrides: one per slide.' });
+export const SCENE_MAX = 500;
 const instructionsShape = {
   goal: text.min(1), brand: text, audience: text, language: z.string().trim().min(1).max(80),
   direction: directionText, lockedConstraints: constraints,
   // SLA-700: traits the source format suggests. Soft preferences that yield to the direction and to every lock; never hard rules.
   sourceDefaults: z.array(text.min(1)).max(20).optional(),
-  variables: z.array(z.union([z.enum(VARIABLE_FIELDS), z.literal('angle')]).transform(v => v === 'angle' ? 'concept' as const : v)).min(1).max(7), mode: z.enum(['controlled', 'exploration']),
+  variables: z.array(z.union([z.enum(TESTED_VARIABLES), z.literal('angle')]).transform(v => v === 'angle' ? 'concept' as const : v)).min(1).max(7), mode: z.enum(['controlled', 'exploration']),
   // SLA-555: which kind of source this is. Expands to default variables, mode,
   // direction and locks (source-format.ts); stored resolved so a later reader
   // sees which preset shaped the locks. Optional: older experiments have none.
@@ -46,6 +50,8 @@ const instructionsShape = {
   // It pins exact values, so it cannot be combined with a mode that deliberately
   // lets the model retell that same copy (see the superRefine guard below).
   copyOverrides: CopyOverrides.optional(),
+  // The setting arm B moves every slide to when "scene" is the variable: one description for all slides, or exactly one per slide.
+  sceneOverrides: z.array(z.string().trim().min(1).max(SCENE_MAX)).min(1).max(8).optional(),
   // SLA-476: explicit opt-in to keeping the source deck's own trailing CTA
   // slide. Absent/false is the historical contract — a detected closing
   // call-to-action slide is subtracted from the slide count at both the creation
@@ -62,6 +68,9 @@ export const Instructions = z.object(instructionsShape).strict().superRefine((v,
   if (v.mode === 'controlled' && v.variables.some(x => x === 'concept' || x === 'slides')) {
     ctx.addIssue({ code: 'custom', message: 'Controlled variables: hook, character, visualStyle, caption, cta. Concept/slides require exploration.' });
   }
+  if (v.sceneOverrides && !v.variables.includes('scene')) ctx.addIssue({ code: 'custom', message: 'sceneOverrides needs the scene variable.' });
+  if (v.variables.includes('scene') && v.mode === 'controlled' && v.variables.length > 1) ctx.addIssue({ code: 'custom', message: 'The scene variable is tested on its own: arm B moves every slide to another setting.' });
+  if (v.variables.includes('scene') && v.variables.some(x => x === 'concept' || x === 'slides')) ctx.addIssue({ code: 'custom', message: 'scene cannot be combined with concept or slides: those retell the storyline, scene only changes where it takes place.' });
   if (v.copyOverrides && Object.keys(v.copyOverrides).length) {
     // Exact overrides and a supporting-copy retell are contradictory contracts:
     // one says "these words are the answer", the other "the model may rewrite
@@ -546,7 +555,7 @@ export const Report = z.object({ summary: text.min(1), patterns: z.array(z.objec
 }).strict()).min(1).max(12) }).strict();
 export const VariantProposal = z.object({ title: z.string().min(1).max(160), hypothesis: text.min(1),
   mechanism: z.string().min(1).max(80).optional(),
-  changedVariables: z.array(z.object({ name: z.enum(VARIABLE_FIELDS), value: text.min(1) }).strict()).max(7), brief: Brief }).strict();
+  changedVariables: z.array(z.object({ name: z.enum(TESTED_VARIABLES), value: text.min(1) }).strict()).max(7), brief: Brief }).strict();
 export type InstructionsData = z.infer<typeof Instructions>;
 export type BriefData = z.infer<typeof Brief>;
 export type ReportData = z.infer<typeof Report>;
@@ -733,8 +742,8 @@ export function sharedBriefFields(e: Experiment): Array<typeof VARIABLE_FIELDS[n
   return VARIABLE_FIELDS.filter(k => !vars.includes(k) && (k !== 'slides' || !vars.includes('concept')));
 }
 /** The variables a brief really changes against the baseline: a concept change (or a hook test with varySupportingOverlays and identical scenes) retells the storyboard, so its slides diff belongs to that one variable and is not counted separately. */
-export function effectiveChangedFields(e: Experiment, baseline: BriefData, brief: BriefData) {
-  const changed = VARIABLE_FIELDS.filter(k => !same(brief[k], baseline[k]));
+export function effectiveChangedFields(e: Experiment, baseline: BriefData, brief: BriefData): TestedVariable[] {
+  const changed: TestedVariable[] = VARIABLE_FIELDS.filter(k => !same(brief[k], baseline[k]));
   const scenesSame = brief.slides.length === baseline.slides.length
     && brief.slides.every((s, n) => s.role === baseline.slides[n]!.role && s.scene === baseline.slides[n]!.scene);
   const supportRetell = !!e.instructions.varySupportingOverlays && changed.includes('hook')
@@ -744,7 +753,18 @@ export function effectiveChangedFields(e: Experiment, baseline: BriefData, brief
   const hookOnlyDiff = e.pipeline === 'contract' && changed.includes('hook') && changed.includes('slides')
     && brief.slides.length === baseline.slides.length
     && brief.slides.every((s, n) => n === 0 ? same({ ...s, overlayText: '' }, { ...baseline.slides[0]!, overlayText: '' }) : same(s, baseline.slides[n]));
+  // A slides diff confined to each slide's scene is the scene variable, not a retold storyline.
+  const sceneOnlyDiff = e.pipeline === 'contract' && e.instructions.variables.includes('scene') && changed.includes('slides')
+    && brief.slides.length === baseline.slides.length
+    && brief.slides.every((s, n) => same({ ...s, scene: '' }, { ...baseline.slides[n]!, scene: '' }) || (n === 0 && changed.includes('hook') && same({ ...s, scene: '', overlayText: '' }, { ...baseline.slides[0]!, scene: '', overlayText: '' })));
+  if (sceneOnlyDiff) return [...changed.filter(k => k !== 'slides'), 'scene'];
   return changed.includes('concept') || supportRetell || hookOnlyDiff ? changed.filter(k => k !== 'slides') : changed;
+}
+/** The text recorded for a changed variable. Scene is the slides' own scenes. */
+export function changedValue(brief: BriefData, name: TestedVariable): string {
+  if (name === 'scene') return [...new Set(brief.slides.map(s => s.scene))].join(' | ').slice(0, 2000);
+  const value = brief[name];
+  return typeof value === 'string' ? value : JSON.stringify(value);
 }
 export function validateVariants(e: Experiment, proposals: Proposal[]) {
   // Fewer than requested is a degraded success (the fan-out cannot always
@@ -765,7 +785,7 @@ export function validateVariants(e: Experiment, proposals: Proposal[]) {
     if ((effective.includes('concept') || effective.includes('slides')) && same(p.brief.slides, baseline.brief.slides))
       throw new ExperimentError(422, 'identical_storyboard', 'Concept/slides variants must retell the storyboard â€” identical slide briefs cannot test an angle.');
     for (const c of p.changedVariables) {
-      const value = p.brief[c.name];
+      const value = c.name === 'scene' ? undefined : p.brief[c.name];
       if (typeof value === 'string' && c.value !== value) throw new ExperimentError(422, 'incorrect_variable_value');
     }
   }
