@@ -28,6 +28,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { withNextSteps, type NextStep } from '../lib/next-steps.js';
 import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload } from '../lib/credits.js';
+import { CompositeOptions } from '../experiments/composite/options.js';
 import { createExperiment, dedupeSourcePosts, estimate, mutate, fingerprint, estimateFeedback } from '../experiments/service.js';
 import { SOURCE_FORMATS } from '../experiments/source-format.js';
 import { ARC_LEVELS } from '../experiments/resolved-contract.js';
@@ -211,6 +212,10 @@ const ERROR_HINTS: Record<string, string> = {
   not_revisable: 'Only a failed experiment can have its brief revised. get_experiment shows the status; retry_experiment handles paused ones.',
   no_qa_failure: 'No variant failed QA, so there is nothing to revise the brief with. Use retry_experiment for the failed jobs.',
   revise_limit: 'The brief was already revised the maximum number of times and still failed QA. Create a new experiment with a changed direction.',
+  composite_deck_pending: 'The photo-annotation deck is being drawn by the worker (no image credits). await_job / get_job_status on the job id in the message, then repeat this exact create_experiment call.',
+  composite_deck_in_use: 'An unfinished experiment still reads this video\'s composite deck. Cancel or delete it (cancel_experiment / delete_experiment), or wait for it to finish, then repeat the call.',
+  library_too_small: 'The face library has too few tagged faces for this feature and verdict mix. Ingest more faces (operator CLI) or loosen composite.order / feature.',
+  not_photo_annotation: 'This video is not a feature + ✅/❌ photo-annotation format, so there is no composite deck for it.',
   invalid_slide: 'Slide indexes are 0-based and must exist on the variant (slide 1 = index 0).',
 };
 
@@ -576,6 +581,8 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     + 'controlled mode, 2 variants, a 100-credit cap — with the copy quoted per slide in the site\'s wording. '
     + 'The source deck\'s own slide count wins when it is known; pass slideCount only if you do not have it.\n'
     + 'Sources must be slideshows or videos with a finished Recreate deck (show_gallery marks them). '
+    + 'Photo-annotation videos (face photo + drawn line + ✅/❌ badge + score card) are also accepted: their deck is drawn in code from the tagged face library at 0 image credits. '
+    + 'The first call queues that render and returns composite_deck_pending with a job id; await the job and repeat the same call. Shape the deck with `composite`. '
     + `Credits: analysis ${CREDIT_COSTS.analyzeVideo}/source + ${CREDIT_COSTS.experimentPlanningCall} per planning call at plan time; `
     + `${CREDIT_COSTS.experimentSlide} per slide render at generation: one render per slide, and slides the alternative shares with the baseline are free. `
     + `A QA check of each deck (${CREDIT_COSTS.experimentPlanningCall}) is added, and estimate_experiment(stage="generate") gives the exact total. ${LIFECYCLE}`,
@@ -617,11 +624,14 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       ranBy: ranByAliasField,
       tagGoalWithSource: tagGoalField,
       notify: notifyField,
+      composite: CompositeOptions.optional().describe(
+        'CREATE mode, photo-annotation sources (a face photo, a drawn line at a landmark, a ✅/❌ badge, a closing score card): shape the code-rendered deck. feature (jaw/ramus/…), subset (face-library ids), order (e.g. ["neg","pos","pos"]: cycled badge order and ratio), scoreCard {appName,name,score,tier}, seed. A named real person only ever appears on a ✅ slide. Hook text and the rest of the direction go in instructions.',
+      ),
       test_key: testKeyField,
       test_max_credits: testMaxCreditsField,
     },
     { readOnlyHint: false },
-    ({ workspaceId, mode, videoIds, instructions, variables, character, scene, hook, overlayTexts, language, overlayMode, variantCount, slideCount, maxCredits, idempotencyKey, ran_by: ranByRaw, ranBy: ranByCamel, tagGoalWithSource, notify, test_key, test_max_credits }) => guarded(async () => {
+    ({ workspaceId, mode, videoIds, instructions, variables, character, scene, hook, overlayTexts, language, overlayMode, variantCount, slideCount, maxCredits, idempotencyKey, ran_by: ranByRaw, ranBy: ranByCamel, tagGoalWithSource, notify, composite, test_key, test_max_credits }) => guarded(async () => {
       const ran_by = ranByRaw ?? ranByCamel;
       const test = { ...(test_key === undefined ? {} : { test_key }), ...(test_max_credits === undefined ? {} : { test_max_credits }) };
       const workspace = await d.resolveWorkspace({ workspaceId });
@@ -688,9 +698,9 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         const body = { workspaceId: workspace.id, videoIds: [videoId], ...edit, slideCount, maxCredits: edit.maxCredits };
         const key = idempotencyKey
           ? (videoIds.length === 1 ? idempotencyKey : `${idempotencyKey}:${i + 1}`)
-          : derivedKey('create', body);
+          : derivedKey('create', composite ? { ...body, composite } : body);
         try {
-          const e = await d.createExperiment({ ...body, idempotencyKey: key, ...(ran_by === undefined ? {} : { ran_by }), ...(notify === undefined ? {} : { notify }), ...test }, undefined, { ...(mode === 'edit' ? { expandFormat: false } : {}), tagGoal: tagGoalWithSource });
+          const e = await d.createExperiment({ ...body, idempotencyKey: key, ...(ran_by === undefined ? {} : { ran_by }), ...(notify === undefined ? {} : { notify }), ...test }, undefined, { ...(mode === 'edit' ? { expandFormat: false } : {}), tagGoal: tagGoalWithSource, ...(composite ? { composite } : {}) });
           created.push({ ...listRow(e), ...(e.notify ? { notify: e.notify } : {}), idempotencyKey: key, planEstimate: await d.estimate(e, 'plan') });
         } catch (err) {
           const payload = JSON.parse(experimentToolError(err).content[0]!.text);

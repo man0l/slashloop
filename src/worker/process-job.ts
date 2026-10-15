@@ -28,6 +28,7 @@ import { tagJobFailure, classifyGeminiError } from '../lib/gemini-errors.js';
 import { isVideoCeilingError } from '../lib/scrapers/proxy-adapter.js';
 import { failureLines } from '../lib/refresh-notes.js';
 import { db } from '../db.js';
+import { CompositeError } from '../experiments/composite/plan.js';
 
 export interface JobProcessOptions {
   /**
@@ -510,6 +511,19 @@ export async function processClaimedJob(
       if (JSON.parse(job.payloadJson || '{}').mode === 'video') {
         throw new Error('video recreates are built by the Workers stepper (Stream), not the VPS worker');
       }
+      const payload = JSON.parse(job.payloadJson || '{}') as { mode?: string; request?: unknown };
+      if (payload.mode === 'composite') {
+        // SLA-868: code-rendered deck. No credits were pre-authorised, so nothing to refund on failure.
+        const { buildCompositeDeckForVideo } = await import('../experiments/composite/build.js');
+        const { CompositeOptions } = await import('../experiments/composite/options.js');
+        const direction = (payload.request as { direction?: unknown } | undefined)?.direction;
+        const opts = CompositeOptions.safeParse(payload.request ?? {});
+        if (!opts.success) throw new CompositeError('bad_composite_request', 'The queued deck request is malformed.');
+        const request = { ...opts.data, ...(typeof direction === 'string' ? { direction } : {}) };
+        await buildCompositeDeckForVideo(job.workspaceId, videoId, request);
+        await completeJob(job.id, null);
+        return { ok: true };
+      }
       const { recreateSlideshowForVideo } = await import('../lib/recreate-slideshow.js');
       await recreateSlideshowForVideo(job.workspaceId, videoId);
       await completeJob(job.id, null);
@@ -520,7 +534,7 @@ export async function processClaimedJob(
       const { terminal } = await failJob(
         job.id,
         message,
-        message.startsWith('video recreates are built') ? { terminal: true } : undefined,
+        message.startsWith('video recreates are built') || err instanceof CompositeError ? { terminal: true } : undefined,
       );
       if (terminal && job.opId) {
         await refundCredits(

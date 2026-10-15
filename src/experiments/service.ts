@@ -10,6 +10,8 @@ import { experimentSourceKeys, hasExperimentSlides, isPhotoPost } from '../lib/m
 import { persistedOverlayText } from './render-prompt.js';
 import { deriveStorySlideCount } from './slide-count.js';
 import { applyApprovedEstimate } from './budget.js';
+import { resolveCompositeSource } from './composite/resolve.js';
+import type { DeckRequest } from './composite/options.js';
 import { compileExactEdit } from './exact-edit.js';
 import { applyFeedback, applyRevise, briefToArm, FALLBACK_HOOK, generationTasks, hookForOverlay, isContractPipeline, reviseTargets } from './contract-flow.js';
 import { slideWork } from './resolved-contract.js';
@@ -92,12 +94,15 @@ export type CreateExperimentDeps = {
   findSource: (workspaceId: string, videoId: string) => Promise<Video | null>;
   findLatestAnalysis: (videoId: string) => Promise<{ analysisJson: string } | null>;
   buildInput: (video: Video) => Promise<S.Input>;
+  /** SLA-868: swap a photo-annotation video for its code-rendered composite deck, or queue the render and throw `composite_deck_pending`. */
+  resolveComposite?: (workspaceId: string, video: Video, request: DeckRequest) => Promise<Video>;
   persist: (experiment: S.Experiment, idempotencyKey: string, run?: store.Run, notify?: S.NotifyConfig | null) => Promise<S.Experiment>;
 };
 export const createDeps: CreateExperimentDeps = {
   findSource: (workspaceId, videoId) => db.video.findFirst({ where: { id: videoId, source: { workspaceId } } }),
   findLatestAnalysis: (videoId) => db.analysis.findFirst({ where: { videoId, schemaVersion: 'v3' }, orderBy: { createdAt: 'desc' }, select: { analysisJson: true } }),
   buildInput: compatibleInput,
+  resolveComposite: (workspaceId, video, request) => resolveCompositeSource(workspaceId, video, request),
   persist: store.create,
 };
 export interface CreateExperimentOptions {
@@ -108,6 +113,8 @@ export interface CreateExperimentOptions {
   tagGoal?: boolean;
   /** Brief-only experiment: no source video, the direction is the spec. Takes a body with no videoIds. */
   sourceless?: boolean;
+  /** SLA-868: composite-deck knobs (feature, face subset, ✅/❌ order, score card, seed) and the direction a feature may be named in. */
+  composite?: DeckRequest;
 }
 export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: CreateExperimentDeps = createDeps, options: CreateExperimentOptions = {}) {
   const { body: rawWithRunner, notify: notifyRaw } = S.takeNotify(rawWithRunnerAndNotify);
@@ -137,8 +144,9 @@ export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: Cr
   const tags: string[] = [];
   const posts = new Set<string>();
   for (const videoId of head.videoIds) {
-    const v = await deps.findSource(head.workspaceId, videoId);
+    let v = await deps.findSource(head.workspaceId, videoId);
     if (!v) throw new S.ExperimentError(404,'video_not_found');
+    if (deps.resolveComposite) v = await deps.resolveComposite(head.workspaceId, v, { ...options.composite, ...(head.instructions.direction ? { direction: head.instructions.direction } : {}) });
     // The same TikTok post is stored once per source, so two video ids can be one post.
     const post = postKey(v);
     if (posts.has(post)) throw new S.ExperimentError(400,'duplicate_source_post','Two of the videoIds are the same post; pass it once.');

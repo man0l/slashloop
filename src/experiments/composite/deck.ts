@@ -50,6 +50,8 @@ export function detectAnnotationPattern(analysisJson: unknown): AnnotationPatter
 export interface BuildDeckOptions {
   /** Free-text direction; a feature named in it replaces the source's feature on every slot. */
   direction?: string;
+  /** Explicit feature; wins over one named in `direction`. */
+  feature?: Feature;
   /** Restrict faces to these library ids. */
   subset?: readonly string[];
   /** Override the source's order/ratio, e.g. ['neg','pos','pos']. Cycled to fill the deck. */
@@ -66,7 +68,7 @@ export function deckSize(pattern: AnnotationPattern): number {
 }
 
 export function buildCompositePlan(pattern: AnnotationPattern, library: readonly FaceRecord[], o: BuildDeckOptions): BuiltDeck {
-  const override = o.direction ? featureFromText(o.direction) : null;
+  const override = o.feature ?? (o.direction ? featureFromText(o.direction) : null);
   const total = deckSize(pattern);
   const faceCount = total - 1;
   const base = pattern.slots;
