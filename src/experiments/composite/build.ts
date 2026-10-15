@@ -6,7 +6,8 @@ import { getObject, thumbBucket } from '../../lib/storage.js';
 import { buildCompositePlan, detectAnnotationPattern } from './deck.js';
 import { prismaFaceStore, usableFaces, type FaceStore } from './face-store.js';
 import { deckFingerprint, type DeckRequest } from './options.js';
-import { CompositeError, type CompositePlanT } from './plan.js';
+import { CompositeError, type CompositePlanT, type FaceSlideT, type ScoreCardSlideT } from './plan.js';
+import type { Landmarks } from './landmarks.js';
 import { renderFaceSlide, renderScoreCard, type RenderedSlide } from './render.js';
 
 export interface BuildDeckDeps {
@@ -14,6 +15,8 @@ export interface BuildDeckDeps {
   latestAnalysisJson(videoId: string): Promise<unknown | null>;
   faces: FaceStore;
   getImage(key: string): Promise<Uint8Array | null>;
+  renderFace(photo: Uint8Array, slide: FaceSlideT, landmarks: Landmarks): Promise<RenderedSlide>;
+  renderCard(slide: ScoreCardSlideT): Promise<RenderedSlide>;
   persist(workspaceId: string, videoId: string, slides: RenderedSlide[], stamp: { model: string; compositeDeck: Record<string, unknown> }): Promise<string[]>;
 }
 
@@ -26,6 +29,8 @@ export const liveBuildDeps: BuildDeckDeps = {
   },
   faces: prismaFaceStore,
   getImage: key => getObject(thumbBucket(), key),
+  renderFace: renderFaceSlide,
+  renderCard: renderScoreCard,
   persist: (workspaceId, videoId, slides, stamp) => persistRecreation(workspaceId, videoId, slides, stamp),
 };
 
@@ -47,11 +52,11 @@ export async function buildCompositeDeckForVideo(
 
   const slides: RenderedSlide[] = [];
   for (const slide of plan.slides) {
-    if (slide.type === 'score_card') { slides.push(await renderScoreCard(slide)); continue; }
+    if (slide.type === 'score_card') { slides.push(await deps.renderCard(slide)); continue; }
     const face = byId.get(slide.faceId)!;
     const bytes = await deps.getImage(face.imageKey);
     if (!bytes) throw new CompositeError('face_image_missing', `Face ${face.id} has no stored image.`);
-    slides.push(await renderFaceSlide(bytes, slide, face.landmarks));
+    slides.push(await deps.renderFace(bytes, slide, face.landmarks));
   }
   const keys = await deps.persist(workspaceId, videoId, slides, {
     model: 'composite',
