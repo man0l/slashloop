@@ -368,7 +368,7 @@ describe('nextStallLog (SLA-548 cooldown)', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'index.ts'), 'utf8');
     expect(src).toContain('nextStallLog(stallLog,');
     // The only console.warn on the STALLED path is gated on the warn level.
-    expect(src).toContain("if (level === 'warn') console.warn(msg);");
+    expect(src).toContain("if (level === 'warn' && ids !== 'none') console.warn(msg);");
     expect(src).not.toMatch(/if \(cadence\.parkedStreak !== null\) \{\s*console\.warn/);
   });
 });

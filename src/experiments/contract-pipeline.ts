@@ -11,6 +11,7 @@ import { contractView, proposalsFromContract, slideFeedback, slideWorkFor } from
 import { validateVariants, type Experiment, type Task } from './schema.js';
 import { CONTENT_FILTER_PATTERN, SafeFailure, contentFilterFailure, SlideMeter, logAiCost, type ExecuteContext, type Prepared, type RenderDeps } from './providers.js';
 import { storySlideCount } from './slide-count.js';
+import { classifyOpenRouterError } from '../lib/openrouter.js';
 import { redactOverlayCopy } from './render-prompt.js';
 
 /** One source image the contract, the renderer and QA all index the same way. */
@@ -135,7 +136,8 @@ export async function prepareContractBriefs(e: Experiment, render: RenderDeps, r
         }
       } finally { meter.flush(e.workspaceId, `${e.id}#contract`, render.recordAiCost ?? logAiCost); }
       const { proposals, notices } = proposalsFromContract(e, contract);
-      validateVariants(e, proposals);
+      // The contract always renders baseline + one alternative, so a variantCount of 1 cannot cap it (notice above).
+      validateVariants({ ...e, variantCount: Math.max(e.variantCount, proposals.length) }, proposals);
       return { proposals, contract, slideCount: e.slideCount, notices, calls: { contract: calls } };
     },
   };
@@ -154,6 +156,8 @@ function renderFailure(err: unknown, refusal: { overlayMode: 'model' | 'script';
   if (/in_flight_budget_exhausted/i.test(flat) && !/insufficient credits/i.test(flat)) throw new SafeFailure(`in_flight_budget retry_after=${/retry_after=(\d+)/i.exec(flat)?.[1] ?? 20}`);
   if (/\b402\b|insufficient credits/i.test(flat)) throw new SafeFailure('credits_exhausted_402');
   if (/\b429\b|rate.?limit/i.test(flat)) throw new SafeFailure(`rate_limited_429 retry_after=${/retry_after=(\d+)/i.exec(flat)?.[1] ?? 30}`);
+  // 5xx and timeouts can change on a repeat: hand the provider error to the engine as-is so it is requeued as an unknown outcome, not recorded as a verified render_failed.
+  if (classifyOpenRouterError(err).retryable) throw err;
   throw new SafeFailure(`render_failed[${flat.slice(0, 120)}]`);
 }
 

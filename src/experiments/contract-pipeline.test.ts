@@ -113,6 +113,16 @@ describe('briefs: one contract call', () => {
     expect(w.providerCalls).toEqual({ contract: 1 });
   });
 
+  test('SLA-841: variantCount 1 still plans the two arms and says so, instead of 422 variant_count', async () => {
+    const w = world({ contract: rawContract(), qa: [] });
+    w.update(e => { e.variantCount = 1; });
+    await w.plan();
+    expect(w.row.error).toBeNull();
+    expect(w.row.status).toBe('review');
+    expect(w.row.variants).toHaveLength(2);
+    expect(w.row.notices).toContain('The slide contract always compares the direction against one alternative, so this run has 2 variants instead of 1.');
+  });
+
   test('the source default is dropped with a reason and the contract records it', async () => {
     const w = world({ contract: rawContract({ droppedSourceDefaults: [{ default: 'Keep the subject exactly as in the source frame', reason: 'the direction changes the subject' }] }), qa: [] });
     await w.plan();
@@ -451,6 +461,45 @@ describe('content-filter refusals keep the provider\'s own words (SLA-816)', () 
     expect(w.row.variants[0]!.slides.every(s => !s.diagnostic)).toBe(true);
     expect(w.row.tasks.some(t => /provider_content_filtered/.test(t.error ?? ''))).toBe(false);
     expect(w.calls.images.filter(c => c.prompt.includes('Create one new'))).toHaveLength(w.row.tasks.filter(t => t.kind === 'slide' && t.attempts > 0).length);
+  });
+});
+
+describe('SLA-841: provider 5xx and timeouts are retryable renders, not terminal render_failed', () => {
+  const imageError = (message: string) => world({ contract: rawContract(), qa: [() => qaPass()], rejectImage: () => true, refusal: message });
+  const firstSlide = async (message: string) => {
+    const w = imageError(message);
+    await w.plan();
+    await w.generate([w.row.variants[0]!.id]).catch(() => undefined);
+    return { w, task: w.row.tasks.find(t => t.kind === 'slide' && t.attempts > 0)! };
+  };
+
+  test.each([
+    ['502', 'OpenRouter image error 502: {"error":{"message":"Provider returned error","code":502,"metadata":{"provider_name":"Meta"}}}', 'provider_server_502'],
+    ['503', 'OpenRouter image error 503: {"error":{"message":"Service unavailable","code":503}}', 'provider_server_503'],
+    ['502 with an HTML body', 'OpenRouter image error 502: <html><body>Bad gateway</body></html>', 'provider_server_502'],
+    ['timeout', 'The operation timed out after 120000ms', 'timeout'],
+  ])('%s is requeued with its provider cause and never reads as render_failed', async (_name, message, cause) => {
+    const { w, task } = await firstSlide(message);
+    expect(task.status).toBe('pending');
+    expect(task.error).toBe(`provider_outcome_unknown:${cause}`);
+    expect(task.error).not.toContain('render_failed');
+    expect(task.attempts).toBe(1);
+    expect(w.row.variants[0]!.slides[task.index!]!.status).toBe('pending');
+    expect(w.row.status).toBe('generating');
+  });
+
+  test.each([
+    ['402', 'OpenRouter image error 402: {"error":{"message":"Insufficient credits","code":402}}', 'credits_exhausted_402', 'failed'],
+    ['429', 'OpenRouter image error 429: {"error":{"message":"Rate limit exceeded","code":429}}', 'rate_limited_429 retry_after=30', 'pending'],
+  ])('%s keeps its existing classification', async (_name, message, cause, status) => {
+    const { task } = await firstSlide(message);
+    expect(task.status).toBe(status as never);
+    expect(task.error).toBe(`provider_result_rejected:${cause}`);
+  });
+
+  test('a non-retryable unknown provider error is still a terminal-shaped render_failed', async () => {
+    const { task } = await firstSlide('OpenRouter image error 400: {"error":{"message":"bad aspect ratio","code":400}}');
+    expect(task.error).toStartWith('provider_result_rejected:render_failed[');
   });
 });
 

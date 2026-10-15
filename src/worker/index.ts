@@ -569,7 +569,8 @@ while (!shuttingDown) {
               + (level === 'warn'
                 ? 'Logged once per stall; reminders hourly at info level. Check EXPERIMENT_TICK_ENABLED / experiments.enabled and stuck experiment rows.'
                 : 'Still stalled (hourly reminder).');
-            if (level === 'warn') console.warn(msg);
+            // Nothing active left to look at: the idle ticks were a race with completion, not a stall worth a warning.
+            if (level === 'warn' && ids !== 'none') console.warn(msg);
             else console.log(msg);
           }
           experimentTickErrorRounds = 0;
