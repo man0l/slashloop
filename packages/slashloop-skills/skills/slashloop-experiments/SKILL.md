@@ -135,6 +135,22 @@ exact overlay copy, up to 8000 characters; required), `slideCount` (3-8, the rea
 output length), `variantCount` and `maxCredits`. It creates one free draft with a
 `planEstimate`; planning skips source analysis, and the same approval gates apply.
 
+### Photo-annotation sources (face photo, drawn line, ✅/❌ badge, score card)
+
+A video whose overlays read like `short ramus ❌` / `tall ramus ✅` is not a
+slideshow, but `create_experiment` accepts it: its deck is drawn in code from the
+workspace's tagged face library, at 0 image credits. The first call queues that
+render and returns `composite_deck_pending` with a job id; `await_job` it, then
+repeat the same call. Shape the deck with `composite`: `feature` (or name one in
+`instructions.direction`), `subset` (face ids), `order` (e.g. `["neg","pos","pos"]`,
+cycled: the ✅/❌ ratio and sequence), `scoreCard` (`appName`, `name`, `score`,
+`tier`) and `seed`. A named real person appears only on ✅ slides; ❌ slides use
+unnamed faces. A hook-only experiment on the finished deck is a text edit
+(fan-out 1). A different `composite` on the same video replaces its deck, so it is
+refused with `composite_deck_in_use` while an earlier experiment on that video is
+unfinished: cancel or finish it first. `library_too_small` means the library lacks
+faces for that feature and verdict mix; an operator ingests more.
+
 ## Approval and lifecycle
 
 ### Approval: a standing budget is the approval

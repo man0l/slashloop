@@ -119,8 +119,12 @@ export const prismaFaceStore: FaceStore = {
   },
 };
 
-/** Faces the planner may draw from: tagged (at least one verdict) rows only. */
+/**
+ * Faces a deck may draw: tagged (at least one verdict) rows only, and never a
+ * gallery frame. Those carry the source video's burned-in line, badge and label,
+ * so they calibrate thresholds but would double-annotate a slide.
+ */
 export const usableFaces = (faces: readonly FaceRecord[]): FaceRecord[] =>
-  faces.filter(f => Object.values(f.verdicts).some(v => v === 'pos' || v === 'neg'));
+  faces.filter(f => f.source !== 'gallery_frame' && Object.values(f.verdicts).some(v => v === 'pos' || v === 'neg'));
 
 export { mayBeNegative };
