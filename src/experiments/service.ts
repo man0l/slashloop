@@ -184,6 +184,8 @@ export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: Cr
       ...ri, ...expanded, sourceDefaults, ...(format ? { sourceFormat: format } : {}),
     } });
   }
+  // SLA-867: a morph (ladder) deck's labels are drawn in code; stored explicitly so every reader sees it.
+  if (b.instructions.variables.includes('morph') && !b.instructions.overlayMode) b = { ...b, instructions: { ...b.instructions, overlayMode: 'script' } };
   const { idempotencyKey, videoIds, workspaceId, slideCount: requestedSlideCount, ...fields } = b;
   // Persisted count: SLA-476 — the source deck keeps its own closing CTA slide
   // only when the caller opted in. Both boundaries read the same flag off the
@@ -294,7 +296,9 @@ async function contractPrice(e: S.Experiment, n: { analyses: number; planningCal
     remainingCredits: e.maxCredits - e.creditsCharged, workspaceCredits: (await creditBalance(e.workspaceId)).total,
     maxCredits: e.maxCredits, generationBasis: e.generationBasis, exactProviderUsdCap: false,
     maxProviderRequests: analyses + planningCalls + (renders + qas) * (correctionCredits ? 2 : 1),
-    pricing: { analysis: AN, planningCall: PL, slide: SL } };
+    pricing: { analysis: AN, planningCall: PL, slide: SL },
+    // Every contract slide renders exactly one candidate (fan-out 1), morph decks (SLA-867) included.
+    candidatesPerSlide: 1 };
 }
 /** SLA-797: price one human feedback round — the slides it re-renders plus one QA of the arm, and the repair round QA may buy. */
 export async function estimateFeedback(e: S.Experiment, raw: unknown) {
@@ -466,7 +470,7 @@ export function applyVariantEdit(e:S.Experiment,variantId:string|undefined,edit:
   // Slide contract fields are a partial merge: an omitted one keeps the stored slide's value.
   edit={...edit,brief:{...edit.brief,slides:edit.brief.slides.map((s,i)=>{
     const prior=v.brief.slides[i];
-    return prior?{...(prior.composition!==undefined?{composition:prior.composition}:{}),...(prior.visibleChange!==undefined?{visibleChange:prior.visibleChange}:{}),...(prior.arcLevel!==undefined?{arcLevel:prior.arcLevel}:{}),...s}:s;
+    return prior?{...(prior.composition!==undefined?{composition:prior.composition}:{}),...(prior.visibleChange!==undefined?{visibleChange:prior.visibleChange}:{}),...(prior.arcLevel!==undefined?{arcLevel:prior.arcLevel}:{}),...(prior.morph!==undefined?{morph:prior.morph}:{}),...s}:s;
   })}};
   // One text field: on the contract pipeline the hook is the first slide's caption, never a second copy.
   if(isContractPipeline(e)) edit={...edit,brief:reconcileContractHook(v.brief,edit.brief)};

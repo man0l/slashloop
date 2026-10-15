@@ -3,6 +3,7 @@
 // The renderer and QA both read it; nothing here knows which source format it is.
 // Pure module: no I/O, no provider calls, so every rule below is unit-testable.
 import { z } from 'zod/v4';
+import { MORPH_ATTRIBUTES, MORPH_GRADES, MorphError, assertNoValuationWords, redactValuation, morphAnchorText, morphAttribute, morphBlock, morphChangeText, morphChecks, normalizeMorphSlides, valuationWords, type MorphAttribute, type MorphSpec, type MorphStep } from './morph.js';
 
 export const ARC_LEVELS = ['low', 'mid', 'high', 'none'] as const;
 export type ArcLevel = (typeof ARC_LEVELS)[number];
@@ -14,7 +15,9 @@ export type ReferenceUse = 'edit' | 'style-only' | 'none';
 export type LockOrigin = 'user' | 'workspace';
 
 export interface TaggedLock { text: string; origin: LockOrigin }
-export interface ContractSlide { overlayText: string; arcLevel: ArcLevel; scene: string; composition: string; visibleChange: string }
+export interface ContractSlide { overlayText: string; arcLevel: ArcLevel; scene: string; composition: string; visibleChange: string;
+  /** SLA-867: morph decks only. This slide's grade for every morph attribute; visibleChange is derived from it. */
+  morph?: MorphStep[] }
 export interface SourceFrameInfo { index: number; level: ArcLevel; showsPerson: boolean }
 export const ARC_MAGNITUDES = ['none', 'subtle', 'clear', 'strong'] as const;
 export type ArcMagnitude = (typeof ARC_MAGNITUDES)[number];
@@ -24,7 +27,7 @@ export interface SourceArc { axis: string; levers: string[]; magnitude: ArcMagni
 export const NO_SOURCE_ARC: SourceArc = { axis: '', levers: [], magnitude: 'none', lowVsHigh: '' };
 /** A pre-SLA-866 contract's single alternate. Read-only: nothing writes it any more. */
 export interface VariantB { variable: string; value: string; slides: ContractSlide[] }
-export type ArmField = 'hook' | 'character' | 'visualStyle' | 'caption' | 'cta' | 'concept' | 'slides' | 'scene';
+export type ArmField = 'hook' | 'character' | 'visualStyle' | 'caption' | 'cta' | 'concept' | 'slides' | 'scene' | 'morph';
 /** One variable an alternate changes, with the value it takes. `slides` carries the whole alternate deck for concept/slides and the per-slide scenes for scene; [] otherwise. */
 export interface ArmAxis { variable: ArmField; value: string; slides: ContractSlide[] }
 export interface ContractAlternate { axes: ArmAxis[] }
@@ -40,6 +43,8 @@ export interface ResolvedContract {
   sourceFrames: SourceFrameInfo[];
   /** SLA-809. Absent on contracts resolved before it. */
   sourceArc?: SourceArc;
+  /** SLA-867: set on a morph deck: one invented subject, graded per slide along these attributes. */
+  morph?: MorphSpec;
   hardLocks: TaggedLock[];
   keptSourceDefaults: string[];
   droppedSourceDefaults: Array<{ default: string; reason: string }>;
@@ -68,6 +73,8 @@ export interface ContractInput {
   alternates: number;
   /** Variable "scene": the user's own setting for arm B, one for every slide or exactly one per slide. Wins over the model's. */
   sceneOverrides?: string[];
+  /** SLA-867: the deck is a morph ladder (the experiment approved the morph variable). */
+  morph?: boolean;
 }
 
 export class ContractError extends Error {
@@ -87,7 +94,8 @@ export function tagLocks(lockedConstraints: readonly string[], workspaceLocks: r
 
 const Level = z.enum(ARC_LEVELS);
 const RawSourceArc = z.object({ axis: z.string(), levers: z.array(z.string()), magnitude: z.enum(ARC_MAGNITUDES), lowVsHigh: z.string() });
-const RawSlide = z.object({ overlayText: z.string(), arcLevel: Level, scene: z.string(), composition: z.string(), visibleChange: z.string() });
+const RawMorphStep = z.object({ attribute: z.string(), grade: z.number() });
+const RawSlide = z.object({ overlayText: z.string(), arcLevel: Level, scene: z.string(), composition: z.string(), visibleChange: z.string(), morph: z.array(RawMorphStep).optional() });
 export const RawContract = z.object({
   droppedSourceDefaults: z.array(z.object({ default: z.string(), reason: z.string() })),
   droppedLocks: z.array(z.object({ lock: z.string(), origin: z.string(), reason: z.string() })),
@@ -101,6 +109,7 @@ export const RawContract = z.object({
   sourceFrameLevels: z.array(z.object({ index: z.number().int(), level: Level, showsPerson: z.boolean() })),
   // Optional for older callers and fixtures; the JSON schema still requires it from the model.
   sourceArc: RawSourceArc.optional(),
+  morph: z.object({ axis: z.string(), attributes: z.array(z.string()) }).optional(),
   slides: z.array(RawSlide),
   pools: z.array(z.object({ variable: z.string(), values: z.array(z.object({ value: z.string(), slides: z.array(RawSlide) })) })),
 });
@@ -123,6 +132,16 @@ export const CONTRACT_JSON_SCHEMA = obj({
   slides: arr(SLIDE_JSON),
   pools: arr(obj({ variable: S, values: arr(obj({ value: S, slides: arr(SLIDE_JSON) })) })),
 });
+const MORPH_SLIDE_JSON = obj({ overlayText: S, arcLevel: LEVEL, scene: S, composition: S, visibleChange: S,
+  morph: arr(obj({ attribute: { type: 'string', enum: [...MORPH_ATTRIBUTES] }, grade: { type: 'integer' } })) });
+/** SLA-867: the morph deck's answer: the same contract plus the morph axis and every slide's grades. */
+export const MORPH_CONTRACT_JSON_SCHEMA = {
+  ...CONTRACT_JSON_SCHEMA,
+  properties: { ...CONTRACT_JSON_SCHEMA.properties, morph: obj({ axis: S, attributes: arr({ type: 'string', enum: [...MORPH_ATTRIBUTES] }) }),
+    slides: arr(MORPH_SLIDE_JSON), variantB: obj({ variable: S, value: S, slides: arr(MORPH_SLIDE_JSON) }) },
+  required: [...CONTRACT_JSON_SCHEMA.required, 'morph'],
+};
+export const contractJsonSchema = (input: Pick<ContractInput, 'morph'>) => input.morph ? MORPH_CONTRACT_JSON_SCHEMA : CONTRACT_JSON_SCHEMA;
 
 export const CONTRACT_SYSTEM = 'You turn a user\'s creative direction into a format-agnostic slide contract for a 9:16 social carousel. '
   + 'Precedence: user direction and origin=user locks > origin=workspace locks > source defaults. '
@@ -153,6 +172,25 @@ export function contractFieldGuide(input: ContractInput): Record<string, string>
     'slides[].visibleChange': 'for slides after the first: the concrete physical difference from the FIRST slide (the image model only sees the first image), written as visible landmarks and proportions, not percentages (for example "X now as wide as Y", "Z clearly visible"), big enough to read at phone size. On an arc that sourceArc also shows, use sourceArc.levers and match the source\'s magnitude: the slide furthest from the first on the axis differs from it at least as much as sourceArc.lowVsHigh, a slide halfway differs about half as much. Drop a lever only when the direction or a lock keeps that property fixed or forbids it (for example the same hair, expression, head angle, framing, outfit or background); every lever they do not name follows the source. A variable that is not being tested (character, style, hook...) stays the same between arm A and arm B; that never stops the subject changing along the arc inside one deck. Identity wording ("the same man", "same bone structure", "recognisably the same", "an edit of the same base face") keeps WHO the subject is, not how much they change: the source keeps one subject while changing these levers, so the deck does too. Wording asking for small, subtle, ordinary or non-extreme changes never makes the change smaller than the source shows. Do not write "unchanged" or "same as the first slide" for a lever sourceArc lists. ' + NEUTRAL_WORDS + ' The composition of every slide must keep the feature that changes fully visible, nothing covering it. "" for the first slide or when nothing changes.',
     sourceFrameLevels: 'rank EVERY attached source frame (index from 0) on YOUR arcAxis (low/mid/high, none if it does not show the axis) by looking at the images, and set showsPerson=true if a person or character is visible in it',
     pools: poolsGuide(input),
+    ...(input.morph ? morphFieldGuide(input) : {}),
+  };
+}
+
+// SLA-867: a morph deck reproduces a "ladder" carousel: one invented subject in one studio set-up, graded slide by slide.
+const VALUATION_RULE = 'Never write a valuation word in scene, composition, identitySheet or medium: no tier or rank names (chad, htn, mtn, ltn, sub 5...), no psl, score, rating, percentage, testosterone, attractive, ugly or handsome. Those words belong only in overlayText, which code draws onto the finished picture.';
+
+function morphFieldGuide(input: ContractInput): Record<string, string> {
+  const grades = MORPH_ATTRIBUTES.map(a => `${a}: ${MORPH_GRADES[a].map((w, g) => `${g}=${w}`).join(', ')}`).join(' | ');
+  return {
+    identity: 'invented-consistent: a morph deck shows ONE invented adult on every slide, never the source person.',
+    identitySheet: `the invented subject exactly as slide 1 shows them, in neutral visible words: apparent age, skin tone, hair colour and style, eye colour, wardrobe. Reused verbatim on every slide. ${VALUATION_RULE}`,
+    arcAxis: '"" on a morph deck: the morph grades carry the progression, so every slides[].arcLevel is none.',
+    sourceFrameLevels: 'every attached source frame with level none, showsPerson as seen',
+    morph: `axis: the progression in a few neutral words (for the user only; the image model never sees it). attributes: the 2 to 5 attributes from this list that the source frames visibly change, most visible first: ${MORPH_ATTRIBUTES.join(', ')}.`,
+    'slides[].morph': `one {attribute, grade} for EVERY morph attribute on EVERY slide, grade 0..4 meaning: ${grades}. Read the grades off the source frames in order, by looking at the pixels. Each attribute moves one way only across the deck (equal steps allowed, never back), and the last slide differs from the first by at least 2 grades on most attributes.`,
+    'slides[].scene': `the same studio set-up on every slide: the subject, backdrop, framing and lighting copied from the source frames, in visible words only. ${VALUATION_RULE}`,
+    'slides[].visibleChange': '"" (code writes it from the grades).',
+    'slides[].overlayText': 'the exact label for that slide. When the direction keeps the source format, copy the source slide\'s own label (for example a rank name and a percentage line). Put a line break between a title and its subtitle ("TITLE\\nsubtitle"). Code draws it onto the finished picture; the image model never sees it.',
   };
 }
 
@@ -168,7 +206,7 @@ export function contractPromptPayload(input: ContractInput, extra: Record<string
 // ---- planning the alternates: which variables each one changes, and which value of each ----
 
 /** Most values the model is asked for per variable: short strings can be many, per-slide or whole-deck answers are kept small. */
-export const POOL_CAP: Record<ArmField, number> = { hook: 12, caption: 12, cta: 12, character: 6, visualStyle: 6, concept: 5, scene: 5, slides: 3 };
+export const POOL_CAP: Record<ArmField, number> = { hook: 12, caption: 12, cta: 12, character: 6, visualStyle: 6, concept: 5, scene: 5, slides: 3, morph: 3 };
 
 /** The variables as axes: a whole-storyline `slides` test is folded into `concept`, which then carries the storyline itself. */
 export function armVariables(variables: readonly ArmField[]): ArmField[] {
@@ -264,6 +302,7 @@ function poolsGuide(input: ContractInput): string {
       ? `value = a short name for the angle; slides = that angle's whole storyline (${n} slides).`
       : `value = a short name for a new angle (a different way to tell the same story); slides = the same ${n} slides as arm A with ONLY overlayText rewritten for that angle (set scene, composition and visibleChange to "" and arcLevel to "none": they are ignored).`,
     slides: `value = ""; slides = the alternative storyline (${n} slides).`,
+    morph: `value = the alternative progression in a few neutral words; slides = ${n} slides with the same overlayText, scene and composition as arm A's slides; slide 1 has the same grades as arm A's slide 1, the later slides follow a different curve or end point on the same attributes, still one way only.`,
     scene: input.sceneOverrides?.length
       ? 'the user fixed the setting: return one value, value = that setting; slides [].'
       : `value = an alternative setting, props and action in one sentence; slides = ${n} slides where ONLY scene is filled (that setting for that slide's beat; overlayText, composition and visibleChange "", arcLevel "none"). The person, medium, lighting, camera and overlay text stay as in arm A.`,
@@ -274,7 +313,7 @@ function poolsGuide(input: ContractInput): string {
 
 // ---- normalization: precedence and invariants live in code ---------------------
 
-const cleanSlide = (s: ContractSlide, arcOn: boolean): ContractSlide => ({
+const cleanSlide = (s: Omit<ContractSlide, 'morph'>, arcOn: boolean): ContractSlide => ({
   overlayText: s.overlayText.trim(), arcLevel: arcOn ? s.arcLevel : 'none',
   scene: s.scene.trim(), composition: s.composition.trim(), visibleChange: s.visibleChange.trim(),
 });
@@ -285,7 +324,9 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
   const raw = parsed.data;
   const issues: string[] = [];
   if (raw.slides.length < input.slideCount) throw new ContractError('contract_slide_count', `The contract has ${raw.slides.length} slides; ${input.slideCount} were requested.`);
-  const arcAxis = raw.arcAxis.trim();
+  const morphOn = !!input.morph;
+  // A morph deck's progression is its grades, not an arc axis.
+  const arcAxis = morphOn ? '' : raw.arcAxis.trim();
   const arcOn = arcAxis !== '';
   let slides = raw.slides.slice(0, input.slideCount).map(s => cleanSlide(s, arcOn));
   if (slides.some(s => !s.scene) ) throw new ContractError('contract_empty_scene', 'Every slide needs a scene.');
@@ -313,12 +354,18 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
   const sourceless = input.frameCount === 0;
   // A scene arm re-stages every slide, so the source photos cannot stay as they are.
   const sceneArm = input.variables.includes('scene');
-  const keepSourceImage = raw.keepSourceImage && !sourceless && !sceneArm;
+  // A morph deck invents its subject and edits slide 1 of its own, never a source photo.
+  const keepSourceImage = raw.keepSourceImage && !sourceless && !sceneArm && !morphOn;
   const borrowSourceLook = raw.borrowSourceLook && !sourceless;
+  if (morphOn && raw.keepSourceImage) issues.push('A morph deck invents one subject and grades it slide by slide, so the source photos are not kept.');
   if (sourceless && (raw.keepSourceImage || raw.borrowSourceLook)) issues.push('There is no source video, so there are no source images to keep or borrow a look from; every slide is created new from the brief.');
   if (sceneArm && raw.keepSourceImage && !sourceless) issues.push('Changing the scene re-stages every slide, so the source images are not kept unchanged.');
   let identity = raw.identity;
   if (sourceless && identity === 'source') identity = 'invented-per-slide';
+  if (morphOn && identity !== 'invented-consistent') {
+    issues.push('A morph deck shows one invented subject on every slide, so the identity is "invented-consistent".');
+    identity = 'invented-consistent';
+  }
   if (keepSourceImage && identity !== 'source' && identity !== 'none') {
     issues.push('Editing the source images keeps the source subject, so the identity is "source".');
     identity = 'source';
@@ -346,11 +393,16 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
     slides = framed;
   }
 
+  let morph: MorphSpec | undefined;
+  if (morphOn) {
+    ({ morph, slides } = morphSlides(raw.morph, raw.slides.slice(0, slides.length), slides));
+    lintMorphContract({ identitySheet, medium: raw.medium.trim(), slides, locks: hardLocks.map(l => l.text) });
+  }
   const alternates = normalizeAlternates(raw.pools, input, arcOn, framing, slides, kept, { identitySheet, medium: raw.medium.trim() }, issues);
   return {
     version: 1, subject: raw.subject, identity, identitySheet, medium: raw.medium.trim(),
     keepSourceImage: framing.keepSourceImage, borrowSourceLook: framing.borrowSourceLook, arcAxis,
-    sourceFrames, sourceArc,
+    sourceFrames, sourceArc, ...(morph ? { morph } : {}),
     hardLocks, keptSourceDefaults, droppedSourceDefaults, droppedLocks,
     slides, hook: slides[0]!.overlayText, alternates, issues,
   };
@@ -364,6 +416,31 @@ function normalizeSourceArc(a: RawContractT['sourceArc'], sourceless: boolean): 
   // A change nobody can name is not a change the renderer can be held to.
   if (sourceless || !axis || a.magnitude === 'none' || (!levers.length && !lowVsHigh)) return { ...NO_SOURCE_ARC, levers: [] };
   return { axis, levers, magnitude: a.magnitude, lowVsHigh };
+}
+
+const asContractError = (err: unknown): never => {
+  if (err instanceof MorphError) throw new ContractError(err.code, err.message);
+  throw err;
+};
+
+/** SLA-867: the deck's grades, validated, with every slide's visibleChange written from them. */
+function morphSlides(spec: RawContractT['morph'], raw: RawContractT['slides'], slides: ContractSlide[]): { morph: MorphSpec; slides: ContractSlide[] } {
+  const named = uniq((spec?.attributes ?? []).map(morphAttribute).filter((a): a is MorphAttribute => !!a), a => a);
+  let grades: MorphStep[][] = [];
+  try { grades = normalizeMorphSlides(raw.map(s => s.morph ?? []), named.length ? named : undefined); } catch (err) { asContractError(err); }
+  const anchor = grades[0]!;
+  return {
+    morph: { axis: spec?.axis.trim() || anchor.map(s => s.attribute).join(', '), attributes: anchor.map(s => s.attribute) },
+    slides: slides.map((s, i) => ({ ...s, morph: grades[i]!, visibleChange: i ? morphChangeText(anchor, grades[i]!) : '' })),
+  };
+}
+
+/** SLA-867: nothing the image model reads may carry a valuation word. The overlay copy is exempt: code draws it. */
+function lintMorphContract(c: { identitySheet: string; medium: string; slides: ContractSlide[]; locks: string[] }): void {
+  const fields: Record<string, string> = { identitySheet: c.identitySheet, medium: c.medium };
+  c.slides.forEach((s, i) => { fields[`slides[${i}].scene`] = s.scene; fields[`slides[${i}].composition`] = s.composition; fields[`slides[${i}].morph`] = s.visibleChange; });
+  c.locks.forEach((l, i) => { fields[`locks[${i}]`] = l; });
+  try { assertNoValuationWords(fields); } catch (err) { asContractError(err); }
 }
 
 interface PoolValue { value: string; slides: ContractSlide[] }
@@ -437,8 +514,22 @@ function poolValue(
         // The slides are locked: an angle retells only the words, on the same pictures.
         alt = c.armA.map((s, j) => ({ ...s, overlayText: slides[c.kept[j]!]!.overlayText }));
       }
+      // On a morph deck an alternative storyline keeps arm A's grades: the subject still changes the same way.
+      if (c.input.morph) alt = alt.map((s, i) => ({ ...s, morph: c.armA[i]?.morph ?? c.armA[c.armA.length - 1]!.morph, visibleChange: c.armA[i]?.visibleChange ?? '' }));
       if (alt.length === c.armA.length && alt.every((s, i) => slideKey(s) === slideKey(c.armA[i]!))) return null;
       return { value: variable === 'slides' ? '' : value, slides: alt };
+    }
+    case 'morph': {
+      if (!c.input.morph) throw new ContractError('contract_variable', 'The morph variable needs a morph deck.');
+      if (!value) return null;
+      if (r.slides.length < c.armA.length) return null;
+      // The alternate keeps arm A's subject: slide 1 is arm A's (so it is reused, not re-cast) and only the later grades differ.
+      const anchor = c.armA[0]!.morph!;
+      let grades: MorphStep[][] = [];
+      try { grades = normalizeMorphSlides([anchor, ...r.slides.slice(1, c.armA.length).map(s => s.morph ?? [])], anchor.map(s => s.attribute)); } catch (err) { asContractError(err); }
+      const alt = c.armA.map((s, i) => ({ ...s, morph: grades[i]!, visibleChange: i ? morphChangeText(anchor, grades[i]!) : '' }));
+      if (alt.every((s, i) => JSON.stringify(s.morph) === JSON.stringify(c.armA[i]!.morph))) return null;
+      return { value, slides: alt };
     }
   }
 }
@@ -538,6 +629,7 @@ export function feedbackLine(feedback: string): string {
 export function compileSlidePrompt(c: ResolvedContract, index: number, role: SlideRole, referenceUse: ReferenceUse, fix = '', feedback = '', labelRule = ''): string {
   const s = c.slides[index];
   if (!s) throw new RangeError('Slide index is outside the contract.');
+  if (c.morph && role !== 'edit') return compileMorphPrompt(c, index, role, referenceUse, fix, feedback);
   const text = textLine(s.overlayText);
   const arc = arcLine(c, s);
   const fixLine = [feedbackLine(feedback), fix ? `FIX FROM QA: ${fix}` : ''].filter(Boolean).join('\n');
@@ -576,6 +668,35 @@ export function compileSlidePrompt(c: ResolvedContract, index: number, role: Sli
     text, fixLine].filter(Boolean).join('\n');
 }
 
+/** SLA-867: a morph slide. Slide 1 is created from the identity sheet at its anchor grades; every later slide is an edit of
+ *  slide 1 that changes only the graded attributes. The result never carries a valuation word: QA text and feedback are
+ *  scrubbed, and anything else that slipped through fails the slide before a provider call is paid for. */
+function compileMorphPrompt(c: ResolvedContract, index: number, role: SlideRole, referenceUse: ReferenceUse, fix: string, feedback: string): string {
+  const s = c.slides[index]!;
+  const anchor = c.slides[0]?.morph ?? [];
+  const grades = s.morph ?? anchor;
+  const hard = c.hardLocks.map(l => l.text);
+  const hardLine = hard.length ? `HARD RULES:\n- ${hard.join('\n- ')}` : '';
+  const fixLine = [feedbackLine(redactValuation(feedback)), fix ? `FIX FROM QA: ${redactValuation(fix)}` : ''].filter(Boolean).join('\n');
+  const prompt = role === 'anchor-edit'
+    ? [
+      'Edit the attached image, which is the first image of this carousel.',
+      morphBlock(anchor, grades),
+      `SCENE for this image: ${s.scene}`, hardLine,
+      'Remove the attached image\'s caption and any card or overlay it has.',
+      textLine(s.overlayText), fixLine].filter(Boolean).join('\n')
+    : [
+      'Create one new 9:16 social carousel image. Do not print slide numbers, page dots or progress labels.',
+      referenceUse === 'style-only' ? 'The attached image is a STYLE reference only: copy its lighting, backdrop and camera. Do NOT copy its subject, face or any of its text.' : '',
+      `MEDIUM: ${c.medium}.`, `SUBJECT: ${c.identitySheet}`,
+      grades.length ? `FACE AND BUILD on this image: ${morphAnchorText(grades)}.` : '',
+      `SCENE: ${s.scene}`, s.composition ? `COMPOSITION: ${s.composition}` : '', hardLine,
+      textLine(s.overlayText), fixLine].filter(Boolean).join('\n');
+  const words = valuationWords(prompt);
+  if (words.length) throw new ContractError('morph_valuation_words', `The image prompt for slide ${index + 1} would carry valuation words (${words.join(', ')}); they are drawn in code, never rendered.`);
+  return prompt;
+}
+
 export function captionEditPrompt(from: string, to: string, fix = ''): string {
   return [
     from
@@ -593,12 +714,15 @@ export function slideRole(c: Pick<ResolvedContract, 'identity' | 'keepSourceImag
 
 // ---- QA: one vision call per arm, compiled from the same contract ---------------
 
-export const QA_JSON_SCHEMA = obj({
-  slides: arr(obj({ index: { type: 'integer' }, textSeen: S, overlayExact: B, sceneMatches: B, settingChanged: B, stateLevel: LEVEL, mediumMatches: B, lockResults: arr(obj({ lock: S, pass: B, note: S })) })),
-  deck: obj({ identityConsistent: B, sourceLikeness: B, arcVisibleWithoutText: B, notes: S }),
-});
+const QA_SLIDE = { index: { type: 'integer' }, textSeen: S, overlayExact: B, sceneMatches: B, settingChanged: B, stateLevel: LEVEL, mediumMatches: B, lockResults: arr(obj({ lock: S, pass: B, note: S })) };
+const QA_DECK = obj({ identityConsistent: B, sourceLikeness: B, arcVisibleWithoutText: B, notes: S });
+export const QA_JSON_SCHEMA = obj({ slides: arr(obj(QA_SLIDE)), deck: QA_DECK });
+/** SLA-867: a morph deck's QA also answers, per slide, whether it is slide 1's person and one check per graded attribute. */
+export const MORPH_QA_JSON_SCHEMA = obj({ slides: arr(obj({ ...QA_SLIDE, samePerson: B, morphChecks: arr(obj({ check: S, pass: B, note: S })) })), deck: QA_DECK });
+export const qaJsonSchema = (c: Pick<ResolvedContract, 'morph'>) => c.morph ? MORPH_QA_JSON_SCHEMA : QA_JSON_SCHEMA;
 export const RawQa = z.object({
-  slides: z.array(z.object({ index: z.number().int(), textSeen: z.string(), overlayExact: z.boolean(), sceneMatches: z.boolean(), settingChanged: z.boolean().optional(), stateLevel: Level, mediumMatches: z.boolean(), lockResults: z.array(z.object({ lock: z.string(), pass: z.boolean(), note: z.string() })) })),
+  slides: z.array(z.object({ index: z.number().int(), textSeen: z.string(), overlayExact: z.boolean(), sceneMatches: z.boolean(), settingChanged: z.boolean().optional(), stateLevel: Level, mediumMatches: z.boolean(), lockResults: z.array(z.object({ lock: z.string(), pass: z.boolean(), note: z.string() })),
+    samePerson: z.boolean().optional(), morphChecks: z.array(z.object({ check: z.string(), pass: z.boolean(), note: z.string() })).optional() })),
   deck: z.object({ identityConsistent: z.boolean(), sourceLikeness: z.boolean(), arcVisibleWithoutText: z.boolean(), notes: z.string() }),
 });
 export type QaAnswer = z.infer<typeof RawQa>;
@@ -625,7 +749,22 @@ export function compileQaPrompt(c: ResolvedContract, opts: { slideCount: number;
   return `Images 1..${n} are the slides of one carousel, in order. ${sources}${baseline ? `${sources ? ' ' : ''}${baseline}` : ''}
 Contract: ${JSON.stringify({ medium: c.medium, identity: c.identity, identitySheet: c.identitySheet, arcAxis: c.arcAxis, slides: c.slides.map((s, i) => ({ index: i, overlayText: s.overlayText, arcLevel: s.arcLevel, scene: s.scene })) })}
 For every slide: textSeen (all caption text you can read), overlayExact (the caption equals overlayText, ignoring case and punctuation; text inside an app screen is not a caption), sceneMatches (the scene is recognisably what the contract describes${edit ? '; for edited slides the photo is unchanged from its source frame apart from the caption, including clothing prints' : ''}), settingChanged (${sceneEdit ? 'the setting, props and action are clearly different from the matching baseline slide' : 'true; not applicable'}), stateLevel (the visible state on the arc axis judged from the PICTURE ONLY, ignoring captions, labels and app-screen numbers: low, mid, high, or none), mediumMatches, and lockResults for EACH of these locks: ${JSON.stringify(hard)}.
-deck.identityConsistent: ${sceneEdit ? 'the same person or character as in the baseline slides on every slide (true if the slides show no person)' : c.identity === 'invented-consistent' ? `the same person or character on every slide${c.arcAxis ? ` (changing along "${c.arcAxis}" is expected: they stay the same person while they remain recognisable)` : ''}` : 'true if not applicable'}. deck.arcVisibleWithoutText: ${c.arcAxis ? `cover all text with your hand: does the picture itself clearly progress along "${c.arcAxis}" from the first to the last slide?${scale}` : 'true if not applicable'}. deck.sourceLikeness: ${c.identity.startsWith('invented') ? 'true if any slide shows the source person' : 'false if not applicable'}.`;
+${morphQaLines(c)}deck.identityConsistent: ${sceneEdit ? 'the same person or character as in the baseline slides on every slide (true if the slides show no person)' : c.identity === 'invented-consistent' ? `the same person or character on every slide${c.arcAxis ? ` (changing along "${c.arcAxis}" is expected: they stay the same person while they remain recognisable)` : ''}` : 'true if not applicable'}. deck.arcVisibleWithoutText: ${c.arcAxis ? `cover all text with your hand: does the picture itself clearly progress along "${c.arcAxis}" from the first to the last slide?${scale}` : 'true if not applicable'}. deck.sourceLikeness: ${c.identity.startsWith('invented') ? 'true if any slide shows the source person' : 'false if not applicable'}.`;
+}
+
+/** The QA checks one morph slide must answer: one per graded attribute, judged against slide 1. Empty for slide 1 and non-morph decks. */
+export function morphQaChecks(c: Pick<ResolvedContract, 'morph' | 'slides'>, index: number): string[] {
+  const anchor = c.slides[0]?.morph;
+  const s = c.slides[index];
+  if (!c.morph || !anchor || !s?.morph || index === 0) return [];
+  return morphChecks(anchor, s.morph).map(x => x.check);
+}
+
+function morphQaLines(c: ResolvedContract): string {
+  if (!c.morph) return '';
+  const checks = c.slides.map((_, i) => ({ index: i, checks: morphQaChecks(c, i) })).filter(x => x.checks.length);
+  return `This is a morph deck: slide 1 is the reference person and every later slide is meant to be that SAME person with only some visible attributes changed. Do NOT judge attractiveness, rank or rate anyone; judge only whether each listed visible attribute looks as described. For every slide: samePerson (slide 1 itself: true; later slides: the same individual as slide 1, recognisable by ethnicity, eye colour, hair colour, outfit, backdrop and framing, even where the listed attributes differ) and morphChecks: one entry per check listed for that slide below (copy the check text; slide 1 has none, answer []), pass=true only if that change is clearly visible against slide 1 at phone size. Checks: ${JSON.stringify(checks.map(x => ({ slide: x.index + 1, index: x.index, checks: x.checks })))}.
+`;
 }
 
 export interface QaVerdict {
@@ -649,6 +788,15 @@ export function qaVerdict(c: ResolvedContract, q: QaAnswer, opts: { slides?: num
     if (!s.mediumMatches) add(i, `the medium must be ${c.medium}`);
     if (opts.sceneEdit && s.settingChanged !== true) add(i, 'the setting, props and action must differ from the baseline slide');
     for (const l of s.lockResults) if (!l.pass) add(i, `violates "${l.lock}": ${l.note}`);
+    if (c.morph && i > 0) {
+      if (s.samePerson === false) add(i, 'this is not the same person as slide 1; keep slide 1\'s person and change only the listed attributes');
+      const answered = new Map((s.morphChecks ?? []).map(m => [norm(m.check), m] as const));
+      for (const check of morphQaChecks(c, i)) {
+        const got = answered.get(norm(check));
+        if (!got) add(i, `unchecked: ${check}`);
+        else if (!got.pass) add(i, `${check}${got.note ? ` (seen: ${got.note})` : ''}`);
+      }
+    }
     const want = c.slides[i]!.arcLevel;
     if (want !== 'none' && s.stateLevel !== want && !c.keepSourceImage) add(i, `the visible state reads as ${s.stateLevel}, it must read as ${want} on "${c.arcAxis}"`);
   });
@@ -679,9 +827,13 @@ export function fixText(failures: Record<string, string[]>, index: number): stri
 
 export interface ArmBrief {
   character: string; visualStyle: string; caption: string; cta: string;
+  /** SLA-867: the arm's morph progression, "" outside a morph deck. */
+  morph?: string;
   slides: Array<ContractSlide & { role?: string }>;
 }
-const slideKey = (s: ContractSlide) => JSON.stringify([s.overlayText, s.arcLevel, s.scene, s.composition, s.visibleChange]);
+const slideKey = (s: ContractSlide) => JSON.stringify([s.overlayText, s.arcLevel, s.scene, s.composition, s.visibleChange, ...(s.morph?.length ? [s.morph] : [])]);
+/** A slide without its morph grades (and the visibleChange written from them). */
+const unmorphed = (s: ContractSlide): ContractSlide => ({ ...s, visibleChange: s.morph?.length ? '' : s.visibleChange, morph: undefined });
 
 /** An alternate is A with exactly the declared variables replaced. A retold storyline goes first, then the scenes, then the hook, so the hook wins on slide 1. */
 export function buildAlternate(a: ArmBrief, alt: ContractAlternate): ArmBrief {
@@ -696,6 +848,9 @@ export function buildAlternate(a: ArmBrief, alt: ContractAlternate): ArmBrief {
       case 'character': next.character = b.value; break;
       case 'visualStyle': next.visualStyle = b.value; break;
       case 'scene': next.slides = next.slides.map((s, i) => ({ ...s, scene: b.slides[i]?.scene || b.value })); break;
+      case 'morph':
+        next.morph = b.value;
+        next.slides = next.slides.map((s, i) => ({ ...s, morph: b.slides[i]?.morph ?? s.morph, visibleChange: b.slides[i]?.visibleChange ?? s.visibleChange })); break;
       case 'concept': case 'slides':
         next.slides = b.slides.map((s, i) => ({ ...s, ...(a.slides[i]?.role ? { role: a.slides[i]!.role } : {}) })); break;
       default: throw new ContractError('contract_variable', `Unsupported variable "${String(b.variable)}".`);
@@ -712,8 +867,11 @@ export function diffArms(a: ArmBrief, b: ArmBrief): ArmField[] {
   if (a.caption !== b.caption) out.push('caption');
   if (a.cta !== b.cta) out.push('cta');
   const same = a.slides.length === b.slides.length;
+  // The morph grades (and the visibleChange written from them) are the morph variable, never a slides diff.
+  const morphDiff = same && a.slides.some((s, i) => JSON.stringify(s.morph ?? []) !== JSON.stringify(b.slides[i]!.morph ?? []));
+  if ((a.morph ?? '') !== (b.morph ?? '') || morphDiff) out.push('morph');
   // Beyond the hook (slide 1's caption) and the scenes, the slides must be identical for the diff to be named by field.
-  const strip = (s: ContractSlide, i: number) => slideKey({ ...s, scene: '', ...(i === 0 ? { overlayText: '' } : {}) });
+  const strip = (s: ContractSlide, i: number) => slideKey(unmorphed({ ...s, scene: '', ...(i === 0 ? { overlayText: '' } : {}) }));
   const onlyHookAndScene = same && a.slides.every((s, i) => strip(s, i) === strip(b.slides[i]!, i));
   if (!same || !onlyHookAndScene) { out.push('slides'); return out; }
   if (a.slides.some((s, i) => s.scene !== b.slides[i]!.scene)) out.push('scene');

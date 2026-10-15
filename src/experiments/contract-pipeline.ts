@@ -4,10 +4,10 @@ import { publicUrl, thumbBucket, thumbPath } from '../lib/storage.js';
 import { universalLocks } from './source-format.js';
 import {
   CONTRACT_SYSTEM, ContractError, QA_SYSTEM, RawQa, captionEditPrompt, chooseReferenceUse, compileQaPrompt, compileSlidePrompt,
-  contractPromptPayload, normalizeContract, pickFramesByArc, qaVerdict, slideRole, tagLocks,
+  contractJsonSchema, contractPromptPayload, normalizeContract, pickFramesByArc, qaJsonSchema, qaVerdict, slideRole, tagLocks,
   type ContractInput, type ResolvedContract,
 } from './resolved-contract.js';
-import { contractView, isSceneArm, proposalsFromContract, slideFeedback, slideWorkFor } from './contract-flow.js';
+import { contractView, isMorphExperiment, isSceneArm, proposalsFromContract, slideFeedback, slideWorkFor } from './contract-flow.js';
 import { validateVariants, type Experiment, type Task } from './schema.js';
 import { CONTENT_FILTER_PATTERN, SafeFailure, contentFilterFailure, SlideMeter, logAiCost, type ExecuteContext, type Prepared, type RenderDeps } from './providers.js';
 import { storySlideCount } from './slide-count.js';
@@ -107,6 +107,7 @@ export async function prepareContractBriefs(e: Experiment, render: RenderDeps, r
         sourceDefaults: e.instructions.sourceDefaults ?? [], slideCount: e.slideCount, frameCount: frames.length,
         variables: e.instructions.variables, mode: e.instructions.mode, alternates: Math.max(e.variantCount - 1, 1),
         ...(e.instructions.sceneOverrides?.length ? { sceneOverrides: e.instructions.sceneOverrides } : {}),
+        ...(isMorphExperiment(e) ? { morph: true } : {}),
       };
       const sources = e.inputs.filter(i => i.status === 'ready').map((i, ix) => ({
         // SLA-809: every observed slide, each trimmed, so a ladder's last frames (where the change peaks) are never cut off.
@@ -123,13 +124,18 @@ export async function prepareContractBriefs(e: Experiment, render: RenderDeps, r
           calls++;
           const raw = await contractCall({
             system: CONTRACT_SYSTEM, user: contractPromptPayload(input, repair ? { sources, ...revision, repair } : { sources, ...revision }),
-            images: bytes.map((b, i) => jpeg(b, `Source frame ${i}:`)), meter: meter.sink,
+            images: bytes.map((b, i) => jpeg(b, `Source frame ${i}:`)), meter: meter.sink, schema: contractJsonSchema(input),
           });
           try { contract = normalizeContract(raw, input); }
           catch (err) {
             if (!(err instanceof ContractError)) throw err;
             if (err.code === 'contract_variant_missing' && calls === 1) {
               repair = `Your previous answer was rejected: ${err.message} Return the complete contract again with a full pool for every variable.`;
+              continue;
+            }
+            // SLA-867: a morph deck's grades or wording get the same one in-call repair, naming what was wrong.
+            if (err.code.startsWith('morph_') && calls === 1) {
+              repair = `Your previous answer was rejected: ${err.message} Return the complete contract again with that fixed.`;
               continue;
             }
             throw new SafeFailure(err.code);
@@ -162,6 +168,14 @@ function renderFailure(err: unknown, refusal: { overlayMode: 'model' | 'script';
   throw new SafeFailure(`render_failed[${flat.slice(0, 120)}]`);
 }
 
+/** A prompt the contract refuses to compile (SLA-867: valuation words on a morph slide) fails the slide before any provider call. */
+function compileWithin(compile: () => string): string {
+  try { return compile(); } catch (err) {
+    if (err instanceof ContractError) throw new SafeFailure(`${err.code}: ${err.message}`.slice(0, 300));
+    throw err;
+  }
+}
+
 export async function prepareContractSlide(e: Experiment, t: Task, render: RenderDeps): Promise<Prepared> {
   const v = e.variants.find(x => x.id === t.target);
   if (!v?.frozenBrief) throw new SafeFailure('missing_frozen_brief');
@@ -176,7 +190,9 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
   const baseSlide = base?.slides[index];
   // SLA-787: in script mode the model only ever sees a text-free contract; the words are drawn onto the verified-blank
   // bytes in code, so a word that trips the provider's content filter never reaches it.
-  const scriptMode = e.instructions.overlayMode === 'script';
+  // SLA-867: a morph deck's labels (rank names, percentages) never reach the image model, whatever the stored mode says.
+  const morph = isMorphExperiment(e);
+  const scriptMode = e.instructions.overlayMode === 'script' || morph;
   const scriptText = scriptMode ? (view.slides[index]?.overlayText ?? '') : '';
   const copy = scriptMode ? [view.hook, ...view.slides.map(x => x.overlayText), ...(base?.frozenBrief?.slides.map(x => x.overlayText ?? '') ?? [])].filter(x => x.trim().length > 1) : [];
   const promptView: ResolvedContract = scriptMode ? { ...view, hook: '', slides: view.slides.map(x => ({ ...x, overlayText: '' })) } : view;
@@ -186,7 +202,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
     if (!scriptText) return { body: bytes, contentType: 'image/jpeg', audit: null };
     if (!render.composeOverlay) throw new SafeFailure('overlay_compose_failed: compositor unavailable');
     try {
-      const c = await render.composeOverlay({ buffer: bytes, text: scriptText, slideIndex: index });
+      const c = await render.composeOverlay({ buffer: bytes, text: scriptText, slideIndex: index, ...(morph ? { stacked: true } : {}) });
       return { body: c.buffer, contentType: c.contentType, audit: { mode: 'script', font: c.font, fontSize: c.fontSize, lines: c.lines, skipped: c.skipped } };
     } catch (err) {
       throw new SafeFailure(`overlay_compose_failed: ${(err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').slice(0, 100)}`);
@@ -195,11 +211,15 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
 
   if (work === 'reuse') {
     if (!baseSlide?.path) throw new SafeFailure('baseline_slide_missing');
-    const bytes = await need(render.readReference, 'render_deps_incomplete')({ bucket: thumbBucket(), path: baseSlide.path });
+    const read = need(render.readReference, 'render_deps_incomplete');
+    const bytes = await read({ bucket: thumbBucket(), path: baseSlide.path });
     if (!bytes) throw new SafeFailure('baseline_slide_unreadable');
+    // SLA-867: the text-free base travels with the copy, so a later slide can still edit a picture without words.
+    const clean = scriptMode ? await read({ bucket: thumbBucket(), path: basePathOf(baseSlide.path) }) : null;
     return {
       free: true, units: 0,
       execute: async () => {
+        if (clean) await render.upload({ bucket: thumbBucket(), path: basePathOf(path), body: clean, contentType: 'image/jpeg', upsert: false });
         await upload(bytes, 'image/jpeg');
         return { path, url: publicUrl(thumbBucket(), path), provider: 'reuse', costUsd: 0, prompt: '', reference: { kind: 'baseline', videoId: base!.id, index, path: baseSlide.path }, fanout: { requested: 0, rendered: 0, chosen: 0, judge: [] }, calls: {} };
       },
@@ -259,11 +279,17 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
       const anchor = v.slides[0];
       if (!anchor?.url) throw new SafeFailure('anchor_slide_missing');
       referenceUrl = anchor.url; referenceNote = { kind: 'anchor', videoId: v.id, index: 0, path: anchor.path ?? '' };
+      // SLA-867: in script mode slide 1 carries code-drawn words; the edit starts from its text-free base, so no label reaches the model as pixels.
+      if (scriptMode && anchor.path && (view.slides[0]?.overlayText ?? '').trim()) {
+        const base1 = basePathOf(anchor.path);
+        if (!(await need(render.readReference, 'render_deps_incomplete')({ bucket: thumbBucket(), path: base1 }))) throw new SafeFailure('anchor_slide_missing');
+        referenceUrl = publicUrl(thumbBucket(), base1); referenceNote = { ...referenceNote, path: base1 };
+      }
     } else if (pick.referenceUse === 'style-only') {
       const f = frames[pick.frameIndex ?? -1];
       if (f) { referenceUrl = f.url; referenceNote = { kind: f.kind, videoId: f.videoId, index: f.slideIndex, path: f.path }; }
     }
-    prompt = guard(compileSlidePrompt(promptView, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse, t.fix ?? '', guard(human)));
+    prompt = guard(compileWithin(() => compileSlidePrompt(promptView, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse, t.fix ?? '', guard(human))));
   }
 
   const callKind = t.fix || human ? 'render-extra' : work === 'caption-edit' ? 'caption-edit' : 'render';
@@ -297,7 +323,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
             ? captionEditPrompt(base.frozenBrief.slides[index]?.overlayText ?? '', view.slides[index]!.overlayText)
             : work === 'scene-edit'
               ? guard(compileSlidePrompt(promptView, index, 'scene-edit', 'none', '', '', labelRenderInstruction(labelPolicy(e.instructions.lockedConstraints))))
-              : guard(compileSlidePrompt(plain, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse));
+              : guard(compileWithin(() => compileSlidePrompt(plain, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse)));
           try { image = await once(usedPrompt); } catch (err2) { renderFailure(err2, { ...refusal, invocations: calls, plainPromptRetry: true }); }
         }
         let overlay: unknown = null;
@@ -355,7 +381,7 @@ export async function prepareContractQa(e: Experiment, t: Task, render: RenderDe
         raw = await verify({
           system: QA_SYSTEM, user: compileQaPrompt(view, { slideCount: n, sourceImages: sourceBytes.length, referenceUse, ...(baselineBytes.length ? { baselineImages: baselineBytes.length } : {}) }),
           images: [...slideBytes.map((b, i) => jpeg(b, `Slide ${i + 1}:`)), ...sourceBytes.map((b, i) => jpeg(b, `Source frame ${i + 1}:`)), ...baselineBytes.map((b, i) => jpeg(b, `Baseline slide ${i + 1}:`))],
-          meter: meter.sink,
+          meter: meter.sink, schema: qaJsonSchema(view),
         });
       } finally { meter.flush(e.workspaceId, `${e.id}:${v.id}#qa`, render.recordAiCost ?? logAiCost); }
       const parsed = RawQa.safeParse(raw);
