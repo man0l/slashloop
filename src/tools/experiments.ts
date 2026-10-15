@@ -92,6 +92,13 @@ export function editSceneDirection(scenes: readonly string[]): string {
   const said = scenes.length === 1 ? scenes[0]!.trim() : scenes.map((x, i) => `slide ${i + 1}: ${x.trim()}`).join('; ');
   return ('Scene: ' + said).slice(0, 1500) + '. Change only the setting, props and action; keep the same person, medium, lighting, camera and overlay text.';
 }
+export const EDIT_MORPH_GOAL = 'Re-create the ladder slideshow with one new invented subject, graded slide by slide on visible attributes, with the source labels drawn in code.';
+/** SLA-867: edit-mode morph. The source deck is the template: its set-up, framing and labels are kept, its subject is replaced by one invented adult. */
+export function editMorphDirection(morph: string | undefined): string {
+  return 'Keep this source deck\'s format exactly: the same studio set-up, backdrop, framing, lighting and slide order, and each slide\'s own label copied exactly as its overlay text (title on the first line, any subtitle on the next). '
+    + 'Replace the person with ONE invented adult shown on every slide, and grade them slide by slide along the visible changes the source frames show, in the same direction and to the same extent.'
+    + (morph?.trim() ? ` Progression to test: ${morph.trim()}` : '');
+}
 export function editCharacterDirection(character: string): string {
   return 'Character: ' + character.trim() + '. Keep the same overlay text, style, setting and story.';
 }
@@ -131,9 +138,9 @@ export function editSlideDirection(hook: string | undefined, overlayTexts: Array
 
 /** Edit mode is a single deck, so the "one experiment per source" loop is length 1 by definition. */
 export function editInstructions(hook: string | undefined, overlayTexts: Array<string | null>, language: string,
-  options: { variables?: Array<'hook' | 'character' | 'scene'>; character?: string; scene?: string | string[]; overlayMode?: 'model' | 'script' } = {}): InstructionsData {
-  const variables = options.variables ?? [options.scene !== undefined ? 'scene' : options.character !== undefined ? 'character' : 'hook'];
-  if (variables.length !== 1) throw new ExperimentError(400, 'invalid_request', 'Edit mode tests exactly one variable: hook, character or scene. Use create mode for several variables.');
+  options: { variables?: Array<'hook' | 'character' | 'scene' | 'morph' | 'ladder'>; character?: string; scene?: string | string[]; morph?: string; overlayMode?: 'model' | 'script' } = {}): InstructionsData {
+  const variables = (options.variables ?? [options.scene !== undefined ? 'scene' : options.character !== undefined ? 'character' : options.morph !== undefined ? 'morph' : 'hook']).map(v => v === 'ladder' ? 'morph' as const : v);
+  if (variables.length !== 1) throw new ExperimentError(400, 'invalid_request', 'Edit mode tests exactly one variable: hook, character, scene or morph. Use create mode for several variables.');
   if (variables[0] === 'scene') {
     const scenes = (Array.isArray(options.scene) ? options.scene : options.scene === undefined ? [] : [options.scene]).map(x => x.trim());
     if (!scenes.length || scenes.some(x => !x)) throw new ExperimentError(400, 'invalid_request', 'Scene edits need a scene: one description for every slide, or one non-empty description per slide.');
@@ -147,6 +154,15 @@ export function editInstructions(hook: string | undefined, overlayTexts: Array<s
     });
   }
   if (options.scene !== undefined) throw new ExperimentError(400, 'invalid_request', 'A scene requires variables=["scene"].');
+  if (variables[0] === 'morph') {
+    if (hook !== undefined || overlayTexts.some(t => t !== null) || options.character !== undefined) throw new ExperimentError(400, 'invalid_request', 'Morph edits keep the source labels and invent the subject. Omit hook, overlayTexts and character, or use create mode.');
+    if (options.overlayMode === 'model') throw new ExperimentError(400, 'invalid_request', 'A morph deck draws its labels in code: overlayMode must be "script" or omitted.');
+    return Instructions.parse({
+      goal: EDIT_MORPH_GOAL, brand: '', audience: '', language: language.trim() || 'English',
+      direction: editMorphDirection(options.morph), lockedConstraints: [], variables, mode: 'controlled', overlayMode: 'script',
+    });
+  }
+  if (options.morph !== undefined) throw new ExperimentError(400, 'invalid_request', 'A morph progression requires variables=["morph"].');
   if (variables[0] === 'character') {
     if (!options.character?.trim()) throw new ExperimentError(400, 'invalid_request', 'Character edits need a non-empty character casting direction.');
     if (hook !== undefined || overlayTexts.some(t => t !== null)) throw new ExperimentError(400, 'invalid_request', 'Character-only edits keep source copy. Omit hook and overlayTexts, or use create mode.');
@@ -245,9 +261,10 @@ export function derivedKey(scope: string, parts: unknown): string {
  * at least 30. Priced from the server's CREDIT_COSTS / slideFanout(). It is a
  * runaway guard only: an approved estimate may raise it (applyApprovedEstimate).
  */
-export function defaultExperimentCap(variantCount: number, slideCount: number, withSource = true): number {
+/** `fanout` defaults to the legacy candidate fan-out; a morph deck (SLA-867) renders exactly 1 candidate per slide. */
+export function defaultExperimentCap(variantCount: number, slideCount: number, withSource = true, fanout = slideFanout()): number {
   const total = (withSource ? CREDIT_COSTS.analyzeVideo : 0) + 2 * CREDIT_COSTS.experimentPlanningCall
-    + variantCount * slideCount * CREDIT_COSTS.experimentSlide * slideFanout();
+    + variantCount * slideCount * CREDIT_COSTS.experimentSlide * fanout;
   return Math.min(MAX_EXPERIMENT_CREDITS, Math.max(30, Math.ceil((total * 2) / 10) * 10));
 }
 
@@ -467,7 +484,7 @@ const approvedCreditsField = z.number().int().min(0).describe(
   + 'or, under a standing budget (a per-experiment or per-batch credit cap granted in the task), the remaining cap. '
   + 'The step runs only when the fresh estimate is <= this number; if it is higher, nothing is started and the new estimate is returned.',
 );
-const VARIABLE_INPUT = z.enum([...VARIABLE_FIELDS, 'angle']);
+const VARIABLE_INPUT = z.enum([...VARIABLE_FIELDS, 'angle', 'ladder']);
 const instructionsInput = z.object({
   goal: z.string().min(1).max(2000).describe('What the experiment should find out, e.g. "Find an opening hook that earns the first swipe".'),
   brand: z.string().max(2000).default(''),
@@ -482,7 +499,8 @@ const instructionsInput = z.object({
     + 'Inferred from the source analysis when omitted; your own variables/mode/direction win over the preset.',
   ),
   variables: z.array(VARIABLE_INPUT).min(1).max(7).optional().describe(
-    'What to vary: hook, character, visualStyle, caption, cta (controlled mode), plus concept/"angle" and slides (exploration mode only). Required unless sourceFormat is given or can be inferred.',
+    'What to vary: hook, character, visualStyle, caption, cta, morph/"ladder" (controlled mode), plus concept/"angle" and slides (exploration mode only). Required unless sourceFormat is given or can be inferred. '
+    + 'morph (alias ladder) reproduces a tier-ladder carousel: one invented subject in one studio set-up, graded slide by slide on visible attributes (jaw definition, cheek fullness, neck width, hairline, under-eye hooding, skin texture, facial hair, expression); every label is drawn in code (overlayMode "script"). Put the progression and any per-slide grades in direction; arm B grades the same subject on a different curve.',
   ),
   mode: z.enum(['controlled', 'exploration']).optional().describe(
     'controlled (default without a preset): each alternate changes one of the selected variables vs the baseline. exploration (SaaS Explore combinations): an alternate may change several selected variables together, including hook + character + visualStyle; concept/slides are allowed.',
@@ -593,11 +611,14 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       ),
       videoIds: z.array(Id).min(1).max(20).optional().describe('Required in create and edit modes: 1–20 distinct Gallery video ids; one experiment per video. Edit mode takes exactly one. Must be omitted in brief mode.'),
       instructions: instructionsInput.optional().describe('CREATE and BRIEF modes. Required in both; rejected in edit mode (use top-level variables and character or hook/overlayTexts). Brief mode also requires instructions.direction.'),
-      variables: z.array(z.enum(['hook', 'character', 'scene'])).length(1).optional().describe(
-        'EDIT mode: ["hook"] for copy, ["character"] for casting only, or ["scene"] for the setting. Defaults to scene when scene is supplied, then character when character is supplied, otherwise hook.',
+      variables: z.array(z.enum(['hook', 'character', 'scene', 'morph', 'ladder'])).length(1).optional().describe(
+        'EDIT mode: ["hook"] for copy, ["character"] for casting only, ["scene"] for the setting, or ["morph"] (alias "ladder") to re-create a tier-ladder deck with one invented subject graded slide by slide, labels drawn in code. Defaults to scene when scene is supplied, then character when character is supplied, then morph when morph is supplied, otherwise hook.',
       ),
       scene: z.union([z.string().trim().min(1).max(SCENE_MAX), z.array(z.string().trim().min(1).max(SCENE_MAX)).min(1).max(8)]).optional().describe(
         'EDIT mode, scene variable: where the deck takes place instead (setting, props, action). One description for every slide, or an array with one per slide. Keeps the same person, medium, lighting, camera and overlay text. Omit hook/overlayTexts/character.',
+      ),
+      morph: z.string().trim().min(1).max(EDIT_CHARACTER_MAX).optional().describe(
+        'EDIT mode, morph variable: the progression to test in neutral visible words, optionally with per-slide grades 0-4 (e.g. "jaw definition 4,4,3,3,2,1,0; cheek fullness 0,0,1,2,3,3,4"). Omit to follow the source frames.',
       ),
       character: z.string().trim().min(1).max(EDIT_CHARACTER_MAX).optional().describe(
         'EDIT mode, character variable: visible casting changes (e.g. short blond hair). Keeps source copy, style, setting and story. Omit hook/overlayTexts.',
@@ -631,13 +652,13 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       test_max_credits: testMaxCreditsField,
     },
     { readOnlyHint: false },
-    ({ workspaceId, mode, videoIds, instructions, variables, character, scene, hook, overlayTexts, language, overlayMode, variantCount, slideCount, maxCredits, idempotencyKey, ran_by: ranByRaw, ranBy: ranByCamel, tagGoalWithSource, notify, composite, test_key, test_max_credits }) => guarded(async () => {
+    ({ workspaceId, mode, videoIds, instructions, variables, character, scene, morph, hook, overlayTexts, language, overlayMode, variantCount, slideCount, maxCredits, idempotencyKey, ran_by: ranByRaw, ranBy: ranByCamel, tagGoalWithSource, notify, composite, test_key, test_max_credits }) => guarded(async () => {
       const ran_by = ranByRaw ?? ranByCamel;
       const test = { ...(test_key === undefined ? {} : { test_key }), ...(test_max_credits === undefined ? {} : { test_max_credits }) };
       const workspace = await d.resolveWorkspace({ workspaceId });
       if (mode === 'brief') {
         if (videoIds?.length) return text({ error: 'invalid_request', message: 'mode "brief" has no source video — omit videoIds, or use mode "create" to generate from slideshows.' }, true);
-        if (variables || character !== undefined || scene !== undefined || hook !== undefined || overlayTexts !== undefined || language !== undefined || overlayMode !== undefined) {
+        if (variables || character !== undefined || scene !== undefined || morph !== undefined || hook !== undefined || overlayTexts !== undefined || language !== undefined || overlayMode !== undefined) {
           return text({ error: 'invalid_request', message: 'mode "brief" takes everything in instructions (variables, language, direction, instructions.overlayMode); top-level variables/character/hook/overlayTexts/language/overlayMode are edit-only.' }, true);
         }
         if (!instructions) return text({ error: 'invalid_request', message: 'mode "brief" needs instructions — at least a goal and a direction that spells out the slides.' }, true);
@@ -675,21 +696,22 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         if (videoIds.length !== 1) {
           return text({ error: 'invalid_request', message: 'mode "edit" works on exactly one slideshow — pass a single videoId, or use mode "create".' }, true);
         }
-        if (!character && scene === undefined && variables?.[0] !== 'character' && variables?.[0] !== 'scene' && !hook?.trim() && !(overlayTexts ?? []).some(t => t?.trim())) {
+        const morphEdit = morph !== undefined || variables?.[0] === 'morph' || variables?.[0] === 'ladder';
+        if (!character && scene === undefined && !morphEdit && variables?.[0] !== 'character' && variables?.[0] !== 'scene' && !hook?.trim() && !(overlayTexts ?? []).some(t => t?.trim())) {
           return text({ error: 'invalid_request', message: 'mode "edit" needs new copy: a hook for slide 1, or overlay text for a later slide.' }, true);
         }
-      } else if (variables || character !== undefined || scene !== undefined || overlayMode !== undefined) {
-        return text({ error: 'invalid_request', message: 'Create mode uses instructions.variables and instructions.direction; top-level variables/character/overlayMode are edit-only (create mode: instructions.overlayMode).' }, true);
+      } else if (variables || character !== undefined || scene !== undefined || morph !== undefined || overlayMode !== undefined) {
+        return text({ error: 'invalid_request', message: 'Create mode uses instructions.variables and instructions.direction; top-level variables/character/scene/morph/overlayMode are edit-only (create mode: instructions.overlayMode).' }, true);
       } else if (!instructions) {
         return text({ error: 'invalid_request', message: 'mode "create" needs instructions — a goal and at least one variable to test.' }, true);
       }
       const edit = mode === 'edit'
         ? {
-          instructions: editInstructions(hook, overlayTexts ?? [], language ?? 'English', { variables, character, scene, overlayMode }),
+          instructions: editInstructions(hook, overlayTexts ?? [], language ?? 'English', { variables, character, scene, morph, overlayMode }),
           variantCount: EDIT_VARIANT_COUNT,
           maxCredits: EDIT_MAX_CREDITS,
         }
-        : { instructions: instructions!, variantCount, maxCredits: maxCredits ?? defaultExperimentCap(variantCount, slideCount) };
+        : { instructions: instructions!, variantCount, maxCredits: maxCredits ?? defaultExperimentCap(variantCount, slideCount, true, instructions!.variables?.some(v => v === 'morph' || v === 'ladder') ? 1 : undefined) };
       const created: Array<Record<string, unknown>> = [];
       const failed: Array<Record<string, unknown>> = [];
       const deduped = d.dedupeSourcePosts ? await d.dedupeSourcePosts(workspace.id, videoIds) : { videoIds, duplicates: [] };
