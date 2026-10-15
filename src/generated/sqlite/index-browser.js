@@ -257,6 +257,25 @@ exports.Prisma.ExperimentScalarFieldEnum = {
   testKey: 'testKey'
 };
 
+exports.Prisma.FaceLibraryScalarFieldEnum = {
+  id: 'id',
+  workspaceId: 'workspaceId',
+  imageKey: 'imageKey',
+  source: 'source',
+  sourceRef: 'sourceRef',
+  personName: 'personName',
+  sex: 'sex',
+  view: 'view',
+  landmarksJson: 'landmarksJson',
+  measuresJson: 'measuresJson',
+  verdictsJson: 'verdictsJson',
+  licence: 'licence',
+  attribution: 'attribution',
+  sourceVerdictJson: 'sourceVerdictJson',
+  taggedAt: 'taggedAt',
+  createdAt: 'createdAt'
+};
+
 exports.Prisma.ExperimentWebhookOutboxScalarFieldEnum = {
   id: 'id',
   experimentId: 'experimentId',
@@ -456,6 +475,7 @@ exports.Prisma.ModelName = {
   Source: 'Source',
   Video: 'Video',
   Experiment: 'Experiment',
+  FaceLibrary: 'FaceLibrary',
   ExperimentWebhookOutbox: 'ExperimentWebhookOutbox',
   CanonicalScrapeLock: 'CanonicalScrapeLock',
   Baseline: 'Baseline',

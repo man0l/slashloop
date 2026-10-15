@@ -84,6 +84,15 @@ export type Video = $Result.DefaultSelection<Prisma.$VideoPayload>
  */
 export type Experiment = $Result.DefaultSelection<Prisma.$ExperimentPayload>
 /**
+ * Model FaceLibrary
+ * SLA-868: tagged face library for the composite (photo-annotation) render kind.
+ * One row per photo. Landmarks are image-pixel coordinates from one vision call;
+ * measures and verdicts are computed from them in code (src/experiments/composite/landmarks.ts),
+ * so a verdict can be re-thresholded without a new call. personName is set only for
+ * source = commons, and the planner never places a named person on a negative badge.
+ */
+export type FaceLibrary = $Result.DefaultSelection<Prisma.$FaceLibraryPayload>
+/**
  * Model ExperimentWebhookOutbox
  * SLA-617: one row per non-terminal -> terminal experiment transition that asked for a webhook, written in the same batch as the status change and delivered by the VPS worker.
  */
@@ -402,6 +411,16 @@ export class PrismaClient<
     * ```
     */
   get experiment(): Prisma.ExperimentDelegate<ExtArgs, ClientOptions>;
+
+  /**
+   * `prisma.faceLibrary`: Exposes CRUD operations for the **FaceLibrary** model.
+    * Example usage:
+    * ```ts
+    * // Fetch zero or more FaceLibraries
+    * const faceLibraries = await prisma.faceLibrary.findMany()
+    * ```
+    */
+  get faceLibrary(): Prisma.FaceLibraryDelegate<ExtArgs, ClientOptions>;
 
   /**
    * `prisma.experimentWebhookOutbox`: Exposes CRUD operations for the **ExperimentWebhookOutbox** model.
@@ -1022,6 +1041,7 @@ export namespace Prisma {
     Source: 'Source',
     Video: 'Video',
     Experiment: 'Experiment',
+    FaceLibrary: 'FaceLibrary',
     ExperimentWebhookOutbox: 'ExperimentWebhookOutbox',
     CanonicalScrapeLock: 'CanonicalScrapeLock',
     Baseline: 'Baseline',
@@ -1057,7 +1077,7 @@ export namespace Prisma {
       omit: GlobalOmitOptions
     }
     meta: {
-      modelProps: "user" | "workspace" | "workspaceMember" | "creditLedger" | "stripeEvent" | "suggestionDismissal" | "source" | "video" | "experiment" | "experimentWebhookOutbox" | "canonicalScrapeLock" | "baseline" | "score" | "analysis" | "hook" | "board" | "swipeEntry" | "idea" | "script" | "brief" | "usageLog" | "refreshRun" | "autoAnalyzeRun" | "mediaJob" | "workerControl" | "scrapeAlertState"
+      modelProps: "user" | "workspace" | "workspaceMember" | "creditLedger" | "stripeEvent" | "suggestionDismissal" | "source" | "video" | "experiment" | "faceLibrary" | "experimentWebhookOutbox" | "canonicalScrapeLock" | "baseline" | "score" | "analysis" | "hook" | "board" | "swipeEntry" | "idea" | "script" | "brief" | "usageLog" | "refreshRun" | "autoAnalyzeRun" | "mediaJob" | "workerControl" | "scrapeAlertState"
       txIsolationLevel: Prisma.TransactionIsolationLevel
     }
     model: {
@@ -1724,6 +1744,80 @@ export namespace Prisma {
           count: {
             args: Prisma.ExperimentCountArgs<ExtArgs>
             result: $Utils.Optional<ExperimentCountAggregateOutputType> | number
+          }
+        }
+      }
+      FaceLibrary: {
+        payload: Prisma.$FaceLibraryPayload<ExtArgs>
+        fields: Prisma.FaceLibraryFieldRefs
+        operations: {
+          findUnique: {
+            args: Prisma.FaceLibraryFindUniqueArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$FaceLibraryPayload> | null
+          }
+          findUniqueOrThrow: {
+            args: Prisma.FaceLibraryFindUniqueOrThrowArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$FaceLibraryPayload>
+          }
+          findFirst: {
+            args: Prisma.FaceLibraryFindFirstArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$FaceLibraryPayload> | null
+          }
+          findFirstOrThrow: {
+            args: Prisma.FaceLibraryFindFirstOrThrowArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$FaceLibraryPayload>
+          }
+          findMany: {
+            args: Prisma.FaceLibraryFindManyArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$FaceLibraryPayload>[]
+          }
+          create: {
+            args: Prisma.FaceLibraryCreateArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$FaceLibraryPayload>
+          }
+          createMany: {
+            args: Prisma.FaceLibraryCreateManyArgs<ExtArgs>
+            result: BatchPayload
+          }
+          createManyAndReturn: {
+            args: Prisma.FaceLibraryCreateManyAndReturnArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$FaceLibraryPayload>[]
+          }
+          delete: {
+            args: Prisma.FaceLibraryDeleteArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$FaceLibraryPayload>
+          }
+          update: {
+            args: Prisma.FaceLibraryUpdateArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$FaceLibraryPayload>
+          }
+          deleteMany: {
+            args: Prisma.FaceLibraryDeleteManyArgs<ExtArgs>
+            result: BatchPayload
+          }
+          updateMany: {
+            args: Prisma.FaceLibraryUpdateManyArgs<ExtArgs>
+            result: BatchPayload
+          }
+          updateManyAndReturn: {
+            args: Prisma.FaceLibraryUpdateManyAndReturnArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$FaceLibraryPayload>[]
+          }
+          upsert: {
+            args: Prisma.FaceLibraryUpsertArgs<ExtArgs>
+            result: $Utils.PayloadToResult<Prisma.$FaceLibraryPayload>
+          }
+          aggregate: {
+            args: Prisma.FaceLibraryAggregateArgs<ExtArgs>
+            result: $Utils.Optional<AggregateFaceLibrary>
+          }
+          groupBy: {
+            args: Prisma.FaceLibraryGroupByArgs<ExtArgs>
+            result: $Utils.Optional<FaceLibraryGroupByOutputType>[]
+          }
+          count: {
+            args: Prisma.FaceLibraryCountArgs<ExtArgs>
+            result: $Utils.Optional<FaceLibraryCountAggregateOutputType> | number
           }
         }
       }
@@ -3090,6 +3184,7 @@ export namespace Prisma {
     source?: SourceOmit
     video?: VideoOmit
     experiment?: ExperimentOmit
+    faceLibrary?: FaceLibraryOmit
     experimentWebhookOutbox?: ExperimentWebhookOutboxOmit
     canonicalScrapeLock?: CanonicalScrapeLockOmit
     baseline?: BaselineOmit
@@ -14422,6 +14517,1166 @@ export namespace Prisma {
      * Omit specific fields from the Experiment
      */
     omit?: ExperimentOmit<ExtArgs> | null
+  }
+
+
+  /**
+   * Model FaceLibrary
+   */
+
+  export type AggregateFaceLibrary = {
+    _count: FaceLibraryCountAggregateOutputType | null
+    _min: FaceLibraryMinAggregateOutputType | null
+    _max: FaceLibraryMaxAggregateOutputType | null
+  }
+
+  export type FaceLibraryMinAggregateOutputType = {
+    id: string | null
+    workspaceId: string | null
+    imageKey: string | null
+    source: string | null
+    sourceRef: string | null
+    personName: string | null
+    sex: string | null
+    view: string | null
+    landmarksJson: string | null
+    measuresJson: string | null
+    verdictsJson: string | null
+    licence: string | null
+    attribution: string | null
+    sourceVerdictJson: string | null
+    taggedAt: Date | null
+    createdAt: Date | null
+  }
+
+  export type FaceLibraryMaxAggregateOutputType = {
+    id: string | null
+    workspaceId: string | null
+    imageKey: string | null
+    source: string | null
+    sourceRef: string | null
+    personName: string | null
+    sex: string | null
+    view: string | null
+    landmarksJson: string | null
+    measuresJson: string | null
+    verdictsJson: string | null
+    licence: string | null
+    attribution: string | null
+    sourceVerdictJson: string | null
+    taggedAt: Date | null
+    createdAt: Date | null
+  }
+
+  export type FaceLibraryCountAggregateOutputType = {
+    id: number
+    workspaceId: number
+    imageKey: number
+    source: number
+    sourceRef: number
+    personName: number
+    sex: number
+    view: number
+    landmarksJson: number
+    measuresJson: number
+    verdictsJson: number
+    licence: number
+    attribution: number
+    sourceVerdictJson: number
+    taggedAt: number
+    createdAt: number
+    _all: number
+  }
+
+
+  export type FaceLibraryMinAggregateInputType = {
+    id?: true
+    workspaceId?: true
+    imageKey?: true
+    source?: true
+    sourceRef?: true
+    personName?: true
+    sex?: true
+    view?: true
+    landmarksJson?: true
+    measuresJson?: true
+    verdictsJson?: true
+    licence?: true
+    attribution?: true
+    sourceVerdictJson?: true
+    taggedAt?: true
+    createdAt?: true
+  }
+
+  export type FaceLibraryMaxAggregateInputType = {
+    id?: true
+    workspaceId?: true
+    imageKey?: true
+    source?: true
+    sourceRef?: true
+    personName?: true
+    sex?: true
+    view?: true
+    landmarksJson?: true
+    measuresJson?: true
+    verdictsJson?: true
+    licence?: true
+    attribution?: true
+    sourceVerdictJson?: true
+    taggedAt?: true
+    createdAt?: true
+  }
+
+  export type FaceLibraryCountAggregateInputType = {
+    id?: true
+    workspaceId?: true
+    imageKey?: true
+    source?: true
+    sourceRef?: true
+    personName?: true
+    sex?: true
+    view?: true
+    landmarksJson?: true
+    measuresJson?: true
+    verdictsJson?: true
+    licence?: true
+    attribution?: true
+    sourceVerdictJson?: true
+    taggedAt?: true
+    createdAt?: true
+    _all?: true
+  }
+
+  export type FaceLibraryAggregateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Filter which FaceLibrary to aggregate.
+     */
+    where?: FaceLibraryWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of FaceLibraries to fetch.
+     */
+    orderBy?: FaceLibraryOrderByWithRelationInput | FaceLibraryOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the start position
+     */
+    cursor?: FaceLibraryWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` FaceLibraries from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` FaceLibraries.
+     */
+    skip?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Count returned FaceLibraries
+    **/
+    _count?: true | FaceLibraryCountAggregateInputType
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Select which fields to find the minimum value
+    **/
+    _min?: FaceLibraryMinAggregateInputType
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+     * 
+     * Select which fields to find the maximum value
+    **/
+    _max?: FaceLibraryMaxAggregateInputType
+  }
+
+  export type GetFaceLibraryAggregateType<T extends FaceLibraryAggregateArgs> = {
+        [P in keyof T & keyof AggregateFaceLibrary]: P extends '_count' | 'count'
+      ? T[P] extends true
+        ? number
+        : GetScalarType<T[P], AggregateFaceLibrary[P]>
+      : GetScalarType<T[P], AggregateFaceLibrary[P]>
+  }
+
+
+
+
+  export type FaceLibraryGroupByArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    where?: FaceLibraryWhereInput
+    orderBy?: FaceLibraryOrderByWithAggregationInput | FaceLibraryOrderByWithAggregationInput[]
+    by: FaceLibraryScalarFieldEnum[] | FaceLibraryScalarFieldEnum
+    having?: FaceLibraryScalarWhereWithAggregatesInput
+    take?: number
+    skip?: number
+    _count?: FaceLibraryCountAggregateInputType | true
+    _min?: FaceLibraryMinAggregateInputType
+    _max?: FaceLibraryMaxAggregateInputType
+  }
+
+  export type FaceLibraryGroupByOutputType = {
+    id: string
+    workspaceId: string
+    imageKey: string
+    source: string
+    sourceRef: string
+    personName: string | null
+    sex: string
+    view: string
+    landmarksJson: string
+    measuresJson: string
+    verdictsJson: string
+    licence: string | null
+    attribution: string | null
+    sourceVerdictJson: string | null
+    taggedAt: Date | null
+    createdAt: Date
+    _count: FaceLibraryCountAggregateOutputType | null
+    _min: FaceLibraryMinAggregateOutputType | null
+    _max: FaceLibraryMaxAggregateOutputType | null
+  }
+
+  type GetFaceLibraryGroupByPayload<T extends FaceLibraryGroupByArgs> = Prisma.PrismaPromise<
+    Array<
+      PickEnumerable<FaceLibraryGroupByOutputType, T['by']> &
+        {
+          [P in ((keyof T) & (keyof FaceLibraryGroupByOutputType))]: P extends '_count'
+            ? T[P] extends boolean
+              ? number
+              : GetScalarType<T[P], FaceLibraryGroupByOutputType[P]>
+            : GetScalarType<T[P], FaceLibraryGroupByOutputType[P]>
+        }
+      >
+    >
+
+
+  export type FaceLibrarySelect<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
+    id?: boolean
+    workspaceId?: boolean
+    imageKey?: boolean
+    source?: boolean
+    sourceRef?: boolean
+    personName?: boolean
+    sex?: boolean
+    view?: boolean
+    landmarksJson?: boolean
+    measuresJson?: boolean
+    verdictsJson?: boolean
+    licence?: boolean
+    attribution?: boolean
+    sourceVerdictJson?: boolean
+    taggedAt?: boolean
+    createdAt?: boolean
+  }, ExtArgs["result"]["faceLibrary"]>
+
+  export type FaceLibrarySelectCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
+    id?: boolean
+    workspaceId?: boolean
+    imageKey?: boolean
+    source?: boolean
+    sourceRef?: boolean
+    personName?: boolean
+    sex?: boolean
+    view?: boolean
+    landmarksJson?: boolean
+    measuresJson?: boolean
+    verdictsJson?: boolean
+    licence?: boolean
+    attribution?: boolean
+    sourceVerdictJson?: boolean
+    taggedAt?: boolean
+    createdAt?: boolean
+  }, ExtArgs["result"]["faceLibrary"]>
+
+  export type FaceLibrarySelectUpdateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
+    id?: boolean
+    workspaceId?: boolean
+    imageKey?: boolean
+    source?: boolean
+    sourceRef?: boolean
+    personName?: boolean
+    sex?: boolean
+    view?: boolean
+    landmarksJson?: boolean
+    measuresJson?: boolean
+    verdictsJson?: boolean
+    licence?: boolean
+    attribution?: boolean
+    sourceVerdictJson?: boolean
+    taggedAt?: boolean
+    createdAt?: boolean
+  }, ExtArgs["result"]["faceLibrary"]>
+
+  export type FaceLibrarySelectScalar = {
+    id?: boolean
+    workspaceId?: boolean
+    imageKey?: boolean
+    source?: boolean
+    sourceRef?: boolean
+    personName?: boolean
+    sex?: boolean
+    view?: boolean
+    landmarksJson?: boolean
+    measuresJson?: boolean
+    verdictsJson?: boolean
+    licence?: boolean
+    attribution?: boolean
+    sourceVerdictJson?: boolean
+    taggedAt?: boolean
+    createdAt?: boolean
+  }
+
+  export type FaceLibraryOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "imageKey" | "source" | "sourceRef" | "personName" | "sex" | "view" | "landmarksJson" | "measuresJson" | "verdictsJson" | "licence" | "attribution" | "sourceVerdictJson" | "taggedAt" | "createdAt", ExtArgs["result"]["faceLibrary"]>
+
+  export type $FaceLibraryPayload<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    name: "FaceLibrary"
+    objects: {}
+    scalars: $Extensions.GetPayloadResult<{
+      id: string
+      workspaceId: string
+      /**
+       * R2 key in the thumbs bucket.
+       */
+      imageKey: string
+      /**
+       * gallery_frame | commons | synthetic
+       */
+      source: string
+      /**
+       * gallery_frame: "<videoId>@<timestampSec>"; commons: file title; synthetic: generation seed.
+       */
+      sourceRef: string
+      personName: string | null
+      /**
+       * male | female | unknown
+       */
+      sex: string
+      /**
+       * profile | three_quarter | frontal
+       */
+      view: string
+      landmarksJson: string
+      measuresJson: string
+      verdictsJson: string
+      /**
+       * SPDX-ish licence label: "CC0", "CC BY 4.0", "CC BY-SA 3.0", "Public domain", "synthetic", "gallery".
+       */
+      licence: string | null
+      /**
+       * Credit line CC-BY requires, drawn on the slide. Null when the licence needs none.
+       */
+      attribution: string | null
+      /**
+       * Verdicts a gallery frame arrived with from the source's own overlay, e.g. {"ramus":"neg"}. The calibration set.
+       */
+      sourceVerdictJson: string | null
+      taggedAt: Date | null
+      createdAt: Date
+    }, ExtArgs["result"]["faceLibrary"]>
+    composites: {}
+  }
+
+  type FaceLibraryGetPayload<S extends boolean | null | undefined | FaceLibraryDefaultArgs> = $Result.GetResult<Prisma.$FaceLibraryPayload, S>
+
+  type FaceLibraryCountArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> =
+    Omit<FaceLibraryFindManyArgs, 'select' | 'include' | 'distinct' | 'omit'> & {
+      select?: FaceLibraryCountAggregateInputType | true
+    }
+
+  export interface FaceLibraryDelegate<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs, GlobalOmitOptions = {}> {
+    [K: symbol]: { types: Prisma.TypeMap<ExtArgs>['model']['FaceLibrary'], meta: { name: 'FaceLibrary' } }
+    /**
+     * Find zero or one FaceLibrary that matches the filter.
+     * @param {FaceLibraryFindUniqueArgs} args - Arguments to find a FaceLibrary
+     * @example
+     * // Get one FaceLibrary
+     * const faceLibrary = await prisma.faceLibrary.findUnique({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findUnique<T extends FaceLibraryFindUniqueArgs>(args: SelectSubset<T, FaceLibraryFindUniqueArgs<ExtArgs>>): Prisma__FaceLibraryClient<$Result.GetResult<Prisma.$FaceLibraryPayload<ExtArgs>, T, "findUnique", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find one FaceLibrary that matches the filter or throw an error with `error.code='P2025'`
+     * if no matches were found.
+     * @param {FaceLibraryFindUniqueOrThrowArgs} args - Arguments to find a FaceLibrary
+     * @example
+     * // Get one FaceLibrary
+     * const faceLibrary = await prisma.faceLibrary.findUniqueOrThrow({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findUniqueOrThrow<T extends FaceLibraryFindUniqueOrThrowArgs>(args: SelectSubset<T, FaceLibraryFindUniqueOrThrowArgs<ExtArgs>>): Prisma__FaceLibraryClient<$Result.GetResult<Prisma.$FaceLibraryPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find the first FaceLibrary that matches the filter.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {FaceLibraryFindFirstArgs} args - Arguments to find a FaceLibrary
+     * @example
+     * // Get one FaceLibrary
+     * const faceLibrary = await prisma.faceLibrary.findFirst({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findFirst<T extends FaceLibraryFindFirstArgs>(args?: SelectSubset<T, FaceLibraryFindFirstArgs<ExtArgs>>): Prisma__FaceLibraryClient<$Result.GetResult<Prisma.$FaceLibraryPayload<ExtArgs>, T, "findFirst", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find the first FaceLibrary that matches the filter or
+     * throw `PrismaKnownClientError` with `P2025` code if no matches were found.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {FaceLibraryFindFirstOrThrowArgs} args - Arguments to find a FaceLibrary
+     * @example
+     * // Get one FaceLibrary
+     * const faceLibrary = await prisma.faceLibrary.findFirstOrThrow({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     */
+    findFirstOrThrow<T extends FaceLibraryFindFirstOrThrowArgs>(args?: SelectSubset<T, FaceLibraryFindFirstOrThrowArgs<ExtArgs>>): Prisma__FaceLibraryClient<$Result.GetResult<Prisma.$FaceLibraryPayload<ExtArgs>, T, "findFirstOrThrow", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Find zero or more FaceLibraries that matches the filter.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {FaceLibraryFindManyArgs} args - Arguments to filter and select certain fields only.
+     * @example
+     * // Get all FaceLibraries
+     * const faceLibraries = await prisma.faceLibrary.findMany()
+     * 
+     * // Get first 10 FaceLibraries
+     * const faceLibraries = await prisma.faceLibrary.findMany({ take: 10 })
+     * 
+     * // Only select the `id`
+     * const faceLibraryWithIdOnly = await prisma.faceLibrary.findMany({ select: { id: true } })
+     * 
+     */
+    findMany<T extends FaceLibraryFindManyArgs>(args?: SelectSubset<T, FaceLibraryFindManyArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$FaceLibraryPayload<ExtArgs>, T, "findMany", GlobalOmitOptions>>
+
+    /**
+     * Create a FaceLibrary.
+     * @param {FaceLibraryCreateArgs} args - Arguments to create a FaceLibrary.
+     * @example
+     * // Create one FaceLibrary
+     * const FaceLibrary = await prisma.faceLibrary.create({
+     *   data: {
+     *     // ... data to create a FaceLibrary
+     *   }
+     * })
+     * 
+     */
+    create<T extends FaceLibraryCreateArgs>(args: SelectSubset<T, FaceLibraryCreateArgs<ExtArgs>>): Prisma__FaceLibraryClient<$Result.GetResult<Prisma.$FaceLibraryPayload<ExtArgs>, T, "create", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Create many FaceLibraries.
+     * @param {FaceLibraryCreateManyArgs} args - Arguments to create many FaceLibraries.
+     * @example
+     * // Create many FaceLibraries
+     * const faceLibrary = await prisma.faceLibrary.createMany({
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     *     
+     */
+    createMany<T extends FaceLibraryCreateManyArgs>(args?: SelectSubset<T, FaceLibraryCreateManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
+
+    /**
+     * Create many FaceLibraries and returns the data saved in the database.
+     * @param {FaceLibraryCreateManyAndReturnArgs} args - Arguments to create many FaceLibraries.
+     * @example
+     * // Create many FaceLibraries
+     * const faceLibrary = await prisma.faceLibrary.createManyAndReturn({
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * 
+     * // Create many FaceLibraries and only return the `id`
+     * const faceLibraryWithIdOnly = await prisma.faceLibrary.createManyAndReturn({
+     *   select: { id: true },
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * 
+     */
+    createManyAndReturn<T extends FaceLibraryCreateManyAndReturnArgs>(args?: SelectSubset<T, FaceLibraryCreateManyAndReturnArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$FaceLibraryPayload<ExtArgs>, T, "createManyAndReturn", GlobalOmitOptions>>
+
+    /**
+     * Delete a FaceLibrary.
+     * @param {FaceLibraryDeleteArgs} args - Arguments to delete one FaceLibrary.
+     * @example
+     * // Delete one FaceLibrary
+     * const FaceLibrary = await prisma.faceLibrary.delete({
+     *   where: {
+     *     // ... filter to delete one FaceLibrary
+     *   }
+     * })
+     * 
+     */
+    delete<T extends FaceLibraryDeleteArgs>(args: SelectSubset<T, FaceLibraryDeleteArgs<ExtArgs>>): Prisma__FaceLibraryClient<$Result.GetResult<Prisma.$FaceLibraryPayload<ExtArgs>, T, "delete", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Update one FaceLibrary.
+     * @param {FaceLibraryUpdateArgs} args - Arguments to update one FaceLibrary.
+     * @example
+     * // Update one FaceLibrary
+     * const faceLibrary = await prisma.faceLibrary.update({
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: {
+     *     // ... provide data here
+     *   }
+     * })
+     * 
+     */
+    update<T extends FaceLibraryUpdateArgs>(args: SelectSubset<T, FaceLibraryUpdateArgs<ExtArgs>>): Prisma__FaceLibraryClient<$Result.GetResult<Prisma.$FaceLibraryPayload<ExtArgs>, T, "update", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+    /**
+     * Delete zero or more FaceLibraries.
+     * @param {FaceLibraryDeleteManyArgs} args - Arguments to filter FaceLibraries to delete.
+     * @example
+     * // Delete a few FaceLibraries
+     * const { count } = await prisma.faceLibrary.deleteMany({
+     *   where: {
+     *     // ... provide filter here
+     *   }
+     * })
+     * 
+     */
+    deleteMany<T extends FaceLibraryDeleteManyArgs>(args?: SelectSubset<T, FaceLibraryDeleteManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
+
+    /**
+     * Update zero or more FaceLibraries.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {FaceLibraryUpdateManyArgs} args - Arguments to update one or more rows.
+     * @example
+     * // Update many FaceLibraries
+     * const faceLibrary = await prisma.faceLibrary.updateMany({
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: {
+     *     // ... provide data here
+     *   }
+     * })
+     * 
+     */
+    updateMany<T extends FaceLibraryUpdateManyArgs>(args: SelectSubset<T, FaceLibraryUpdateManyArgs<ExtArgs>>): Prisma.PrismaPromise<BatchPayload>
+
+    /**
+     * Update zero or more FaceLibraries and returns the data updated in the database.
+     * @param {FaceLibraryUpdateManyAndReturnArgs} args - Arguments to update many FaceLibraries.
+     * @example
+     * // Update many FaceLibraries
+     * const faceLibrary = await prisma.faceLibrary.updateManyAndReturn({
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * 
+     * // Update zero or more FaceLibraries and only return the `id`
+     * const faceLibraryWithIdOnly = await prisma.faceLibrary.updateManyAndReturn({
+     *   select: { id: true },
+     *   where: {
+     *     // ... provide filter here
+     *   },
+     *   data: [
+     *     // ... provide data here
+     *   ]
+     * })
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * 
+     */
+    updateManyAndReturn<T extends FaceLibraryUpdateManyAndReturnArgs>(args: SelectSubset<T, FaceLibraryUpdateManyAndReturnArgs<ExtArgs>>): Prisma.PrismaPromise<$Result.GetResult<Prisma.$FaceLibraryPayload<ExtArgs>, T, "updateManyAndReturn", GlobalOmitOptions>>
+
+    /**
+     * Create or update one FaceLibrary.
+     * @param {FaceLibraryUpsertArgs} args - Arguments to update or create a FaceLibrary.
+     * @example
+     * // Update or create a FaceLibrary
+     * const faceLibrary = await prisma.faceLibrary.upsert({
+     *   create: {
+     *     // ... data to create a FaceLibrary
+     *   },
+     *   update: {
+     *     // ... in case it already exists, update
+     *   },
+     *   where: {
+     *     // ... the filter for the FaceLibrary we want to update
+     *   }
+     * })
+     */
+    upsert<T extends FaceLibraryUpsertArgs>(args: SelectSubset<T, FaceLibraryUpsertArgs<ExtArgs>>): Prisma__FaceLibraryClient<$Result.GetResult<Prisma.$FaceLibraryPayload<ExtArgs>, T, "upsert", GlobalOmitOptions>, never, ExtArgs, GlobalOmitOptions>
+
+
+    /**
+     * Count the number of FaceLibraries.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {FaceLibraryCountArgs} args - Arguments to filter FaceLibraries to count.
+     * @example
+     * // Count the number of FaceLibraries
+     * const count = await prisma.faceLibrary.count({
+     *   where: {
+     *     // ... the filter for the FaceLibraries we want to count
+     *   }
+     * })
+    **/
+    count<T extends FaceLibraryCountArgs>(
+      args?: Subset<T, FaceLibraryCountArgs>,
+    ): Prisma.PrismaPromise<
+      T extends $Utils.Record<'select', any>
+        ? T['select'] extends true
+          ? number
+          : GetScalarType<T['select'], FaceLibraryCountAggregateOutputType>
+        : number
+    >
+
+    /**
+     * Allows you to perform aggregations operations on a FaceLibrary.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {FaceLibraryAggregateArgs} args - Select which aggregations you would like to apply and on what fields.
+     * @example
+     * // Ordered by age ascending
+     * // Where email contains prisma.io
+     * // Limited to the 10 users
+     * const aggregations = await prisma.user.aggregate({
+     *   _avg: {
+     *     age: true,
+     *   },
+     *   where: {
+     *     email: {
+     *       contains: "prisma.io",
+     *     },
+     *   },
+     *   orderBy: {
+     *     age: "asc",
+     *   },
+     *   take: 10,
+     * })
+    **/
+    aggregate<T extends FaceLibraryAggregateArgs>(args: Subset<T, FaceLibraryAggregateArgs>): Prisma.PrismaPromise<GetFaceLibraryAggregateType<T>>
+
+    /**
+     * Group by FaceLibrary.
+     * Note, that providing `undefined` is treated as the value not being there.
+     * Read more here: https://pris.ly/d/null-undefined
+     * @param {FaceLibraryGroupByArgs} args - Group by arguments.
+     * @example
+     * // Group by city, order by createdAt, get count
+     * const result = await prisma.user.groupBy({
+     *   by: ['city', 'createdAt'],
+     *   orderBy: {
+     *     createdAt: true
+     *   },
+     *   _count: {
+     *     _all: true
+     *   },
+     * })
+     * 
+    **/
+    groupBy<
+      T extends FaceLibraryGroupByArgs,
+      HasSelectOrTake extends Or<
+        Extends<'skip', Keys<T>>,
+        Extends<'take', Keys<T>>
+      >,
+      OrderByArg extends True extends HasSelectOrTake
+        ? { orderBy: FaceLibraryGroupByArgs['orderBy'] }
+        : { orderBy?: FaceLibraryGroupByArgs['orderBy'] },
+      OrderFields extends ExcludeUnderscoreKeys<Keys<MaybeTupleToUnion<T['orderBy']>>>,
+      ByFields extends MaybeTupleToUnion<T['by']>,
+      ByValid extends Has<ByFields, OrderFields>,
+      HavingFields extends GetHavingFields<T['having']>,
+      HavingValid extends Has<ByFields, HavingFields>,
+      ByEmpty extends T['by'] extends never[] ? True : False,
+      InputErrors extends ByEmpty extends True
+      ? `Error: "by" must not be empty.`
+      : HavingValid extends False
+      ? {
+          [P in HavingFields]: P extends ByFields
+            ? never
+            : P extends string
+            ? `Error: Field "${P}" used in "having" needs to be provided in "by".`
+            : [
+                Error,
+                'Field ',
+                P,
+                ` in "having" needs to be provided in "by"`,
+              ]
+        }[HavingFields]
+      : 'take' extends Keys<T>
+      ? 'orderBy' extends Keys<T>
+        ? ByValid extends True
+          ? {}
+          : {
+              [P in OrderFields]: P extends ByFields
+                ? never
+                : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
+            }[OrderFields]
+        : 'Error: If you provide "take", you also need to provide "orderBy"'
+      : 'skip' extends Keys<T>
+      ? 'orderBy' extends Keys<T>
+        ? ByValid extends True
+          ? {}
+          : {
+              [P in OrderFields]: P extends ByFields
+                ? never
+                : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
+            }[OrderFields]
+        : 'Error: If you provide "skip", you also need to provide "orderBy"'
+      : ByValid extends True
+      ? {}
+      : {
+          [P in OrderFields]: P extends ByFields
+            ? never
+            : `Error: Field "${P}" in "orderBy" needs to be provided in "by"`
+        }[OrderFields]
+    >(args: SubsetIntersection<T, FaceLibraryGroupByArgs, OrderByArg> & InputErrors): {} extends InputErrors ? GetFaceLibraryGroupByPayload<T> : Prisma.PrismaPromise<InputErrors>
+  /**
+   * Fields of the FaceLibrary model
+   */
+  readonly fields: FaceLibraryFieldRefs;
+  }
+
+  /**
+   * The delegate class that acts as a "Promise-like" for FaceLibrary.
+   * Why is this prefixed with `Prisma__`?
+   * Because we want to prevent naming conflicts as mentioned in
+   * https://github.com/prisma/prisma-client-js/issues/707
+   */
+  export interface Prisma__FaceLibraryClient<T, Null = never, ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs, GlobalOmitOptions = {}> extends Prisma.PrismaPromise<T> {
+    readonly [Symbol.toStringTag]: "PrismaPromise"
+    /**
+     * Attaches callbacks for the resolution and/or rejection of the Promise.
+     * @param onfulfilled The callback to execute when the Promise is resolved.
+     * @param onrejected The callback to execute when the Promise is rejected.
+     * @returns A Promise for the completion of which ever callback is executed.
+     */
+    then<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | undefined | null, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null): $Utils.JsPromise<TResult1 | TResult2>
+    /**
+     * Attaches a callback for only the rejection of the Promise.
+     * @param onrejected The callback to execute when the Promise is rejected.
+     * @returns A Promise for the completion of the callback.
+     */
+    catch<TResult = never>(onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null): $Utils.JsPromise<T | TResult>
+    /**
+     * Attaches a callback that is invoked when the Promise is settled (fulfilled or rejected). The
+     * resolved value cannot be modified from the callback.
+     * @param onfinally The callback to execute when the Promise is settled (fulfilled or rejected).
+     * @returns A Promise for the completion of the callback.
+     */
+    finally(onfinally?: (() => void) | undefined | null): $Utils.JsPromise<T>
+  }
+
+
+
+
+  /**
+   * Fields of the FaceLibrary model
+   */
+  interface FaceLibraryFieldRefs {
+    readonly id: FieldRef<"FaceLibrary", 'String'>
+    readonly workspaceId: FieldRef<"FaceLibrary", 'String'>
+    readonly imageKey: FieldRef<"FaceLibrary", 'String'>
+    readonly source: FieldRef<"FaceLibrary", 'String'>
+    readonly sourceRef: FieldRef<"FaceLibrary", 'String'>
+    readonly personName: FieldRef<"FaceLibrary", 'String'>
+    readonly sex: FieldRef<"FaceLibrary", 'String'>
+    readonly view: FieldRef<"FaceLibrary", 'String'>
+    readonly landmarksJson: FieldRef<"FaceLibrary", 'String'>
+    readonly measuresJson: FieldRef<"FaceLibrary", 'String'>
+    readonly verdictsJson: FieldRef<"FaceLibrary", 'String'>
+    readonly licence: FieldRef<"FaceLibrary", 'String'>
+    readonly attribution: FieldRef<"FaceLibrary", 'String'>
+    readonly sourceVerdictJson: FieldRef<"FaceLibrary", 'String'>
+    readonly taggedAt: FieldRef<"FaceLibrary", 'DateTime'>
+    readonly createdAt: FieldRef<"FaceLibrary", 'DateTime'>
+  }
+    
+
+  // Custom InputTypes
+  /**
+   * FaceLibrary findUnique
+   */
+  export type FaceLibraryFindUniqueArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the FaceLibrary
+     */
+    select?: FaceLibrarySelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the FaceLibrary
+     */
+    omit?: FaceLibraryOmit<ExtArgs> | null
+    /**
+     * Filter, which FaceLibrary to fetch.
+     */
+    where: FaceLibraryWhereUniqueInput
+  }
+
+  /**
+   * FaceLibrary findUniqueOrThrow
+   */
+  export type FaceLibraryFindUniqueOrThrowArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the FaceLibrary
+     */
+    select?: FaceLibrarySelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the FaceLibrary
+     */
+    omit?: FaceLibraryOmit<ExtArgs> | null
+    /**
+     * Filter, which FaceLibrary to fetch.
+     */
+    where: FaceLibraryWhereUniqueInput
+  }
+
+  /**
+   * FaceLibrary findFirst
+   */
+  export type FaceLibraryFindFirstArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the FaceLibrary
+     */
+    select?: FaceLibrarySelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the FaceLibrary
+     */
+    omit?: FaceLibraryOmit<ExtArgs> | null
+    /**
+     * Filter, which FaceLibrary to fetch.
+     */
+    where?: FaceLibraryWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of FaceLibraries to fetch.
+     */
+    orderBy?: FaceLibraryOrderByWithRelationInput | FaceLibraryOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the position for searching for FaceLibraries.
+     */
+    cursor?: FaceLibraryWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` FaceLibraries from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` FaceLibraries.
+     */
+    skip?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}
+     * 
+     * Filter by unique combinations of FaceLibraries.
+     */
+    distinct?: FaceLibraryScalarFieldEnum | FaceLibraryScalarFieldEnum[]
+  }
+
+  /**
+   * FaceLibrary findFirstOrThrow
+   */
+  export type FaceLibraryFindFirstOrThrowArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the FaceLibrary
+     */
+    select?: FaceLibrarySelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the FaceLibrary
+     */
+    omit?: FaceLibraryOmit<ExtArgs> | null
+    /**
+     * Filter, which FaceLibrary to fetch.
+     */
+    where?: FaceLibraryWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of FaceLibraries to fetch.
+     */
+    orderBy?: FaceLibraryOrderByWithRelationInput | FaceLibraryOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the position for searching for FaceLibraries.
+     */
+    cursor?: FaceLibraryWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` FaceLibraries from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` FaceLibraries.
+     */
+    skip?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}
+     * 
+     * Filter by unique combinations of FaceLibraries.
+     */
+    distinct?: FaceLibraryScalarFieldEnum | FaceLibraryScalarFieldEnum[]
+  }
+
+  /**
+   * FaceLibrary findMany
+   */
+  export type FaceLibraryFindManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the FaceLibrary
+     */
+    select?: FaceLibrarySelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the FaceLibrary
+     */
+    omit?: FaceLibraryOmit<ExtArgs> | null
+    /**
+     * Filter, which FaceLibraries to fetch.
+     */
+    where?: FaceLibraryWhereInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/sorting Sorting Docs}
+     * 
+     * Determine the order of FaceLibraries to fetch.
+     */
+    orderBy?: FaceLibraryOrderByWithRelationInput | FaceLibraryOrderByWithRelationInput[]
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination Cursor Docs}
+     * 
+     * Sets the position for listing FaceLibraries.
+     */
+    cursor?: FaceLibraryWhereUniqueInput
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Take `±n` FaceLibraries from the position of the cursor.
+     */
+    take?: number
+    /**
+     * {@link https://www.prisma.io/docs/concepts/components/prisma-client/pagination Pagination Docs}
+     * 
+     * Skip the first `n` FaceLibraries.
+     */
+    skip?: number
+    distinct?: FaceLibraryScalarFieldEnum | FaceLibraryScalarFieldEnum[]
+  }
+
+  /**
+   * FaceLibrary create
+   */
+  export type FaceLibraryCreateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the FaceLibrary
+     */
+    select?: FaceLibrarySelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the FaceLibrary
+     */
+    omit?: FaceLibraryOmit<ExtArgs> | null
+    /**
+     * The data needed to create a FaceLibrary.
+     */
+    data: XOR<FaceLibraryCreateInput, FaceLibraryUncheckedCreateInput>
+  }
+
+  /**
+   * FaceLibrary createMany
+   */
+  export type FaceLibraryCreateManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * The data used to create many FaceLibraries.
+     */
+    data: FaceLibraryCreateManyInput | FaceLibraryCreateManyInput[]
+  }
+
+  /**
+   * FaceLibrary createManyAndReturn
+   */
+  export type FaceLibraryCreateManyAndReturnArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the FaceLibrary
+     */
+    select?: FaceLibrarySelectCreateManyAndReturn<ExtArgs> | null
+    /**
+     * Omit specific fields from the FaceLibrary
+     */
+    omit?: FaceLibraryOmit<ExtArgs> | null
+    /**
+     * The data used to create many FaceLibraries.
+     */
+    data: FaceLibraryCreateManyInput | FaceLibraryCreateManyInput[]
+  }
+
+  /**
+   * FaceLibrary update
+   */
+  export type FaceLibraryUpdateArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the FaceLibrary
+     */
+    select?: FaceLibrarySelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the FaceLibrary
+     */
+    omit?: FaceLibraryOmit<ExtArgs> | null
+    /**
+     * The data needed to update a FaceLibrary.
+     */
+    data: XOR<FaceLibraryUpdateInput, FaceLibraryUncheckedUpdateInput>
+    /**
+     * Choose, which FaceLibrary to update.
+     */
+    where: FaceLibraryWhereUniqueInput
+  }
+
+  /**
+   * FaceLibrary updateMany
+   */
+  export type FaceLibraryUpdateManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * The data used to update FaceLibraries.
+     */
+    data: XOR<FaceLibraryUpdateManyMutationInput, FaceLibraryUncheckedUpdateManyInput>
+    /**
+     * Filter which FaceLibraries to update
+     */
+    where?: FaceLibraryWhereInput
+    /**
+     * Limit how many FaceLibraries to update.
+     */
+    limit?: number
+  }
+
+  /**
+   * FaceLibrary updateManyAndReturn
+   */
+  export type FaceLibraryUpdateManyAndReturnArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the FaceLibrary
+     */
+    select?: FaceLibrarySelectUpdateManyAndReturn<ExtArgs> | null
+    /**
+     * Omit specific fields from the FaceLibrary
+     */
+    omit?: FaceLibraryOmit<ExtArgs> | null
+    /**
+     * The data used to update FaceLibraries.
+     */
+    data: XOR<FaceLibraryUpdateManyMutationInput, FaceLibraryUncheckedUpdateManyInput>
+    /**
+     * Filter which FaceLibraries to update
+     */
+    where?: FaceLibraryWhereInput
+    /**
+     * Limit how many FaceLibraries to update.
+     */
+    limit?: number
+  }
+
+  /**
+   * FaceLibrary upsert
+   */
+  export type FaceLibraryUpsertArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the FaceLibrary
+     */
+    select?: FaceLibrarySelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the FaceLibrary
+     */
+    omit?: FaceLibraryOmit<ExtArgs> | null
+    /**
+     * The filter to search for the FaceLibrary to update in case it exists.
+     */
+    where: FaceLibraryWhereUniqueInput
+    /**
+     * In case the FaceLibrary found by the `where` argument doesn't exist, create a new FaceLibrary with this data.
+     */
+    create: XOR<FaceLibraryCreateInput, FaceLibraryUncheckedCreateInput>
+    /**
+     * In case the FaceLibrary was found with the provided `where` argument, update it with this data.
+     */
+    update: XOR<FaceLibraryUpdateInput, FaceLibraryUncheckedUpdateInput>
+  }
+
+  /**
+   * FaceLibrary delete
+   */
+  export type FaceLibraryDeleteArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the FaceLibrary
+     */
+    select?: FaceLibrarySelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the FaceLibrary
+     */
+    omit?: FaceLibraryOmit<ExtArgs> | null
+    /**
+     * Filter which FaceLibrary to delete.
+     */
+    where: FaceLibraryWhereUniqueInput
+  }
+
+  /**
+   * FaceLibrary deleteMany
+   */
+  export type FaceLibraryDeleteManyArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Filter which FaceLibraries to delete
+     */
+    where?: FaceLibraryWhereInput
+    /**
+     * Limit how many FaceLibraries to delete.
+     */
+    limit?: number
+  }
+
+  /**
+   * FaceLibrary without action
+   */
+  export type FaceLibraryDefaultArgs<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
+    /**
+     * Select specific fields to fetch from the FaceLibrary
+     */
+    select?: FaceLibrarySelect<ExtArgs> | null
+    /**
+     * Omit specific fields from the FaceLibrary
+     */
+    omit?: FaceLibraryOmit<ExtArgs> | null
   }
 
 
@@ -33447,6 +34702,28 @@ export namespace Prisma {
   export type ExperimentScalarFieldEnum = (typeof ExperimentScalarFieldEnum)[keyof typeof ExperimentScalarFieldEnum]
 
 
+  export const FaceLibraryScalarFieldEnum: {
+    id: 'id',
+    workspaceId: 'workspaceId',
+    imageKey: 'imageKey',
+    source: 'source',
+    sourceRef: 'sourceRef',
+    personName: 'personName',
+    sex: 'sex',
+    view: 'view',
+    landmarksJson: 'landmarksJson',
+    measuresJson: 'measuresJson',
+    verdictsJson: 'verdictsJson',
+    licence: 'licence',
+    attribution: 'attribution',
+    sourceVerdictJson: 'sourceVerdictJson',
+    taggedAt: 'taggedAt',
+    createdAt: 'createdAt'
+  };
+
+  export type FaceLibraryScalarFieldEnum = (typeof FaceLibraryScalarFieldEnum)[keyof typeof FaceLibraryScalarFieldEnum]
+
+
   export const ExperimentWebhookOutboxScalarFieldEnum: {
     id: 'id',
     experimentId: 'experimentId',
@@ -34611,6 +35888,114 @@ export namespace Prisma {
     ranBy?: StringNullableWithAggregatesFilter<"Experiment"> | string | null
     notifyJson?: StringNullableWithAggregatesFilter<"Experiment"> | string | null
     testKey?: StringNullableWithAggregatesFilter<"Experiment"> | string | null
+  }
+
+  export type FaceLibraryWhereInput = {
+    AND?: FaceLibraryWhereInput | FaceLibraryWhereInput[]
+    OR?: FaceLibraryWhereInput[]
+    NOT?: FaceLibraryWhereInput | FaceLibraryWhereInput[]
+    id?: StringFilter<"FaceLibrary"> | string
+    workspaceId?: StringFilter<"FaceLibrary"> | string
+    imageKey?: StringFilter<"FaceLibrary"> | string
+    source?: StringFilter<"FaceLibrary"> | string
+    sourceRef?: StringFilter<"FaceLibrary"> | string
+    personName?: StringNullableFilter<"FaceLibrary"> | string | null
+    sex?: StringFilter<"FaceLibrary"> | string
+    view?: StringFilter<"FaceLibrary"> | string
+    landmarksJson?: StringFilter<"FaceLibrary"> | string
+    measuresJson?: StringFilter<"FaceLibrary"> | string
+    verdictsJson?: StringFilter<"FaceLibrary"> | string
+    licence?: StringNullableFilter<"FaceLibrary"> | string | null
+    attribution?: StringNullableFilter<"FaceLibrary"> | string | null
+    sourceVerdictJson?: StringNullableFilter<"FaceLibrary"> | string | null
+    taggedAt?: DateTimeNullableFilter<"FaceLibrary"> | Date | string | null
+    createdAt?: DateTimeFilter<"FaceLibrary"> | Date | string
+  }
+
+  export type FaceLibraryOrderByWithRelationInput = {
+    id?: SortOrder
+    workspaceId?: SortOrder
+    imageKey?: SortOrder
+    source?: SortOrder
+    sourceRef?: SortOrder
+    personName?: SortOrderInput | SortOrder
+    sex?: SortOrder
+    view?: SortOrder
+    landmarksJson?: SortOrder
+    measuresJson?: SortOrder
+    verdictsJson?: SortOrder
+    licence?: SortOrderInput | SortOrder
+    attribution?: SortOrderInput | SortOrder
+    sourceVerdictJson?: SortOrderInput | SortOrder
+    taggedAt?: SortOrderInput | SortOrder
+    createdAt?: SortOrder
+  }
+
+  export type FaceLibraryWhereUniqueInput = Prisma.AtLeast<{
+    id?: string
+    workspaceId_source_sourceRef?: FaceLibraryWorkspaceIdSourceSourceRefCompoundUniqueInput
+    AND?: FaceLibraryWhereInput | FaceLibraryWhereInput[]
+    OR?: FaceLibraryWhereInput[]
+    NOT?: FaceLibraryWhereInput | FaceLibraryWhereInput[]
+    workspaceId?: StringFilter<"FaceLibrary"> | string
+    imageKey?: StringFilter<"FaceLibrary"> | string
+    source?: StringFilter<"FaceLibrary"> | string
+    sourceRef?: StringFilter<"FaceLibrary"> | string
+    personName?: StringNullableFilter<"FaceLibrary"> | string | null
+    sex?: StringFilter<"FaceLibrary"> | string
+    view?: StringFilter<"FaceLibrary"> | string
+    landmarksJson?: StringFilter<"FaceLibrary"> | string
+    measuresJson?: StringFilter<"FaceLibrary"> | string
+    verdictsJson?: StringFilter<"FaceLibrary"> | string
+    licence?: StringNullableFilter<"FaceLibrary"> | string | null
+    attribution?: StringNullableFilter<"FaceLibrary"> | string | null
+    sourceVerdictJson?: StringNullableFilter<"FaceLibrary"> | string | null
+    taggedAt?: DateTimeNullableFilter<"FaceLibrary"> | Date | string | null
+    createdAt?: DateTimeFilter<"FaceLibrary"> | Date | string
+  }, "id" | "workspaceId_source_sourceRef">
+
+  export type FaceLibraryOrderByWithAggregationInput = {
+    id?: SortOrder
+    workspaceId?: SortOrder
+    imageKey?: SortOrder
+    source?: SortOrder
+    sourceRef?: SortOrder
+    personName?: SortOrderInput | SortOrder
+    sex?: SortOrder
+    view?: SortOrder
+    landmarksJson?: SortOrder
+    measuresJson?: SortOrder
+    verdictsJson?: SortOrder
+    licence?: SortOrderInput | SortOrder
+    attribution?: SortOrderInput | SortOrder
+    sourceVerdictJson?: SortOrderInput | SortOrder
+    taggedAt?: SortOrderInput | SortOrder
+    createdAt?: SortOrder
+    _count?: FaceLibraryCountOrderByAggregateInput
+    _max?: FaceLibraryMaxOrderByAggregateInput
+    _min?: FaceLibraryMinOrderByAggregateInput
+  }
+
+  export type FaceLibraryScalarWhereWithAggregatesInput = {
+    AND?: FaceLibraryScalarWhereWithAggregatesInput | FaceLibraryScalarWhereWithAggregatesInput[]
+    OR?: FaceLibraryScalarWhereWithAggregatesInput[]
+    NOT?: FaceLibraryScalarWhereWithAggregatesInput | FaceLibraryScalarWhereWithAggregatesInput[]
+    id?: StringWithAggregatesFilter<"FaceLibrary"> | string
+    workspaceId?: StringWithAggregatesFilter<"FaceLibrary"> | string
+    imageKey?: StringWithAggregatesFilter<"FaceLibrary"> | string
+    source?: StringWithAggregatesFilter<"FaceLibrary"> | string
+    sourceRef?: StringWithAggregatesFilter<"FaceLibrary"> | string
+    personName?: StringNullableWithAggregatesFilter<"FaceLibrary"> | string | null
+    sex?: StringWithAggregatesFilter<"FaceLibrary"> | string
+    view?: StringWithAggregatesFilter<"FaceLibrary"> | string
+    landmarksJson?: StringWithAggregatesFilter<"FaceLibrary"> | string
+    measuresJson?: StringWithAggregatesFilter<"FaceLibrary"> | string
+    verdictsJson?: StringWithAggregatesFilter<"FaceLibrary"> | string
+    licence?: StringNullableWithAggregatesFilter<"FaceLibrary"> | string | null
+    attribution?: StringNullableWithAggregatesFilter<"FaceLibrary"> | string | null
+    sourceVerdictJson?: StringNullableWithAggregatesFilter<"FaceLibrary"> | string | null
+    taggedAt?: DateTimeNullableWithAggregatesFilter<"FaceLibrary"> | Date | string | null
+    createdAt?: DateTimeWithAggregatesFilter<"FaceLibrary"> | Date | string
   }
 
   export type ExperimentWebhookOutboxWhereInput = {
@@ -36819,6 +38204,139 @@ export namespace Prisma {
     testKey?: NullableStringFieldUpdateOperationsInput | string | null
   }
 
+  export type FaceLibraryCreateInput = {
+    id: string
+    workspaceId: string
+    imageKey: string
+    source: string
+    sourceRef: string
+    personName?: string | null
+    sex?: string
+    view: string
+    landmarksJson?: string
+    measuresJson?: string
+    verdictsJson?: string
+    licence?: string | null
+    attribution?: string | null
+    sourceVerdictJson?: string | null
+    taggedAt?: Date | string | null
+    createdAt?: Date | string
+  }
+
+  export type FaceLibraryUncheckedCreateInput = {
+    id: string
+    workspaceId: string
+    imageKey: string
+    source: string
+    sourceRef: string
+    personName?: string | null
+    sex?: string
+    view: string
+    landmarksJson?: string
+    measuresJson?: string
+    verdictsJson?: string
+    licence?: string | null
+    attribution?: string | null
+    sourceVerdictJson?: string | null
+    taggedAt?: Date | string | null
+    createdAt?: Date | string
+  }
+
+  export type FaceLibraryUpdateInput = {
+    id?: StringFieldUpdateOperationsInput | string
+    workspaceId?: StringFieldUpdateOperationsInput | string
+    imageKey?: StringFieldUpdateOperationsInput | string
+    source?: StringFieldUpdateOperationsInput | string
+    sourceRef?: StringFieldUpdateOperationsInput | string
+    personName?: NullableStringFieldUpdateOperationsInput | string | null
+    sex?: StringFieldUpdateOperationsInput | string
+    view?: StringFieldUpdateOperationsInput | string
+    landmarksJson?: StringFieldUpdateOperationsInput | string
+    measuresJson?: StringFieldUpdateOperationsInput | string
+    verdictsJson?: StringFieldUpdateOperationsInput | string
+    licence?: NullableStringFieldUpdateOperationsInput | string | null
+    attribution?: NullableStringFieldUpdateOperationsInput | string | null
+    sourceVerdictJson?: NullableStringFieldUpdateOperationsInput | string | null
+    taggedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+  }
+
+  export type FaceLibraryUncheckedUpdateInput = {
+    id?: StringFieldUpdateOperationsInput | string
+    workspaceId?: StringFieldUpdateOperationsInput | string
+    imageKey?: StringFieldUpdateOperationsInput | string
+    source?: StringFieldUpdateOperationsInput | string
+    sourceRef?: StringFieldUpdateOperationsInput | string
+    personName?: NullableStringFieldUpdateOperationsInput | string | null
+    sex?: StringFieldUpdateOperationsInput | string
+    view?: StringFieldUpdateOperationsInput | string
+    landmarksJson?: StringFieldUpdateOperationsInput | string
+    measuresJson?: StringFieldUpdateOperationsInput | string
+    verdictsJson?: StringFieldUpdateOperationsInput | string
+    licence?: NullableStringFieldUpdateOperationsInput | string | null
+    attribution?: NullableStringFieldUpdateOperationsInput | string | null
+    sourceVerdictJson?: NullableStringFieldUpdateOperationsInput | string | null
+    taggedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+  }
+
+  export type FaceLibraryCreateManyInput = {
+    id: string
+    workspaceId: string
+    imageKey: string
+    source: string
+    sourceRef: string
+    personName?: string | null
+    sex?: string
+    view: string
+    landmarksJson?: string
+    measuresJson?: string
+    verdictsJson?: string
+    licence?: string | null
+    attribution?: string | null
+    sourceVerdictJson?: string | null
+    taggedAt?: Date | string | null
+    createdAt?: Date | string
+  }
+
+  export type FaceLibraryUpdateManyMutationInput = {
+    id?: StringFieldUpdateOperationsInput | string
+    workspaceId?: StringFieldUpdateOperationsInput | string
+    imageKey?: StringFieldUpdateOperationsInput | string
+    source?: StringFieldUpdateOperationsInput | string
+    sourceRef?: StringFieldUpdateOperationsInput | string
+    personName?: NullableStringFieldUpdateOperationsInput | string | null
+    sex?: StringFieldUpdateOperationsInput | string
+    view?: StringFieldUpdateOperationsInput | string
+    landmarksJson?: StringFieldUpdateOperationsInput | string
+    measuresJson?: StringFieldUpdateOperationsInput | string
+    verdictsJson?: StringFieldUpdateOperationsInput | string
+    licence?: NullableStringFieldUpdateOperationsInput | string | null
+    attribution?: NullableStringFieldUpdateOperationsInput | string | null
+    sourceVerdictJson?: NullableStringFieldUpdateOperationsInput | string | null
+    taggedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+  }
+
+  export type FaceLibraryUncheckedUpdateManyInput = {
+    id?: StringFieldUpdateOperationsInput | string
+    workspaceId?: StringFieldUpdateOperationsInput | string
+    imageKey?: StringFieldUpdateOperationsInput | string
+    source?: StringFieldUpdateOperationsInput | string
+    sourceRef?: StringFieldUpdateOperationsInput | string
+    personName?: NullableStringFieldUpdateOperationsInput | string | null
+    sex?: StringFieldUpdateOperationsInput | string
+    view?: StringFieldUpdateOperationsInput | string
+    landmarksJson?: StringFieldUpdateOperationsInput | string
+    measuresJson?: StringFieldUpdateOperationsInput | string
+    verdictsJson?: StringFieldUpdateOperationsInput | string
+    licence?: NullableStringFieldUpdateOperationsInput | string | null
+    attribution?: NullableStringFieldUpdateOperationsInput | string | null
+    sourceVerdictJson?: NullableStringFieldUpdateOperationsInput | string | null
+    taggedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+    createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+  }
+
   export type ExperimentWebhookOutboxCreateInput = {
     id: string
     experimentId: string
@@ -38920,6 +40438,69 @@ export namespace Prisma {
 
   export type ExperimentSumOrderByAggregateInput = {
     version?: SortOrder
+  }
+
+  export type FaceLibraryWorkspaceIdSourceSourceRefCompoundUniqueInput = {
+    workspaceId: string
+    source: string
+    sourceRef: string
+  }
+
+  export type FaceLibraryCountOrderByAggregateInput = {
+    id?: SortOrder
+    workspaceId?: SortOrder
+    imageKey?: SortOrder
+    source?: SortOrder
+    sourceRef?: SortOrder
+    personName?: SortOrder
+    sex?: SortOrder
+    view?: SortOrder
+    landmarksJson?: SortOrder
+    measuresJson?: SortOrder
+    verdictsJson?: SortOrder
+    licence?: SortOrder
+    attribution?: SortOrder
+    sourceVerdictJson?: SortOrder
+    taggedAt?: SortOrder
+    createdAt?: SortOrder
+  }
+
+  export type FaceLibraryMaxOrderByAggregateInput = {
+    id?: SortOrder
+    workspaceId?: SortOrder
+    imageKey?: SortOrder
+    source?: SortOrder
+    sourceRef?: SortOrder
+    personName?: SortOrder
+    sex?: SortOrder
+    view?: SortOrder
+    landmarksJson?: SortOrder
+    measuresJson?: SortOrder
+    verdictsJson?: SortOrder
+    licence?: SortOrder
+    attribution?: SortOrder
+    sourceVerdictJson?: SortOrder
+    taggedAt?: SortOrder
+    createdAt?: SortOrder
+  }
+
+  export type FaceLibraryMinOrderByAggregateInput = {
+    id?: SortOrder
+    workspaceId?: SortOrder
+    imageKey?: SortOrder
+    source?: SortOrder
+    sourceRef?: SortOrder
+    personName?: SortOrder
+    sex?: SortOrder
+    view?: SortOrder
+    landmarksJson?: SortOrder
+    measuresJson?: SortOrder
+    verdictsJson?: SortOrder
+    licence?: SortOrder
+    attribution?: SortOrder
+    sourceVerdictJson?: SortOrder
+    taggedAt?: SortOrder
+    createdAt?: SortOrder
   }
 
   export type ExperimentWebhookOutboxCountOrderByAggregateInput = {
