@@ -22,7 +22,12 @@ export type ArcMagnitude = (typeof ARC_MAGNITUDES)[number];
  *  where the story goes; this says how far the source moves the subject, so a brief cannot shrink it. */
 export interface SourceArc { axis: string; levers: string[]; magnitude: ArcMagnitude; lowVsHigh: string }
 export const NO_SOURCE_ARC: SourceArc = { axis: '', levers: [], magnitude: 'none', lowVsHigh: '' };
+/** A pre-SLA-866 contract's single alternate. Read-only: nothing writes it any more. */
 export interface VariantB { variable: string; value: string; slides: ContractSlide[] }
+export type ArmField = 'hook' | 'character' | 'visualStyle' | 'caption' | 'cta' | 'concept' | 'slides' | 'scene';
+/** One variable an alternate changes, with the value it takes. `slides` carries the whole alternate deck for concept/slides and the per-slide scenes for scene; [] otherwise. */
+export interface ArmAxis { variable: ArmField; value: string; slides: ContractSlide[] }
+export interface ContractAlternate { axes: ArmAxis[] }
 export interface ResolvedContract {
   version: 1;
   subject: Subject;
@@ -42,7 +47,10 @@ export interface ResolvedContract {
   slides: ContractSlide[];
   /** Derived from slides[0].overlayText; never an independent field. */
   hook: string;
-  variantB: VariantB;
+  /** SLA-866: the alternates, composed by code from the model's value pools. Absent on contracts resolved before it. */
+  alternates?: ContractAlternate[];
+  /** Contracts resolved before SLA-866 carry their one alternate here. */
+  variantB?: VariantB;
   /** Plain-language corrections code made to the model's answer. */
   issues: string[];
 }
@@ -53,8 +61,11 @@ export interface ContractInput {
   sourceDefaults: string[];
   slideCount: number;
   frameCount: number;
-  /** The one variable arm B changes. */
-  variable: string;
+  /** The variables the alternates change, in the caller's order. */
+  variables: ArmField[];
+  mode: 'controlled' | 'exploration';
+  /** How many alternates to build (the baseline is not one of them). */
+  alternates: number;
   /** Variable "scene": the user's own setting for arm B, one for every slide or exactly one per slide. Wins over the model's. */
   sceneOverrides?: string[];
 }
@@ -91,7 +102,7 @@ export const RawContract = z.object({
   // Optional for older callers and fixtures; the JSON schema still requires it from the model.
   sourceArc: RawSourceArc.optional(),
   slides: z.array(RawSlide),
-  variantB: z.object({ variable: z.string(), value: z.string(), slides: z.array(RawSlide) }),
+  pools: z.array(z.object({ variable: z.string(), values: z.array(z.object({ value: z.string(), slides: z.array(RawSlide) })) })),
 });
 export type RawContractT = z.infer<typeof RawContract>;
 
@@ -110,7 +121,7 @@ export const CONTRACT_JSON_SCHEMA = obj({
   sourceFrameLevels: arr(obj({ index: { type: 'integer' }, level: LEVEL, showsPerson: B })),
   sourceArc: obj({ axis: S, levers: arr(S), magnitude: { type: 'string', enum: [...ARC_MAGNITUDES] }, lowVsHigh: S }),
   slides: arr(SLIDE_JSON),
-  variantB: obj({ variable: S, value: S, slides: arr(SLIDE_JSON) }),
+  pools: arr(obj({ variable: S, values: arr(obj({ value: S, slides: arr(SLIDE_JSON) })) })),
 });
 
 export const CONTRACT_SYSTEM = 'You turn a user\'s creative direction into a format-agnostic slide contract for a 9:16 social carousel. '
@@ -130,10 +141,10 @@ export function contractFieldGuide(input: ContractInput): Record<string, string>
     medium: 'the resolved medium plus style words for every slide',
     keepSourceImage: 'true ONLY if the direction says to keep the source images and change only the text',
     borrowSourceLook: 'true if the direction keeps the source medium or drawing style while changing the content',
-    sourceArc: `read from the attached source frames in order, by looking at the pixels (not the captions): does the SAME subject (a person's face or body, a character, an object, a room, a product...) visibly change from frame to frame? axis: that change in a few words; levers: every concrete visible attribute that changes (for example "cheek and jaw fullness", "hair volume", "skin texture", "clutter on the desk"); magnitude: subtle | clear | strong = how different the two extreme frames look at phone size; lowVsHigh: the concrete visible difference between the frame furthest down the axis and the frame furthest up, written as landmarks and proportions. ${NEUTRAL_WORDS} If nothing changes or there are no source frames: axis "", levers [], magnitude "none", lowVsHigh "". ${input.variable === 'concept' || input.variable === 'slides'
-      // The tested variable IS the storyline: arm B may retell it without the source's change (SLA-809).
-      ? `This change is part of arm A's story. Arm B tests a different storyline ("${input.variable}"), so its slides show this change only if its own story keeps that progression; when they do, at the same scale.`
-      : `This change is part of the story, not a tested variable: arm A and arm B both show it, and only "${input.variable}" differs between them.`}`,
+    sourceArc: `read from the attached source frames in order, by looking at the pixels (not the captions): does the SAME subject (a person's face or body, a character, an object, a room, a product...) visibly change from frame to frame? axis: that change in a few words; levers: every concrete visible attribute that changes (for example "cheek and jaw fullness", "hair volume", "skin texture", "clutter on the desk"); magnitude: subtle | clear | strong = how different the two extreme frames look at phone size; lowVsHigh: the concrete visible difference between the frame furthest down the axis and the frame furthest up, written as landmarks and proportions. ${NEUTRAL_WORDS} If nothing changes or there are no source frames: axis "", levers [], magnitude "none", lowVsHigh "". ${retellsStory(input)
+      // A tested variable IS the storyline: an alternate may retell it without the source's change (SLA-809).
+      ? `This change is part of arm A's story. Some alternates test a different storyline, so their slides show this change only if their own story keeps that progression; when they do, at the same scale.`
+      : `This change is part of the story, not a tested variable: arm A and every alternate show it, and only ${variableList(input.variables)} ${input.variables.length === 1 ? 'differs' : 'differ'} between them.`}`,
     arcAxis: 'the story axis in a few words if the direction states a progression (before/after, low to high, week 1 to week 4), or if sourceArc shows one and the direction keeps the source format without asking to drop it; otherwise ""',
     'slides[].arcLevel': 'position on the arc axis (low, mid or high); none for every slide when arcAxis is ""',
     'slides[].overlayText': 'the exact on-image text for that slide ("" for none). The first slide\'s text is the hook.',
@@ -141,7 +152,7 @@ export function contractFieldGuide(input: ContractInput): Record<string, string>
     'slides[].composition': 'layout and framing',
     'slides[].visibleChange': 'for slides after the first: the concrete physical difference from the FIRST slide (the image model only sees the first image), written as visible landmarks and proportions, not percentages (for example "X now as wide as Y", "Z clearly visible"), big enough to read at phone size. On an arc that sourceArc also shows, use sourceArc.levers and match the source\'s magnitude: the slide furthest from the first on the axis differs from it at least as much as sourceArc.lowVsHigh, a slide halfway differs about half as much. Drop a lever only when the direction or a lock keeps that property fixed or forbids it (for example the same hair, expression, head angle, framing, outfit or background); every lever they do not name follows the source. A variable that is not being tested (character, style, hook...) stays the same between arm A and arm B; that never stops the subject changing along the arc inside one deck. Identity wording ("the same man", "same bone structure", "recognisably the same", "an edit of the same base face") keeps WHO the subject is, not how much they change: the source keeps one subject while changing these levers, so the deck does too. Wording asking for small, subtle, ordinary or non-extreme changes never makes the change smaller than the source shows. Do not write "unchanged" or "same as the first slide" for a lever sourceArc lists. ' + NEUTRAL_WORDS + ' The composition of every slide must keep the feature that changes fully visible, nothing covering it. "" for the first slide or when nothing changes.',
     sourceFrameLevels: 'rank EVERY attached source frame (index from 0) on YOUR arcAxis (low/mid/high, none if it does not show the axis) by looking at the images, and set showsPerson=true if a person or character is visible in it',
-    variantB: `arm B differs from arm A ONLY in the variable "${input.variable}". Return variable="${input.variable}". value: for hook, a different first-slide overlay text that tests a different hook while keeping the same story; for caption or cta, the alternative text; for character, an alternative identitySheet; for visualStyle, an alternative medium; for concept or slides, "" and give the alternative storyline in variantB.slides (${input.slideCount} slides); for scene, the alternative setting, props and action in one sentence as value, and variantB.slides is ${input.slideCount} slides identical to arm A's except that each scene is the alternative setting for that slide's beat (the same person, medium, lighting, camera and overlay text, only where it takes place and what is in frame changes). In every other case variantB.slides is [].${input.variable === 'scene' ? ' keepSourceImage must be false: arm B re-stages every slide, so the source photos cannot stay as they are.' : ''}`,
+    pools: poolsGuide(input),
   };
 }
 
@@ -152,6 +163,113 @@ export function contractPromptPayload(input: ContractInput, extra: Record<string
     sourceDefaults: input.sourceDefaults, slideCount: input.slideCount, sourceFrameCount: input.frameCount,
     fieldGuide: contractFieldGuide(input),
   });
+}
+
+// ---- planning the alternates: which variables each one changes, and which value of each ----
+
+/** Most values the model is asked for per variable: short strings can be many, per-slide or whole-deck answers are kept small. */
+export const POOL_CAP: Record<ArmField, number> = { hook: 12, caption: 12, cta: 12, character: 6, visualStyle: 6, concept: 5, scene: 5, slides: 3 };
+
+/** The variables as axes: a whole-storyline `slides` test is folded into `concept`, which then carries the storyline itself. */
+export function armVariables(variables: readonly ArmField[]): ArmField[] {
+  const unique = [...new Set(variables)];
+  return unique.includes('concept') ? unique.filter(v => v !== 'slides') : unique;
+}
+const retellsStory = (input: Pick<ContractInput, 'variables'>) => input.variables.includes('concept') || input.variables.includes('slides');
+const variableList = (vs: readonly ArmField[]) => vs.map(v => `"${v}"`).join(', ');
+
+export interface AlternatePlan { axes: Array<{ variable: ArmField; pick: number }> }
+
+/**
+ * Which variables each of up to `n` alternates changes and which pool value each takes. Deterministic.
+ * `controlled`: one variable per alternate, round-robin. `exploration`: one clean single-variable control per
+ * variable first (so each effect can be attributed), then combinations of 2..V variables rotating evenly.
+ * `sizes` is how many distinct values each pool really holds; fewer than `n` plans come back when they run out.
+ */
+export function planAlternates(variables: readonly ArmField[], mode: 'controlled' | 'exploration', n: number, sizes: Partial<Record<ArmField, number>> = {}): AlternatePlan[] {
+  const size = (v: ArmField) => Math.min(sizes[v] ?? POOL_CAP[v], POOL_CAP[v]);
+  const vars = armVariables(variables).filter(v => size(v) > 0);
+  const out: AlternatePlan[] = [];
+  const used = new Map<ArmField, number>();
+  const seen = new Set<string>();
+  const take = (subset: ArmField[]): boolean => {
+    const axes = subset.map(variable => ({ variable, pick: (used.get(variable) ?? 0) % size(variable) }));
+    const key = axes.map(a => `${a.variable}:${a.pick}`).join('|');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    for (const a of axes) used.set(a.variable, (used.get(a.variable) ?? 0) + 1);
+    out.push({ axes });
+    return true;
+  };
+  const roundRobin = (pool: ArmField[]) => {
+    const live = [...pool];
+    for (let k = 0; out.length < n && live.length; k++) {
+      const v = live[k % live.length]!;
+      if (!take([v])) { live.splice(k % live.length, 1); k--; }
+    }
+  };
+  if (n <= 0 || !vars.length) return out;
+  if (mode === 'controlled' || vars.length === 1) { roundRobin(vars); return out; }
+  for (const v of vars.slice(0, n)) take([v]);
+  const subsetsOf = (k: number): ArmField[][] => {
+    const acc: ArmField[][] = [];
+    const go = (start: number, cur: ArmField[]) => {
+      if (cur.length === k) { acc.push([...cur]); return; }
+      for (let i = start; i < vars.length; i++) { cur.push(vars[i]!); go(i + 1, cur); cur.pop(); }
+    };
+    go(0, []);
+    return acc;
+  };
+  const bySize = new Map<number, ArmField[][]>();
+  for (let k = 2; k <= vars.length; k++) bySize.set(k, subsetsOf(k));
+  const cursor = new Map<number, number>();
+  const sizesCycle = [...bySize.keys()];
+  for (let tries = 0, left = Math.max(0, n - out.length); out.length < n && tries < left * 8 + 32; tries++) {
+    const k = sizesCycle[tries % sizesCycle.length]!;
+    const list = bySize.get(k)!;
+    const at = cursor.get(k) ?? 0;
+    cursor.set(k, at + 1);
+    take(list[at % list.length]!);
+  }
+  if (out.length < n) roundRobin(vars);
+  return out;
+}
+
+const poolCaps = (input: Pick<ContractInput, 'sceneOverrides'>): Partial<Record<ArmField, number>> => (input.sceneOverrides?.length ? { scene: 1 } : {});
+
+/** How many distinct values the model must supply per variable for the plan to fill every alternate. */
+export function poolNeeds(input: Pick<ContractInput, 'variables' | 'mode' | 'alternates' | 'sceneOverrides'>): Partial<Record<ArmField, number>> {
+  const needs: Partial<Record<ArmField, number>> = {};
+  for (const plan of planAlternates(input.variables, input.mode, input.alternates, poolCaps(input)))
+    for (const a of plan.axes) needs[a.variable] = Math.max(needs[a.variable] ?? 0, a.pick + 1);
+  return needs;
+}
+
+/** Every alternate of a contract, whichever way it was stored. */
+export function armsOf(c: Pick<ResolvedContract, 'alternates' | 'variantB'>): ContractAlternate[] {
+  if (c.alternates) return c.alternates;
+  return c.variantB ? [{ axes: [{ variable: c.variantB.variable as ArmField, value: c.variantB.value, slides: c.variantB.slides }] }] : [];
+}
+
+function poolsGuide(input: ContractInput): string {
+  const needs = poolNeeds(input);
+  const n = input.slideCount;
+  const help: Record<ArmField, string> = {
+    hook: 'value = a different first-slide overlay text that tests a different hook while keeping the same story; slides [].',
+    caption: 'value = the alternative caption text; slides [].',
+    cta: 'value = the alternative call-to-action text; slides [].',
+    character: 'value = an alternative identitySheet (a precise visual description of a different person or character); slides [].',
+    visualStyle: 'value = an alternative medium plus style words; slides [].',
+    concept: input.variables.includes('slides')
+      ? `value = a short name for the angle; slides = that angle's whole storyline (${n} slides).`
+      : `value = a short name for a new angle (a different way to tell the same story); slides = the same ${n} slides as arm A with ONLY overlayText rewritten for that angle (set scene, composition and visibleChange to "" and arcLevel to "none": they are ignored).`,
+    slides: `value = ""; slides = the alternative storyline (${n} slides).`,
+    scene: input.sceneOverrides?.length
+      ? 'the user fixed the setting: return one value, value = that setting; slides [].'
+      : `value = an alternative setting, props and action in one sentence; slides = ${n} slides where ONLY scene is filled (that setting for that slide's beat; overlayText, composition and visibleChange "", arcLevel "none"). The person, medium, lighting, camera and overlay text stay as in arm A.`,
+  };
+  const entries = armVariables(input.variables).filter(v => needs[v]).map(v => `${v}: exactly ${needs[v]} distinct value(s). ${help[v]}`);
+  return `One entry per variable below, as { variable, values: [{ value, slides }] }, each with exactly that many DISTINCT values that all differ from arm A. Code combines the values into the alternates: never combine them yourself, never repeat arm A. ${entries.join(' ')}${input.variables.includes('scene') ? ' keepSourceImage must be false: a scene alternate re-stages every slide, so the source photos cannot stay as they are.' : ''}`;
 }
 
 // ---- normalization: precedence and invariants live in code ---------------------
@@ -194,7 +312,7 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
   // A brief-only experiment has no source frames: nothing can be kept or borrowed, so those flags and the "source" identity are void whatever the model says.
   const sourceless = input.frameCount === 0;
   // A scene arm re-stages every slide, so the source photos cannot stay as they are.
-  const sceneArm = input.variable === 'scene';
+  const sceneArm = input.variables.includes('scene');
   const keepSourceImage = raw.keepSourceImage && !sourceless && !sceneArm;
   const borrowSourceLook = raw.borrowSourceLook && !sourceless;
   if (sourceless && (raw.keepSourceImage || raw.borrowSourceLook)) issues.push('There is no source video, so there are no source images to keep or borrow a look from; every slide is created new from the brief.');
@@ -220,20 +338,21 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
   const sourceArc = normalizeSourceArc(raw.sourceArc, sourceless);
   if (!arcOn && sourceArc.magnitude !== 'none') issues.push(`The source frames show "${sourceArc.axis}", but the direction does not ask for a progression, so the slides do not follow it.`);
   const framing = { keepSourceImage, borrowSourceLook: borrowSourceLook && !keepSourceImage, identity, sourceFrames, arcAxis };
-  const framed = onlyFramedSlides(framing, slides);
+  const kept = framedIndices(framing, slides);
+  const framed = kept.map(i => slides[i]!);
   if (!framed.length) throw new ContractError('contract_no_matching_frame', 'No source frame matches any slide, and the source images are kept.');
   if (framed.length < slides.length) {
     issues.push(`Keeping the source images: ${slides.length - framed.length} slide(s) had no unused source frame at their arc level and were dropped, so the deck has ${framed.length} slides.`);
     slides = framed;
   }
 
-  const variantB = normalizeVariantB(raw.variantB, input, arcOn, framing, slides);
+  const alternates = normalizeAlternates(raw.pools, input, arcOn, framing, slides, kept, { identitySheet, medium: raw.medium.trim() }, issues);
   return {
     version: 1, subject: raw.subject, identity, identitySheet, medium: raw.medium.trim(),
     keepSourceImage: framing.keepSourceImage, borrowSourceLook: framing.borrowSourceLook, arcAxis,
     sourceFrames, sourceArc,
     hardLocks, keptSourceDefaults, droppedSourceDefaults, droppedLocks,
-    slides, hook: slides[0]!.overlayText, variantB, issues,
+    slides, hook: slides[0]!.overlayText, alternates, issues,
   };
 }
 
@@ -247,28 +366,81 @@ function normalizeSourceArc(a: RawContractT['sourceArc'], sourceless: boolean): 
   return { axis, levers, magnitude: a.magnitude, lowVsHigh };
 }
 
-function normalizeVariantB(b: RawContractT['variantB'], input: ContractInput, arcOn: boolean, framing: Parameters<typeof onlyFramedSlides>[0], armA: ContractSlide[]): VariantB {
-  const variable = input.variable;
-  const value = b.value.trim();
-  let slides = b.slides.slice(0, input.slideCount).map(s => cleanSlide(s, arcOn));
-  if (variable === 'scene') return normalizeSceneArm(b, input, armA, value);
-  if ((variable === 'concept' || variable === 'slides')) {
-    if (slides.length < input.slideCount) throw new ContractError('contract_variant_missing', `Arm B needs an alternative storyline of ${input.slideCount} slides.`);
-    slides = onlyFramedSlides(framing, slides);
-    if (!slides.length) throw new ContractError('contract_variant_missing', 'No slide of the alternative storyline has a source frame, and the source images are kept.');
-  } else if (!value) throw new ContractError('contract_variant_missing', `Arm B needs a value for "${variable}".`);
-  return { variable, value, slides: variable === 'concept' || variable === 'slides' ? slides : [] };
-}
+interface PoolValue { value: string; slides: ContractSlide[] }
 
-/** Arm B of a scene test: arm A with only each slide's scene replaced. The user's own scenes win over the model's. */
-function normalizeSceneArm(b: RawContractT['variantB'], input: ContractInput, armA: ContractSlide[], modelValue: string): VariantB {
+const canonVariable = (v: string): string => (v.trim() === 'angle' ? 'concept' : v.trim());
+
+/** The alternates: the model's value pools, cleaned and de-duplicated, combined by `planAlternates`. A variable with no usable value cannot be tested, so it fails the contract (one repair round, see the pipeline). */
+function normalizeAlternates(
+  pools: RawContractT['pools'], input: ContractInput, arcOn: boolean, framing: Parameters<typeof onlyFramedSlides>[0],
+  armA: ContractSlide[], kept: number[], base: { identitySheet: string; medium: string }, issues: string[],
+): ContractAlternate[] {
+  const vars = armVariables(input.variables);
+  const storyline = input.variables.includes('slides');
   const given = (input.sceneOverrides ?? []).map(x => x.trim()).filter(Boolean);
   if (given.length > 1 && given.length !== armA.length) throw new ContractError('contract_scene_count', `The scene needs one description for every slide or one per slide (${armA.length}); ${given.length} were given.`);
-  const fromModel = b.slides.map(s => s.scene.trim());
-  const scenes = armA.map((_, i) => (given.length ? given[given.length === 1 ? 0 : i]! : (fromModel[i] || modelValue)));
-  if (scenes.some(x => !x)) throw new ContractError('contract_variant_missing', 'Arm B needs a scene for every slide.');
-  const value = given.length ? given.join(' | ') : (modelValue || scenes[0]!);
-  return { variable: 'scene', value, slides: armA.map((s, i) => ({ ...s, scene: scenes[i]! })) };
+  const cleaned = new Map<ArmField, PoolValue[]>();
+  for (const variable of vars) {
+    const raws = pools.filter(p => canonVariable(p.variable) === variable || (variable === 'concept' && canonVariable(p.variable) === 'slides')).flatMap(p => p.values);
+    const out: PoolValue[] = [];
+    const seen = new Set<string>();
+    const add = (v: PoolValue | null) => {
+      if (!v) return;
+      const key = norm(v.value) + '|' + v.slides.map(slideKey).join('|');
+      if (seen.has(key)) return;
+      seen.add(key); out.push(v);
+    };
+    if (variable === 'scene' && given.length) {
+      const scenes = armA.map((_, i) => given[given.length === 1 ? 0 : i]!);
+      add({ value: given.join(' | '), slides: armA.map((s, i) => ({ ...s, scene: scenes[i]! })) });
+    } else {
+      for (const r of raws) add(poolValue(variable, r, { input, arcOn, framing, armA, kept, base, storyline }));
+    }
+    cleaned.set(variable, out.slice(0, POOL_CAP[variable]));
+  }
+  const need = poolNeeds(input);
+  for (const variable of vars) {
+    if (need[variable] && !cleaned.get(variable)!.length) throw new ContractError('contract_variant_missing', `The alternates need at least one usable, different value for "${variable}".`);
+  }
+  const sizes: Partial<Record<ArmField, number>> = {};
+  for (const variable of vars) sizes[variable] = cleaned.get(variable)!.length;
+  for (const variable of vars) if (need[variable] && sizes[variable]! < need[variable]!) issues.push(`Only ${sizes[variable]} distinct ${variable} value(s) came back, ${need[variable]} were asked for.`);
+  const plans = planAlternates(input.variables, input.mode, input.alternates, sizes);
+  if (!plans.length) throw new ContractError('contract_variant_missing', 'No alternate could be built from the values returned.');
+  return plans.map(plan => ({ axes: plan.axes.map(a => ({ variable: a.variable, ...cleaned.get(a.variable)![a.pick]! })) }));
+}
+
+/** One model value as a pool entry, or null when it is empty or equal to arm A. */
+function poolValue(
+  variable: ArmField, r: RawContractT['pools'][number]['values'][number],
+  c: { input: ContractInput; arcOn: boolean; framing: Parameters<typeof onlyFramedSlides>[0]; armA: ContractSlide[]; kept: number[]; base: { identitySheet: string; medium: string }; storyline: boolean },
+): PoolValue | null {
+  const value = r.value.trim();
+  const slides = r.slides.slice(0, c.input.slideCount).map(s => cleanSlide(s, c.arcOn));
+  switch (variable) {
+    case 'hook': return value && norm(value) !== norm(c.armA[0]!.overlayText) ? { value, slides: [] } : null;
+    case 'caption': case 'cta': return value ? { value, slides: [] } : null;
+    case 'character': return value && norm(value) !== norm(c.base.identitySheet) ? { value, slides: [] } : null;
+    case 'visualStyle': return value && norm(value) !== norm(c.base.medium) ? { value, slides: [] } : null;
+    case 'scene': {
+      const scenes = c.armA.map((_, i) => slides[i]?.scene || value);
+      if (scenes.some(x => !x) || scenes.every((x, i) => norm(x) === norm(c.armA[i]!.scene))) return null;
+      return { value: value || scenes[0]!, slides: c.armA.map((s, i) => ({ ...s, scene: scenes[i]! })) };
+    }
+    case 'concept': case 'slides': {
+      if (slides.length < c.input.slideCount) return null;
+      let alt: ContractSlide[];
+      if (c.storyline) {
+        alt = onlyFramedSlides(c.framing, slides);
+        if (!alt.length) return null;
+      } else {
+        // The slides are locked: an angle retells only the words, on the same pictures.
+        alt = c.armA.map((s, j) => ({ ...s, overlayText: slides[c.kept[j]!]!.overlayText }));
+      }
+      if (alt.length === c.armA.length && alt.every((s, i) => slideKey(s) === slideKey(c.armA[i]!))) return null;
+      return { value: variable === 'slides' ? '' : value, slides: alt };
+    }
+  }
 }
 
 // ---- code decides how a source image is used ----------------------------------
@@ -282,11 +454,14 @@ export function chooseReferenceUse(c: Pick<ResolvedContract, 'keepSourceImage' |
   return 'none';
 }
 
-/** With the source images kept, a slide that finds no frame would be rendered as a new photo. Such a slide is dropped, never rendered. */
-export function onlyFramedSlides<T extends ContractSlide>(c: Pick<ResolvedContract, 'keepSourceImage' | 'borrowSourceLook' | 'identity' | 'sourceFrames' | 'arcAxis'>, slides: T[]): T[] {
-  if (!c.keepSourceImage) return slides;
+/** The indices of the slides that keep a source frame. With the source images kept, a slide that finds no frame would be rendered as a new photo, so it is dropped, never rendered. */
+export function framedIndices(c: Pick<ResolvedContract, 'keepSourceImage' | 'borrowSourceLook' | 'identity' | 'sourceFrames' | 'arcAxis'>, slides: ContractSlide[]): number[] {
+  if (!c.keepSourceImage) return slides.map((_, i) => i);
   const picks = pickFramesByArc({ ...c, slides });
-  return slides.filter((_, i) => picks[i]!.frameIndex !== null);
+  return slides.map((_, i) => i).filter(i => picks[i]!.frameIndex !== null);
+}
+export function onlyFramedSlides<T extends ContractSlide>(c: Pick<ResolvedContract, 'keepSourceImage' | 'borrowSourceLook' | 'identity' | 'sourceFrames' | 'arcAxis'>, slides: T[]): T[] {
+  return framedIndices(c, slides).map(i => slides[i]!);
 }
 
 export interface FramePick { referenceUse: ReferenceUse; frameIndex: number | null; note?: string }
@@ -506,22 +681,25 @@ export interface ArmBrief {
   character: string; visualStyle: string; caption: string; cta: string;
   slides: Array<ContractSlide & { role?: string }>;
 }
-export type ArmField = 'hook' | 'character' | 'visualStyle' | 'caption' | 'cta' | 'concept' | 'slides' | 'scene';
 const slideKey = (s: ContractSlide) => JSON.stringify([s.overlayText, s.arcLevel, s.scene, s.composition, s.visibleChange]);
 
-/** Arm B is A with exactly the declared variable replaced. */
-export function buildArmB(a: ArmBrief, b: VariantB): ArmBrief {
+/** An alternate is A with exactly the declared variables replaced. A retold storyline goes first, then the scenes, then the hook, so the hook wins on slide 1. */
+export function buildAlternate(a: ArmBrief, alt: ContractAlternate): ArmBrief {
   const next: ArmBrief = structuredClone(a);
-  switch (b.variable) {
-    case 'hook': next.slides[0] = { ...next.slides[0]!, overlayText: b.value }; break;
-    case 'caption': next.caption = b.value; break;
-    case 'cta': next.cta = b.value; break;
-    case 'character': next.character = b.value; break;
-    case 'visualStyle': next.visualStyle = b.value; break;
-    case 'scene': next.slides = next.slides.map((s, i) => ({ ...s, scene: b.slides[i]?.scene || b.value })); break;
-    case 'concept': case 'slides':
-      next.slides = b.slides.map((s, i) => ({ ...s, ...(a.slides[i]?.role ? { role: a.slides[i]!.role } : {}) })); break;
-    default: throw new ContractError('contract_variable', `Unsupported variable "${b.variable}".`);
+  const order: ArmField[] = ['concept', 'slides', 'scene'];
+  const rank = (v: ArmField) => { const i = order.indexOf(v); return i < 0 ? order.length : i; };
+  for (const b of [...alt.axes].sort((x, y) => rank(x.variable) - rank(y.variable))) {
+    switch (b.variable) {
+      case 'hook': next.slides[0] = { ...next.slides[0]!, overlayText: b.value }; break;
+      case 'caption': next.caption = b.value; break;
+      case 'cta': next.cta = b.value; break;
+      case 'character': next.character = b.value; break;
+      case 'visualStyle': next.visualStyle = b.value; break;
+      case 'scene': next.slides = next.slides.map((s, i) => ({ ...s, scene: b.slides[i]?.scene || b.value })); break;
+      case 'concept': case 'slides':
+        next.slides = b.slides.map((s, i) => ({ ...s, ...(a.slides[i]?.role ? { role: a.slides[i]!.role } : {}) })); break;
+      default: throw new ContractError('contract_variable', `Unsupported variable "${String(b.variable)}".`);
+    }
   }
   return next;
 }
@@ -543,10 +721,11 @@ export function diffArms(a: ArmBrief, b: ArmBrief): ArmField[] {
   return out;
 }
 
-export function assertArmsDifferOnly(a: ArmBrief, b: ArmBrief, variable: ArmField): void {
-  const retells = variable === 'concept' || variable === 'slides';
-  const extra = diffArms(a, b).filter(f => f !== variable && !(retells && (f === 'slides' || f === 'scene')));
-  if (extra.length) throw new ContractError('arms_differ', `Arm B differs from arm A in ${extra.join(', ')}; only "${variable}" may differ.`);
+/** An alternate may differ from the baseline only in the variables it declares; a retold storyline (concept, slides) also moves the slides, the scenes and the first caption. */
+export function assertArmDiffers(a: ArmBrief, b: ArmBrief, declared: readonly ArmField[]): void {
+  const retells = declared.includes('concept') || declared.includes('slides');
+  const extra = diffArms(a, b).filter(f => !declared.includes(f) && !(retells && (f === 'slides' || f === 'scene' || f === 'hook')));
+  if (extra.length) throw new ContractError('arms_differ', `An alternate differs from arm A in ${extra.join(', ')}; only ${declared.map(d => `"${d}"`).join(', ')} may differ.`);
 }
 
 export type SlideWork = 'render' | 'caption-edit' | 'scene-edit' | 'reuse';

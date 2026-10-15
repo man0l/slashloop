@@ -70,7 +70,7 @@ export const Instructions = z.object(instructionsShape).strict().superRefine((v,
   }
   if (v.sceneOverrides && !v.variables.includes('scene')) ctx.addIssue({ code: 'custom', message: 'sceneOverrides needs the scene variable.' });
   if (v.variables.includes('scene') && v.mode === 'controlled' && v.variables.length > 1) ctx.addIssue({ code: 'custom', message: 'The scene variable is tested on its own: arm B moves every slide to another setting.' });
-  if (v.variables.includes('scene') && v.variables.some(x => x === 'concept' || x === 'slides')) ctx.addIssue({ code: 'custom', message: 'scene cannot be combined with concept or slides: those retell the storyline, scene only changes where it takes place.' });
+  if (v.variables.includes('scene') && v.variables.includes('slides')) ctx.addIssue({ code: 'custom', message: 'scene cannot be combined with slides: slides retells the whole storyline, scene only changes where it takes place. angle (concept) can be combined with it: it only retells the words.' });
   if (v.copyOverrides && Object.keys(v.copyOverrides).length) {
     // Exact overrides and a supporting-copy retell are contradictory contracts:
     // one says "these words are the answer", the other "the model may rewrite
@@ -753,11 +753,13 @@ export function effectiveChangedFields(e: Experiment, baseline: BriefData, brief
   const hookOnlyDiff = e.pipeline === 'contract' && changed.includes('hook') && changed.includes('slides')
     && brief.slides.length === baseline.slides.length
     && brief.slides.every((s, n) => n === 0 ? same({ ...s, overlayText: '' }, { ...baseline.slides[0]!, overlayText: '' }) : same(s, baseline.slides[n]));
-  // A slides diff confined to each slide's scene is the scene variable, not a retold storyline.
-  const sceneOnlyDiff = e.pipeline === 'contract' && e.instructions.variables.includes('scene') && changed.includes('slides')
-    && brief.slides.length === baseline.slides.length
-    && brief.slides.every((s, n) => same({ ...s, scene: '' }, { ...baseline.slides[n]!, scene: '' }) || (n === 0 && changed.includes('hook') && same({ ...s, scene: '', overlayText: '' }, { ...baseline.slides[0]!, scene: '', overlayText: '' })));
-  if (sceneOnlyDiff) return [...changed.filter(k => k !== 'slides'), 'scene'];
+  // A slides diff that moves each slide's scene, plus at most the words (the hook, or an angle retelling them), is the scene variable.
+  const sceneMoved = e.pipeline === 'contract' && e.instructions.variables.includes('scene') && changed.includes('slides')
+    && brief.slides.length === baseline.slides.length && brief.slides.some((s, n) => s.scene !== baseline.slides[n]!.scene);
+  const wordsOnly = (s: BriefData['slides'][number], b: BriefData['slides'][number]) => same({ ...s, scene: '', overlayText: '' }, { ...b, scene: '', overlayText: '' });
+  if (sceneMoved && brief.slides.every((s, n) => same({ ...s, scene: '' }, { ...baseline.slides[n]!, scene: '' })
+    || (n === 0 && changed.includes('hook') && wordsOnly(s, baseline.slides[0]!)) || (changed.includes('concept') && wordsOnly(s, baseline.slides[n]!))))
+    return [...changed.filter(k => k !== 'slides'), 'scene'];
   return changed.includes('concept') || supportRetell || hookOnlyDiff ? changed.filter(k => k !== 'slides') : changed;
 }
 /** The text recorded for a changed variable. Scene is the slides' own scenes. */

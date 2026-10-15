@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
-  assertArmsDifferOnly, buildArmB, fixText, repairSlides, slideRole, pickFramesByArc, slideWork,
+  armsOf, assertArmDiffers, buildAlternate, fixText, repairSlides, slideRole, pickFramesByArc, slideWork,
   type ArmBrief, type ArmField, type ContractSlide, type ResolvedContract, type SlideWork,
 } from './resolved-contract.js';
 import { persistedOverlayText } from './render-prompt.js';
@@ -59,9 +59,11 @@ function armToBrief(arm: ArmBrief, base: BriefData, over: Partial<BriefData>): B
   };
 }
 
-/** Arm A from the contract; arm B is A with exactly the declared variable replaced, enforced by code. */
+const axisValue = (variable: ArmField, brief: BriefData, value: string): string =>
+  variable === 'hook' ? brief.hook : variable === 'slides' ? 'Alternative storyline' : value || variable;
+
+/** Arm A from the contract, then one proposal per alternate. Each alternate is A with exactly its declared variables replaced, enforced by code. */
 export function proposalsFromContract(e: Pick<Experiment, 'instructions' | 'slideCount' | 'variantCount'>, c: ResolvedContract): { proposals: Proposal[]; notices: string[] } {
-  const variable = c.variantB.variable as ArmField;
   const concept = (e.instructions.direction || e.instructions.goal).slice(0, 400);
   const armA: ArmBrief = {
     character: c.identitySheet, visualStyle: c.medium, caption: '', cta: '',
@@ -71,31 +73,38 @@ export function proposalsFromContract(e: Pick<Experiment, 'instructions' | 'slid
     concept, hook: c.hook || FALLBACK_HOOK, character: '', visualStyle: c.medium, caption: '', cta: '',
     lockedConstraints: e.instructions.lockedConstraints, slides: [],
   }, {});
-  const armB = buildArmB(armA, c.variantB);
-  assertArmsDifferOnly(armA, armB, variable);
-  const briefB = armToBrief(armB, baseBrief, {
-    hook: variable === 'hook' ? (armB.slides[0]!.overlayText || FALLBACK_HOOK) : baseBrief.hook,
-    concept: variable === 'concept' ? c.variantB.value : baseBrief.concept,
+  const alternates = armsOf(c);
+  const proposals: Proposal[] = [{ title: 'Direction as written', hypothesis: 'The slides follow the user direction as written.', changedVariables: [], brief: baseBrief }];
+  alternates.forEach((alt, k) => {
+    const declared = alt.axes.map(a => a.variable);
+    const armB = buildAlternate(armA, alt);
+    assertArmDiffers(armA, armB, declared);
+    const retold = alt.axes.find(a => a.variable === 'concept' || a.variable === 'slides');
+    const brief = armToBrief(armB, baseBrief, {
+      hook: declared.includes('hook') ? (armB.slides[0]!.overlayText || FALLBACK_HOOK) : baseBrief.hook,
+      concept: declared.includes('concept') ? (retold?.value || 'Alternative storyline') : baseBrief.concept,
+    });
+    const names = declared.join(' + ');
+    proposals.push({
+      title: alternates.length === 1 ? `Alternative ${names}` : `Alternate ${k + 1}: ${names}`,
+      hypothesis: `Only the ${declared.join(', ')} ${declared.length === 1 ? 'differs' : 'differ'} from the baseline.`,
+      changedVariables: alt.axes.map(a => ({ name: a.variable, value: axisValue(a.variable, brief, a.variable === 'concept' ? brief.concept : a.value) })),
+      brief,
+    });
   });
-  const value = variable === 'slides' ? 'Alternative storyline' : variable === 'hook' ? briefB.hook : c.variantB.value;
   const notices: string[] = [];
   if (c.slides.length < e.slideCount && c.keepSourceImage) notices.push(`Your source photos are kept unchanged, so the deck has ${c.slides.length} slides instead of ${e.slideCount}: only that many source frames match the story arc.`);
-  if (e.variantCount < 2) notices.push(`The slide contract always compares the direction against one alternative, so this run has 2 variants instead of ${e.variantCount}.`);
-  if (e.variantCount > 2) notices.push(`The slide contract compares the direction against one alternative, so this run has 2 variants instead of ${e.variantCount}.`);
-  return {
-    proposals: [
-      { title: 'Direction as written', hypothesis: 'The slides follow the user direction as written.', changedVariables: [], brief: baseBrief },
-      { title: `Alternative ${variable}`, hypothesis: `Only the ${variable} differs from the baseline.`, changedVariables: [{ name: variable, value: value || variable }], brief: briefB },
-    ],
-    notices,
-  };
+  const wanted = Math.max(e.variantCount, 2);
+  if (e.variantCount < 2) notices.push(`The slide contract always compares the direction against at least one alternative, so this run has 2 variants instead of ${e.variantCount}.`);
+  else if (proposals.length < wanted) notices.push(`Only ${proposals.length} variants could be built instead of ${e.variantCount}: the values the planner returned ran out of distinct, usable combinations.`);
+  return { proposals, notices };
 }
 
 // ---- scheduling ----------------------------------------------------------------
 
-/** True for arm B of a scene test: every slide edits the baseline's picture of it. */
-export function isSceneArm(e: Experiment, v: Variant): boolean {
-  return !!v.baselineId && e.instructions.variables.includes('scene');
+/** True for an alternate that changes the scene: its slides edit the baseline's picture of them. */
+export function isSceneArm(_e: Experiment, v: Variant): boolean {
+  return !!v.baselineId && (v.changedVariables ?? []).some(c => c.name === 'scene');
 }
 
 export function slideWorkFor(e: Experiment, v: Variant, index: number, fix?: string): SlideWork {

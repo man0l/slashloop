@@ -11,7 +11,7 @@ import { universalLocks } from './source-format.js';
 const slide = (o: Record<string, string> = {}) => ({ overlayText: '', arcLevel: 'none', scene: 'a scene', composition: 'centred', visibleChange: '', ...o });
 
 const input = (o: Partial<ContractInput> = {}): ContractInput => ({
-  direction: 'Same format as the source tier ladder', slideCount: 3, frameCount: 3, variable: 'hook',
+  direction: 'Same format as the source tier ladder', slideCount: 3, frameCount: 3, variables: ['hook'], mode: 'controlled', alternates: 1,
   locks: tagLocks(universalLocks(), universalLocks()), sourceDefaults: [], ...o,
 });
 
@@ -23,7 +23,7 @@ const raw = (o: Record<string, unknown> = {}) => ({
   sourceFrameLevels: (['high', 'mid', 'low'] as const).map((level, index) => ({ index, level, showsPerson: true })),
   sourceArc: morph,
   slides: [slide({ overlayText: 'TOP', arcLevel: 'high' }), slide({ overlayText: 'MIDDLE', arcLevel: 'mid', visibleChange: 'jaw softer' }), slide({ overlayText: 'BOTTOM', arcLevel: 'low', visibleChange: 'face rounder, jaw gone' })],
-  variantB: { variable: 'hook', value: 'Hook B', slides: [] },
+  pools: [{ variable: 'hook', values: [{ value: 'Hook B', slides: [] }] }],
   ...o,
 });
 
@@ -59,13 +59,13 @@ describe('the contract reads the source change from the frames', () => {
 
   test('every form variable is respected: a non-story variable keeps the change in both arms, angle/slide structure may retell without it', () => {
     for (const variable of ['hook', 'character', 'visualStyle', 'caption', 'cta']) {
-      const guide = JSON.parse(contractPromptPayload(input({ variable }))).fieldGuide as Record<string, string>;
-      expect(guide.sourceArc).toContain(`arm A and arm B both show it, and only "${variable}" differs`);
+      const guide = JSON.parse(contractPromptPayload(input({ variables: [variable as never] }))).fieldGuide as Record<string, string>;
+      expect(guide.sourceArc).toContain(`arm A and every alternate show it, and only "${variable}" differs`);
     }
     for (const variable of ['concept', 'slides']) {
-      const guide = JSON.parse(contractPromptPayload(input({ variable }))).fieldGuide as Record<string, string>;
+      const guide = JSON.parse(contractPromptPayload(input({ variables: [variable as never] }))).fieldGuide as Record<string, string>;
       expect(guide.sourceArc).not.toContain('arm A and arm B both show it');
-      expect(guide.sourceArc).toContain('only if its own story keeps that progression');
+      expect(guide.sourceArc).toContain('only if their own story keeps that progression');
     }
   });
 
@@ -113,8 +113,8 @@ describe('the identity chain may change the face along the arc', () => {
   });
 
   test('the source change is a constant between arms; only the tested variable differs', () => {
-    const guide = JSON.parse(contractPromptPayload(input({ variable: 'character' }))).fieldGuide as Record<string, string>;
-    expect(guide.sourceArc).toContain('arm A and arm B both show it, and only "character" differs between them');
+    const guide = JSON.parse(contractPromptPayload(input({ variables: ['character'] }))).fieldGuide as Record<string, string>;
+    expect(guide.sourceArc).toContain('arm A and every alternate show it, and only "character" differs between them');
     expect(guide['slides[].visibleChange']).toContain('a lock keeps that property fixed or forbids it');
     expect(guide['slides[].visibleChange']).toContain('never stops the subject changing along the arc inside one deck');
   });

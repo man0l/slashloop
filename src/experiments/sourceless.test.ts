@@ -92,13 +92,13 @@ describe('brief schemas', () => {
 
 describe('contract planning with no source frames', () => {
   const input = (o: Partial<ContractInput> = {}): ContractInput => ({
-    direction, slideCount: 3, frameCount: 0, variable: 'hook', locks: tagLocks(universalLocks(), universalLocks()), sourceDefaults: [], ...o,
+    direction, slideCount: 3, frameCount: 0, variables: ['hook'], mode: 'controlled', alternates: 1, locks: tagLocks(universalLocks(), universalLocks()), sourceDefaults: [], ...o,
   });
   const slide = (overlayText: string) => ({ overlayText, arcLevel: 'none', scene: 'a scene', composition: 'centred', visibleChange: '' });
   const raw = (o: Record<string, unknown> = {}) => ({
     droppedSourceDefaults: [], droppedLocks: [], subject: 'objects', identity: 'none', identitySheet: '', medium: 'photograph',
     keepSourceImage: false, borrowSourceLook: false, arcAxis: '', sourceFrameLevels: [],
-    slides: [slide('Hook A'), slide('two'), slide('three')], variantB: { variable: 'hook', value: 'Hook B', slides: [] }, ...o,
+    slides: [slide('Hook A'), slide('two'), slide('three')], pools: [{ variable: 'hook', values: [{ value: 'Hook B', slides: [] }] }], ...o,
   });
 
   test('a clean contract normalizes with zero source frames', () => {

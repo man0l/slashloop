@@ -97,15 +97,15 @@ export function revisionContext(e: Experiment): Record<string, unknown> {
 
 export async function prepareContractBriefs(e: Experiment, render: RenderDeps, revise = false): Promise<Prepared> {
   const contractCall = need(render.generateContract, 'render_deps_incomplete');
-  const variable = e.instructions.variables[0];
-  if (!variable) throw new SafeFailure('no_variable');
+  if (!e.instructions.variables.length) throw new SafeFailure('no_variable');
   const frames = listSourceFrames(e, await sourcesOf(e, render));
   const bytes = await readFrames(render, frames);
   return {
     execute: async () => {
       const input: ContractInput = {
         direction: direction(e), locks: tagLocks(e.instructions.lockedConstraints, universalLocks()),
-        sourceDefaults: e.instructions.sourceDefaults ?? [], slideCount: e.slideCount, frameCount: frames.length, variable,
+        sourceDefaults: e.instructions.sourceDefaults ?? [], slideCount: e.slideCount, frameCount: frames.length,
+        variables: e.instructions.variables, mode: e.instructions.mode, alternates: Math.max(e.variantCount - 1, 1),
         ...(e.instructions.sceneOverrides?.length ? { sceneOverrides: e.instructions.sceneOverrides } : {}),
       };
       const sources = e.inputs.filter(i => i.status === 'ready').map((i, ix) => ({
@@ -118,7 +118,7 @@ export async function prepareContractBriefs(e: Experiment, render: RenderDeps, r
       let repair: string | undefined;
       const revision = revise ? revisionContext(e) : {};
       try {
-        // A short or empty variantB gets one in-call repair that names the missing field; any other contract error is final.
+        // A variable whose value pool came back short or empty gets one in-call repair that names it; any other contract error is final.
         while (!contract) {
           calls++;
           const raw = await contractCall({
@@ -129,7 +129,7 @@ export async function prepareContractBriefs(e: Experiment, render: RenderDeps, r
           catch (err) {
             if (!(err instanceof ContractError)) throw err;
             if (err.code === 'contract_variant_missing' && calls === 1) {
-              repair = `Your previous answer was rejected: ${err.message} Return the complete contract again with variantB filled in.`;
+              repair = `Your previous answer was rejected: ${err.message} Return the complete contract again with a full pool for every variable.`;
               continue;
             }
             throw new SafeFailure(err.code);
@@ -137,7 +137,7 @@ export async function prepareContractBriefs(e: Experiment, render: RenderDeps, r
         }
       } finally { meter.flush(e.workspaceId, `${e.id}#contract`, render.recordAiCost ?? logAiCost); }
       const { proposals, notices } = proposalsFromContract(e, contract);
-      // The contract always renders baseline + one alternative, so a variantCount of 1 cannot cap it (notice above).
+      // The contract renders at least baseline + one alternative, so a variantCount of 1 cannot cap it (notice in proposalsFromContract).
       validateVariants({ ...e, variantCount: Math.max(e.variantCount, proposals.length) }, proposals);
       return { proposals, contract, slideCount: e.slideCount, notices, calls: { contract: calls } };
     },
