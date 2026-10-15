@@ -241,13 +241,13 @@ export interface RenderDeps {
    *  unavailable — never a substituted, similar or inferred frame. */
   readReference?(opts:{bucket:string;path:string}):Promise<Buffer|null>;
   /** SLA-787: draws the overlay text onto a text-free render (`overlayMode: "script"`). Loaded lazily so the native image library stays out of the edge bundle. */
-  composeOverlay?(opts:{buffer:Buffer;text:string;slideIndex:number}):Promise<{buffer:Buffer;contentType:string;font:string;fontSize:number;lines:string[];skipped:string[]}>;
+  composeOverlay?(opts:{buffer:Buffer;text:string;slideIndex:number;stacked?:boolean}):Promise<{buffer:Buffer;contentType:string;font:string;fontSize:number;lines:string[];skipped:string[]}>;
   /** Ledger writer for metered calls; defaults to the usage-log row. A seam so a suite can observe the rows without a store. */
   recordAiCost?:AiCostWriter;
   /** SLA-700: the one contract call (direction + tagged locks + source defaults + small source thumbnails). Returns the model's raw JSON. */
-  generateContract?(opts:{system:string;user:string;images:Array<{mimeType:string;dataBase64:string;label?:string}>;meter?:AiMeterSink}):Promise<unknown>;
+  generateContract?(opts:{system:string;user:string;images:Array<{mimeType:string;dataBase64:string;label?:string}>;meter?:AiMeterSink;schema?:Record<string,unknown>}):Promise<unknown>;
   /** SLA-700: the one QA vision call per arm. Returns the model's raw JSON. */
-  verifyDeck?(opts:{system:string;user:string;images:Array<{mimeType:string;dataBase64:string;label?:string}>;meter?:AiMeterSink}):Promise<unknown>;
+  verifyDeck?(opts:{system:string;user:string;images:Array<{mimeType:string;dataBase64:string;label?:string}>;meter?:AiMeterSink;schema?:Record<string,unknown>}):Promise<unknown>;
 }
 export class HydrationPending extends Error { constructor(public jobId:string){super('hydration_pending');} }
 /** Dedupe key across ALL variable fields — hook+concept alone would drop every
@@ -907,16 +907,16 @@ export const renderDeps:RenderDeps={
   },
   upload:putObject,
   composeOverlay:async opts=>(await import('./overlay-compose.js')).composeOverlay(opts),
-  generateContract:async({system,user,images,meter})=>{
+  generateContract:async({system,user,images,meter,schema})=>{
     const model=process.env.EXPERIMENT_ANALYSIS_MODEL?.trim()||'x-ai/grok-4.6';
-    const result=await callOpenRouterText(system,user,model,{images,maxTokens:12000,timeoutMs:240_000,reasoningEffort:'medium',jsonSchema:{name:'slide_contract',schema:CONTRACT_JSON_SCHEMA}});
+    const result=await callOpenRouterText(system,user,model,{images,maxTokens:12000,timeoutMs:240_000,reasoningEffort:'medium',jsonSchema:{name:'slide_contract',schema:schema??CONTRACT_JSON_SCHEMA}});
     meter?.('contract',result);
     if(!result.parsed)throw new SafeFailure('contract_invalid_json');
     return result.parsed;
   },
-  verifyDeck:async({system,user,images,meter})=>{
+  verifyDeck:async({system,user,images,meter,schema})=>{
     const policy=qaRequestPolicy(process.env,8);
-    const result=await callOpenRouterText(system,user,policy.model,{images,maxTokens:8000,timeoutMs:150_000,reasoningEffort:'low',jsonSchema:{name:'deck_qa',schema:QA_JSON_SCHEMA}});
+    const result=await callOpenRouterText(system,user,policy.model,{images,maxTokens:8000,timeoutMs:150_000,reasoningEffort:'low',jsonSchema:{name:'deck_qa',schema:schema??QA_JSON_SCHEMA}});
     meter?.('qa',result);
     if(!result.parsed)throw new SafeFailure('qa_invalid_json');
     return result.parsed;
