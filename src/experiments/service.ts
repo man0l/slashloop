@@ -468,22 +468,26 @@ export function applyVariantEdit(e:S.Experiment,variantId:string|undefined,edit:
   const mirroredTo=new Set<string>();
   const proposals=e.variants.map(p=>p.id===v.id?{...p,brief:edit.brief}:{...p});
   // With hook a variable, each contract arm owns its first-slide caption: it is the one slides[] field that never mirrors.
+  // With scene a variable, each arm owns the scene of every slide in the same way.
   const ownCaption=isContractPipeline(e)&&e.instructions.variables.includes('hook');
-  const withCaptionOf=(slides:S.BriefData['slides'],own:S.BriefData['slides'])=>slides.map((s,i)=>i===0&&own[0]?{...s,overlayText:own[0].overlayText}:s);
+  const ownScene=isContractPipeline(e)&&e.instructions.variables.includes('scene');
+  const ownSlides=ownCaption||ownScene;
+  const withOwnOf=(slides:S.BriefData['slides'],own:S.BriefData['slides'])=>slides.map((s,i)=>({...s,
+    ...(i===0&&ownCaption&&own[0]?{overlayText:own[0].overlayText}:{}),...(ownScene&&own[i]?{scene:own[i]!.scene}:{})}));
   for(const k of S.sharedBriefFields(e)) {
-    const next=(p:{brief:S.BriefData})=>k==='slides'&&ownCaption?withCaptionOf(structuredClone(edit.brief.slides),p.brief.slides):structuredClone(edit.brief[k]);
-    if(k==='slides'&&ownCaption?S.same(withCaptionOf(v.brief.slides,edit.brief.slides),edit.brief.slides):S.same(v.brief[k],edit.brief[k])) continue;
+    const next=(p:{brief:S.BriefData})=>k==='slides'&&ownSlides?withOwnOf(structuredClone(edit.brief.slides),p.brief.slides):structuredClone(edit.brief[k]);
+    if(k==='slides'&&ownSlides?S.same(withOwnOf(v.brief.slides,edit.brief.slides),edit.brief.slides):S.same(v.brief[k],edit.brief[k])) continue;
     for(const p of proposals) {
       if(p.id===v.id || p.status!=='draft' || p.frozenBrief) continue;
       const value=next(p);
-      if(k==='slides'&&ownCaption&&S.same(value,p.brief.slides)) continue;
+      if(k==='slides'&&ownSlides&&S.same(value,p.brief.slides)) continue;
       p.brief={...p.brief,[k]:value}; mirroredTo.add(p.id);
     }
   }
   // Derive factual delta labels rather than accepting stale model labels after editing.
   for(let i=1;i<proposals.length;i++) {
     const p=proposals[i]!;
-    p.changedVariables=S.effectiveChangedFields(e,proposals[0]!.brief,p.brief).map(name=>({name,value:typeof p.brief[name]==='string'?p.brief[name] as string:JSON.stringify(p.brief[name])}));
+    p.changedVariables=S.effectiveChangedFields(e,proposals[0]!.brief,p.brief).map(name=>({name,value:S.changedValue(p.brief,name)}));
   }
   S.validateVariants(e,proposals);
   const before=new Map(e.variants.map(x=>[x.id,x]));

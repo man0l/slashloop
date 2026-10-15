@@ -35,7 +35,7 @@ import { load, list, serialize, testSummary } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
 import {
-  CopyOverrides, DIRECTION_MAX, ExperimentError, FEEDBACK_MAX, Id, Instructions, MAX_MANUAL_ATTEMPTS, normalizeTestKey, slideFanout, VARIABLE_FIELDS, type Experiment, type InstructionsData,
+  CopyOverrides, DIRECTION_MAX, ExperimentError, SCENE_MAX, FEEDBACK_MAX, Id, Instructions, MAX_MANUAL_ATTEMPTS, normalizeTestKey, slideFanout, VARIABLE_FIELDS, type Experiment, type InstructionsData,
 } from '../experiments/schema.js';
 
 // ---- dependencies ----------------------------------------------------------
@@ -85,6 +85,12 @@ export const defaultExperimentToolDeps: ExperimentToolDeps = {
 export const EDIT_GOAL = 'Edit the slideshow overlay text, keeping the same images.';
 export const EDIT_CHARACTER_GOAL = 'Edit the slideshow character, keeping the same overlay text, style, setting and story.';
 export const EDIT_CHARACTER_MAX = 1000;
+export const EDIT_SCENE_GOAL = 'Edit the slideshow scene, keeping the same person, medium, lighting, camera and overlay text.';
+/** The scenes as one sentence for the planner; the exact per-slide values travel in `sceneOverrides`. */
+export function editSceneDirection(scenes: readonly string[]): string {
+  const said = scenes.length === 1 ? scenes[0]!.trim() : scenes.map((x, i) => `slide ${i + 1}: ${x.trim()}`).join('; ');
+  return ('Scene: ' + said).slice(0, 1500) + '. Change only the setting, props and action; keep the same person, medium, lighting, camera and overlay text.';
+}
 export function editCharacterDirection(character: string): string {
   return 'Character: ' + character.trim() + '. Keep the same overlay text, style, setting and story.';
 }
@@ -124,9 +130,22 @@ export function editSlideDirection(hook: string | undefined, overlayTexts: Array
 
 /** Edit mode is a single deck, so the "one experiment per source" loop is length 1 by definition. */
 export function editInstructions(hook: string | undefined, overlayTexts: Array<string | null>, language: string,
-  options: { variables?: Array<'hook' | 'character'>; character?: string; overlayMode?: 'model' | 'script' } = {}): InstructionsData {
-  const variables = options.variables ?? [options.character !== undefined ? 'character' : 'hook'];
-  if (variables.length !== 1) throw new ExperimentError(400, 'invalid_request', 'Edit mode tests exactly one variable: hook or character. Use create mode for several variables.');
+  options: { variables?: Array<'hook' | 'character' | 'scene'>; character?: string; scene?: string | string[]; overlayMode?: 'model' | 'script' } = {}): InstructionsData {
+  const variables = options.variables ?? [options.scene !== undefined ? 'scene' : options.character !== undefined ? 'character' : 'hook'];
+  if (variables.length !== 1) throw new ExperimentError(400, 'invalid_request', 'Edit mode tests exactly one variable: hook, character or scene. Use create mode for several variables.');
+  if (variables[0] === 'scene') {
+    const scenes = (Array.isArray(options.scene) ? options.scene : options.scene === undefined ? [] : [options.scene]).map(x => x.trim());
+    if (!scenes.length || scenes.some(x => !x)) throw new ExperimentError(400, 'invalid_request', 'Scene edits need a scene: one description for every slide, or one non-empty description per slide.');
+    if (scenes.some(x => x.length > SCENE_MAX)) throw new ExperimentError(400, 'invalid_request', `A scene description is at most ${SCENE_MAX} characters.`);
+    if (options.character !== undefined) throw new ExperimentError(400, 'invalid_request', 'A scene edit keeps the person: omit character, or use create mode.');
+    if (hook !== undefined || overlayTexts.some(t => t !== null)) throw new ExperimentError(400, 'invalid_request', 'Scene-only edits keep source copy. Omit hook and overlayTexts, or use create mode.');
+    return Instructions.parse({
+      goal: EDIT_SCENE_GOAL, brand: '', audience: '', language: language.trim() || 'English',
+      direction: editSceneDirection(scenes), lockedConstraints: [], variables, mode: 'controlled', sceneOverrides: scenes,
+      ...(options.overlayMode ? { overlayMode: options.overlayMode } : {}),
+    });
+  }
+  if (options.scene !== undefined) throw new ExperimentError(400, 'invalid_request', 'A scene requires variables=["scene"].');
   if (variables[0] === 'character') {
     if (!options.character?.trim()) throw new ExperimentError(400, 'invalid_request', 'Character edits need a non-empty character casting direction.');
     if (hook !== undefined || overlayTexts.some(t => t !== null)) throw new ExperimentError(400, 'invalid_request', 'Character-only edits keep source copy. Omit hook and overlayTexts, or use create mode.');
@@ -549,6 +568,8 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     + '`instructions.preserveSourceCtaSlide: true` to keep a source deck\'s own closing call-to-action slide in the deck.\n'
     + '• mode "edit" — exactly ONE deck. For a character-only edit pass variables:["character"] and `character` '
     + '(visible casting direction); omit hook/overlayTexts to keep all source copy, style, setting and story locked. '
+    + 'For a scene edit pass variables:["scene"] and `scene` (one description for every slide, or one per slide): each slide is an edit of the baseline slide that '
+    + 'keeps the same person, medium, lighting, camera and overlay text and changes only the setting, props and action; omit hook/overlayTexts. '
     + 'For a copy edit (variables:["hook"], default), keep the same images and pass `hook` '
     + '(slide 1) and `overlayTexts` (slides 2, 3, … in order; an empty string strips that slide\'s text, null leaves it unchanged) instead of '
     + '`instructions`; the tool assembles the same brief the site sends — fixed goal, one selected variable, '
@@ -556,7 +577,8 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     + 'The source deck\'s own slide count wins when it is known; pass slideCount only if you do not have it.\n'
     + 'Sources must be slideshows or videos with a finished Recreate deck (show_gallery marks them). '
     + `Credits: analysis ${CREDIT_COSTS.analyzeVideo}/source + ${CREDIT_COSTS.experimentPlanningCall} per planning call at plan time; `
-    + `${CREDIT_COSTS.experimentSlide} per slide × ${slideFanout()} candidates at generation. ${LIFECYCLE}`,
+    + `${CREDIT_COSTS.experimentSlide} per slide render at generation: one render per slide, and slides the alternative shares with the baseline are free. `
+    + `A QA check of each deck (${CREDIT_COSTS.experimentPlanningCall}) is added, and estimate_experiment(stage="generate") gives the exact total. ${LIFECYCLE}`,
     {
       workspaceId: workspaceIdField,
       mode: z.enum(['edit', 'create', 'brief']).default('create').describe(
@@ -564,8 +586,11 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       ),
       videoIds: z.array(Id).min(1).max(20).optional().describe('Required in create and edit modes: 1–20 distinct Gallery video ids; one experiment per video. Edit mode takes exactly one. Must be omitted in brief mode.'),
       instructions: instructionsInput.optional().describe('CREATE and BRIEF modes. Required in both; rejected in edit mode (use top-level variables and character or hook/overlayTexts). Brief mode also requires instructions.direction.'),
-      variables: z.array(z.enum(['hook', 'character'])).length(1).optional().describe(
-        'EDIT mode: ["hook"] for copy, or ["character"] for casting only. Defaults to character when character is supplied, otherwise hook.',
+      variables: z.array(z.enum(['hook', 'character', 'scene'])).length(1).optional().describe(
+        'EDIT mode: ["hook"] for copy, ["character"] for casting only, or ["scene"] for the setting. Defaults to scene when scene is supplied, then character when character is supplied, otherwise hook.',
+      ),
+      scene: z.union([z.string().trim().min(1).max(SCENE_MAX), z.array(z.string().trim().min(1).max(SCENE_MAX)).min(1).max(8)]).optional().describe(
+        'EDIT mode, scene variable: where the deck takes place instead (setting, props, action). One description for every slide, or an array with one per slide. Keeps the same person, medium, lighting, camera and overlay text. Omit hook/overlayTexts/character.',
       ),
       character: z.string().trim().min(1).max(EDIT_CHARACTER_MAX).optional().describe(
         'EDIT mode, character variable: visible casting changes (e.g. short blond hair). Keeps source copy, style, setting and story. Omit hook/overlayTexts.',
@@ -596,13 +621,13 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       test_max_credits: testMaxCreditsField,
     },
     { readOnlyHint: false },
-    ({ workspaceId, mode, videoIds, instructions, variables, character, hook, overlayTexts, language, overlayMode, variantCount, slideCount, maxCredits, idempotencyKey, ran_by: ranByRaw, ranBy: ranByCamel, tagGoalWithSource, notify, test_key, test_max_credits }) => guarded(async () => {
+    ({ workspaceId, mode, videoIds, instructions, variables, character, scene, hook, overlayTexts, language, overlayMode, variantCount, slideCount, maxCredits, idempotencyKey, ran_by: ranByRaw, ranBy: ranByCamel, tagGoalWithSource, notify, test_key, test_max_credits }) => guarded(async () => {
       const ran_by = ranByRaw ?? ranByCamel;
       const test = { ...(test_key === undefined ? {} : { test_key }), ...(test_max_credits === undefined ? {} : { test_max_credits }) };
       const workspace = await d.resolveWorkspace({ workspaceId });
       if (mode === 'brief') {
         if (videoIds?.length) return text({ error: 'invalid_request', message: 'mode "brief" has no source video — omit videoIds, or use mode "create" to generate from slideshows.' }, true);
-        if (variables || character !== undefined || hook !== undefined || overlayTexts !== undefined || language !== undefined || overlayMode !== undefined) {
+        if (variables || character !== undefined || scene !== undefined || hook !== undefined || overlayTexts !== undefined || language !== undefined || overlayMode !== undefined) {
           return text({ error: 'invalid_request', message: 'mode "brief" takes everything in instructions (variables, language, direction, instructions.overlayMode); top-level variables/character/hook/overlayTexts/language/overlayMode are edit-only.' }, true);
         }
         if (!instructions) return text({ error: 'invalid_request', message: 'mode "brief" needs instructions — at least a goal and a direction that spells out the slides.' }, true);
@@ -640,17 +665,17 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         if (videoIds.length !== 1) {
           return text({ error: 'invalid_request', message: 'mode "edit" works on exactly one slideshow — pass a single videoId, or use mode "create".' }, true);
         }
-        if (!character && variables?.[0] !== 'character' && !hook?.trim() && !(overlayTexts ?? []).some(t => t?.trim())) {
+        if (!character && scene === undefined && variables?.[0] !== 'character' && variables?.[0] !== 'scene' && !hook?.trim() && !(overlayTexts ?? []).some(t => t?.trim())) {
           return text({ error: 'invalid_request', message: 'mode "edit" needs new copy: a hook for slide 1, or overlay text for a later slide.' }, true);
         }
-      } else if (variables || character !== undefined || overlayMode !== undefined) {
+      } else if (variables || character !== undefined || scene !== undefined || overlayMode !== undefined) {
         return text({ error: 'invalid_request', message: 'Create mode uses instructions.variables and instructions.direction; top-level variables/character/overlayMode are edit-only (create mode: instructions.overlayMode).' }, true);
       } else if (!instructions) {
         return text({ error: 'invalid_request', message: 'mode "create" needs instructions — a goal and at least one variable to test.' }, true);
       }
       const edit = mode === 'edit'
         ? {
-          instructions: editInstructions(hook, overlayTexts ?? [], language ?? 'English', { variables, character, overlayMode }),
+          instructions: editInstructions(hook, overlayTexts ?? [], language ?? 'English', { variables, character, scene, overlayMode }),
           variantCount: EDIT_VARIANT_COUNT,
           maxCredits: EDIT_MAX_CREDITS,
         }
@@ -785,7 +810,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
   // ---- generate_experiment ----
   server.tool('generate_experiment',
     'Render slide images for reviewed variants (status "review", or "completed" with draft variants left). SPENDS CREDITS — '
-    + `${CREDIT_COSTS.experimentSlide} per slide × ${slideFanout()} candidates. Call estimate_experiment(stage="generate", variantIds) `
+    + `${CREDIT_COSTS.experimentSlide} per slide render (one render per slide; slides shared with the baseline are free), plus a QA check per deck (${CREDIT_COSTS.experimentPlanningCall}). Call estimate_experiment(stage="generate", variantIds) `
     + 'first. approvedCredits is the amount already approved: the confirmed totalCredits, or under a standing credit cap '
     + '(per experiment or per batch) the remaining cap, which counts as approval when the estimate is within it. Ask the user only when '
     + 'the estimate exceeds it. Pass each variant with its CURRENT revision (get_experiment); the brief '

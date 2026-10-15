@@ -93,23 +93,29 @@ export function proposalsFromContract(e: Pick<Experiment, 'instructions' | 'slid
 
 // ---- scheduling ----------------------------------------------------------------
 
+/** True for arm B of a scene test: every slide edits the baseline's picture of it. */
+export function isSceneArm(e: Experiment, v: Variant): boolean {
+  return !!v.baselineId && e.instructions.variables.includes('scene');
+}
+
 export function slideWorkFor(e: Experiment, v: Variant, index: number, fix?: string): SlideWork {
   if (!v.baselineId || !v.frozenBrief) return 'render';
   // Human feedback asks for a different picture: never a copy or a caption-only edit of the baseline's.
   // Nor may a slide that edits this arm's own re-rendered anchor copy the baseline's face.
-  if (slideFeedback(v, index) || (index > 0 && slideFeedback(v, 0) && isAnchorEdit(e, v, index))) return 'render';
+  // A scene arm is an edit of the baseline's picture already, so the feedback is carried into that edit instead.
+  if (!isSceneArm(e, v) && (slideFeedback(v, index) || (index > 0 && slideFeedback(v, 0) && isAnchorEdit(e, v, index)))) return 'render';
   const base = variantOf(e, v.baselineId);
   if (!base?.frozenBrief) return 'render';
   // The baseline must be producing (or have produced) the slide this one copies. A baseline slide that died is not "never
   // produced": rendering it here would send the same request that already failed, so it stays a dependency (see baselineDependency).
   if (base.status !== 'generating' && !base.slides[index]?.path && baselineSlideState(e, base, index) !== 'dead') return 'render';
-  const work = slideWork(briefToArm(base.frozenBrief), briefToArm(v.frozenBrief), index);
+  const work = slideWork(briefToArm(base.frozenBrief), briefToArm(v.frozenBrief), index, isSceneArm(e, v));
   return work === 'reuse' && fix ? 'render' : work;
 }
 
 /** True when the slide's role is an edit of the arm's own first slide. */
 export function isAnchorEdit(e: Experiment, v: Variant, index: number): boolean {
-  if (index === 0 || !v.frozenBrief || !e.contract) return false;
+  if (index === 0 || !v.frozenBrief || !e.contract || isSceneArm(e, v)) return false;
   const view = contractView(e, v.frozenBrief);
   return slideRole(view, index, pickFramesByArc(view)[index]!) === 'anchor-edit';
 }
@@ -177,9 +183,12 @@ function failDeadDependencies(e: Experiment): boolean {
     const base = v?.baselineId ? variantOf(e, v.baselineId) : undefined;
     if (!v || !base?.frozenBrief) continue;
     const index = t.index ?? 0;
-    if (slideWorkFor(e, v, index, t.fix) === 'render' || baselineDependency(e, base, index) !== 'dead') continue;
+    const work = slideWorkFor(e, v, index, t.fix);
+    if (work === 'render' || baselineDependency(e, base, index) !== 'dead') continue;
     t.status = 'failed';
-    t.error = `baseline_slide_unavailable: this slide is an unchanged copy of baseline slide ${index + 1}, which failed and has no picture to copy. It is not re-rendered, because that would send the failed request again.`;
+    t.error = work === 'scene-edit'
+      ? `baseline_slide_unavailable: this slide is an edit of baseline slide ${index + 1}, which failed and has no picture to edit. It is not rendered from scratch, because that would not be the same person and medium.`
+      : `baseline_slide_unavailable: this slide is an unchanged copy of baseline slide ${index + 1}, which failed and has no picture to copy. It is not re-rendered, because that would send the failed request again.`;
     const slide = v.slides[index];
     if (slide) { slide.status = 'failed'; slide.error = t.error; }
     changed = true;

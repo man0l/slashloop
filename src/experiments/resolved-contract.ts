@@ -55,6 +55,8 @@ export interface ContractInput {
   frameCount: number;
   /** The one variable arm B changes. */
   variable: string;
+  /** Variable "scene": the user's own setting for arm B, one for every slide or exactly one per slide. Wins over the model's. */
+  sceneOverrides?: string[];
 }
 
 export class ContractError extends Error {
@@ -139,7 +141,7 @@ export function contractFieldGuide(input: ContractInput): Record<string, string>
     'slides[].composition': 'layout and framing',
     'slides[].visibleChange': 'for slides after the first: the concrete physical difference from the FIRST slide (the image model only sees the first image), written as visible landmarks and proportions, not percentages (for example "X now as wide as Y", "Z clearly visible"), big enough to read at phone size. On an arc that sourceArc also shows, use sourceArc.levers and match the source\'s magnitude: the slide furthest from the first on the axis differs from it at least as much as sourceArc.lowVsHigh, a slide halfway differs about half as much. Drop a lever only when the direction or a lock keeps that property fixed or forbids it (for example the same hair, expression, head angle, framing, outfit or background); every lever they do not name follows the source. A variable that is not being tested (character, style, hook...) stays the same between arm A and arm B; that never stops the subject changing along the arc inside one deck. Identity wording ("the same man", "same bone structure", "recognisably the same", "an edit of the same base face") keeps WHO the subject is, not how much they change: the source keeps one subject while changing these levers, so the deck does too. Wording asking for small, subtle, ordinary or non-extreme changes never makes the change smaller than the source shows. Do not write "unchanged" or "same as the first slide" for a lever sourceArc lists. ' + NEUTRAL_WORDS + ' The composition of every slide must keep the feature that changes fully visible, nothing covering it. "" for the first slide or when nothing changes.',
     sourceFrameLevels: 'rank EVERY attached source frame (index from 0) on YOUR arcAxis (low/mid/high, none if it does not show the axis) by looking at the images, and set showsPerson=true if a person or character is visible in it',
-    variantB: `arm B differs from arm A ONLY in the variable "${input.variable}". Return variable="${input.variable}". value: for hook, a different first-slide overlay text that tests a different hook while keeping the same story; for caption or cta, the alternative text; for character, an alternative identitySheet; for visualStyle, an alternative medium; for concept or slides, "" and give the alternative storyline in variantB.slides (${input.slideCount} slides). In every other case variantB.slides is [].`,
+    variantB: `arm B differs from arm A ONLY in the variable "${input.variable}". Return variable="${input.variable}". value: for hook, a different first-slide overlay text that tests a different hook while keeping the same story; for caption or cta, the alternative text; for character, an alternative identitySheet; for visualStyle, an alternative medium; for concept or slides, "" and give the alternative storyline in variantB.slides (${input.slideCount} slides); for scene, the alternative setting, props and action in one sentence as value, and variantB.slides is ${input.slideCount} slides identical to arm A's except that each scene is the alternative setting for that slide's beat (the same person, medium, lighting, camera and overlay text, only where it takes place and what is in frame changes). In every other case variantB.slides is [].${input.variable === 'scene' ? ' keepSourceImage must be false: arm B re-stages every slide, so the source photos cannot stay as they are.' : ''}`,
   };
 }
 
@@ -191,9 +193,12 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
 
   // A brief-only experiment has no source frames: nothing can be kept or borrowed, so those flags and the "source" identity are void whatever the model says.
   const sourceless = input.frameCount === 0;
-  const keepSourceImage = raw.keepSourceImage && !sourceless;
+  // A scene arm re-stages every slide, so the source photos cannot stay as they are.
+  const sceneArm = input.variable === 'scene';
+  const keepSourceImage = raw.keepSourceImage && !sourceless && !sceneArm;
   const borrowSourceLook = raw.borrowSourceLook && !sourceless;
   if (sourceless && (raw.keepSourceImage || raw.borrowSourceLook)) issues.push('There is no source video, so there are no source images to keep or borrow a look from; every slide is created new from the brief.');
+  if (sceneArm && raw.keepSourceImage && !sourceless) issues.push('Changing the scene re-stages every slide, so the source images are not kept unchanged.');
   let identity = raw.identity;
   if (sourceless && identity === 'source') identity = 'invented-per-slide';
   if (keepSourceImage && identity !== 'source' && identity !== 'none') {
@@ -222,7 +227,7 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
     slides = framed;
   }
 
-  const variantB = normalizeVariantB(raw.variantB, input, arcOn, framing);
+  const variantB = normalizeVariantB(raw.variantB, input, arcOn, framing, slides);
   return {
     version: 1, subject: raw.subject, identity, identitySheet, medium: raw.medium.trim(),
     keepSourceImage: framing.keepSourceImage, borrowSourceLook: framing.borrowSourceLook, arcAxis,
@@ -242,16 +247,28 @@ function normalizeSourceArc(a: RawContractT['sourceArc'], sourceless: boolean): 
   return { axis, levers, magnitude: a.magnitude, lowVsHigh };
 }
 
-function normalizeVariantB(b: RawContractT['variantB'], input: ContractInput, arcOn: boolean, framing: Parameters<typeof onlyFramedSlides>[0]): VariantB {
+function normalizeVariantB(b: RawContractT['variantB'], input: ContractInput, arcOn: boolean, framing: Parameters<typeof onlyFramedSlides>[0], armA: ContractSlide[]): VariantB {
   const variable = input.variable;
   const value = b.value.trim();
   let slides = b.slides.slice(0, input.slideCount).map(s => cleanSlide(s, arcOn));
+  if (variable === 'scene') return normalizeSceneArm(b, input, armA, value);
   if ((variable === 'concept' || variable === 'slides')) {
     if (slides.length < input.slideCount) throw new ContractError('contract_variant_missing', `Arm B needs an alternative storyline of ${input.slideCount} slides.`);
     slides = onlyFramedSlides(framing, slides);
     if (!slides.length) throw new ContractError('contract_variant_missing', 'No slide of the alternative storyline has a source frame, and the source images are kept.');
   } else if (!value) throw new ContractError('contract_variant_missing', `Arm B needs a value for "${variable}".`);
   return { variable, value, slides: variable === 'concept' || variable === 'slides' ? slides : [] };
+}
+
+/** Arm B of a scene test: arm A with only each slide's scene replaced. The user's own scenes win over the model's. */
+function normalizeSceneArm(b: RawContractT['variantB'], input: ContractInput, armA: ContractSlide[], modelValue: string): VariantB {
+  const given = (input.sceneOverrides ?? []).map(x => x.trim()).filter(Boolean);
+  if (given.length > 1 && given.length !== armA.length) throw new ContractError('contract_scene_count', `The scene needs one description for every slide or one per slide (${armA.length}); ${given.length} were given.`);
+  const fromModel = b.slides.map(s => s.scene.trim());
+  const scenes = armA.map((_, i) => (given.length ? given[given.length === 1 ? 0 : i]! : (fromModel[i] || modelValue)));
+  if (scenes.some(x => !x)) throw new ContractError('contract_variant_missing', 'Arm B needs a scene for every slide.');
+  const value = given.length ? given.join(' | ') : (modelValue || scenes[0]!);
+  return { variable: 'scene', value, slides: armA.map((s, i) => ({ ...s, scene: scenes[i]! })) };
 }
 
 // ---- code decides how a source image is used ----------------------------------
@@ -298,7 +315,7 @@ export function pickFramesByArc(c: Pick<ResolvedContract, 'keepSourceImage' | 'b
 
 // ---- the slide prompt, compiled from the contract ------------------------------
 
-export type SlideRole = 'edit' | 'anchor-edit' | 'fresh';
+export type SlideRole = 'edit' | 'anchor-edit' | 'scene-edit' | 'fresh';
 const ARC_WORDS: Record<Exclude<ArcLevel, 'none'>, string> = { low: 'LOW (worst / earliest)', mid: 'MIDDLE', high: 'HIGH (best / latest)' };
 
 export function textLine(overlayText: string): string {
@@ -342,7 +359,8 @@ export function feedbackLine(feedback: string): string {
     : '';
 }
 
-export function compileSlidePrompt(c: ResolvedContract, index: number, role: SlideRole, referenceUse: ReferenceUse, fix = '', feedback = ''): string {
+/** `labelRule` is the source-label instruction (render-prompt.labelRenderInstruction); it is passed in because that module cannot be imported from here. */
+export function compileSlidePrompt(c: ResolvedContract, index: number, role: SlideRole, referenceUse: ReferenceUse, fix = '', feedback = '', labelRule = ''): string {
   const s = c.slides[index];
   if (!s) throw new RangeError('Slide index is outside the contract.');
   const text = textLine(s.overlayText);
@@ -355,6 +373,11 @@ export function compileSlidePrompt(c: ResolvedContract, index: number, role: Sli
   const source = sourceArcLine(c, s, role);
   const hard = c.hardLocks.map(l => l.text);
   const hardLine = hard.length ? `HARD RULES (they win over the change and the source change above):\n- ${hard.join('\n- ')}` : '';
+  // The attached frame is the baseline deck's own slide: only where it takes place changes, and the caption stays exactly as contracted.
+  if (role === 'scene-edit') return [
+    'Edit the attached 9:16 frame. Keep the SAME person, medium, lighting and camera. Change ONLY the setting, props and action to the slide scene.',
+    labelRule, `SCENE for this image: ${s.scene}`, hard.length ? `HARD RULES:\n- ${hard.join('\n- ')}` : '',
+    text, fixLine].filter(Boolean).join('\n');
   if (role === 'anchor-edit') return [
     arcDistance(c, s) > 0
       // SLA-809: "keep the same face and build" froze exactly what an arc changes. On an arc only the identity is kept.
@@ -396,18 +419,19 @@ export function slideRole(c: Pick<ResolvedContract, 'identity' | 'keepSourceImag
 // ---- QA: one vision call per arm, compiled from the same contract ---------------
 
 export const QA_JSON_SCHEMA = obj({
-  slides: arr(obj({ index: { type: 'integer' }, textSeen: S, overlayExact: B, sceneMatches: B, stateLevel: LEVEL, mediumMatches: B, lockResults: arr(obj({ lock: S, pass: B, note: S })) })),
+  slides: arr(obj({ index: { type: 'integer' }, textSeen: S, overlayExact: B, sceneMatches: B, settingChanged: B, stateLevel: LEVEL, mediumMatches: B, lockResults: arr(obj({ lock: S, pass: B, note: S })) })),
   deck: obj({ identityConsistent: B, sourceLikeness: B, arcVisibleWithoutText: B, notes: S }),
 });
 export const RawQa = z.object({
-  slides: z.array(z.object({ index: z.number().int(), textSeen: z.string(), overlayExact: z.boolean(), sceneMatches: z.boolean(), stateLevel: Level, mediumMatches: z.boolean(), lockResults: z.array(z.object({ lock: z.string(), pass: z.boolean(), note: z.string() })) })),
+  slides: z.array(z.object({ index: z.number().int(), textSeen: z.string(), overlayExact: z.boolean(), sceneMatches: z.boolean(), settingChanged: z.boolean().optional(), stateLevel: Level, mediumMatches: z.boolean(), lockResults: z.array(z.object({ lock: z.string(), pass: z.boolean(), note: z.string() })) })),
   deck: z.object({ identityConsistent: z.boolean(), sourceLikeness: z.boolean(), arcVisibleWithoutText: z.boolean(), notes: z.string() }),
 });
 export type QaAnswer = z.infer<typeof RawQa>;
 
 export const QA_SYSTEM = 'You are a strict visual QA checker. Judge only what is visible. Return JSON.';
 
-export function compileQaPrompt(c: ResolvedContract, opts: { slideCount: number; sourceImages: number; referenceUse: ReferenceUse }): string {
+/** `baselineImages`: a scene arm is judged against the baseline deck's slides, appended after the source frames. */
+export function compileQaPrompt(c: ResolvedContract, opts: { slideCount: number; sourceImages: number; referenceUse: ReferenceUse; baselineImages?: number }): string {
   const edit = opts.referenceUse === 'edit';
   const hard = c.hardLocks.map(l => l.text);
   const n = opts.slideCount;
@@ -418,10 +442,15 @@ export function compileQaPrompt(c: ResolvedContract, opts: { slideCount: number;
   const sources = opts.sourceImages
     ? `Image ${n + 1}${opts.sourceImages > 1 ? `..${n + opts.sourceImages}` : ''} = source reference${edit ? ' frame(s) the slides were edited from, in slide order' : ' (only to judge likeness: the slides must NOT show this person)'}.`
     : '';
-  return `Images 1..${n} are the slides of one carousel, in order. ${sources}
+  const baselineAt = n + opts.sourceImages + 1;
+  const baseline = opts.baselineImages
+    ? `Image ${baselineAt}${opts.baselineImages > 1 ? `..${baselineAt + opts.baselineImages - 1}` : ''} = the baseline deck's slides, in slide order: this carousel was edited from them to change ONLY the setting, props and action; the person, medium, lighting, camera and caption were to stay.`
+    : '';
+  const sceneEdit = !!opts.baselineImages;
+  return `Images 1..${n} are the slides of one carousel, in order. ${sources}${baseline ? `${sources ? ' ' : ''}${baseline}` : ''}
 Contract: ${JSON.stringify({ medium: c.medium, identity: c.identity, identitySheet: c.identitySheet, arcAxis: c.arcAxis, slides: c.slides.map((s, i) => ({ index: i, overlayText: s.overlayText, arcLevel: s.arcLevel, scene: s.scene })) })}
-For every slide: textSeen (all caption text you can read), overlayExact (the caption equals overlayText, ignoring case and punctuation; text inside an app screen is not a caption), sceneMatches (the scene is recognisably what the contract describes${edit ? '; for edited slides the photo is unchanged from its source frame apart from the caption, including clothing prints' : ''}), stateLevel (the visible state on the arc axis judged from the PICTURE ONLY, ignoring captions, labels and app-screen numbers: low, mid, high, or none), mediumMatches, and lockResults for EACH of these locks: ${JSON.stringify(hard)}.
-deck.identityConsistent: ${c.identity === 'invented-consistent' ? `the same person or character on every slide${c.arcAxis ? ` (changing along "${c.arcAxis}" is expected: they stay the same person while they remain recognisable)` : ''}` : 'true if not applicable'}. deck.arcVisibleWithoutText: ${c.arcAxis ? `cover all text with your hand: does the picture itself clearly progress along "${c.arcAxis}" from the first to the last slide?${scale}` : 'true if not applicable'}. deck.sourceLikeness: ${c.identity.startsWith('invented') ? 'true if any slide shows the source person' : 'false if not applicable'}.`;
+For every slide: textSeen (all caption text you can read), overlayExact (the caption equals overlayText, ignoring case and punctuation; text inside an app screen is not a caption), sceneMatches (the scene is recognisably what the contract describes${edit ? '; for edited slides the photo is unchanged from its source frame apart from the caption, including clothing prints' : ''}), settingChanged (${sceneEdit ? 'the setting, props and action are clearly different from the matching baseline slide' : 'true; not applicable'}), stateLevel (the visible state on the arc axis judged from the PICTURE ONLY, ignoring captions, labels and app-screen numbers: low, mid, high, or none), mediumMatches, and lockResults for EACH of these locks: ${JSON.stringify(hard)}.
+deck.identityConsistent: ${sceneEdit ? 'the same person or character as in the baseline slides on every slide (true if the slides show no person)' : c.identity === 'invented-consistent' ? `the same person or character on every slide${c.arcAxis ? ` (changing along "${c.arcAxis}" is expected: they stay the same person while they remain recognisable)` : ''}` : 'true if not applicable'}. deck.arcVisibleWithoutText: ${c.arcAxis ? `cover all text with your hand: does the picture itself clearly progress along "${c.arcAxis}" from the first to the last slide?${scale}` : 'true if not applicable'}. deck.sourceLikeness: ${c.identity.startsWith('invented') ? 'true if any slide shows the source person' : 'false if not applicable'}.`;
 }
 
 export interface QaVerdict {
@@ -432,7 +461,7 @@ export interface QaVerdict {
 }
 
 /** Source defaults are never checked. Locks, caption, scene, medium, arc and identity are. */
-export function qaVerdict(c: ResolvedContract, q: QaAnswer, opts: { slides?: number[] } = {}): QaVerdict {
+export function qaVerdict(c: ResolvedContract, q: QaAnswer, opts: { slides?: number[]; sceneEdit?: boolean } = {}): QaVerdict {
   const failures: Record<string, string[]> = {};
   const warnings: string[] = [];
   const add = (k: string | number, m: string) => { (failures[String(k)] ??= []).push(m); };
@@ -443,11 +472,12 @@ export function qaVerdict(c: ResolvedContract, q: QaAnswer, opts: { slides?: num
     if (!s.overlayExact) add(i, `the caption must be exactly "${c.slides[i]!.overlayText}" (seen: "${s.textSeen}")`);
     if (!s.sceneMatches) add(i, 'the scene does not match the contract');
     if (!s.mediumMatches) add(i, `the medium must be ${c.medium}`);
+    if (opts.sceneEdit && s.settingChanged !== true) add(i, 'the setting, props and action must differ from the baseline slide');
     for (const l of s.lockResults) if (!l.pass) add(i, `violates "${l.lock}": ${l.note}`);
     const want = c.slides[i]!.arcLevel;
     if (want !== 'none' && s.stateLevel !== want && !c.keepSourceImage) add(i, `the visible state reads as ${s.stateLevel}, it must read as ${want} on "${c.arcAxis}"`);
   });
-  if (c.identity === 'invented-consistent' && !q.deck.identityConsistent) add('deck', `identity drifts between slides: ${q.deck.notes}`);
+  if ((c.identity === 'invented-consistent' || opts.sceneEdit) && !q.deck.identityConsistent) add('deck', `identity drifts between slides: ${q.deck.notes}`);
   if (c.arcAxis && !q.deck.arcVisibleWithoutText) {
     if (c.keepSourceImage) warnings.push(`The source photos do not show the progression "${c.arcAxis}" on their own: ${q.deck.notes}`);
     else add('deck', `the progression "${c.arcAxis}" is not visible in the pictures: ${q.deck.notes}`);
@@ -476,7 +506,7 @@ export interface ArmBrief {
   character: string; visualStyle: string; caption: string; cta: string;
   slides: Array<ContractSlide & { role?: string }>;
 }
-export type ArmField = 'hook' | 'character' | 'visualStyle' | 'caption' | 'cta' | 'concept' | 'slides';
+export type ArmField = 'hook' | 'character' | 'visualStyle' | 'caption' | 'cta' | 'concept' | 'slides' | 'scene';
 const slideKey = (s: ContractSlide) => JSON.stringify([s.overlayText, s.arcLevel, s.scene, s.composition, s.visibleChange]);
 
 /** Arm B is A with exactly the declared variable replaced. */
@@ -488,6 +518,7 @@ export function buildArmB(a: ArmBrief, b: VariantB): ArmBrief {
     case 'cta': next.cta = b.value; break;
     case 'character': next.character = b.value; break;
     case 'visualStyle': next.visualStyle = b.value; break;
+    case 'scene': next.slides = next.slides.map((s, i) => ({ ...s, scene: b.slides[i]?.scene || b.value })); break;
     case 'concept': case 'slides':
       next.slides = b.slides.map((s, i) => ({ ...s, ...(a.slides[i]?.role ? { role: a.slides[i]!.role } : {}) })); break;
     default: throw new ContractError('contract_variable', `Unsupported variable "${b.variable}".`);
@@ -503,23 +534,29 @@ export function diffArms(a: ArmBrief, b: ArmBrief): ArmField[] {
   if (a.caption !== b.caption) out.push('caption');
   if (a.cta !== b.cta) out.push('cta');
   const same = a.slides.length === b.slides.length;
-  const onlyHook = same && a.slides.every((s, i) => i === 0 ? slideKey({ ...s, overlayText: '' }) === slideKey({ ...b.slides[0]!, overlayText: '' }) : slideKey(s) === slideKey(b.slides[i]!));
-  if (!same || !onlyHook) out.push('slides');
-  else if (a.slides[0]!.overlayText !== b.slides[0]!.overlayText) out.push('hook');
+  // Beyond the hook (slide 1's caption) and the scenes, the slides must be identical for the diff to be named by field.
+  const strip = (s: ContractSlide, i: number) => slideKey({ ...s, scene: '', ...(i === 0 ? { overlayText: '' } : {}) });
+  const onlyHookAndScene = same && a.slides.every((s, i) => strip(s, i) === strip(b.slides[i]!, i));
+  if (!same || !onlyHookAndScene) { out.push('slides'); return out; }
+  if (a.slides.some((s, i) => s.scene !== b.slides[i]!.scene)) out.push('scene');
+  if (a.slides[0]!.overlayText !== b.slides[0]!.overlayText) out.push('hook');
   return out;
 }
 
 export function assertArmsDifferOnly(a: ArmBrief, b: ArmBrief, variable: ArmField): void {
-  const extra = diffArms(a, b).filter(f => f !== variable && !(variable === 'concept' && f === 'slides'));
+  const retells = variable === 'concept' || variable === 'slides';
+  const extra = diffArms(a, b).filter(f => f !== variable && !(retells && (f === 'slides' || f === 'scene')));
   if (extra.length) throw new ContractError('arms_differ', `Arm B differs from arm A in ${extra.join(', ')}; only "${variable}" may differ.`);
 }
 
-export type SlideWork = 'render' | 'caption-edit' | 'reuse';
-/** What arm B has to do for slide `i`, given arm A. Deck-level changes touch every slide. */
-export function slideWork(a: ArmBrief, b: ArmBrief, i: number): SlideWork {
+export type SlideWork = 'render' | 'caption-edit' | 'scene-edit' | 'reuse';
+/** What arm B has to do for slide `i`, given arm A. Deck-level changes touch every slide.
+ *  `sceneArm`: the variable is scene, so a slide that differs only in its scene edits the baseline's picture; in any other test it is re-rendered. */
+export function slideWork(a: ArmBrief, b: ArmBrief, i: number, sceneArm = false): SlideWork {
   if (a.character !== b.character || a.visualStyle !== b.visualStyle) return 'render';
   const sa = a.slides[i], sb = b.slides[i];
   if (!sa || !sb) return 'render';
   if (slideKey(sa) === slideKey(sb)) return 'reuse';
-  return slideKey({ ...sa, overlayText: '' }) === slideKey({ ...sb, overlayText: '' }) ? 'caption-edit' : 'render';
+  if (slideKey({ ...sa, overlayText: '' }) === slideKey({ ...sb, overlayText: '' })) return 'caption-edit';
+  return sceneArm && slideKey({ ...sa, scene: '' }) === slideKey({ ...sb, scene: '' }) ? 'scene-edit' : 'render';
 }

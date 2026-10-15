@@ -1,6 +1,6 @@
 // SLA-700: the resolved-contract pipeline end to end through the real engine step and prepare(), with fake provider seams.
 // Counts every provider call so the 7-clean / 11-worst-case budget for a 3-slide A/B is asserted, not assumed.
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { Video } from '@prisma/client';
 import { step, type EngineDeps } from './engine.js';
 import { prepare, type RenderDeps } from './providers.js';
@@ -820,5 +820,132 @@ describe('SLA-811: a QA-failed experiment is retried with a model-revised brief'
     w.update(e => { applyRevise(e, new Date(0)); });
     expect(w.row.status).toBe('generating');
     expect(w.row.tasks.some(t => t.kind === 'revise' && t.status === 'pending')).toBe(true);
+  });
+});
+
+describe('scene variable: arm B edits every baseline slide into another setting', () => {
+  const OPENER = 'Edit the attached 9:16 frame. Keep the SAME person, medium, lighting and camera. Change ONLY the setting, props and action to the slide scene.';
+  const STREET = 'a rainy street at night';
+  const sceneContract = (o: Record<string, unknown> = {}) => rawContract({ variantB: { variable: 'scene', value: STREET, slides: [] }, ...o });
+  const qaScene = (n = 3, changed = true) => { const q = qaPass(n); q.slides.forEach(s => { (s as Record<string, unknown>).settingChanged = changed; }); return q; };
+  const scenario = (qa: Script['qa'] = [() => qaPass(), () => qaScene()]) => ({ contract: sceneContract(), qa });
+  const vars: Partial<Experiment['instructions']> = { variables: ['scene'] };
+
+  test('plans arm B as arm A with only each slide\'s scene replaced; the overlay copy stays locked', async () => {
+    const w = world(scenario(), vars);
+    await w.plan();
+    expect(w.row.error).toBeNull();
+    expect(w.row.status).toBe('review');
+    const [a, b] = w.row.variants;
+    expect(w.row.contract?.keepSourceImage).toBe(false);
+    expect(b!.brief.slides.map(s => s.scene)).toEqual([STREET, STREET, STREET]);
+    expect(a!.brief.slides.map(s => s.scene)).toEqual(['a scene', 'a scene', 'a scene']);
+    expect(b!.brief.slides.map(s => s.overlayText)).toEqual(a!.brief.slides.map(s => s.overlayText));
+    expect(b!.brief.hook).toBe(a!.brief.hook);
+    expect(b!.changedVariables.map(c => c.name)).toEqual(['scene']);
+    expect(b!.changedVariables[0]!.value).toBe(STREET);
+  });
+
+  test('the user\'s own scenes win over the model\'s, one per slide', async () => {
+    const w = world(scenario(), { ...vars, sceneOverrides: ['a beach', 'a kitchen', 'a train'] });
+    await w.plan();
+    expect(w.row.variants[1]!.brief.slides.map(s => s.scene)).toEqual(['a beach', 'a kitchen', 'a train']);
+  });
+
+  test('a scene count that is neither one nor the slide count fails the plan with contract_scene_count', async () => {
+    const w = world(scenario(), { ...vars, sceneOverrides: ['a beach', 'a kitchen'] });
+    await w.plan().catch(() => {});
+    expect(JSON.stringify(w.row.tasks)).toContain('contract_scene_count');
+    expect(w.row.variants).toHaveLength(0);
+  });
+
+  test('every B slide is an edit of its own baseline picture, one render each (6 renders, 2 QA, 1 contract)', async () => {
+    const w = world(scenario(), vars);
+    await w.plan();
+    await w.generate();
+    expect(w.row.status).toBe('completed');
+    expect(w.providerCalls).toEqual({ contract: 1, render: 6, qa: 2 });
+    const [a, b] = w.row.variants;
+    const bImages = w.calls.images.slice(3);
+    expect(bImages).toHaveLength(3);
+    bImages.forEach((img, i) => {
+      expect(img.prompt.startsWith(OPENER)).toBe(true);
+      expect(img.referenceUrl).toBe(a!.slides[i]!.url!);
+      expect(img.prompt).toContain(`SCENE for this image: ${STREET}`);
+      expect(img.prompt).toContain(['Hook A', 'two', 'three'][i]!);
+    });
+    expect(b!.slides.every(s => s.provider === 'openrouter')).toBe(true);
+    expect(w.files.get(b!.slides[1]!.path!)).not.toEqual(w.files.get(a!.slides[1]!.path!));
+  });
+
+  test('the source-label rule rides on the edit opener, like the other edit prompts', async () => {
+    const w = world(scenario(), vars);
+    await w.plan();
+    await w.generate();
+    expect(w.calls.images[3]!.prompt.split('\n')[1]).toMatch(/Erase ONLY the marks listed for removal|Do not copy any text, logo or watermark/);
+  });
+
+  test('QA gets the baseline slides, keeps identity on, and expects the setting to change', async () => {
+    const w = world(scenario(), vars);
+    await w.plan();
+    await w.generate();
+    const [qaA, qaB] = w.calls.qa;
+    expect(qaA!.user).toContain('true; not applicable');
+    expect(qaA!.user).not.toContain("baseline deck's slides");
+    expect(qaB!.user).toContain("baseline deck's slides");
+    expect(qaB!.user).toContain('clearly different from the matching baseline slide');
+    expect(qaB!.user).toContain('the same person or character as in the baseline slides');
+    expect(qaB!.images).toBeGreaterThanOrEqual(qaA!.images + 3);
+  });
+
+  test('a slide whose setting did not change fails QA, is re-rendered once with the QA text, then passes', async () => {
+    const bad = () => { const q = qaScene(); (q.slides[1] as Record<string, unknown>).settingChanged = false; return q; };
+    const w = world(scenario([() => qaPass(), bad, () => qaScene()]), vars);
+    await w.plan();
+    await w.generate();
+    expect(w.row.status).toBe('completed');
+    expect(w.providerCalls['render-extra']).toBe(1);
+    const fix = w.calls.images.at(-1)!;
+    expect(fix.prompt.startsWith(OPENER)).toBe(true);
+    expect(fix.prompt).toContain('FIX FROM QA');
+    expect(fix.prompt).toContain('the setting, props and action must differ from the baseline slide');
+  });
+
+  test('a setting that stays unchanged after the repair round fails the arm', async () => {
+    const same = () => qaScene(3, false);
+    const w = world(scenario([() => qaPass(), same, same, same]), vars);
+    await w.plan();
+    await w.generate().catch(() => {});
+    expect(w.row.status).toBe('failed');
+  });
+
+  test('script mode: B edits the text-free base of the baseline picture and draws its own copy afterwards', async () => {
+    const w = world(scenario(), { ...vars, overlayMode: 'script' });
+    await w.plan();
+    await w.generate();
+    expect(w.row.status).toBe('completed');
+    const [a, b] = w.row.variants;
+    const bImages = w.calls.images.slice(3);
+    expect(bImages[0]!.referenceUrl).toBe(`https://assets.example.test/${a!.slides[0]!.path!.replace(/\.jpg$/, '.base.jpg')}`);
+    for (const { prompt } of w.calls.images) expect(prompt).not.toMatch(/Hook A|\btwo\b|\bthree\b/);
+    expect(w.files.get(b!.slides[0]!.path!)!.toString()).toContain('+Hook A');
+  });
+
+  test('estimate_experiment(generate) equals what the run charges: one render per slide plus a QA per arm', async () => {
+    const { CREDIT_COSTS } = await import('../lib/credits.js');
+    const real = { ...(await import('../lib/credits.js')) };
+    mock.module('../lib/credits.js', () => ({ ...real, creditBalance: async () => ({ total: 9999 }) }));
+    try {
+      const { estimate } = await import('./service.js');
+      const w = world(scenario(), vars);
+      await w.plan();
+      const est = await estimate(w.row, 'generate');
+      const before = w.row.creditsCharged;
+      await w.generate();
+      const charged = w.row.creditsCharged - before;
+      expect(est.generationCredits).toBe(6 * CREDIT_COSTS.experimentSlide + 2 * CREDIT_COSTS.experimentPlanningCall);
+      expect(est.totalCredits).toBe(charged);
+      expect(est.pricing.slide).toBe(CREDIT_COSTS.experimentSlide);
+    } finally { mock.module('../lib/credits.js', () => ({ ...real })); }
   });
 });

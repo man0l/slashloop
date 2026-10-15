@@ -324,3 +324,79 @@ test('the resolved type is exported', () => {
   const c: ResolvedContract = normalizeContract(raw(), input());
   expect(c.version).toBe(1);
 });
+
+describe('scene variable', () => {
+  const a: ArmBrief = { character: 'a man', visualStyle: 'pencil', caption: 'cap', cta: 'cta', slides: [slide({ overlayText: 'Hook A' }) as never, slide({ overlayText: 'two' }) as never, slide({ overlayText: 'three' }) as never] };
+  const sceneB = (scenes: string[]) => ({ variable: 'scene', value: 'a beach', slides: scenes.map((scene, i) => ({ ...a.slides[i]!, scene })) as never[] });
+
+  test('buildArmB rewrites each slide\'s scene and nothing else; diffArms reports scene', () => {
+    const b = buildArmB(a, sceneB(['a beach', 'a kitchen', 'a train']));
+    expect(b.slides.map(s => s.scene)).toEqual(['a beach', 'a kitchen', 'a train']);
+    expect(b.slides.map(s => s.overlayText)).toEqual(['Hook A', 'two', 'three']);
+    expect(diffArms(a, b)).toEqual(['scene']);
+    expect(() => assertArmsDifferOnly(a, b, 'scene')).not.toThrow();
+  });
+
+  test('a single value fills every slide when the model gave no per-slide scenes', () => {
+    const b = buildArmB(a, { variable: 'scene', value: 'a beach', slides: [] });
+    expect(b.slides.map(s => s.scene)).toEqual(['a beach', 'a beach', 'a beach']);
+  });
+
+  test('a scene change that also touches anything else is rejected', () => {
+    const b = buildArmB(a, sceneB(['a beach', 'a kitchen', 'a train']));
+    b.slides[1] = { ...b.slides[1]!, overlayText: 'changed' };
+    expect(() => assertArmsDifferOnly(a, b, 'scene')).toThrow(ContractError);
+    expect(() => assertArmsDifferOnly(a, buildArmB(a, sceneB(['a beach', 'a kitchen', 'a train'])), 'hook')).toThrow(ContractError);
+  });
+
+  test('slideWork: an edit of the baseline slide for a scene arm, a fresh render for any other test', () => {
+    const b = buildArmB(a, sceneB(['a beach', 'a kitchen', 'a train']));
+    expect([0, 1, 2].map(i => slideWork(a, b, i, true))).toEqual(['scene-edit', 'scene-edit', 'scene-edit']);
+    expect([0, 1, 2].map(i => slideWork(a, b, i))).toEqual(['render', 'render', 'render']);
+    const same = buildArmB(a, sceneB(['a scene', 'a kitchen', 'a scene']));
+    expect([0, 1, 2].map(i => slideWork(a, same, i, true))).toEqual(['reuse', 'scene-edit', 'reuse']);
+  });
+
+  test('normalizeContract: one override fills every slide, N overrides are per slide, any other count is refused', () => {
+    const c = normalizeContract(raw({ keepSourceImage: true, variantB: { variable: 'scene', value: 'model value', slides: [] } }), input({ variable: 'scene', sceneOverrides: ['a beach'] }));
+    expect(c.keepSourceImage).toBe(false);
+    expect(c.variantB.slides.map(s => s.scene)).toEqual(['a beach', 'a beach', 'a beach']);
+    const per = normalizeContract(raw({ variantB: { variable: 'scene', value: '', slides: [] } }), input({ variable: 'scene', sceneOverrides: ['x', 'y', 'z'] }));
+    expect(per.variantB.slides.map(s => s.scene)).toEqual(['x', 'y', 'z']);
+    expect(() => normalizeContract(raw({ variantB: { variable: 'scene', value: 'v', slides: [] } }), input({ variable: 'scene', sceneOverrides: ['x', 'y'] }))).toThrow(/one per slide/);
+    expect(() => normalizeContract(raw({ variantB: { variable: 'scene', value: ' ', slides: [] } }), input({ variable: 'scene' }))).toThrow(ContractError);
+  });
+
+  test('compileSlidePrompt: the edit-of-baseline opener, the label rule, the scene, the locked overlay copy', () => {
+    const c = normalizeContract(raw({ variantB: { variable: 'scene', value: 'v', slides: [] } }), input({ variable: 'scene', sceneOverrides: ['a rainy street'] }));
+    const view = { ...c, slides: c.variantB.slides };
+    const p = compileSlidePrompt(view, 0, 'scene-edit', 'none', 'make it rainier', 'more neon', 'LABEL RULE');
+    const lines = p.split('\n');
+    expect(lines[0]).toBe('Edit the attached 9:16 frame. Keep the SAME person, medium, lighting and camera. Change ONLY the setting, props and action to the slide scene.');
+    expect(lines[1]).toBe('LABEL RULE');
+    expect(p).toContain('SCENE for this image: a rainy street');
+    expect(p).toContain('Hook A');
+    expect(p).toContain('FIX FROM QA: make it rainier');
+    expect(p).toContain('more neon');
+    expect(p).not.toMatch(/\bslide\s*\d/i);
+  });
+
+  test('QA expects the setting to change, keeps identity on, and is unchanged for any other arm', () => {
+    const c = normalizeContract(raw({ variantB: { variable: 'scene', value: 'v', slides: [] } }), input({ variable: 'scene' }));
+    const slideOk = (index: number, settingChanged?: boolean) => ({ index, textSeen: '', overlayExact: true, sceneMatches: true, stateLevel: 'none', mediumMatches: true, lockResults: [], ...(settingChanged === undefined ? {} : { settingChanged }) });
+    const deck = { identityConsistent: true, sourceLikeness: false, arcVisibleWithoutText: true, notes: '' };
+    const q = (settingChanged?: boolean) => ({ slides: [0, 1, 2].map(i => slideOk(i, settingChanged)), deck }) as never;
+    expect(qaVerdict(c, q(true), { sceneEdit: true }).passed).toBe(true);
+    const bad = qaVerdict(c, q(false), { sceneEdit: true });
+    expect(bad.passed).toBe(false);
+    expect(bad.failures['0']![0]).toContain('must differ from the baseline slide');
+    expect(qaVerdict(c, q(undefined), { sceneEdit: true }).passed).toBe(false);
+    expect(qaVerdict(c, q(undefined)).passed).toBe(true);
+    const drift = qaVerdict(c, { slides: [0, 1, 2].map(i => slideOk(i, true)), deck: { ...deck, identityConsistent: false, notes: 'new face' } } as never, { sceneEdit: true });
+    expect(drift.failures.deck![0]).toContain('identity drifts');
+    const promptA = compileQaPrompt(c, { slideCount: 3, sourceImages: 0, referenceUse: 'none' });
+    const promptB = compileQaPrompt(c, { slideCount: 3, sourceImages: 0, referenceUse: 'none', baselineImages: 3 });
+    expect(promptA).not.toContain('baseline');
+    expect(promptB).toContain('Image 4..6 = the baseline deck');
+  });
+});
