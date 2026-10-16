@@ -407,6 +407,27 @@ describe('scene variable', () => {
     expect(() => normalizeContract(raw({ pools: [{ variable: 'scene', values: [{ value: ' ', slides: [] }] }] }), input({ variables: ['scene'] }))).toThrow(ContractError);
   });
 
+  test('SLA-884: a scene alternate drops arm A\'s background words, and still counts as a scene-only edit of the baseline', () => {
+    const slides = [0, 1, 2].map(i => slide({ overlayText: `t${i}`, scene: 'a gym locker-room mirror', composition: 'paneled door filling the background', visibleChange: i ? 'beige wall background' : '' }));
+    const armA: ArmBrief = { ...a, slides: slides as never[] };
+    const pooled = normalizeContract(
+      raw({ slides: slides as never[], pools: [{ variable: 'scene', values: [{ value: 'a beach', slides: [0, 1, 2].map(i => slide({ scene: `beach ${i}`, composition: '', visibleChange: '' })) as never[] }] }] }),
+      input({ variables: ['scene'] }),
+    );
+    const alt = armsOf(pooled)[0]!.axes[0]!.slides;
+    expect(alt.map(s => s.scene)).toEqual(['beach 0', 'beach 1', 'beach 2']);
+    expect(alt.every(s => s.composition === '' && s.visibleChange === '')).toBe(true);
+    const b = buildAlternate(armA, mk('scene', 'a beach', alt as never[]));
+    expect(diffArms(armA, b)).toEqual(['scene']);
+    expect(() => assertArmDiffers(armA, b, ['scene'])).not.toThrow();
+    expect([0, 1, 2].map(i => slideWork(armA, b, i, true))).toEqual(['baseline-edit', 'baseline-edit', 'baseline-edit']);
+    for (const role of ['fresh', 'anchor-edit'] as const) {
+      const p = compileSlidePrompt({ ...pooled, slides: b.slides }, 1, role, 'none', '', '', '');
+      expect(p).toContain('beach 1');
+      expect(p).not.toMatch(/paneled door|beige wall|locker-room/);
+    }
+  });
+
   test('compileSlidePrompt: the edit-of-baseline opener, the label rule, the scene, the locked overlay copy', () => {
     const c = normalizeContract(raw({ pools: [{ variable: 'scene', values: [{ value: 'v', slides: [] }] }] }), input({ variables: ['scene'], sceneOverrides: ['a rainy street'] }));
     const view = { ...c, slides: armsOf(c)[0]!.axes[0]!.slides };
