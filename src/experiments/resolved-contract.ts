@@ -159,7 +159,7 @@ export function contractFieldGuide(input: ContractInput): Record<string, string>
     identity: 'none | source (the source subject is kept) | invented-consistent (one invented person or character on every slide) | invented-per-slide',
     identitySheet: 'if invented-consistent: a precise visual description reused verbatim on every slide (face, body, hair, outfit, art style). Otherwise "".',
     medium: 'the resolved medium plus style words for every slide',
-    keepSourceImage: 'true ONLY if the direction says to keep the source images and change only the text',
+    keepSourceImage: 'true if arm A (the baseline) keeps the source photographs: the direction says to keep or edit the source images, and arm A changes at most their text. It describes arm A only: an alternate that recasts the person, re-stages the scene or restyles never makes it false, because code edits those alternates from arm A\'s slides.',
     borrowSourceLook: 'true if the direction keeps the source medium or drawing style while changing the content',
     sourceArc: `read from the attached source frames in order, by looking at the pixels (not the captions): does the SAME subject (a person's face or body, a character, an object, a room, a product...) visibly change from frame to frame? axis: that change in a few words; levers: every concrete visible attribute that changes (for example "cheek and jaw fullness", "hair volume", "skin texture", "clutter on the desk"); magnitude: subtle | clear | strong = how different the two extreme frames look at phone size; lowVsHigh: the concrete visible difference between the frame furthest down the axis and the frame furthest up, written as landmarks and proportions. ${NEUTRAL_WORDS} If nothing changes or there are no source frames: axis "", levers [], magnitude "none", lowVsHigh "". ${retellsStory(input)
       // A tested variable IS the storyline: an alternate may retell it without the source's change (SLA-809).
@@ -309,7 +309,7 @@ function poolsGuide(input: ContractInput): string {
       : `value = an alternative setting, props and action in one sentence; slides = ${n} slides where ONLY scene is filled (that setting for that slide's beat; overlayText, composition and visibleChange "", arcLevel "none"). The person, medium, lighting, camera and overlay text stay as in arm A.`,
   };
   const entries = armVariables(input.variables).filter(v => needs[v]).map(v => `${v}: exactly ${needs[v]} distinct value(s). ${help[v]}`);
-  return `One entry per variable below, as { variable, values: [{ value, slides }] }, each with exactly that many DISTINCT values that all differ from arm A. Code combines the values into the alternates: never combine them yourself, never repeat arm A. ${entries.join(' ')}${input.variables.includes('scene') ? ' keepSourceImage must be false: a scene alternate re-stages every slide, so the source photos cannot stay as they are.' : ''}`;
+  return `One entry per variable below, as { variable, values: [{ value, slides }] }, each with exactly that many DISTINCT values that all differ from arm A. Code combines the values into the alternates: never combine them yourself, never repeat arm A. ${entries.join(' ')}`;
 }
 
 // ---- normalization: precedence and invariants live in code ---------------------
@@ -353,14 +353,12 @@ export function normalizeContract(rawIn: unknown, input: ContractInput): Resolve
 
   // A brief-only experiment has no source frames: nothing can be kept or borrowed, so those flags and the "source" identity are void whatever the model says.
   const sourceless = input.frameCount === 0;
-  // A scene arm re-stages every slide, so the source photos cannot stay as they are.
-  const sceneArm = input.variables.includes('scene');
   // A morph deck invents its subject and edits slide 1 of its own, never a source photo.
-  const keepSourceImage = raw.keepSourceImage && !sourceless && !sceneArm && !morphOn;
+  // SLA-881: keepSourceImage is arm A's. A scene or character alternate edits arm A's slides, and its own view drops the source photos (contractView).
+  const keepSourceImage = raw.keepSourceImage && !sourceless && !morphOn;
   const borrowSourceLook = raw.borrowSourceLook && !sourceless;
   if (morphOn && raw.keepSourceImage) issues.push('A morph deck invents one subject and grades it slide by slide, so the source photos are not kept.');
   if (sourceless && (raw.keepSourceImage || raw.borrowSourceLook)) issues.push('There is no source video, so there are no source images to keep or borrow a look from; every slide is created new from the brief.');
-  if (sceneArm && raw.keepSourceImage && !sourceless) issues.push('Changing the scene re-stages every slide, so the source images are not kept unchanged.');
   let identity = raw.identity;
   if (sourceless && identity === 'source') identity = 'invented-per-slide';
   if (morphOn && identity !== 'invented-consistent') {
@@ -568,7 +566,7 @@ export function pickFramesByArc(c: Pick<ResolvedContract, 'keepSourceImage' | 'b
   const none = (note?: string): FramePick => ({ referenceUse: 'none', frameIndex: null, note });
   if (use === 'none') return c.slides.map(() => none());
   const used = new Set<number>();
-  return c.slides.map(s => {
+  return c.slides.map((s, i) => {
     const free = c.sourceFrames.filter(f => !used.has(f.index));
     // Style references may not carry a person when the identity is invented; the chooser already gated that per deck.
     let pool: SourceFrameInfo[];
@@ -577,7 +575,8 @@ export function pickFramesByArc(c: Pick<ResolvedContract, 'keepSourceImage' | 'b
       if (!pool.length) return none(`no unused source frame at the ${s.arcLevel} level`);
     } else pool = free.filter(f => f.level === 'none' || !c.arcAxis);
     if (!pool.length) return none('no unused source frame');
-    const f = s.arcLevel === 'high' ? pool[pool.length - 1]! : pool[0]!;
+    // Among frames at the same level the slide's own position wins, so two tied slides never swap their frames (SLA-881).
+    const f = pool.find(x => x.index === i) ?? (s.arcLevel === 'high' ? pool[pool.length - 1]! : pool[0]!);
     used.add(f.index);
     return { referenceUse: use, frameIndex: f.index };
   });

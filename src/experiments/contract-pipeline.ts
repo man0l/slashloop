@@ -195,7 +195,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
   if (!v?.frozenBrief) throw new SafeFailure('missing_frozen_brief');
   const index = t.index ?? 0;
   if (!v.frozenBrief.slides[index]) throw new SafeFailure('invalid_slide');
-  const view = contractView(e, v.frozenBrief);
+  const view = contractView(e, v.frozenBrief, v);
   const path = `experiments/retained/${e.workspaceId}/${e.id}/${v.id}/r${v.revision}/${t.id}.jpg`;
   const upload = async (body: Buffer, contentType: string) => { await render.upload({ bucket: thumbBucket(), path, body, contentType, upsert: false }); };
   const base = v.baselineId ? e.variants.find(x => x.id === v.baselineId) : undefined;
@@ -365,7 +365,7 @@ export async function prepareContractQa(e: Experiment, t: Task, render: RenderDe
   const verify = need(render.verifyDeck, 'render_deps_incomplete');
   const v = e.variants.find(x => x.id === t.target);
   if (!v?.frozenBrief) throw new SafeFailure('missing_frozen_brief');
-  const view = contractView(e, v.frozenBrief);
+  const view = contractView(e, v.frozenBrief, v);
   const n = view.slides.length;
   const read = need(render.readReference, 'render_deps_incomplete');
   const slideBytes = await Promise.all(v.slides.map(async s => {

@@ -137,6 +137,11 @@ describe('frames are picked by arc level, never by position', () => {
     const picks = pickFramesByArc(deck(['none', 'none', 'none'], { arcAxis: '', sourceFrames: flat }) as never);
     expect(picks.map(p => p.frameIndex)).toEqual([0, 1, 2]);
   });
+  test('SLA-881: two slides at the same level keep their own frames instead of swapping them', () => {
+    const tied = [0, 1, 2, 3, 4].map(index => ({ index, level: (index < 3 ? 'low' : 'high') as 'low' | 'high', showsPerson: true }));
+    const picks = pickFramesByArc(deck(['low', 'low', 'low', 'high', 'high'], { sourceFrames: tied }) as never);
+    expect(picks.map(p => p.frameIndex)).toEqual([0, 1, 2, 3, 4]);
+  });
   test('referenceUse none attaches no frame', () => {
     const picks = pickFramesByArc(deck(['low', 'mid', 'high'], { keepSourceImage: false }) as never);
     expect(picks.every(p => p.frameIndex === null && p.referenceUse === 'none')).toBe(true);
@@ -394,7 +399,7 @@ describe('scene variable', () => {
 
   test('normalizeContract: one override fills every slide, N overrides are per slide, any other count is refused', () => {
     const c = normalizeContract(raw({ keepSourceImage: true, pools: [{ variable: 'scene', values: [{ value: 'model value', slides: [] }] }] }), input({ variables: ['scene'], sceneOverrides: ['a beach'] }));
-    expect(c.keepSourceImage).toBe(false);
+    expect(c.keepSourceImage).toBe(true);
     expect(armsOf(c)[0]!.axes[0]!.slides.map(s => s.scene)).toEqual(['a beach', 'a beach', 'a beach']);
     const per = normalizeContract(raw({ pools: [{ variable: 'scene', values: [{ value: '', slides: [] }] }] }), input({ variables: ['scene'], sceneOverrides: ['x', 'y', 'z'] }));
     expect(armsOf(per)[0]!.axes[0]!.slides.map(s => s.scene)).toEqual(['x', 'y', 'z']);
