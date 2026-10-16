@@ -50,21 +50,25 @@ const RUNNING = new Set(['queued', 'running', 'queued_remote']);
  * video with an AI Recreate deck, or a video that is not a photo-annotation
  * source) or when its composite deck already matches the request. Otherwise
  * queues the render and throws `composite_deck_pending`, so the caller repeats
- * the same create once the job is done.
+ * the same create once the job is done. An AI Recreate deck is left alone unless
+ * the caller passed `composite` explicitly (`replaceAiDeck`): that is consent to
+ * replace it, behind the same unfinished-experiment guard as a composite deck.
  */
 export async function resolveCompositeSource(
   workspaceId: string, video: Video, req: DeckRequest, deps: CompositeResolveDeps = liveResolveDeps,
+  opts: { replaceAiDeck?: boolean } = {},
 ): Promise<Video> {
   if (isPhotoPost(video)) return video;
   const stamp = compositeDeckOf(video.rawJson);
-  if (hasExperimentSlides(video.rawJson) && !stamp) return video;
+  const aiDeck = hasExperimentSlides(video.rawJson) && !stamp;
+  if (aiDeck && !opts.replaceAiDeck) return video;
   const pattern = detectAnnotationPattern(await deps.latestAnalysisJson(video.id));
   if (!pattern) return video;
 
   const fingerprint = deckFingerprint(video.id, req);
   if (stamp?.fingerprint === fingerprint) return video;
 
-  if (stamp) {
+  if (stamp || aiDeck) {
     const active = await deps.activeExperimentIds(workspaceId, video.id);
     if (active.length) {
       throw new ExperimentError(409, 'composite_deck_in_use',

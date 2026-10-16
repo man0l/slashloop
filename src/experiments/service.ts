@@ -95,14 +95,14 @@ export type CreateExperimentDeps = {
   findLatestAnalysis: (videoId: string) => Promise<{ analysisJson: string } | null>;
   buildInput: (video: Video) => Promise<S.Input>;
   /** SLA-868: swap a photo-annotation video for its code-rendered composite deck, or queue the render and throw `composite_deck_pending`. */
-  resolveComposite?: (workspaceId: string, video: Video, request: DeckRequest) => Promise<Video>;
+  resolveComposite?: (workspaceId: string, video: Video, request: DeckRequest, opts?: { replaceAiDeck?: boolean }) => Promise<Video>;
   persist: (experiment: S.Experiment, idempotencyKey: string, run?: store.Run, notify?: S.NotifyConfig | null) => Promise<S.Experiment>;
 };
 export const createDeps: CreateExperimentDeps = {
   findSource: (workspaceId, videoId) => db.video.findFirst({ where: { id: videoId, source: { workspaceId } } }),
   findLatestAnalysis: (videoId) => db.analysis.findFirst({ where: { videoId, schemaVersion: 'v3' }, orderBy: { createdAt: 'desc' }, select: { analysisJson: true } }),
   buildInput: compatibleInput,
-  resolveComposite: (workspaceId, video, request) => resolveCompositeSource(workspaceId, video, request),
+  resolveComposite: (workspaceId, video, request, opts) => resolveCompositeSource(workspaceId, video, request, undefined, opts),
   persist: store.create,
 };
 export interface CreateExperimentOptions {
@@ -146,7 +146,7 @@ export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: Cr
   for (const videoId of head.videoIds) {
     let v = await deps.findSource(head.workspaceId, videoId);
     if (!v) throw new S.ExperimentError(404,'video_not_found');
-    if (deps.resolveComposite) v = await deps.resolveComposite(head.workspaceId, v, { ...options.composite, ...(head.instructions.direction ? { direction: head.instructions.direction } : {}) });
+    if (deps.resolveComposite) v = await deps.resolveComposite(head.workspaceId, v, { ...options.composite, ...(head.instructions.direction ? { direction: head.instructions.direction } : {}) }, { replaceAiDeck: options.composite !== undefined });
     // The same TikTok post is stored once per source, so two video ids can be one post.
     const post = postKey(v);
     if (posts.has(post)) throw new S.ExperimentError(400,'duplicate_source_post','Two of the videoIds are the same post; pass it once.');

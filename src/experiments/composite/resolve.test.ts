@@ -29,6 +29,16 @@ describe('resolveCompositeSource (SLA-868)', () => {
     expect(await resolveCompositeSource('ws', v, {}, d)).toBe(v);
     expect(enqueued).toEqual([]);
   });
+  test('an explicit composite request replaces an AI Recreate deck: queues the render', async () => {
+    const { d, enqueued } = deps();
+    expect(await code(resolveCompositeSource('ws', video({ recreationKeys: keys }), {}, d, { replaceAiDeck: true }))).toBe('composite_deck_pending');
+    expect(enqueued).toHaveLength(1);
+  });
+  test('replacing an AI Recreate deck is refused while an unfinished experiment reads it', async () => {
+    const busy = deps({ activeExperimentIds: async () => ['exp-1'] });
+    expect(await code(resolveCompositeSource('ws', video({ recreationKeys: keys }), {}, busy.d, { replaceAiDeck: true }))).toBe('composite_deck_in_use');
+    expect(busy.enqueued).toEqual([]);
+  });
   test('a video that is not photo-annotation falls through to the existing eligibility error path', async () => {
     const { d, enqueued } = deps({ latestAnalysisJson: async () => ({ shots: shots.map(s => ({ ...s, onScreenText: 'hello' })), onScreenText: [] }) });
     const v = video({});
