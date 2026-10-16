@@ -148,6 +148,7 @@ exports.Prisma.WorkspaceScalarFieldEnum = {
   stripeTestSubscriptionId: 'stripeTestSubscriptionId',
   thumbRetentionDays: 'thumbRetentionDays',
   mediaRetentionDays: 'mediaRetentionDays',
+  category: 'category',
   digestEnabled: 'digestEnabled',
   digestEmail: 'digestEmail',
   lastDigestAt: 'lastDigestAt',

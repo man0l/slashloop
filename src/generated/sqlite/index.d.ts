@@ -4624,6 +4624,7 @@ export namespace Prisma {
     stripeTestSubscriptionId: string | null
     thumbRetentionDays: number | null
     mediaRetentionDays: number | null
+    category: string | null
     digestEnabled: boolean | null
     digestEmail: string | null
     lastDigestAt: Date | null
@@ -4653,6 +4654,7 @@ export namespace Prisma {
     stripeTestSubscriptionId: string | null
     thumbRetentionDays: number | null
     mediaRetentionDays: number | null
+    category: string | null
     digestEnabled: boolean | null
     digestEmail: string | null
     lastDigestAt: Date | null
@@ -4682,6 +4684,7 @@ export namespace Prisma {
     stripeTestSubscriptionId: number
     thumbRetentionDays: number
     mediaRetentionDays: number
+    category: number
     digestEnabled: number
     digestEmail: number
     lastDigestAt: number
@@ -4729,6 +4732,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: true
     thumbRetentionDays?: true
     mediaRetentionDays?: true
+    category?: true
     digestEnabled?: true
     digestEmail?: true
     lastDigestAt?: true
@@ -4758,6 +4762,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: true
     thumbRetentionDays?: true
     mediaRetentionDays?: true
+    category?: true
     digestEnabled?: true
     digestEmail?: true
     lastDigestAt?: true
@@ -4787,6 +4792,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: true
     thumbRetentionDays?: true
     mediaRetentionDays?: true
+    category?: true
     digestEnabled?: true
     digestEmail?: true
     lastDigestAt?: true
@@ -4903,6 +4909,7 @@ export namespace Prisma {
     stripeTestSubscriptionId: string | null
     thumbRetentionDays: number
     mediaRetentionDays: number
+    category: string
     digestEnabled: boolean
     digestEmail: string | null
     lastDigestAt: Date | null
@@ -4951,6 +4958,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: boolean
     thumbRetentionDays?: boolean
     mediaRetentionDays?: boolean
+    category?: boolean
     digestEnabled?: boolean
     digestEmail?: boolean
     lastDigestAt?: boolean
@@ -4989,6 +4997,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: boolean
     thumbRetentionDays?: boolean
     mediaRetentionDays?: boolean
+    category?: boolean
     digestEnabled?: boolean
     digestEmail?: boolean
     lastDigestAt?: boolean
@@ -5018,6 +5027,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: boolean
     thumbRetentionDays?: boolean
     mediaRetentionDays?: boolean
+    category?: boolean
     digestEnabled?: boolean
     digestEmail?: boolean
     lastDigestAt?: boolean
@@ -5047,13 +5057,14 @@ export namespace Prisma {
     stripeTestSubscriptionId?: boolean
     thumbRetentionDays?: boolean
     mediaRetentionDays?: boolean
+    category?: boolean
     digestEnabled?: boolean
     digestEmail?: boolean
     lastDigestAt?: boolean
     digestJson?: boolean
   }
 
-  export type WorkspaceOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "ownerId" | "name" | "monthlyBudgetCents" | "autoAnalyzeRulesJson" | "analysisConfigJson" | "failureCountsJson" | "createdAt" | "updatedAt" | "planKey" | "planCredits" | "packCredits" | "billingStatus" | "periodStart" | "periodEnd" | "autoTopUp" | "stripeCustomerId" | "stripeSubscriptionId" | "stripeTestCustomerId" | "stripeTestSubscriptionId" | "thumbRetentionDays" | "mediaRetentionDays" | "digestEnabled" | "digestEmail" | "lastDigestAt" | "digestJson", ExtArgs["result"]["workspace"]>
+  export type WorkspaceOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "ownerId" | "name" | "monthlyBudgetCents" | "autoAnalyzeRulesJson" | "analysisConfigJson" | "failureCountsJson" | "createdAt" | "updatedAt" | "planKey" | "planCredits" | "packCredits" | "billingStatus" | "periodStart" | "periodEnd" | "autoTopUp" | "stripeCustomerId" | "stripeSubscriptionId" | "stripeTestCustomerId" | "stripeTestSubscriptionId" | "thumbRetentionDays" | "mediaRetentionDays" | "category" | "digestEnabled" | "digestEmail" | "lastDigestAt" | "digestJson", ExtArgs["result"]["workspace"]>
   export type WorkspaceInclude<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
     sources?: boolean | Workspace$sourcesArgs<ExtArgs>
     boards?: boolean | Workspace$boardsArgs<ExtArgs>
@@ -5145,6 +5156,13 @@ export namespace Prisma {
        */
       thumbRetentionDays: number
       mediaRetentionDays: number
+      /**
+       * general | faceless. Scopes workspace-level content rules: the "no real
+       * people, celebrities or public figures" lock applies to faceless
+       * workspaces only (SLA-885). Writable via update_settings; validated
+       * against WORKSPACE_CATEGORIES in src/experiments/source-format.ts.
+       */
+      category: string
       /**
        * Opt-out for the weekly outlier digest (api/cron/digest.ts). On by
        * default — the digest is the retention engine, not marketing.
@@ -5618,6 +5636,7 @@ export namespace Prisma {
     readonly stripeTestSubscriptionId: FieldRef<"Workspace", 'String'>
     readonly thumbRetentionDays: FieldRef<"Workspace", 'Int'>
     readonly mediaRetentionDays: FieldRef<"Workspace", 'Int'>
+    readonly category: FieldRef<"Workspace", 'String'>
     readonly digestEnabled: FieldRef<"Workspace", 'Boolean'>
     readonly digestEmail: FieldRef<"Workspace", 'String'>
     readonly lastDigestAt: FieldRef<"Workspace", 'DateTime'>
@@ -34569,6 +34588,7 @@ export namespace Prisma {
     stripeTestSubscriptionId: 'stripeTestSubscriptionId',
     thumbRetentionDays: 'thumbRetentionDays',
     mediaRetentionDays: 'mediaRetentionDays',
+    category: 'category',
     digestEnabled: 'digestEnabled',
     digestEmail: 'digestEmail',
     lastDigestAt: 'lastDigestAt',
@@ -35085,6 +35105,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: StringNullableFilter<"Workspace"> | string | null
     thumbRetentionDays?: IntFilter<"Workspace"> | number
     mediaRetentionDays?: IntFilter<"Workspace"> | number
+    category?: StringFilter<"Workspace"> | string
     digestEnabled?: BoolFilter<"Workspace"> | boolean
     digestEmail?: StringNullableFilter<"Workspace"> | string | null
     lastDigestAt?: DateTimeNullableFilter<"Workspace"> | Date | string | null
@@ -35122,6 +35143,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: SortOrderInput | SortOrder
     thumbRetentionDays?: SortOrder
     mediaRetentionDays?: SortOrder
+    category?: SortOrder
     digestEnabled?: SortOrder
     digestEmail?: SortOrderInput | SortOrder
     lastDigestAt?: SortOrderInput | SortOrder
@@ -35162,6 +35184,7 @@ export namespace Prisma {
     autoTopUp?: BoolFilter<"Workspace"> | boolean
     thumbRetentionDays?: IntFilter<"Workspace"> | number
     mediaRetentionDays?: IntFilter<"Workspace"> | number
+    category?: StringFilter<"Workspace"> | string
     digestEnabled?: BoolFilter<"Workspace"> | boolean
     digestEmail?: StringNullableFilter<"Workspace"> | string | null
     lastDigestAt?: DateTimeNullableFilter<"Workspace"> | Date | string | null
@@ -35199,6 +35222,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: SortOrderInput | SortOrder
     thumbRetentionDays?: SortOrder
     mediaRetentionDays?: SortOrder
+    category?: SortOrder
     digestEnabled?: SortOrder
     digestEmail?: SortOrderInput | SortOrder
     lastDigestAt?: SortOrderInput | SortOrder
@@ -35236,6 +35260,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: StringNullableWithAggregatesFilter<"Workspace"> | string | null
     thumbRetentionDays?: IntWithAggregatesFilter<"Workspace"> | number
     mediaRetentionDays?: IntWithAggregatesFilter<"Workspace"> | number
+    category?: StringWithAggregatesFilter<"Workspace"> | string
     digestEnabled?: BoolWithAggregatesFilter<"Workspace"> | boolean
     digestEmail?: StringNullableWithAggregatesFilter<"Workspace"> | string | null
     lastDigestAt?: DateTimeNullableWithAggregatesFilter<"Workspace"> | Date | string | null
@@ -37248,6 +37273,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -37285,6 +37311,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -37322,6 +37349,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -37359,6 +37387,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -37396,6 +37425,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -37425,6 +37455,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -37454,6 +37485,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -39817,6 +39849,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: SortOrder
     thumbRetentionDays?: SortOrder
     mediaRetentionDays?: SortOrder
+    category?: SortOrder
     digestEnabled?: SortOrder
     digestEmail?: SortOrder
     lastDigestAt?: SortOrder
@@ -39854,6 +39887,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: SortOrder
     thumbRetentionDays?: SortOrder
     mediaRetentionDays?: SortOrder
+    category?: SortOrder
     digestEnabled?: SortOrder
     digestEmail?: SortOrder
     lastDigestAt?: SortOrder
@@ -39883,6 +39917,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: SortOrder
     thumbRetentionDays?: SortOrder
     mediaRetentionDays?: SortOrder
+    category?: SortOrder
     digestEnabled?: SortOrder
     digestEmail?: SortOrder
     lastDigestAt?: SortOrder
@@ -43166,6 +43201,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -43202,6 +43238,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -43254,6 +43291,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -43290,6 +43328,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -43326,6 +43365,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -43362,6 +43402,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -43414,6 +43455,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -43450,6 +43492,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -43486,6 +43529,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -43522,6 +43566,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -43574,6 +43619,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -43610,6 +43656,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -43646,6 +43693,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -43682,6 +43730,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -43852,6 +43901,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -43888,6 +43938,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -45205,6 +45256,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -45241,6 +45293,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -45318,6 +45371,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -45354,6 +45408,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -46143,6 +46198,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -46179,6 +46235,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -46231,6 +46288,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -46267,6 +46325,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -46391,6 +46450,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -46427,6 +46487,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -46479,6 +46540,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -46515,6 +46577,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -46551,6 +46614,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -46587,6 +46651,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: string | null
     thumbRetentionDays?: number
     mediaRetentionDays?: number
+    category?: string
     digestEnabled?: boolean
     digestEmail?: string | null
     lastDigestAt?: Date | string | null
@@ -46639,6 +46704,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -46675,6 +46741,7 @@ export namespace Prisma {
     stripeTestSubscriptionId?: NullableStringFieldUpdateOperationsInput | string | null
     thumbRetentionDays?: IntFieldUpdateOperationsInput | number
     mediaRetentionDays?: IntFieldUpdateOperationsInput | number
+    category?: StringFieldUpdateOperationsInput | string
     digestEnabled?: BoolFieldUpdateOperationsInput | boolean
     digestEmail?: NullableStringFieldUpdateOperationsInput | string | null
     lastDigestAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null

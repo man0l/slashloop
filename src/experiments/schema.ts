@@ -782,8 +782,10 @@ export function effectiveChangedFields(e: Experiment, baseline: BriefData, brief
   // A slides diff that moves each slide's scene, plus at most the words (the hook, or an angle retelling them), is the scene variable.
   const sceneMoved = e.pipeline === 'contract' && e.instructions.variables.includes('scene') && changed.includes('slides')
     && brief.slides.length === baseline.slides.length && brief.slides.some((s, n) => s.scene !== baseline.slides[n]!.scene);
-  const wordsOnly = (s: BriefData['slides'][number], b: BriefData['slides'][number]) => same({ ...s, scene: '', overlayText: '' }, { ...b, scene: '', overlayText: '' });
-  if (sceneMoved && brief.slides.every((s, n) => same({ ...s, scene: '' }, { ...baseline.slides[n]!, scene: '' })
+  // SLA-885: a restaged slide carries no composition of arm A's setting, so composition is part of the scene change on that slide.
+  const blankScene = (s: BriefData['slides'][number], b: BriefData['slides'][number]) => ({ ...s, scene: '', ...(s.scene !== b.scene ? { composition: '' } : {}) });
+  const wordsOnly = (s: BriefData['slides'][number], b: BriefData['slides'][number]) => same({ ...blankScene(s, b), overlayText: '' }, { ...blankScene(b, s), overlayText: '' });
+  if (sceneMoved && brief.slides.every((s, n) => same(blankScene(s, baseline.slides[n]!), blankScene(baseline.slides[n]!, s))
     || (n === 0 && changed.includes('hook') && wordsOnly(s, baseline.slides[0]!)) || (changed.includes('concept') && wordsOnly(s, baseline.slides[n]!))))
     return [...changed.filter(k => k !== 'slides'), 'scene'];
   // SLA-867: the morph grades live on the slides, so a slides diff confined to them belongs to the morph variable.

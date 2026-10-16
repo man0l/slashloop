@@ -34,7 +34,7 @@ const slideAt = (i: number, grades = GRADES) => ({
 });
 const input = (o: Partial<ContractInput> = {}): ContractInput => ({
   direction: 'Keep the source format: one invented man graded slide by slide, labels copied exactly.', slideCount: 8, frameCount: 8, variables: ['morph'], mode: 'controlled', alternates: 1, morph: true,
-  locks: tagLocks([...universalLocks()], universalLocks()), sourceDefaults: [], ...o,
+  locks: tagLocks([...universalLocks('faceless')], universalLocks('faceless')), sourceDefaults: [], ...o,
 });
 const raw = (o: Record<string, unknown> = {}) => ({
   droppedSourceDefaults: [], droppedLocks: [], subject: 'person', identity: 'invented-consistent',
@@ -127,7 +127,7 @@ describe('contract compile (morph)', () => {
     const scenes = LABELS.map((_, i) => ({ ...slideAt(i), scene: i === 3 ? `${SCENE}, an MTN face` : SCENE }));
     expect(code(raw({ slides: scenes }))).toBe('morph_valuation_words');
     expect(code(raw({ identitySheet: 'a chad-looking man' }))).toBe('morph_valuation_words');
-    expect(code(raw(), input({ locks: tagLocks(['make him look low testosterone at the end'], universalLocks()) }))).toBe('morph_valuation_words');
+    expect(code(raw(), input({ locks: tagLocks(['make him look low testosterone at the end'], universalLocks('faceless')) }))).toBe('morph_valuation_words');
   });
 
   test('arm B keeps arm A\'s slide 1 and labels and only regrades the later slides', () => {

@@ -11,7 +11,7 @@ const slide = (o: Partial<{ overlayText: string; arcLevel: string; scene: string
 
 const input = (o: Partial<ContractInput> = {}): ContractInput => ({
   direction: 'dir', slideCount: 3, frameCount: 3, variables: ['hook'], mode: 'controlled', alternates: 1,
-  locks: tagLocks(['Faceless: no face visible', ...universalLocks()], universalLocks()),
+  locks: tagLocks(['Faceless: no face visible', ...universalLocks('faceless')], universalLocks('faceless')),
   sourceDefaults: ['2x2 food grid', 'Keep the subject exactly as in the source frame', 'styleFormula.medium = collage'],
   ...o,
 });
@@ -27,7 +27,7 @@ const raw = (o: Record<string, unknown> = {}) => ({
 
 describe('lock tagging and precedence', () => {
   test('caller locks are user, always-on locks are workspace', () => {
-    const locks = tagLocks(['Faceless: no face visible', ...universalLocks()], universalLocks());
+    const locks = tagLocks(['Faceless: no face visible', ...universalLocks('faceless')], universalLocks('faceless'));
     expect(locks.filter(l => l.origin === 'user').map(l => l.text)).toEqual(['Faceless: no face visible']);
     expect(locks.filter(l => l.origin === 'workspace')).toHaveLength(4);
   });
@@ -45,22 +45,22 @@ describe('lock tagging and precedence', () => {
   });
 
   test('a workspace lock is dropped only with a reason; a user lock is never dropped', () => {
-    const real = universalLocks()[2]!;
+    const real = universalLocks('faceless')[2]!;
     const c = normalizeContract(raw({ droppedLocks: [
       { lock: real, origin: 'workspace', reason: 'the user keeps the real source person' },
-      { lock: universalLocks()[3]!, origin: 'workspace', reason: '' },
+      { lock: universalLocks('faceless')[3]!, origin: 'workspace', reason: '' },
       { lock: 'Faceless: no face visible', origin: 'user', reason: 'because' },
     ] }), input());
     expect(c.droppedLocks).toEqual([{ lock: real, origin: 'workspace', reason: 'the user keeps the real source person' }]);
     const hard = c.hardLocks.map(l => l.text);
     expect(hard).toContain('Faceless: no face visible');
-    expect(hard).toContain(universalLocks()[3]);
+    expect(hard).toContain(universalLocks('faceless')[3]);
     expect(hard).not.toContain(real);
     expect(c.issues.length).toBe(2);
   });
 
   test('source defaults never appear as hard rules, and a dropped lock leaves the prompt', () => {
-    const real = universalLocks()[2]!;
+    const real = universalLocks('faceless')[2]!;
     const c = normalizeContract(raw({ droppedLocks: [{ lock: real, origin: 'workspace', reason: 'user keeps a real person' }] }), input());
     const p = compileSlidePrompt(c, 0, 'fresh', 'none');
     expect(p).toContain('HARD RULES');

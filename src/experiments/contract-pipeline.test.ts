@@ -10,7 +10,7 @@ import { applyRetry } from './service.js';
 import { experimentProgress } from '../tools/experiments.js';
 import { serialize } from './store.js';
 import { EDIT_SCENE_GOAL, editSceneDirection, type Experiment } from './schema.js';
-import { universalLocks } from './source-format.js';
+import { expandPreset, universalLocks, type WorkspaceCategory } from './source-format.js';
 
 const originalEnv = { ...process.env };
 beforeEach(() => { process.env.R2_THUMB_PUBLIC_BASE = 'https://assets.example.test'; });
@@ -36,11 +36,12 @@ const qaFailSlide = (bad: number, n = 3) => { const q = qaPass(n); q.slides[bad]
 interface Script { contract: unknown; contracts?: unknown[]; qa: Array<(armSlides: number, user: string) => unknown>; rejectImage?: (prompt: string) => boolean; refusal?: string; composeFails?: boolean }
 const FILTER_400 = 'OpenRouter image error 400: {"error":{"message":"The response was filtered due to the prompt triggering our content management policy"}}';
 
-function world(script: Script, overrides: Partial<Experiment['instructions']> = {}) {
+function world(script: Script, overrides: Partial<Experiment['instructions']> = {}, category?: WorkspaceCategory) {
   const calls = { contract: 0, contractUsers: [] as string[], images: [] as Array<{ prompt: string; referenceUrl?: string }>, qa: [] as Array<{ images: number; user: string }>, composed: [] as Array<{ text: string; index: number }> };
   const files = new Map<string, Buffer>();
   const render: RenderDeps = {
     findSources: async () => [video('src')],
+    ...(category ? { workspaceCategory: async () => category } : {}),
     generateImage: async o => { calls.images.push({ prompt: o.prompt, referenceUrl: o.referenceUrl }); if (script.rejectImage?.(o.prompt)) throw new Error(script.refusal ?? FILTER_400); return { buffer: Buffer.from(`img${calls.images.length}`), contentType: 'image/jpeg', costUsd: 0.01 }; },
     upload: async ({ path, body }) => { files.set(path, body); },
     composeOverlay: async o => { if (script.composeFails) throw new Error('sharp missing'); calls.composed.push({ text: o.text, index: o.slideIndex }); return { buffer: Buffer.concat([o.buffer, Buffer.from(`+${o.text}`)]), contentType: 'image/jpeg', font: 'Inter Bold', fontSize: 10, lines: [o.text], skipped: [] }; },
@@ -824,6 +825,49 @@ describe('SLA-811: a QA-failed experiment is retried with a model-revised brief'
   });
 });
 
+describe('SLA-885: the real-people lock follows the workspace category', () => {
+  const REAL_PEOPLE = /real people|celebrities|public figures/i;
+  const draft = (category: WorkspaceCategory) => {
+    const x = expandPreset('photo-person', { variables: ['character'], mode: 'controlled' }, true, category);
+    return { variables: x.variables as Experiment['instructions']['variables'], mode: x.mode, direction: x.direction, lockedConstraints: x.lockedConstraints, sourceDefaults: x.sourceDefaults };
+  };
+  const characterContract = () => rawContract({ identity: 'source', pools: [{ variable: 'character', values: [{ value: 'a bearded man with short dark hair', slides: [] }] }] });
+
+  test('general workspace: no real-people lock reaches the planner, nothing is dropped, the baseline edits the source frames', async () => {
+    const w = world({ contract: characterContract(), qa: [() => qaPass(), () => qaPass()] }, draft('general'));
+    await w.plan();
+    expect(w.row.error).toBeNull();
+    const sent = JSON.parse(w.calls.contractUsers[0]!) as { locks: Array<{ lock: string; origin: string }> };
+    expect(sent.locks.some(l => REAL_PEOPLE.test(l.lock))).toBe(false);
+    expect(sent.locks.filter(l => l.origin === 'workspace').map(l => l.lock)).toEqual(expect.arrayContaining(universalLocks('general')));
+    expect(w.row.contract?.droppedLocks.some(l => REAL_PEOPLE.test(l.lock))).toBe(false);
+    expect(w.row.contract?.hardLocks.some(l => REAL_PEOPLE.test(l.text))).toBe(false);
+    expect(w.row.contract?.keepSourceImage).toBe(true);
+    await w.generate();
+    expect(w.calls.images.slice(0, 3).map(i => i.referenceUrl)).toEqual([0, 1, 2].map(i => `https://assets.example.test/w/src/slides/${i}.jpg`));
+  });
+
+  test('faceless workspace: the lock travels with the draft as a workspace lock', async () => {
+    const w = world({ contract: characterContract(), qa: [] }, draft('faceless'));
+    await w.plan();
+    const sent = JSON.parse(w.calls.contractUsers[0]!) as { locks: Array<{ lock: string; origin: string }> };
+    const real = sent.locks.filter(l => REAL_PEOPLE.test(l.lock));
+    expect(real).toHaveLength(1);
+    expect(real[0]!.origin).toBe('workspace');
+    expect(w.row.contract?.hardLocks.some(l => REAL_PEOPLE.test(l.text))).toBe(true);
+  });
+
+  test('an edit-scene re-plan takes the category from the render deps', async () => {
+    for (const [category, expected] of [['faceless', true], ['general', false]] as const) {
+      const w = world({ contract: rawContract({ pools: [{ variable: 'scene', values: [{ value: 'a gym', slides: [] }] }] }), qa: [] },
+        { goal: EDIT_SCENE_GOAL, direction: editSceneDirection(['a gym']), lockedConstraints: [], variables: ['scene'], sceneOverrides: ['a gym'] }, category);
+      await w.plan();
+      const sent = JSON.parse(w.calls.contractUsers[0]!) as { locks: Array<{ lock: string }> };
+      expect(sent.locks.some(l => REAL_PEOPLE.test(l.lock))).toBe(expected);
+    }
+  });
+});
+
 describe('scene variable: arm B edits every baseline slide into another setting', () => {
   const OPENER = 'Edit the attached 9:16 frame. Keep the SAME person, outfit, pose, medium, lighting and camera. Change ONLY the setting and props to the slide scene.';
   const STREET = 'a rainy street at night';
@@ -848,6 +892,20 @@ describe('scene variable: arm B edits every baseline slide into another setting'
     expect(b!.changedVariables[0]!.value).toBe(STREET);
   });
 
+  // SLA-885: the alternate on c60efa2b kept arm A's "ceiling fan, paneled door" composition under a locker-room scene.
+  test('the alternate carries none of arm A\'s composition: it names the source room\'s furniture', async () => {
+    const roomy = [0, 1, 2].map(i => slide({ overlayText: `s${i}`, composition: 'person centred under the ceiling fan, paneled door behind' }));
+    for (const user of [[], ['a gym locker room']]) {
+      const w = world({ contract: sceneContract({ slides: roomy, pools: [{ variable: 'scene', values: [{ value: STREET, slides: roomy.map(s => ({ ...s, scene: STREET, composition: 'by the ceiling fan' })) }] }] }), qa: [] },
+        { ...vars, ...(user.length ? { sceneOverrides: user } : {}) });
+      await w.plan();
+      const [a, b] = w.row.variants;
+      expect(a!.brief.slides.every(s => /ceiling fan/.test(s.composition ?? ''))).toBe(true);
+      expect(b!.brief.slides.map(s => s.composition ?? '')).toEqual(['', '', '']);
+      expect(w.row.error).toBeNull();
+    }
+  });
+
   test('the user\'s own scenes win over the model\'s, one per slide', async () => {
     const w = world(scenario(), { ...vars, sceneOverrides: ['a beach', 'a kitchen', 'a train'] });
     await w.plan();
@@ -863,9 +921,9 @@ describe('scene variable: arm B edits every baseline slide into another setting'
     expect(sent.direction).toBe(editSceneDirection([LOCKER]));
     expect(sent.direction).not.toContain(`Scene: ${LOCKER}`);
     expect(sent.direction.indexOf(LOCKER)).toBeGreaterThan(sent.direction.indexOf('alternate only'));
-    expect(sent.locks.map(l => l.lock)).toEqual(universalLocks());
+    expect(sent.locks.map(l => l.lock)).toEqual(universalLocks('general'));
     expect(sent.locks.every(l => l.origin === 'workspace')).toBe(true);
-    expect(w.row.contract?.hardLocks.map(l => l.text)).toEqual(universalLocks());
+    expect(w.row.contract?.hardLocks.map(l => l.text)).toEqual(universalLocks('general'));
   });
 
   test('a create-mode scene test keeps its own direction and locks', async () => {

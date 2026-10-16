@@ -30,7 +30,7 @@ import { withNextSteps, type NextStep } from '../lib/next-steps.js';
 import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload } from '../lib/credits.js';
 import { CompositeOptions } from '../experiments/composite/options.js';
 import { createExperiment, dedupeSourcePosts, estimate, mutate, fingerprint, estimateFeedback } from '../experiments/service.js';
-import { SOURCE_FORMATS, universalLocks } from '../experiments/source-format.js';
+import { SOURCE_FORMATS, universalLocks, parseWorkspaceCategory, type WorkspaceCategory } from '../experiments/source-format.js';
 import { ARC_LEVELS } from '../experiments/resolved-contract.js';
 import { load, list, serialize, testSummary } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
@@ -133,7 +133,7 @@ export function editSlideDirection(hook: string | undefined, overlayTexts: Array
 
 /** Edit mode is a single deck, so the "one experiment per source" loop is length 1 by definition. */
 export function editInstructions(hook: string | undefined, overlayTexts: Array<string | null>, language: string,
-  options: { variables?: Array<'hook' | 'character' | 'scene' | 'morph' | 'ladder'>; character?: string; scene?: string | string[]; morph?: string; overlayMode?: 'model' | 'script' } = {}): InstructionsData {
+  options: { variables?: Array<'hook' | 'character' | 'scene' | 'morph' | 'ladder'>; character?: string; scene?: string | string[]; morph?: string; overlayMode?: 'model' | 'script'; category?: WorkspaceCategory } = {}): InstructionsData {
   const variables = (options.variables ?? [options.scene !== undefined ? 'scene' : options.character !== undefined ? 'character' : options.morph !== undefined ? 'morph' : 'hook']).map(v => v === 'ladder' ? 'morph' as const : v);
   if (variables.length !== 1) throw new ExperimentError(400, 'invalid_request', 'Edit mode tests exactly one variable: hook, character, scene or morph. Use create mode for several variables.');
   if (variables[0] === 'scene') {
@@ -145,7 +145,7 @@ export function editInstructions(hook: string | undefined, overlayTexts: Array<s
     return Instructions.parse({
       goal: EDIT_SCENE_GOAL, brand: '', audience: '', language: language.trim() || 'English',
       // SLA-881: the scene edit re-renders every slide, so the always-on workspace locks apply as in create mode.
-      direction: editSceneDirection(scenes), lockedConstraints: universalLocks(), variables, mode: 'controlled', sceneOverrides: scenes,
+      direction: editSceneDirection(scenes), lockedConstraints: universalLocks(options.category ?? 'general'), variables, mode: 'controlled', sceneOverrides: scenes,
       ...(options.overlayMode ? { overlayMode: options.overlayMode } : {}),
     });
   }
@@ -492,7 +492,7 @@ const instructionsInput = z.object({
   sourceFormat: z.enum(SOURCE_FORMATS).optional().describe(
     'What kind of source this is: statue-collage, sprite-vs-real, annotated-face, ai-render, sketch, portrait-collage or photo-person. '
     + 'Expands to default variables, mode, direction and locks, and emits person-appearance locks (hair, eyes, wardrobe...) only where the source shows a photographic person. '
-    + 'Always locks: no source watermarks/handles/competitor brands, our app on the CTA slide, no real or celebrity likeness, adults only. '
+    + 'Always locks: no source watermarks/handles/competitor brands, our app on the CTA slide, adults only; a faceless-category workspace (update_settings category) adds no real people, celebrities or public figures. '
     + 'Inferred from the source analysis when omitted; your own variables/mode/direction win over the preset.',
   ),
   variables: z.array(VARIABLE_INPUT).min(1).max(7).optional().describe(
@@ -708,7 +708,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       }
       const edit = mode === 'edit'
         ? {
-          instructions: editInstructions(hook, overlayTexts ?? [], language ?? 'English', { variables, character, scene, morph, overlayMode }),
+          instructions: editInstructions(hook, overlayTexts ?? [], language ?? 'English', { variables, character, scene, morph, overlayMode, category: parseWorkspaceCategory((workspace as { category?: unknown }).category) }),
           variantCount: EDIT_VARIANT_COUNT,
           maxCredits: EDIT_MAX_CREDITS,
         }

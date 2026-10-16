@@ -1,7 +1,7 @@
 import type { Video } from '@prisma/client';
 import { experimentSourceKeys, isPhotoPost } from '../lib/media.js';
 import { publicUrl, thumbBucket, thumbPath } from '../lib/storage.js';
-import { universalLocks } from './source-format.js';
+import { universalLocks, type WorkspaceCategory } from './source-format.js';
 import {
   CONTRACT_SYSTEM, ContractError, QA_SYSTEM, RawQa, baselineEdit, captionEditPrompt, chooseReferenceUse, compileQaPrompt, compileSlidePrompt,
   contractJsonSchema, contractPromptPayload, normalizeContract, pickFramesByArc, qaJsonSchema, qaVerdict, slideRole, tagLocks,
@@ -69,11 +69,12 @@ const isEditScene = (e: Pick<Experiment, 'instructions'>) => e.instructions.goal
  * (drafts before SLA-881 store a direction that staged the baseline in the new setting too), and always carries the
  * workspace locks (those drafts stored none).
  */
-export function contractInputOf(e: Experiment, frameCount: number): ContractInput {
+export function contractInputOf(e: Experiment, frameCount: number, category: WorkspaceCategory = 'general'): ContractInput {
   const editScene = isEditScene(e);
+  // Tagged against every category's locks, so a stored lock keeps its workspace origin if the category changes later.
   return {
     direction: editScene ? editSceneDirection(e.instructions.sceneOverrides!) : direction(e),
-    locks: tagLocks(editScene ? [...universalLocks(), ...e.instructions.lockedConstraints] : e.instructions.lockedConstraints, universalLocks()),
+    locks: tagLocks(editScene ? [...universalLocks(category), ...e.instructions.lockedConstraints] : e.instructions.lockedConstraints, universalLocks('faceless')),
     sourceDefaults: e.instructions.sourceDefaults ?? [], slideCount: e.slideCount, frameCount,
     variables: e.instructions.variables, mode: e.instructions.mode, alternates: Math.max(e.variantCount - 1, 1),
     ...(e.instructions.sceneOverrides?.length ? { sceneOverrides: e.instructions.sceneOverrides } : {}),
@@ -122,7 +123,7 @@ export async function prepareContractBriefs(e: Experiment, render: RenderDeps, r
   const bytes = await readFrames(render, frames);
   return {
     execute: async () => {
-      const input = contractInputOf(e, frames.length);
+      const input = contractInputOf(e, frames.length, await render.workspaceCategory?.(e.workspaceId));
       const sources = e.inputs.filter(i => i.status === 'ready').map((i, ix) => ({
         // SLA-809: every observed slide, each trimmed, so a ladder's last frames (where the change peaks) are never cut off.
         source: `s${ix}`, observations: i.evidence.slice(0, MAX_CONTRACT_FRAMES + 4).map(v => `${v.location}: ${v.observation.slice(0, 240)}`).join(' | ').slice(0, 3000),
