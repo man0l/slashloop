@@ -581,7 +581,7 @@ export function pickFramesByArc(c: Pick<ResolvedContract, 'keepSourceImage' | 'b
 
 // ---- the slide prompt, compiled from the contract ------------------------------
 
-export type SlideRole = 'edit' | 'anchor-edit' | 'scene-edit' | 'fresh';
+export type SlideRole = 'edit' | 'anchor-edit' | 'baseline-edit' | 'fresh';
 const ARC_WORDS: Record<Exclude<ArcLevel, 'none'>, string> = { low: 'LOW (worst / earliest)', mid: 'MIDDLE', high: 'HIGH (best / latest)' };
 
 export function textLine(overlayText: string): string {
@@ -626,7 +626,7 @@ export function feedbackLine(feedback: string): string {
 }
 
 /** `labelRule` is the source-label instruction (render-prompt.labelRenderInstruction); it is passed in because that module cannot be imported from here. */
-export function compileSlidePrompt(c: ResolvedContract, index: number, role: SlideRole, referenceUse: ReferenceUse, fix = '', feedback = '', labelRule = ''): string {
+export function compileSlidePrompt(c: ResolvedContract, index: number, role: SlideRole, referenceUse: ReferenceUse, fix = '', feedback = '', labelRule = '', edit: BaselineEdit = { character: false, scene: true }): string {
   const s = c.slides[index];
   if (!s) throw new RangeError('Slide index is outside the contract.');
   if (c.morph && role !== 'edit') return compileMorphPrompt(c, index, role, referenceUse, fix, feedback);
@@ -640,11 +640,18 @@ export function compileSlidePrompt(c: ResolvedContract, index: number, role: Sli
   const source = sourceArcLine(c, s, role);
   const hard = c.hardLocks.map(l => l.text);
   const hardLine = hard.length ? `HARD RULES (they win over the change and the source change above):\n- ${hard.join('\n- ')}` : '';
-  // The attached frame is the baseline deck's own slide: only where it takes place changes, and the caption stays exactly as contracted.
-  if (role === 'scene-edit') return [
-    'Edit the attached 9:16 frame. Keep the SAME person, medium, lighting and camera. Change ONLY the setting, props and action to the slide scene.',
-    labelRule, `SCENE for this image: ${s.scene}`, hard.length ? `HARD RULES:\n- ${hard.join('\n- ')}` : '',
-    text, fixLine].filter(Boolean).join('\n');
+  // The attached frame is the baseline deck's own slide: only the named axes change, and the caption stays exactly as contracted.
+  if (role === 'baseline-edit') {
+    const { character, scene } = edit;
+    const opener = character
+      ? `Edit the attached 9:16 frame. Replace the person with the NEW PERSON below${scene ? ' and change the setting, props and action to the slide scene' : ''}. Keep the medium, lighting, camera, framing and composition${scene ? '' : ', and keep the setting, props and action exactly as they are'}.`
+      : 'Edit the attached 9:16 frame. Keep the SAME person, medium, lighting and camera. Change ONLY the setting, props and action to the slide scene.';
+    return [
+      opener, labelRule,
+      character ? `NEW PERSON (the face, hair, build and outfit are theirs; nothing of the person in the attached frame stays): ${c.identitySheet}` : '',
+      scene ? `SCENE for this image: ${s.scene}` : '', hard.length ? `HARD RULES:\n- ${hard.join('\n- ')}` : '',
+      text, fixLine].filter(Boolean).join('\n');
+  }
   if (role === 'anchor-edit') return [
     arcDistance(c, s) > 0
       // SLA-809: "keep the same face and build" froze exactly what an arc changes. On an arc only the identity is kept.
@@ -886,14 +893,23 @@ export function assertArmDiffers(a: ArmBrief, b: ArmBrief, declared: readonly Ar
   if (extra.length) throw new ContractError('arms_differ', `An alternate differs from arm A in ${extra.join(', ')}; only ${declared.map(d => `"${d}"`).join(', ')} may differ.`);
 }
 
-export type SlideWork = 'render' | 'caption-edit' | 'scene-edit' | 'reuse';
-/** What arm B has to do for slide `i`, given arm A. Deck-level changes touch every slide.
- *  `sceneArm`: the variable is scene, so a slide that differs only in its scene edits the baseline's picture; in any other test it is re-rendered. */
-export function slideWork(a: ArmBrief, b: ArmBrief, i: number, sceneArm = false): SlideWork {
-  if (a.character !== b.character || a.visualStyle !== b.visualStyle) return 'render';
+export type SlideWork = 'render' | 'caption-edit' | 'baseline-edit' | 'reuse';
+/** What a baseline-edit changes on one slide; the prompt names exactly these. */
+export interface BaselineEdit { character: boolean; scene: boolean }
+/** What alternate `b` changes on slide `i` relative to baseline `a`, among the axes a baseline edit can carry. */
+export function baselineEdit(a: ArmBrief, b: ArmBrief, i: number): BaselineEdit {
+  return { character: a.character !== b.character, scene: a.slides[i]?.scene !== b.slides[i]?.scene };
+}
+/** What alternate `b` has to do for slide `i`, given baseline `a`. Deck-level changes touch every slide.
+ *  `editFirst`: the alternate changes the person or the scene with the storyline locked, so a slide that differs only in
+ *  those (and its caption) edits the baseline's picture; in any other test it is re-rendered. */
+export function slideWork(a: ArmBrief, b: ArmBrief, i: number, editFirst = false): SlideWork {
+  if (a.visualStyle !== b.visualStyle) return 'render';
   const sa = a.slides[i], sb = b.slides[i];
   if (!sa || !sb) return 'render';
-  if (slideKey(sa) === slideKey(sb)) return 'reuse';
-  if (slideKey({ ...sa, overlayText: '' }) === slideKey({ ...sb, overlayText: '' })) return 'caption-edit';
-  return sceneArm && slideKey({ ...sa, scene: '' }) === slideKey({ ...sb, scene: '' }) ? 'scene-edit' : 'render';
+  if (a.character === b.character) {
+    if (slideKey(sa) === slideKey(sb)) return 'reuse';
+    if (slideKey({ ...sa, overlayText: '' }) === slideKey({ ...sb, overlayText: '' })) return 'caption-edit';
+  }
+  return editFirst && slideKey({ ...sa, scene: '', overlayText: '' }) === slideKey({ ...sb, scene: '', overlayText: '' }) ? 'baseline-edit' : 'render';
 }
