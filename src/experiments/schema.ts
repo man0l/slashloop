@@ -47,6 +47,24 @@ export function editSceneDirection(scenes: readonly string[]): string {
     + 'pose, medium, lighting, camera and overlay text, and changing only the setting and props. Never describe the new setting in arm A\'s slides. '
     + ('New setting for the alternate only: ' + said).slice(0, 1500) + '.';
 }
+/**
+ * The planner's direction for an edit-mode character test (SLA-894). Arm A is the source deck as it is, so the
+ * requested person is named for the alternate only: a direction that led with "Character: X" made the planner
+ * recast the baseline too, leaving no source frame to edit. No apostrophes: the site wizard embeds this prefix
+ * in client script and the two producers must emit the same string.
+ */
+export const EDIT_CHARACTER_DIRECTION_PREFIX = 'Keep the format of this source deck exactly. Arm A (the baseline) reproduces every source frame as it is: '
+  + 'the same person, outfit, pose, setting, props, medium, lighting, camera and overlay text. '
+  + 'The only tested variable is the character: the alternate replaces the person in each arm A slide with the new person, '
+  + 'the whole visible body (face, hair, neck, hands, forearms, skin tone, skin marks), keeping the outfit, pose, setting, medium, '
+  + 'lighting, camera and overlay text of that slide. Never describe the new person in the slides of arm A. '
+  + 'New person for the alternate only: ';
+export function editCharacterDirection(character: string): string {
+  return EDIT_CHARACTER_DIRECTION_PREFIX + character.trim() + '.';
+}
+/** Hard credit ceiling for an edit run, shared by the tool and the site wizard. SLA-894: sized for an 8-slide deck at
+ *  one candidate per slide (2 arms x 8 renders x 10 + planning and QA, about 175); the old flat 100 refused a 6-slide one. */
+export const EDIT_MAX_CREDITS = 200;
 const instructionsShape = {
   goal: text.min(1), brand: text, audience: text, language: z.string().trim().min(1).max(80),
   direction: directionText, lockedConstraints: constraints,
