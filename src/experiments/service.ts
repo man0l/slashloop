@@ -16,7 +16,8 @@ import { compileExactEdit } from './exact-edit.js';
 import { applyFeedback, applyRevise, briefToArm, FALLBACK_HOOK, generationTasks, hookForOverlay, isContractPipeline, isEditArm, isScriptOverlay, reviseTargets, slideUnits, slideWorkFor } from './contract-flow.js';
 import { slideWork } from './resolved-contract.js';
 import { postKey } from '../lib/post-key.js';
-import { expandPreset, inferSharedFormat } from './source-format.js';
+import { expandPreset, inferSharedFormat, type WorkspaceCategory } from './source-format.js';
+import { workspaceCategoryOf } from './workspace-category.js';
 import { assertPublicHttpsUrl } from '../lib/webhook-url.js';
 
 export const fingerprint = (v: unknown): string => createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -97,6 +98,8 @@ export type CreateExperimentDeps = {
   /** SLA-868: swap a photo-annotation video for its code-rendered composite deck, or queue the render and throw `composite_deck_pending`. */
   resolveComposite?: (workspaceId: string, video: Video, request: DeckRequest, opts?: { replaceAiDeck?: boolean }) => Promise<Video>;
   persist: (experiment: S.Experiment, idempotencyKey: string, run?: store.Run, notify?: S.NotifyConfig | null) => Promise<S.Experiment>;
+  /** SLA-885: the workspace's content category, which decides whether the real-people lock is emitted. Absent = general. */
+  workspaceCategory?: (workspaceId: string) => Promise<WorkspaceCategory>;
 };
 export const createDeps: CreateExperimentDeps = {
   findSource: (workspaceId, videoId) => db.video.findFirst({ where: { id: videoId, source: { workspaceId } } }),
@@ -104,6 +107,7 @@ export const createDeps: CreateExperimentDeps = {
   buildInput: compatibleInput,
   resolveComposite: (workspaceId, video, request, opts) => resolveCompositeSource(workspaceId, video, request, undefined, opts),
   persist: store.create,
+  workspaceCategory: workspaceCategoryOf,
 };
 export interface CreateExperimentOptions {
   /** False for source-preserving copy/character edits: they carry their own complete
@@ -175,7 +179,7 @@ export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: Cr
     const variables = ri.variables ?? ['hook' as const];
     const expanded = expandPreset(ri.sourceFormat ?? null, {
       variables, mode: ri.mode, direction: ri.direction, lockedConstraints: ri.lockedConstraints,
-    });
+    }, false, await deps.workspaceCategory?.(head.workspaceId));
     const mode = ri.mode ?? (variables.some(v => v === 'concept' || v === 'slides') ? 'exploration' : expanded.mode);
     b = S.CreateBrief.parse({ ...requested, instructions: {
       ...ri, ...expanded, mode, sourceDefaults: expanded.sourceDefaults, ...(ri.sourceFormat ? { sourceFormat: ri.sourceFormat } : {}),
@@ -186,7 +190,7 @@ export async function createExperiment(rawWithRunnerAndNotify: unknown, deps: Cr
     const format = ri.sourceFormat ?? signal?.format ?? null;
     const expanded = expandPreset(format, {
       variables: ri.variables, mode: ri.mode, direction: ri.direction, lockedConstraints: ri.lockedConstraints,
-    }, signal?.observedHuman ?? false);
+    }, signal?.observedHuman ?? false, await deps.workspaceCategory?.(head.workspaceId));
     const sourceDefaults = [...new Set([...(ri.sourceDefaults ?? []), ...expanded.sourceDefaults])].slice(0, 20);
     b = S.Create.parse({ ...requested, instructions: {
       ...ri, ...expanded, sourceDefaults, ...(format ? { sourceFormat: format } : {}),

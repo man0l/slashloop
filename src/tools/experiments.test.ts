@@ -428,7 +428,7 @@ describe('create_experiment', () => {
     // SLA-881: the new setting is named for the alternate only, and the workspace locks travel with the draft.
     expect(body.instructions.direction).toContain('New setting for the alternate only: A rainy street at night');
     expect(body.instructions.direction).toContain('Arm A (the baseline) reproduces every source frame as it is');
-    expect(body.instructions.lockedConstraints).toEqual(universalLocks());
+    expect(body.instructions.lockedConstraints).toEqual(universalLocks('general'));
     expect(body.instructions).not.toHaveProperty('copyOverrides');
     expect(body.variantCount).toBe(2);
     expect(body.maxCredits).toBe(100);

@@ -3,7 +3,7 @@
 // reaches the render request and the QA checker.
 import { expect, test } from 'bun:test';
 import type { Video } from '@prisma/client';
-import { observedCopy, prepare, resolvedCopyBlock } from './providers.js';
+import { CAROUSEL_TEXT_RULE, observations, observedCopy, prepare, resolvedCopyBlock } from './providers.js';
 import { VideoAnalysisDataSchema } from '../analysis/schema.js';
 import type { Experiment, Input, Task } from './schema.js';
 import { compileSlideContract, contractCheckPlan, contractChecks, labelPolicy, type SlideContract } from './render-prompt.js';
@@ -45,6 +45,18 @@ test('observedCopy separates real copy, verified blanks and unknown extraction',
   ]);
   // Video-only experiments have no per-slide copy contract.
   expect(observedCopy(analysis([{ timestampSec: 0, description: 'x' }]), false, 3)).toEqual([]);
+});
+
+test('a transcribed cover word reaches the copy state and the observation (SLA-885 leftover B)', () => {
+  const deck = analysis(Array.from({ length: 6 }, (_, i) => ({ timestampSec: i, description: `Neck curl slide ${i}` })));
+  deck.shots![0]!.onScreenText = 'week 4';
+  const rows = observedCopy(deck, true, 6)!;
+  expect(rows[0]).toEqual({ slideIndex: 0, state: 'observed_text', text: 'week 4' });
+  expect(rows.slice(1).every(r => r.state === 'observed_empty')).toBe(true);
+  expect(observations(deck, true)![0]!.observation).toContain('on-image text: "week 4"');
+  // The deck analysis prompts (grok + gemini branches) carry the per-slide transcription rule.
+  expect(CAROUSEL_TEXT_RULE).toContain('shots[].onScreenText');
+  expect(CAROUSEL_TEXT_RULE).toContain('week or step numbers');
 });
 
 test('the board prompt is told the resolved copy so a blank slide cannot acquire words', () => {

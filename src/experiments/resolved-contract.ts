@@ -147,7 +147,7 @@ export const contractJsonSchema = (input: Pick<ContractInput, 'morph'>) => input
 export const CONTRACT_SYSTEM = 'You turn a user\'s creative direction into a format-agnostic slide contract for a 9:16 social carousel. '
   + 'Precedence: user direction and origin=user locks > origin=workspace locks > source defaults. '
   + 'A source default that conflicts with the direction or with any lock is DROPPED: list it in droppedSourceDefaults with the reason, copying its text exactly. '
-  + 'A workspace lock is dropped ONLY if the user\'s direction explicitly contradicts it (for example the user keeps a real source person against a "no real people" lock); otherwise it stays. Never drop an origin=user lock. '
+  + 'A workspace lock is dropped ONLY if the user\'s direction explicitly contradicts it (for example the user keeps a source trait that a lock forbids); otherwise it stays. Never drop an origin=user lock. '
   + 'Never copy the source\'s overlay text unless the direction asks for it; the direction\'s exact wording for on-image text wins. Return JSON only.';
 
 // SLA-809: image providers refuse an edit that judges a body ("fat", "ugly"); the same change in neutral words renders.

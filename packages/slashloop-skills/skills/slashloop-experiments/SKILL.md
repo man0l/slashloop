@@ -40,7 +40,12 @@ Build `instructions`:
   from `photo-person` (and framing-only locks for `annotated-face`,
   `portrait-collage`, and `ai-render` with a visible person). Every preset
   also locks: no source watermarks, handles or competitor brands; only our own
-  app on the closing CTA slide; no real or celebrity likeness; adults only.
+  app on the closing CTA slide; adults only. The "no real people, celebrities
+  or public figures; only invented likenesses" lock is a workspace category
+  rule, not a per-brief one: it applies only when the workspace category is
+  `faceless` (`get_settings` shows it, `update_settings` with `category`
+  changes it) and is absent in `general` workspaces, where real people are
+  allowed. Do not add it to `lockedConstraints` yourself.
   Do not paste source analysis text into `direction` or `lockedConstraints`
   (it names real people and the source's own brand).
 - `variables`: 1–7 values from `hook`, `character`, `visualStyle`, `caption`,

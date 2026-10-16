@@ -19,17 +19,61 @@ describe('presets', () => {
     }
   });
 
-  test('every format carries the four universal locks', () => {
+  test('every format carries the universal locks of a faceless workspace, real-people lock included', () => {
     for (const f of SOURCE_FORMATS) {
-      const locks = expandPreset(f, {}, true).lockedConstraints;
-      for (const u of universalLocks()) expect(locks).toContain(u);
+      const locks = expandPreset(f, {}, true, 'faceless').lockedConstraints;
+      for (const u of universalLocks('faceless')) expect(locks).toContain(u);
     }
-    const joined = universalLocks().join(' | ').toLowerCase();
+    const joined = universalLocks('faceless').join(' | ').toLowerCase();
     expect(joined).toContain('watermarks');
     expect(joined).toContain('competitor');
     expect(joined).toContain('cta');
     expect(joined).toContain('celebrities');
     expect(joined).toContain('adults only');
+  });
+
+  // SLA-885: the real-people lock is the faceless category's rule, not every workspace's.
+  describe('workspace category (SLA-885)', () => {
+    const REAL_PEOPLE = /real people|celebrities|public figures/i;
+    const others = (c: 'general' | 'faceless') => universalLocks(c).filter(l => !REAL_PEOPLE.test(l));
+
+    test('a general workspace has no real-people lock; the other three universal locks stay', () => {
+      const general = universalLocks('general');
+      expect(general.some(l => REAL_PEOPLE.test(l))).toBe(false);
+      expect(general).toHaveLength(3);
+      expect(general.join(' | ').toLowerCase()).toMatch(/watermarks.*\|.*own app.*\|.*adults only/);
+      expect(others('general')).toEqual(others('faceless'));
+    });
+
+    test('a faceless workspace adds the real-people lock', () => {
+      const faceless = universalLocks('faceless');
+      expect(faceless).toHaveLength(4);
+      expect(faceless.filter(l => REAL_PEOPLE.test(l))).toHaveLength(1);
+    });
+
+    test('expandPreset emits the lock for faceless only, for every format', () => {
+      for (const f of SOURCE_FORMATS) {
+        expect(expandPreset(f, {}, true, 'faceless').lockedConstraints.some(l => REAL_PEOPLE.test(l))).toBe(true);
+        const general = expandPreset(f, {}, true, 'general').lockedConstraints;
+        expect(general.some(l => REAL_PEOPLE.test(l))).toBe(false);
+        for (const u of universalLocks('general')) expect(general).toContain(u);
+      }
+    });
+
+    test('with no format preset the category still decides: faceless adds the lock, general leaves caller locks as given', () => {
+      expect(expandPreset(null, { variables: ['hook'], lockedConstraints: ['Keep the border'] }, false, 'general').lockedConstraints).toEqual(['Keep the border']);
+      const faceless = expandPreset(null, { variables: ['hook'], lockedConstraints: ['Keep the border'] }, false, 'faceless').lockedConstraints;
+      expect(faceless).toEqual([universalLocks('faceless').find(l => REAL_PEOPLE.test(l))!, 'Keep the border']);
+    });
+
+    test('createExperiment reads the workspace category: faceless carries the lock, general does not', async () => {
+      for (const [category, expected] of [['faceless', true], ['general', false]] as const) {
+        const out: Experiment[] = [];
+        const deps = { ...depsFor({ v1: statueAnalysis }, { v1: videoRow('v1') }, out), workspaceCategory: async () => category };
+        await createExperiment(request({ variables: ['caption'], mode: 'controlled', direction: 'mine', lockedConstraints: [] }), deps);
+        expect(out[0]!.instructions.lockedConstraints.some(l => REAL_PEOPLE.test(l))).toBe(expected);
+      }
+    });
   });
 
   test('non-person formats never lock a person attribute, even when a human is observed', () => {
@@ -93,7 +137,7 @@ describe('presets', () => {
     expect(x.direction).toBe('my direction');
     expect(x.lockedConstraints).toContain('Keep the red border');
     expect(x.lockedConstraints.filter(l => l.toLowerCase().startsWith('no real people'))).toHaveLength(1);
-    for (const u of universalLocks()) expect(x.lockedConstraints).toContain(u);
+    for (const u of universalLocks('general')) expect(x.lockedConstraints).toContain(u);
   });
 
   test('a caller-chosen controlled mode drops the preset\'s exploration-only variables', () => {
@@ -217,7 +261,7 @@ describe('createExperiment with a source format', () => {
     const i = out[0]!.instructions;
     expect([i.variables, i.mode, i.direction]).toEqual([['caption'], 'controlled', 'mine']);
     expect(i.lockedConstraints).toContain('Keep the border');
-    expect(i.lockedConstraints).toContain(universalLocks()[0]!);
+    expect(i.lockedConstraints).toContain(universalLocks('general')[0]!);
   });
 
   test('no explicit format and nothing to infer keeps the legacy instructions exactly', async () => {

@@ -77,6 +77,13 @@ model Workspace {
   thumbRetentionDays Int @default(30)
   mediaRetentionDays Int @default(30)
 
+  // --- content category ---
+  /// general | faceless. Scopes workspace-level content rules: the "no real
+  /// people, celebrities or public figures" lock applies to faceless
+  /// workspaces only (SLA-885). Writable via update_settings; validated
+  /// against WORKSPACE_CATEGORIES in src/experiments/source-format.ts.
+  category String @default("general")
+
   // --- weekly digest ---
   /// Opt-out for the weekly outlier digest (api/cron/digest.ts). On by
   /// default — the digest is the retention engine, not marketing.

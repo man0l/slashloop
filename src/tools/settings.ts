@@ -18,6 +18,7 @@ import { fetchRecentLedgerRows, FULL_LEDGER_AUDIT_SQL, type RawLedgerRow } from 
 import { retentionCeiling, validateRetentionDays } from '../lib/retention.js';
 import { costBlock } from '../lib/next-steps.js';
 import { failureLines, infoLines } from '../lib/refresh-notes.js';
+import { WORKSPACE_CATEGORIES, parseWorkspaceCategory } from '../experiments/source-format.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 /** Parse a stored digest payload defensively — the column is written by the
@@ -245,6 +246,7 @@ export function registerSettingsTools(server: McpServer) {
           workspace: {
             id: workspace.id,
             name: workspace.name,
+            category: parseWorkspaceCategory((workspace as { category?: unknown }).category),
             planKey: billingWorkspace.planKey,
             billingStatus: billingWorkspace.billingStatus,
             periodEnd: billingWorkspace.periodEnd?.toISOString() ?? null,
@@ -278,6 +280,8 @@ export function registerSettingsTools(server: McpServer) {
     {
       workspaceId: workspaceIdField,
       name: z.string().optional(),
+      category: z.enum(WORKSPACE_CATEGORIES).optional()
+        .describe('Content category. "faceless" adds the no-real-people/celebrities/public-figures lock to every experiment plan in this workspace; "general" (default) allows real people. Takes effect on the next experiment you create.'),
       autoAnalyzeRules: z.object({
         minOutlierScore: z.number().default(5.0),
         minViews: z.number().default(10000),
@@ -309,6 +313,7 @@ export function registerSettingsTools(server: McpServer) {
       // webhook or a trusted admin path, never a user-facing tool input.
       const workspaceUpdate: any = {};
       if (params.name) workspaceUpdate.name = params.name;
+      if (params.category) workspaceUpdate.category = params.category;
       if (params.autoAnalyzeRules) workspaceUpdate.autoAnalyzeRulesJson = JSON.stringify(params.autoAnalyzeRules);
 
       // Retention IS user-writable, unlike credits/plan — customers legitimately
@@ -366,7 +371,7 @@ export function registerSettingsTools(server: McpServer) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           message: 'Settings updated',
-          workspace: { name: params.name ?? workspace.name, planKey: billingWorkspace.planKey },
+          workspace: { name: params.name ?? workspace.name, category: params.category ?? parseWorkspaceCategory((workspace as { category?: unknown }).category), planKey: billingWorkspace.planKey },
           analysisConfig: config,
           mediaRetention: {
             thumbRetentionDays: workspaceUpdate.thumbRetentionDays ?? workspace.thumbRetentionDays,

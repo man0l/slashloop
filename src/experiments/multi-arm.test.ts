@@ -37,7 +37,7 @@ describe('planAlternates', () => {
 describe('contract with several alternates', () => {
   const base = (o: Partial<ContractInput> = {}): ContractInput => ({
     direction: 'dir', slideCount: 3, frameCount: 0, variables: ['hook', 'character', 'concept', 'scene'], mode: 'exploration', alternates: 7,
-    locks: tagLocks([], universalLocks()), sourceDefaults: [], ...o,
+    locks: tagLocks([], universalLocks('faceless')), sourceDefaults: [], ...o,
   });
   const pool = (variable: string, n: number) => ({ variable, values: Array.from({ length: n }, (_, i) => ({ value: `${variable} ${i}`, slides: [] as never[] })) });
   const raw = (pools: unknown[]) => ({

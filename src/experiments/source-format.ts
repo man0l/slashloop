@@ -94,12 +94,20 @@ export function emitsPersonLocks(format: SourceFormat, observedHuman: boolean): 
   return PERSON_FORMATS.has(format) || (format === 'ai-render' && observedHuman);
 }
 
-/** Always-on locks, independent of format. */
-export function universalLocks(): string[] {
+/** A workspace's content category. Scopes rules that only some workspaces want (SLA-885). */
+export const WORKSPACE_CATEGORIES = ['general', 'faceless'] as const;
+export type WorkspaceCategory = typeof WORKSPACE_CATEGORIES[number];
+export const parseWorkspaceCategory = (v: unknown): WorkspaceCategory => v === 'faceless' ? 'faceless' : 'general';
+
+const FACELESS_LOCK = 'No real people, celebrities or public figures; only invented likenesses';
+const CATEGORY_LOCKS: Record<WorkspaceCategory, string[]> = { general: [], faceless: [FACELESS_LOCK] };
+
+/** Always-on locks, independent of format. The real-people lock is the faceless category's; the rest apply to every workspace. */
+export function universalLocks(category: WorkspaceCategory): string[] {
   return [
     'No source watermarks, creator handles or competitor brand names anywhere in the image',
     'Any app on the closing CTA slide is our own app (name and UI), never a competitor\'s',
-    'No real people, celebrities or public figures; only invented likenesses',
+    ...CATEGORY_LOCKS[category],
     'Adults only: every person depicted is clearly an adult',
   ];
 }
@@ -124,11 +132,13 @@ const EXPLORATION_ONLY = new Set(['concept', 'slides', 'angle']);
 const MAX_LOCKS = 20;
 
 /** Caller values win for variables, mode and direction. Hard locks (workspace + caller) and source defaults (format preset) are kept apart so no source trait is ever presented as a lock. */
-export function expandPreset(format: SourceFormat | null, input: ExpandInput, observedHuman = false): Expanded {
+export function expandPreset(format: SourceFormat | null, input: ExpandInput, observedHuman = false, category: WorkspaceCategory = 'general'): Expanded {
   const preset = format ? PRESETS[format] : null;
   const caller = input.lockedConstraints ?? [];
   if (!preset) {
-    return { variables: input.variables, mode: input.mode ?? 'controlled', direction: input.direction ?? '', lockedConstraints: caller, sourceDefaults: [] };
+    // No format preset means no always-on locks, but a faceless workspace's category lock holds regardless of format.
+    const categoryLocks = CATEGORY_LOCKS[category].filter(l => !caller.some(c => c.trim().toLowerCase() === l.toLowerCase()));
+    return { variables: input.variables, mode: input.mode ?? 'controlled', direction: input.direction ?? '', lockedConstraints: [...categoryLocks, ...caller], sourceDefaults: [] };
   }
   let variables = input.variables;
   if (!variables) {
@@ -150,7 +160,7 @@ export function expandPreset(format: SourceFormat | null, input: ExpandInput, ob
     }
     return out;
   };
-  const locks = dedupe([...universalLocks(), ...caller]);
+  const locks = dedupe([...universalLocks(category), ...caller]);
   const lockKeys = new Set(locks.map(l => l.toLowerCase()));
   // SLA-867: a morph deck has its own grammar (one invented subject, one studio set-up, graded attributes), so the
   // preset's look and person defaults ("keep the subject exactly as in the source", marker annotations) never apply.

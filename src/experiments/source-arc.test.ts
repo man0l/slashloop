@@ -12,7 +12,7 @@ const slide = (o: Record<string, string> = {}) => ({ overlayText: '', arcLevel: 
 
 const input = (o: Partial<ContractInput> = {}): ContractInput => ({
   direction: 'Same format as the source tier ladder', slideCount: 3, frameCount: 3, variables: ['hook'], mode: 'controlled', alternates: 1,
-  locks: tagLocks(universalLocks(), universalLocks()), sourceDefaults: [], ...o,
+  locks: tagLocks(universalLocks('faceless'), universalLocks('faceless')), sourceDefaults: [], ...o,
 });
 
 const morph = { axis: 'tier from top to bottom', levers: ['cheek and jaw fullness', 'jaw definition', 'hair'], magnitude: 'strong', lowVsHigh: 'bottom face visibly rounder, jawline no longer visible, puffy cheeks, messy receding hair' };
@@ -105,7 +105,7 @@ describe('the identity chain may change the face along the arc', () => {
   });
 
   test('the form\'s locked constraints reach the identity chain and win over the source change', () => {
-    const locked = normalizeContract(raw(), input({ locks: tagLocks([...universalLocks(), 'Keep the same hairstyle on every slide'], universalLocks()) }));
+    const locked = normalizeContract(raw(), input({ locks: tagLocks([...universalLocks('faceless'), 'Keep the same hairstyle on every slide'], universalLocks('faceless')) }));
     const p = compileSlidePrompt(locked, 2, 'anchor-edit', 'none');
     expect(p).toContain('HARD RULES (they win over the change and the source change above):');
     expect(p).toContain('- Keep the same hairstyle on every slide');
