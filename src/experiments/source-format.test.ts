@@ -48,6 +48,15 @@ describe('presets', () => {
     expect(x.lockedConstraints.join(' ')).not.toMatch(/hair|eyes|complexion|wardrobe|jewelry/i);
   });
 
+  test('a morph deck carries no preset defaults (SLA-867): no marker annotations, no "keep the source subject"', () => {
+    for (const f of ['annotated-face', 'photo-person'] as const) {
+      expect(expandPreset(f, {}, true).sourceDefaults.length).toBeGreaterThan(0);
+      const x = expandPreset(f, { variables: ['morph'] }, true);
+      expect(x.sourceDefaults).toEqual([]);
+      expect(x.lockedConstraints.length).toBeGreaterThan(0);
+    }
+  });
+
   test('exploration formats default to concept variables in exploration mode', () => {
     for (const f of ['sprite-vs-real', 'sketch'] as const) {
       const x = expandPreset(f, {});

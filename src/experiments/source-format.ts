@@ -152,7 +152,10 @@ export function expandPreset(format: SourceFormat | null, input: ExpandInput, ob
   };
   const locks = dedupe([...universalLocks(), ...caller]);
   const lockKeys = new Set(locks.map(l => l.toLowerCase()));
-  const defaults = dedupe([...preset.locks, ...(preset.person && emitsPersonLocks(format!, observedHuman) ? preset.person(varyCharacter) : [])])
+  // SLA-867: a morph deck has its own grammar (one invented subject, one studio set-up, graded attributes), so the
+  // preset's look and person defaults ("keep the subject exactly as in the source", marker annotations) never apply.
+  const morph = variables.some(v => v === 'morph' || v === 'ladder');
+  const defaults = morph ? [] : dedupe([...preset.locks, ...(preset.person && emitsPersonLocks(format!, observedHuman) ? preset.person(varyCharacter) : [])])
     .filter(d => !lockKeys.has(d.toLowerCase()));
   return { variables, mode, direction: input.direction?.trim() ? input.direction : preset.direction, lockedConstraints: locks, sourceDefaults: defaults };
 }
