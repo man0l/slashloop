@@ -25,6 +25,19 @@ export type ArcMagnitude = (typeof ARC_MAGNITUDES)[number];
  *  where the story goes; this says how far the source moves the subject, so a brief cannot shrink it. */
 export interface SourceArc { axis: string; levers: string[]; magnitude: ArcMagnitude; lowVsHigh: string }
 export const NO_SOURCE_ARC: SourceArc = { axis: '', levers: [], magnitude: 'none', lowVsHigh: '' };
+
+const PERSON_TRAITS: RegExp[] = [
+  /\b(hair|haircut|hairstyle|curls?|curly|buzz\s?cut)\b/i, /\b(beard|stubble|moustache|mustache|clean-shaven)\b/i,
+  /\bskin\b/i, /\beyes?\b/i, /\b(build|physique|body)\b/i,
+];
+
+/** SLA-891: split a source arc's levers into those a recast arm can still change and those its identity sheet fixes
+ *  (a lever naming a person trait the sheet also names, e.g. "hair volume" against "closely cropped black hair"). */
+export function splitLeversByIdentity(levers: readonly string[], identitySheet: string): { kept: string[]; fixed: string[] } {
+  const kept: string[] = [], fixed: string[] = [];
+  for (const l of levers) (PERSON_TRAITS.some(t => t.test(l) && t.test(identitySheet)) ? fixed : kept).push(l);
+  return { kept, fixed };
+}
 /** A pre-SLA-866 contract's single alternate. Read-only: nothing writes it any more. */
 export interface VariantB { variable: string; value: string; slides: ContractSlide[] }
 export type ArmField = 'hook' | 'character' | 'visualStyle' | 'caption' | 'cta' | 'concept' | 'slides' | 'scene' | 'morph';
@@ -45,6 +58,10 @@ export interface ResolvedContract {
   sourceArc?: SourceArc;
   /** SLA-867: set on a morph deck: one invented subject, graded per slide along these attributes. */
   morph?: MorphSpec;
+  /** SLA-891: set on an arm's own view when its `character` variable replaces the source person. Never stored on the experiment contract. */
+  recast?: boolean;
+  /** SLA-891: source-arc levers the recast arm's identity sheet fixes (hair for a buzz cut); they are not asked to change on that arm. */
+  fixedLevers?: string[];
   hardLocks: TaggedLock[];
   keptSourceDefaults: string[];
   droppedSourceDefaults: Array<{ default: string; reason: string }>;
@@ -618,10 +635,10 @@ export function arcDistance(c: Pick<ResolvedContract, 'arcAxis' | 'slides'>, s: 
 }
 
 /** SLA-809: the source's own change, so the image model is told how far the subject moves, not only which way. */
-export function sourceArcLine(c: Pick<ResolvedContract, 'arcAxis' | 'slides' | 'sourceArc'>, s: ContractSlide, role: SlideRole): string {
+export function sourceArcLine(c: Pick<ResolvedContract, 'arcAxis' | 'slides' | 'sourceArc' | 'fixedLevers'>, s: ContractSlide, role: SlideRole): string {
   const a = c.sourceArc;
   if (!a || a.magnitude === 'none' || !c.arcAxis || s.arcLevel === 'none') return '';
-  const what = `SOURCE CHANGE: the source carousel moves its subject along "${a.axis}"${a.levers.length ? ` by changing ${a.levers.join(', ')}` : ''}${a.lowVsHigh ? `; between its two extremes: ${a.lowVsHigh}` : ''} (a ${a.magnitude} change).`;
+  const what = `SOURCE CHANGE: the source carousel moves its subject along "${a.axis}"${a.levers.length ? ` by changing ${a.levers.join(', ')}` : ''}${a.lowVsHigh ? `; between its two extremes: ${a.lowVsHigh}` : ''} (a ${a.magnitude} change).${c.fixedLevers?.length ? ` Not ${c.fixedLevers.join(', ')}: the subject description fixes ${c.fixedLevers.length > 1 ? 'them' : 'it'}, and ${c.fixedLevers.length > 1 ? 'they' : 'it'} stays as described.` : ''}`;
   if (role === 'anchor-edit') {
     const d = arcDistance(c, s);
     if (d === 0) return '';
@@ -659,7 +676,7 @@ export function compileSlidePrompt(c: ResolvedContract, index: number, role: Sli
       : 'Edit the attached 9:16 frame. Keep the SAME person, outfit, pose, medium, lighting and camera. Change ONLY the setting and props to the slide scene.';
     return [
       opener, labelRule,
-      character ? `NEW PERSON (the face, hair, build and outfit are theirs; nothing of the person in the attached frame stays): ${c.identitySheet}` : '',
+      character ? `NEW PERSON (the face, hair, build and outfit are theirs, and so is every other visible part of the body: hands, arms, skin tone, skin marks and tattoos; nothing of the person in the attached frame stays): ${c.identitySheet}` : '',
       scene ? `SCENE for this image: ${s.scene}` : '', hard.length ? `HARD RULES:\n- ${hard.join('\n- ')}` : '',
       text, fixLine].filter(Boolean).join('\n');
   }
@@ -747,27 +764,39 @@ export type QaAnswer = z.infer<typeof RawQa>;
 
 export const QA_SYSTEM = 'You are a strict visual QA checker. Judge only what is visible. Return JSON.';
 
-/** `baselineImages`: a scene arm is judged against the baseline deck's slides, appended after the source frames. */
+/** `baselineImages`: a scene arm is judged against the baseline deck's slides, appended after the source frames.
+ *  A recast arm (`c.recast`) is judged on its own identity: the baseline or source pictures are for framing, pose, setting, outfit and medium only. */
 export function compileQaPrompt(c: ResolvedContract, opts: { slideCount: number; sourceImages: number; referenceUse: ReferenceUse; baselineImages?: number }): string {
   const edit = opts.referenceUse === 'edit';
+  const recast = !!c.recast;
   const hard = c.hardLocks.map(l => l.text);
   const n = opts.slideCount;
   const a = c.sourceArc;
+  const fixed = c.fixedLevers ?? [];
   const scale = c.arcAxis && a && a.magnitude !== 'none' && !c.keepSourceImage
-    ? ` Answer false also when the change is clearly smaller than the source's, which is a ${a.magnitude} change${a.lowVsHigh ? ` between its extremes: ${a.lowVsHigh}` : ''}.`
+    ? ` Answer false also when the change is clearly smaller than the source's, which is a ${a.magnitude} change${a.lowVsHigh ? ` between its extremes: ${a.lowVsHigh}` : recast && a.levers.length ? ` in ${a.levers.join(', ')}` : ''}.`
     : '';
   const sources = opts.sourceImages
-    ? `Image ${n + 1}${opts.sourceImages > 1 ? `..${n + opts.sourceImages}` : ''} = source reference${edit ? ' frame(s) the slides were edited from, in slide order' : ' (only to judge likeness: the slides must NOT show this person)'}.`
+    ? `Image ${n + 1}${opts.sourceImages > 1 ? `..${n + opts.sourceImages}` : ''} = source reference${edit ? ' frame(s) the slides were edited from, in slide order' : recast ? ' (compare framing, pose, setting, outfit and medium only; for likeness the slides must NOT show this person or any visible part of their body)' : ' (only to judge likeness: the slides must NOT show this person)'}.`
     : '';
   const baselineAt = n + opts.sourceImages + 1;
+  const baselineRange = opts.baselineImages ? `Image ${baselineAt}${opts.baselineImages > 1 ? `..${baselineAt + opts.baselineImages - 1}` : ''}` : '';
   const baseline = opts.baselineImages
-    ? `Image ${baselineAt}${opts.baselineImages > 1 ? `..${baselineAt + opts.baselineImages - 1}` : ''} = the baseline deck's slides, in slide order: this carousel was edited from them to change ONLY the setting, props and action; the person, medium, lighting, camera and caption were to stay.`
+    ? recast
+      ? `${baselineRange} = the baseline deck's slides, in slide order: this carousel was edited from them to REPLACE THE PERSON. Compare framing, pose, setting, outfit and medium only; for likeness the slides must NOT show the person in these pictures or any visible part of their body.`
+      : `${baselineRange} = the baseline deck's slides, in slide order: this carousel was edited from them to change ONLY the setting, props and action; the person, medium, lighting, camera and caption were to stay.`
     : '';
-  const sceneEdit = !!opts.baselineImages;
+  const sceneEdit = !!opts.baselineImages && !recast;
+  const recastRule = recast
+    ? `RECAST ARM: this carousel deliberately replaces the person; the person on every slide must be the identity sheet's, not the source's. A lock that says a slide is an edit of, or the same as, its source or baseline slide means the same framing, pose, setting, outfit and medium, NOT the same person (face, hair, skin, body, hands, tattoos): a different person in the same room, pose and outfit passes it. Judge every other lock as written.${fixed.length ? ` The identity sheet fixes ${fixed.join(', ')}; do not expect ${fixed.length > 1 ? 'those' : 'that'} to change along the axis.` : ''}
+`
+    : '';
+  const sceneNote = edit ? '; for edited slides the photo is unchanged from its source frame apart from the caption, including clothing prints'
+    : recast ? '; the people, hair, skin marks and tattoos the scene text may mention are replaced by the identity sheet, ignore them' : '';
   return `Images 1..${n} are the slides of one carousel, in order. ${sources}${baseline ? `${sources ? ' ' : ''}${baseline}` : ''}
-Contract: ${JSON.stringify({ medium: c.medium, identity: c.identity, identitySheet: c.identitySheet, arcAxis: c.arcAxis, slides: c.slides.map((s, i) => ({ index: i, overlayText: s.overlayText, arcLevel: s.arcLevel, scene: s.scene })) })}
-For every slide: textSeen (all caption text you can read), overlayExact (the caption equals overlayText, ignoring case and punctuation; text inside an app screen is not a caption), sceneMatches (the scene is recognisably what the contract describes${edit ? '; for edited slides the photo is unchanged from its source frame apart from the caption, including clothing prints' : ''}), settingChanged (${sceneEdit ? 'the setting, props and action are clearly different from the matching baseline slide' : 'true; not applicable'}), stateLevel (the visible state on the arc axis judged from the PICTURE ONLY, ignoring captions, labels and app-screen numbers: low, mid, high, or none), mediumMatches, and lockResults for EACH of these locks: ${JSON.stringify(hard)}.
-${morphQaLines(c)}deck.identityConsistent: ${sceneEdit ? 'the same person or character as in the baseline slides on every slide (true if the slides show no person)' : c.identity === 'invented-consistent' ? `the same person or character on every slide${c.arcAxis ? ` (changing along "${c.arcAxis}" is expected: they stay the same person while they remain recognisable)` : ''}` : 'true if not applicable'}. deck.arcVisibleWithoutText: ${c.arcAxis ? `cover all text with your hand: does the picture itself clearly progress along "${c.arcAxis}" from the first to the last slide?${scale}` : 'true if not applicable'}. deck.sourceLikeness: ${c.identity.startsWith('invented') ? 'true if any slide shows the source person' : 'false if not applicable'}.`;
+${recastRule}Contract: ${JSON.stringify({ medium: c.medium, identity: c.identity, identitySheet: c.identitySheet, arcAxis: c.arcAxis, ...(recast && a?.levers.length ? { arcLevers: a.levers } : {}), slides: c.slides.map((s, i) => ({ index: i, overlayText: s.overlayText, arcLevel: s.arcLevel, scene: s.scene })) })}
+For every slide: textSeen (all caption text you can read), overlayExact (the caption equals overlayText, ignoring case and punctuation; text inside an app screen is not a caption), sceneMatches (the scene is recognisably what the contract describes${sceneNote}), settingChanged (${sceneEdit ? 'the setting, props and action are clearly different from the matching baseline slide' : 'true; not applicable'}), stateLevel (the visible state on the arc axis judged from the PICTURE ONLY, ignoring captions, labels and app-screen numbers: low, mid, high, or none), mediumMatches, and lockResults for EACH of these locks: ${JSON.stringify(hard)}.
+${morphQaLines(c)}deck.identityConsistent: ${sceneEdit ? 'the same person or character as in the baseline slides on every slide (true if the slides show no person)' : c.identity === 'invented-consistent' ? `the same person or character on every slide${c.arcAxis ? ` (changing along "${c.arcAxis}" is expected: they stay the same person while they remain recognisable)` : ''}${recast ? ', and that person matches the identity sheet' : ''}` : 'true if not applicable'}. deck.arcVisibleWithoutText: ${c.arcAxis ? `cover all text with your hand: does the picture itself clearly progress along "${c.arcAxis}" from the first to the last slide?${scale}` : 'true if not applicable'}. deck.sourceLikeness: ${c.identity.startsWith('invented') ? `true if any slide shows the source person${recast ? ', including any visible part of their body (hands, arms, skin marks, tattoos)' : ''}` : 'false if not applicable'}.`;
 }
 
 /** The QA checks one morph slide must answer: one per graded attribute, judged against slide 1. Empty for slide 1 and non-morph decks. */
