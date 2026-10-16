@@ -205,7 +205,7 @@ function morphFieldGuide(input: ContractInput): Record<string, string> {
     arcAxis: '"" on a morph deck: the morph grades carry the progression, so every slides[].arcLevel is none.',
     sourceFrameLevels: 'every attached source frame with level none, showsPerson as seen',
     morph: `axis: the progression in a few neutral words (for the user only; the image model never sees it). attributes: the 2 to 5 attributes from this list that the source frames visibly change, most visible first: ${MORPH_ATTRIBUTES.join(', ')}.`,
-    'slides[].morph': `one {attribute, grade} for EVERY morph attribute on EVERY slide, grade 0..4 meaning: ${grades}. Read the grades off the source frames in order, by looking at the pixels. Each attribute moves one way only across the deck (equal steps allowed, never back), and the last slide differs from the first by at least 2 grades on most attributes.`,
+    'slides[].morph': `one {attribute, grade} for EVERY morph attribute on EVERY slide, grade 0..4 meaning: ${grades}. Read the grades off the source frames in order, by looking at the pixels. Each attribute moves one way only across the deck (equal steps allowed, never back), and the last slide differs from the first by at least 2 grades on most attributes. Every slide that differs from slide 1 must move at least one attribute by 2 or more grades from slide 1 (a one-grade step is invisible at phone size and fails QA), so on a short deck spend the 0..4 range early: for example 4, 2, 1, 0.`,
     'slides[].scene': `the same studio set-up on every slide: the subject, backdrop, framing and lighting copied from the source frames, in visible words only. ${VALUATION_RULE}`,
     'slides[].visibleChange': '"" (code writes it from the grades).',
     'slides[].overlayText': 'the exact label for that slide. When the direction keeps the source format, copy the source slide\'s own label (for example a rank name and a percentage line). Put a line break between a title and its subtitle ("TITLE\\nsubtitle"). Code draws it onto the finished picture; the image model never sees it.',
@@ -810,7 +810,7 @@ export function morphQaChecks(c: Pick<ResolvedContract, 'morph' | 'slides'>, ind
 function morphQaLines(c: ResolvedContract): string {
   if (!c.morph) return '';
   const checks = c.slides.map((_, i) => ({ index: i, checks: morphQaChecks(c, i) })).filter(x => x.checks.length);
-  return `This is a morph deck: slide 1 is the reference person and every later slide is meant to be that SAME person with only some visible attributes changed. Do NOT judge attractiveness, rank or rate anyone; judge only whether each listed visible attribute looks as described. For every slide: samePerson (slide 1 itself: true; later slides: the same individual as slide 1, recognisable by ethnicity, eye colour, hair colour, outfit, backdrop and framing, even where the listed attributes differ) and morphChecks: one entry per check listed for that slide below (copy the check text; slide 1 has none, answer []), pass=true only if that change is clearly visible against slide 1 at phone size. Checks: ${JSON.stringify(checks.map(x => ({ slide: x.index + 1, index: x.index, checks: x.checks })))}.
+  return `This is a morph deck: slide 1 is the reference person and every later slide is meant to be that SAME person with only some visible attributes changed. Do NOT judge attractiveness, rank or rate anyone; judge only whether each listed visible attribute looks as described. For every slide: samePerson (slide 1 itself: true; later slides: the same individual as slide 1, recognisable by ethnicity, eye colour, hair colour, outfit, backdrop and framing, even where the listed attributes differ) and morphChecks: one entry per check listed for that slide below (copy the check text; slide 1 has none, answer []), pass=true only if that change is clearly visible against slide 1 at phone size; a check that says "changed slightly" passes when the attribute moved the described way against slide 1, even if subtly. Checks: ${JSON.stringify(checks.map(x => ({ slide: x.index + 1, index: x.index, checks: x.checks })))}.
 `;
 }
 
@@ -838,11 +838,18 @@ export function qaVerdict(c: ResolvedContract, q: QaAnswer, opts: { slides?: num
     if (c.morph && i > 0) {
       if (s.samePerson === false) add(i, 'this is not the same person as slide 1; keep slide 1\'s person and change only the listed attributes');
       const answered = new Map((s.morphChecks ?? []).map(m => [norm(m.check), m] as const));
+      const soft = new Set(morphChecks(c.slides[0]!.morph!, c.slides[i]!.morph!).filter(x => x.soft).map(x => x.check));
+      let hardChecks = 0, softSeen = 0;
       for (const check of morphQaChecks(c, i)) {
         const got = answered.get(norm(check));
+        if (!soft.has(check) && !check.includes(' is unchanged from ')) hardChecks++;
         if (!got) add(i, `unchecked: ${check}`);
-        else if (!got.pass) add(i, `${check}${got.note ? ` (seen: ${got.note})` : ''}`);
+        else if (!got.pass) {
+          const miss = `${check}${got.note ? ` (seen: ${got.note})` : ''}`;
+          if (soft.has(check)) warnings.push(`slide ${i + 1}: ${miss}`); else add(i, miss);
+        } else if (soft.has(check)) softSeen++;
       }
+      if (soft.size && !hardChecks && !softSeen) add(i, `none of the small changes from slide 1 is visible (${[...soft].join('; ')}); make at least one clearly visible`);
     }
     const want = c.slides[i]!.arcLevel;
     if (want !== 'none' && s.stateLevel !== want && !c.keepSourceImage) add(i, `the visible state reads as ${s.stateLevel}, it must read as ${want} on "${c.arcAxis}"`);

@@ -238,6 +238,45 @@ describe('QA (morph)', () => {
   });
 });
 
+describe('QA (morph): one-grade steps are soft', () => {
+  const base = normalizeContract(raw(), input());
+  const g = (jaw: number, neck: number, cheek: number) => [{ attribute: 'jaw definition' as const, grade: jaw }, { attribute: 'neck width' as const, grade: neck }, { attribute: 'cheek fullness' as const, grade: cheek }];
+  const deck = (rows: number[][]) => ({ ...base, slides: rows.map((r, i) => ({ ...base.slides[i]!, morph: g(r[0]!, r[1]!, r[2]!) })) });
+  const verdict = (c: ReturnType<typeof deck>, pass: (check: string) => boolean) => qaVerdict(c, {
+    slides: c.slides.map((_, index) => ({ index, textSeen: '', overlayExact: true, sceneMatches: true, stateLevel: 'none', mediumMatches: true, lockResults: [], samePerson: true,
+      morphChecks: morphQaChecks(c, index).map(check => ({ check, pass: pass(check), note: 'looks the same' })) })),
+    deck: { identityConsistent: true, sourceLikeness: false, arcVisibleWithoutText: true, notes: '' },
+  });
+
+  test('a one-grade step is phrased as a slight change', () => {
+    const checks = morphChecks(g(4, 4, 4), g(3, 4, 2));
+    expect(checks.map(x => x.soft)).toEqual([true, false, false]);
+    expect(checks[0]!.check).toMatch(/^jaw definition has changed slightly from slide 1/);
+    expect(checks[2]!.check).toMatch(/^cheek fullness has visibly changed from slide 1/);
+  });
+
+  test('missed one-grade checks are warnings while a clear change on the same slide passes', () => {
+    const c = deck([[4, 4, 4], [3, 3, 2]]);
+    const v = verdict(c, check => !/changed slightly/.test(check));
+    expect(v.passed).toBe(true);
+    expect(v.warnings).toHaveLength(2);
+    expect(v.warnings[0]).toMatch(/^slide 2: jaw definition has changed slightly/);
+  });
+
+  test('a missed clear change still fails the slide', () => {
+    const c = deck([[4, 4, 4], [3, 3, 2]]);
+    const v = verdict(c, check => !/visibly changed/.test(check));
+    expect(v.passed).toBe(false);
+    expect(v.failures['1']).toHaveLength(1);
+  });
+
+  test('a slide whose changes are all one grade needs at least one of them visible', () => {
+    const c = deck([[4, 4, 4], [3, 3, 4]]);
+    expect(verdict(c, check => /unchanged/.test(check)).failures['1']!.join(' ')).toMatch(/none of the small changes from slide 1 is visible/);
+    expect(verdict(c, check => /^jaw|unchanged/.test(check)).passed).toBe(true);
+  });
+});
+
 describe('variable, instructions and estimate', () => {
   const base = { goal: 'g', brand: '', audience: '', language: 'English', direction: '', lockedConstraints: [], mode: 'controlled' as const };
 
