@@ -40,6 +40,10 @@ on:
 jobs:
   docker:
     runs-on: ubuntu-latest
+    # Same environment as deploy-worker: production-environment secrets (e.g.
+    # CLOUDFLARE_STREAM_TOKEN) are only visible to jobs that declare it; repo
+    # secrets still resolve as before.
+    environment: production
     permissions:
       contents: read
       packages: write
