@@ -676,7 +676,9 @@ export interface Task { id: string; kind: 'analysis' | 'report' | 'briefs' | 'sl
   /** Authorized total image requests for this task across every attempt, frozen at first claim. Absent before then. */
   requestCap?: number;
   /** Durable debits for paid QA corrections, one ledger ref each, so every one is refundable by its own receipt. */
-  corrections?: Array<{ ref: string; attempt: number; charged: number }>; }
+  corrections?: Array<{ ref: string; attempt: number; charged: number }>;
+  /** Debits of earlier attempts that ended with an unknown outcome and were requeued. Refunded when a later attempt delivers, so a slide bills once. */
+  retained?: Array<{ ref: string; charged: number }>; }
 export interface Input { videoId: string; status: string; analysisId: string | null; jobId: string | null; error: string | null;
   coverage: { basis: string; observed: number; total: number | null; complete: boolean } | null; evidence: Array<{ location: string; observation: string }>;
   /** Recorded source copy state per slide, kept outside the truncated prose so a
