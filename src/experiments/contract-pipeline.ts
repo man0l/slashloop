@@ -11,7 +11,7 @@ import { briefToArm, contractView, isEditArm, isMorphExperiment, isScriptOverlay
 import { EDIT_SCENE_GOAL, editSceneDirection, validateVariants, type Experiment, type Task } from './schema.js';
 import { CONTENT_FILTER_PATTERN, SafeFailure, contentFilterFailure, SlideMeter, logAiCost, type ExecuteContext, type Prepared, type RenderDeps } from './providers.js';
 import { storySlideCount } from './slide-count.js';
-import { classifyOpenRouterError } from '../lib/openrouter.js';
+import { classifyOpenRouterError, imageMimeOf } from '../lib/openrouter.js';
 import { labelPolicy, labelRenderInstruction, redactOverlayCopy } from './render-prompt.js';
 
 /** One source image the contract, the renderer and QA all index the same way. */
@@ -84,7 +84,9 @@ export function contractInputOf(e: Experiment, frameCount: number, category: Wor
 
 const need = <T>(x: T | undefined, code: string): T => { if (x === undefined || x === null) throw new SafeFailure(code); return x; };
 
-const jpeg = (b: Buffer, label?: string) => ({ mimeType: 'image/jpeg', dataBase64: b.toString('base64'), ...(label ? { label } : {}) });
+// Text-free bases were stored as WebP bytes under an image/jpeg label; sending the bytes inline with their real type avoids the provider's MIME mismatch 400.
+const inlineRef = (b: Buffer) => `data:${imageMimeOf(b)};base64,${b.toString('base64')}`;
+const jpeg = (b: Buffer, label?: string) => ({ mimeType: imageMimeOf(b), dataBase64: b.toString('base64'), ...(label ? { label } : {}) });
 
 async function readFrames(render: RenderDeps, frames: SourceFrame[]): Promise<Buffer[]> {
   const read = need(render.readReference, 'render_deps_incomplete');
@@ -277,7 +279,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
     if (withWords) {
       const clean = await need(render.readReference, 'render_deps_incomplete')({ bucket: thumbBucket(), path: basePathOf(baseSlide.path) });
       if (!clean) throw new SafeFailure('baseline_slide_missing');
-      referenceUrl = publicUrl(thumbBucket(), basePathOf(baseSlide.path));
+      referenceUrl = inlineRef(clean);
     } else referenceUrl = baseSlide.url;
     referenceNote = { kind: 'baseline', videoId: base.id, index, path: baseSlide.path };
     edit = baselineEdit(briefToArm(base.frozenBrief), briefToArm(v.frozenBrief), index);
@@ -300,8 +302,9 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
       // SLA-867: in script mode slide 1 carries code-drawn words; the edit starts from its text-free base, so no label reaches the model as pixels.
       if (scriptMode && anchor.path && (view.slides[0]?.overlayText ?? '').trim()) {
         const base1 = basePathOf(anchor.path);
-        if (!(await need(render.readReference, 'render_deps_incomplete')({ bucket: thumbBucket(), path: base1 }))) throw new SafeFailure('anchor_slide_missing');
-        referenceUrl = publicUrl(thumbBucket(), base1); referenceNote = { ...referenceNote, path: base1 };
+        const clean = await need(render.readReference, 'render_deps_incomplete')({ bucket: thumbBucket(), path: base1 });
+        if (!clean) throw new SafeFailure('anchor_slide_missing');
+        referenceUrl = inlineRef(clean); referenceNote = { ...referenceNote, path: base1 };
       }
     } else if (pick.referenceUse === 'style-only') {
       const f = frames[pick.frameIndex ?? -1];

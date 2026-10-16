@@ -35,7 +35,7 @@ const qaPass = (n = 3) => ({
 });
 const qaFailSlide = (bad: number, n = 3) => { const q = qaPass(n); q.slides[bad]!.overlayExact = false; return q; };
 
-interface Script { contract: unknown; contracts?: unknown[]; qa: Array<(armSlides: number, user: string) => unknown>; rejectImage?: (prompt: string) => boolean; refusal?: string; composeFails?: boolean }
+interface Script { contract: unknown; contracts?: unknown[]; qa: Array<(armSlides: number, user: string) => unknown>; rejectImage?: (prompt: string) => boolean; webpImages?: boolean; refusal?: string; composeFails?: boolean }
 const FILTER_400 = 'OpenRouter image error 400: {"error":{"message":"The response was filtered due to the prompt triggering our content management policy"}}';
 
 function world(script: Script, overrides: Partial<Experiment['instructions']> = {}, category?: WorkspaceCategory) {
@@ -44,7 +44,7 @@ function world(script: Script, overrides: Partial<Experiment['instructions']> = 
   const render: RenderDeps = {
     findSources: async () => [video('src')],
     ...(category ? { workspaceCategory: async () => category } : {}),
-    generateImage: async o => { calls.images.push({ prompt: o.prompt, referenceUrl: o.referenceUrl }); if (script.rejectImage?.(o.prompt)) throw new Error(script.refusal ?? FILTER_400); return { buffer: Buffer.from(`img${calls.images.length}`), contentType: 'image/jpeg', costUsd: 0.01 }; },
+    generateImage: async o => { calls.images.push({ prompt: o.prompt, referenceUrl: o.referenceUrl }); if (script.rejectImage?.(o.prompt)) throw new Error(script.refusal ?? FILTER_400); return { buffer: script.webpImages ? Buffer.concat([Buffer.from('RIFF'), Buffer.from([0x7c, 0xf1, 0x04, 0x00]), Buffer.from(`WEBPVP8X${calls.images.length}`)]) : Buffer.from(`img${calls.images.length}`), contentType: 'image/jpeg', costUsd: 0.01 }; },
     upload: async ({ path, body }) => { files.set(path, body); },
     composeOverlay: async o => { if (script.composeFails) throw new Error('sharp missing'); calls.composed.push({ text: o.text, index: o.slideIndex }); return { buffer: Buffer.concat([o.buffer, Buffer.from(`+${o.text}`)]), contentType: 'image/jpeg', font: 'Inter Bold', fontSize: 10, lines: [o.text], skipped: [] }; },
     readReference: async ({ path }) => files.get(path) ?? Buffer.from(`src:${path}`),
@@ -1077,7 +1077,8 @@ describe('scene variable: arm B edits every baseline slide into another setting'
     expect(w.row.status).toBe('completed');
     const [a, b] = w.row.variants;
     const bImages = w.calls.images.slice(3);
-    expect(bImages[0]!.referenceUrl).toBe(`https://assets.example.test/${a!.slides[0]!.path!.replace(/\.jpg$/, '.base.jpg')}`);
+    const baseA = w.files.get(a!.slides[0]!.path!.replace(/\.jpg$/, '.base.jpg'))!;
+    expect(bImages[0]!.referenceUrl).toBe(`data:image/jpeg;base64,${baseA.toString('base64')}`);
     for (const { prompt } of w.calls.images) expect(prompt).not.toMatch(/Hook A|\btwo\b|\bthree\b/);
     expect(w.files.get(b!.slides[0]!.path!)!.toString()).toContain('+Hook A');
   });
@@ -1154,15 +1155,24 @@ describe('SLA-867: a morph (ladder) deck end to end', () => {
     expect(later).toHaveLength(4);
     // Slide N is an edit of its arm's slide 1 (the hero), never of slide N-1, and of its text-free base: no label as pixels.
     // B's slide 1 is a copy of A's picture, base included.
-    const heroes = w.row.variants.map(v => `https://assets.example.test/${v.slides[0]!.path!.replace(/\.jpg$/, '.base.jpg')}`);
+    const heroes = w.row.variants.map(v => `data:image/jpeg;base64,${w.files.get(v.slides[0]!.path!.replace(/\.jpg$/, '.base.jpg'))!.toString('base64')}`);
     expect(later.every(i => heroes.includes(i.referenceUrl ?? ''))).toBe(true);
-    expect(new Set(later.map(i => i.referenceUrl)).size).toBe(2);
+    expect(new Set(later.map(i => i.referenceUrl)).size).toBe(1); // B's hero is a byte copy of A's, so the inline references coincide
     const [ha, hb] = w.row.variants.map(v => v.slides[0]!.path!.replace(/\.jpg$/, '.base.jpg'));
     expect(w.files.get(hb!)!.equals(w.files.get(ha!)!)).toBe(true);
     expect(w.files.get(ha!)!.toString()).not.toContain('+');
     // Arm B reuses arm A's slide 1: 3 + 2 renders, one candidate each, and the QA prompt carried the morph checks.
     expect(w.calls.images).toHaveLength(5);
     expect(w.calls.qa[0]!.user).toContain('jaw definition has visibly changed from slide 1');
+  });
+
+  test('a text-free base stored as WebP is sent inline with its real MIME type, not by a mislabelled URL', async () => {
+    const w = world({ contract, qa: [judge(true), judge(true)], webpImages: true }, { variables: ['morph'], direction: 'Reproduce the ladder with one invented man', lockedConstraints: [], sourceDefaults: [] });
+    await w.plan();
+    await w.generate();
+    const later = w.calls.images.filter(i => i.prompt.includes('MORPH:'));
+    expect(later.length).toBeGreaterThan(0);
+    for (const i of later) expect(i.referenceUrl).toMatch(/^data:image\/webp;base64,/);
   });
 
   test('a morph check the judge does not see fails the arm', async () => {
@@ -1199,7 +1209,7 @@ describe('multiplication (SLA-866): hook, character, angle and scene alternates 
     expect(w.row.status).toBe('completed');
     expect(w.row.variants).toHaveLength(6);
     const baselineUrls = new Set(w.row.variants[0]!.slides.map(s => s.url));
-    const baselineBases = new Set(w.row.variants[0]!.slides.map(s => `https://assets.example.test/${s.path!.replace(/\.jpg$/, '.base.jpg')}`));
+    const baselineBases = new Set(w.row.variants[0]!.slides.map(s => `data:image/jpeg;base64,${w.files.get(s.path!.replace(/\.jpg$/, '.base.jpg'))?.toString('base64')}`));
     const alternateImages = w.calls.images.slice(3);
     expect(alternateImages.length).toBeGreaterThan(0);
     for (const img of alternateImages) {
