@@ -5,8 +5,13 @@
 //
 //   bun src/scripts/face-library-ingest.ts <command> --workspace=<id> [options]
 //
-//   gallery-frames --video=<id>              cut a frame at every overlay timestamp of a labelled
-//                                            gallery video (calibration set; never drawn on a deck)
+//   gallery-frames --video=<id> [--extractor=stream]
+//                                            cut a frame at every overlay timestamp of a labelled
+//                                            gallery video (calibration set; never drawn on a deck).
+//                                            Default extractor is Playwright + Chrome; "stream" copies
+//                                            the video to Cloudflare Stream (needs CLOUDFLARE_ACCOUNT_ID
+//                                            + CLOUDFLARE_STREAM_TOKEN or CLOUDFLARE_API_TOKEN), reads the
+//                                            thumbnails and deletes the copy. No browser needed.
 //   commons --title="File:X.jpg" --person="Name" [--sex=male|female]
 //                                            one Commons photo; CC0 / public domain / CC-BY only
 //   synthetic --count=N --batch=<name> [--jaw=weak] --yes
@@ -24,6 +29,7 @@ import { mediaBucket, mediaPath, putObject, signUrl, thumbBucket } from '../lib/
 import { FEATURES } from '../experiments/composite/landmarks.js';
 import { prismaFaceStore, usableFaces } from '../experiments/composite/face-store.js';
 import { ingestCommonsFile, ingestGalleryFrames, ingestSyntheticFaces, type FrameExtractor, type IngestDeps } from '../experiments/composite/ingest.js';
+import { deleteStreamVideo, fetchStreamThumbnail, streamConfig, streamCopyFromUrl, streamVideoStatus } from '../lib/stream-frames.js';
 import { LANDMARK_SYSTEM_PROMPT, calibrateThresholds, relabelLibrary } from '../experiments/composite/tagging.js';
 
 const WEAK_JAW_CLAUSE = ' Soft, underdeveloped jawline: a short vertical jaw ramus, a rounded jaw angle, a small recessed chin set back behind the lips.';
@@ -91,6 +97,33 @@ function playwrightFrames(workspaceId: string): { extract: FrameExtractor; close
   };
 }
 
+// Stream is the Chrome-free path: the worker image has no browser, Stream decodes H.264 and serves JPEG frames.
+function streamFrames(workspaceId: string): { extract: FrameExtractor; close(): Promise<void> } {
+  const config = streamConfig();
+  if (!config) throw new Error('--extractor=stream needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_STREAM_TOKEN (or CLOUDFLARE_API_TOKEN)');
+  const copies = new Map<string, { uid: string; thumbnailUrl: string }>();
+  const ready = async (videoId: string) => {
+    const known = copies.get(videoId);
+    if (known) return known;
+    const uid = await streamCopyFromUrl(config, await signUrl(mediaBucket(), mediaPath(workspaceId, videoId), 1800), { name: `slashloop-face-calibration:${videoId}` });
+    copies.set(videoId, { uid, thumbnailUrl: '' });
+    for (let i = 0; i < 60; i++) {
+      const status = await streamVideoStatus(config, uid);
+      if (status.error) throw new Error(`Stream could not process the video (${status.error})`);
+      if (status.ready) { const done = { uid, thumbnailUrl: status.thumbnailUrl ?? '' }; copies.set(videoId, done); return done; }
+      await new Promise(r => setTimeout(r, 5000));
+    }
+    throw new Error('Stream did not finish processing the video in 5 minutes');
+  };
+  return {
+    extract: async (videoId, timestampSec) => {
+      const { uid, thumbnailUrl } = await ready(videoId);
+      return fetchStreamThumbnail(config, uid, timestampSec, thumbnailUrl);
+    },
+    close: async () => { await Promise.all([...copies.values()].map(c => deleteStreamVideo(config, c.uid).catch(() => {}))); },
+  };
+}
+
 const show = (results: Array<{ status: string; reason?: string }>) => {
   const tally = results.reduce<Record<string, number>>((m, r) => ({ ...m, [r.status + (r.reason ? `:${r.reason}` : '')]: (m[r.status + (r.reason ? `:${r.reason}` : '')] ?? 0) + 1 }), {});
   console.log(JSON.stringify(tally));
@@ -111,7 +144,9 @@ async function main() {
     const videoId = need('video');
     const analysis = await db.analysis.findFirst({ where: { videoId, video: { source: { workspaceId } } }, orderBy: { createdAt: 'desc' }, select: { analysisJson: true } });
     if (!analysis?.analysisJson) throw new Error('that video has no analysis');
-    const frames = playwrightFrames(workspaceId);
+    const extractor = flag('extractor');
+    if (extractor !== undefined && extractor !== 'stream') throw new Error('--extractor must be "stream"');
+    const frames = extractor === 'stream' ? streamFrames(workspaceId) : playwrightFrames(workspaceId);
     try { show(await ingestGalleryFrames(await liveDeps(workspaceId), workspaceId, videoId, JSON.parse(analysis.analysisJson), frames.extract)); } finally { await frames.close(); }
   } else if (command === 'commons') {
     show([await ingestCommonsFile(await liveDeps(workspaceId), workspaceId, (u, init) => fetch(u, init), { title: need('title'), personName: need('person'), sex: flag('sex') as 'male' | 'female' | undefined })]);
