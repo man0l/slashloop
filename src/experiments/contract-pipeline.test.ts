@@ -838,7 +838,8 @@ describe('scene variable: arm B edits every baseline slide into another setting'
     expect(w.row.error).toBeNull();
     expect(w.row.status).toBe('review');
     const [a, b] = w.row.variants;
-    expect(w.row.contract?.keepSourceImage).toBe(false);
+    // SLA-881: keepSourceImage is arm A's; the scene alternate drops the source photos in its own view.
+    expect(w.row.contract?.keepSourceImage).toBe(true);
     expect(b!.brief.slides.map(s => s.scene)).toEqual([STREET, STREET, STREET]);
     expect(a!.brief.slides.map(s => s.scene)).toEqual(['a scene', 'a scene', 'a scene']);
     expect(b!.brief.slides.map(s => s.overlayText)).toEqual(a!.brief.slides.map(s => s.overlayText));
@@ -926,7 +927,10 @@ describe('scene variable: arm B edits every baseline slide into another setting'
     expect(qaB!.user).toContain("baseline deck's slides");
     expect(qaB!.user).toContain('clearly different from the matching baseline slide');
     expect(qaB!.user).toContain('the same person or character as in the baseline slides');
-    expect(qaB!.images).toBeGreaterThanOrEqual(qaA!.images + 3);
+    // Arm A is judged against the source frames it was edited from, arm B against the baseline slides only.
+    expect(qaA!.user).toContain('the slides were edited from');
+    expect(qaB!.user).not.toContain('the slides were edited from');
+    expect(qaB!.images).toBe(6);
   });
 
   test('a slide whose setting did not change fails QA, is re-rendered once with the QA text, then passes', async () => {
@@ -1098,6 +1102,30 @@ describe('multiplication (SLA-866): hook, character, angle and scene alternates 
     expect(characterPrompts.every(p => !p.prompt.startsWith('Create one new 9:16'))).toBe(true);
     expect(scenePrompts.length).toBeGreaterThanOrEqual(3);
     expect(scenePrompts.every(p => p.prompt.includes('Keep the SAME person') && !p.prompt.includes('NEW PERSON'))).toBe(true);
+  });
+
+  // SLA-881 (smoke 6b76c4be): "every slide is an edit of the matching source slide" with a character arm. keepSourceImage is arm A's,
+  // so the baseline edits the source frames; the character alternate recasts on the baseline's frames and QA looks for the source person.
+  test('a source-identity mixed run edits the source frames for the baseline and recasts on them for the character arm', async () => {
+    const mixed = rawContract({ identity: 'source', identitySheet: '', subject: 'person', keepSourceImage: true, sourceFrameLevels: [0, 1, 2].map(index => ({ index, level: 'none', showsPerson: true })), pools: pools().filter(p => p.variable !== 'scene') });
+    const w = world({ contract: mixed, qa: qa(6) }, { variables: ['hook', 'character', 'concept'], mode: 'exploration' });
+    w.update(e => { e.variantCount = 4; });
+    await w.plan();
+    await w.generate();
+    expect(w.row.error).toBeNull();
+    expect(w.row.status).toBe('completed');
+    const baseline = w.calls.images.slice(0, 3);
+    baseline.forEach((img, i) => {
+      expect(img.prompt.startsWith(FRESH)).toBe(false);
+      expect(img.referenceUrl).toBe(`https://assets.example.test/w/src/slides/${i}.jpg`);
+    });
+    w.row.variants[0]!.slides.forEach((s, i) => expect(s.reference).toMatchObject({ kind: 'slide', index: i }));
+    const recast = w.calls.images.filter(i => i.prompt.includes('NEW PERSON'));
+    expect(recast.length).toBe(3);
+    expect(recast.every(p => p.prompt.includes('a red-haired woman in her fifties'))).toBe(true);
+    expect(w.calls.qa[0]!.user).toContain('the slides were edited from');
+    const characterArm = w.row.variants.findIndex(v => v.changedVariables.some(c => c.name === 'character'));
+    expect(w.calls.qa[characterArm]!.user).toContain('the slides must NOT show this person');
   });
 
   test('angle and hook alternates are caption edits of the baseline picture, one call per slide in model mode', async () => {

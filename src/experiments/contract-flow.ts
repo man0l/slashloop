@@ -34,17 +34,23 @@ export function briefToArm(b: BriefData): ArmBrief {
   };
 }
 
-/** The contract exactly as one arm renders and is judged: the experiment's contract with this arm's own slides. */
-export function contractView(e: Pick<Experiment, 'contract'>, brief: BriefData): ResolvedContract {
+/** The contract exactly as one arm renders and is judged: the experiment's contract with this arm's own slides.
+ *  `arm`: the variant the view is for. SLA-881: `keepSourceImage` is arm A's; an alternate that recasts the person, re-stages
+ *  the scene or restyles cannot keep the source photographs, so its own view drops them (a recast is a new consistent person). */
+export function contractView(e: Pick<Experiment, 'contract'>, brief: BriefData, arm?: Pick<Variant, 'changedVariables'>): ResolvedContract {
   const c = e.contract;
   if (!c) throw new ExperimentError(409, 'missing_contract', 'This experiment has no resolved slide contract.');
   const slides: ContractSlide[] = brief.slides.map(s => ({
     overlayText: s.overlayText ?? '', arcLevel: c.arcAxis ? (s.arcLevel ?? 'none') : 'none', scene: s.scene,
     composition: s.composition ?? '', visibleChange: s.visibleChange ?? '', ...(c.morph && s.morph?.length ? { morph: s.morph } : {}),
   }));
+  const changed = new Set((arm?.changedVariables ?? []).map(x => x.name));
+  const recast = changed.has('character') && !!brief.character?.trim();
+  const identity = recast ? 'invented-consistent' : c.identity;
   return {
-    ...c, medium: brief.visualStyle || c.medium,
-    identitySheet: c.identity === 'invented-consistent' ? (brief.character || c.identitySheet) : '',
+    ...c, medium: brief.visualStyle || c.medium, identity,
+    identitySheet: identity === 'invented-consistent' ? (brief.character || c.identitySheet) : '',
+    keepSourceImage: c.keepSourceImage && !recast && !changed.has('scene') && !changed.has('visualStyle'),
     slides, hook: slides[0]?.overlayText ?? '',
   };
 }
@@ -146,7 +152,7 @@ export function slideWorkFor(e: Experiment, v: Variant, index: number, fix?: str
 /** True when the slide's role is an edit of the arm's own first slide. */
 export function isAnchorEdit(e: Experiment, v: Variant, index: number): boolean {
   if (index === 0 || !v.frozenBrief || !e.contract || isEditArm(e, v)) return false;
-  const view = contractView(e, v.frozenBrief);
+  const view = contractView(e, v.frozenBrief, v);
   return slideRole(view, index, pickFramesByArc(view)[index]!) === 'anchor-edit';
 }
 
@@ -336,7 +342,8 @@ export function settleQa(e: Experiment, t: Task, rawResult: QaTaskResult): void 
     return;
   }
   if (attempts <= QA_REPAIR_ROUNDS) {
-    const chain = !!v.frozenBrief && !!e.contract && contractView(e, v.frozenBrief).identity === 'invented-consistent' && !e.contract.keepSourceImage;
+    const view = v.frozenBrief && e.contract ? contractView(e, v.frozenBrief, v) : null;
+    const chain = !!view && view.identity === 'invented-consistent' && !view.keepSourceImage;
     const redo = repairSlides(result.failures, n, { chainFromAnchor: chain });
     for (const i of redo) {
       const slide = v.slides[i]!;
@@ -376,7 +383,8 @@ export function feedbackRedo(e: Experiment, v: Variant, req: Pick<FeedbackReques
   const n = v.slides.length;
   if (req.feedback) return v.slides.map((_, i) => i);
   const failures: Record<string, string[]> = Object.fromEntries((req.slides ?? []).map(s => [String(s.index), [s.feedback]]));
-  const chain = !!v.frozenBrief && !!e.contract && contractView(e, v.frozenBrief).identity === 'invented-consistent' && !e.contract.keepSourceImage;
+  const view = v.frozenBrief && e.contract ? contractView(e, v.frozenBrief, v) : null;
+  const chain = !!view && view.identity === 'invented-consistent' && !view.keepSourceImage;
   return repairSlides(failures, n, { chainFromAnchor: chain });
 }
 
