@@ -3,7 +3,7 @@
 // reaches the render request and the QA checker.
 import { expect, test } from 'bun:test';
 import type { Video } from '@prisma/client';
-import { CAROUSEL_TEXT_RULE, observations, observedCopy, prepare, resolvedCopyBlock } from './providers.js';
+import { CAROUSEL_TEXT_PASS, CAROUSEL_TEXT_RULE, staleCarouselText, observations, observedCopy, prepare, resolvedCopyBlock } from './providers.js';
 import { VideoAnalysisDataSchema } from '../analysis/schema.js';
 import type { Experiment, Input, Task } from './schema.js';
 import { compileSlideContract, contractCheckPlan, contractChecks, labelPolicy, type SlideContract } from './render-prompt.js';
@@ -57,6 +57,16 @@ test('a transcribed cover word reaches the copy state and the observation (SLA-8
   // The deck analysis prompts (grok + gemini branches) carry the per-slide transcription rule.
   expect(CAROUSEL_TEXT_RULE).toContain('shots[].onScreenText');
   expect(CAROUSEL_TEXT_RULE).toContain('week or step numbers');
+});
+
+test('a blank carousel analysis from before the text pass is stale once; stamped or texted ones are kept (SLA-885)', () => {
+  const blankDeck = analysis(Array.from({ length: 3 }, (_, i) => ({ timestampSec: i, description: `Slide ${i}` })));
+  expect(staleCarouselText(blankDeck, true)).toBe(true);
+  expect(staleCarouselText({ ...blankDeck, textPass: CAROUSEL_TEXT_PASS }, true)).toBe(false);
+  const texted = analysis(Array.from({ length: 3 }, (_, i) => ({ timestampSec: i, description: `Slide ${i}` })));
+  texted.shots![0]!.onScreenText = 'week 4';
+  expect(staleCarouselText(texted, true)).toBe(false);
+  expect(staleCarouselText(blankDeck, false)).toBe(false);
 });
 
 test('the board prompt is told the resolved copy so a blank slide cannot acquire words', () => {
