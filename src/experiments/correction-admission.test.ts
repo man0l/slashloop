@@ -261,7 +261,8 @@ describe('known-failure refunds settle atomically with the terminal status', () 
     const h = harness(100 * UNIT, async ctx => { await ctx!.admit(FANOUT); await ctx!.admit(FANOUT); throw new Error('socket lost'); });
     await step('w', 'e', h.deps);
     expect(h.task.status).toBe('pending');
-    expect(h.task.corrections).toHaveLength(2);
+    expect(h.task.corrections ?? []).toHaveLength(0);
+    expect(h.task.retained).toHaveLength(3);
     expect(h.net).toBe(3 * FANOUT * UNIT);
   });
 });

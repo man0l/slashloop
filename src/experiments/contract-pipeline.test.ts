@@ -219,6 +219,24 @@ describe('QA: hard failures get one repair and one re-QA, never downgraded', () 
     expect(w.files.get(b!.slides[1]!.path!)).toEqual(w.files.get(a!.slides[1]!.path!));
   });
 
+  test('a repair the approved credits cannot cover is skipped and the arm fails with a budget qa_failed', async () => {
+    const full = world({ contract: rawContract(), qa: [() => qaPass(), () => qaPass()] });
+    await full.plan();
+    await full.generate();
+    const spent = full.row.creditsCharged;
+    const w = world({ contract: rawContract(), qa: [() => qaFailSlide(1), () => qaPass()] });
+    await w.plan();
+    w.update(e => { e.maxCredits = spent - 1; });
+    await w.generate();
+    const a = w.row.variants[0]!;
+    expect(a.status).toBe('failed');
+    expect(a.qaDeck).toMatchObject({ verdict: 'failed', attempts: 1 });
+    expect(a.error).toMatch(/^qa_failed: repair skipped/);
+    expect(a.error).toMatch(/slide 2/);
+    expect(w.providerCalls['render-extra'] ?? 0).toBe(0);
+    expect(w.row.creditsCharged).toBeLessThanOrEqual(spent);
+  });
+
   test('B QA failing a slide it reused from A is ignored: no re-render, the bytes stay identical to A', async () => {
     const w = world({ contract: rawContract(), qa: [() => qaPass(), () => qaFailSlide(1)] });
     await w.plan();
@@ -1183,7 +1201,11 @@ describe('multiplication (SLA-866): hook, character, angle and scene alternates 
     expect(recast.every(p => p.prompt.includes('a red-haired woman in her fifties'))).toBe(true);
     expect(w.calls.qa[0]!.user).toContain('the slides were edited from');
     const characterArm = w.row.variants.findIndex(v => v.changedVariables.some(c => c.name === 'character'));
-    expect(w.calls.qa[characterArm]!.user).toContain('the slides must NOT show this person');
+    const q = w.calls.qa[characterArm]!;
+    expect(q.user).toContain('RECAST ARM');
+    expect(q.user).toContain('for likeness the slides must NOT show the person in these pictures');
+    expect(q.user).not.toContain('unchanged from its source frame');
+    expect(q.images).toBe(6);
   });
 
   test('angle and hook alternates are caption edits of the baseline picture, one call per slide in model mode', async () => {

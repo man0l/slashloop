@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import {
-  armsOf, assertArmDiffers, buildAlternate, fixText, repairSlides, slideRole, pickFramesByArc, slideWork,
+  armsOf, assertArmDiffers, buildAlternate, fixText, repairSlides, slideRole, pickFramesByArc, slideWork, splitLeversByIdentity,
   type ArmBrief, type ArmField, type ContractSlide, type ResolvedContract, type SlideWork,
 } from './resolved-contract.js';
 import { persistedOverlayText } from './render-prompt.js';
+import { CREDIT_COSTS } from '../lib/credits.js';
 import {
   ExperimentError, FEEDBACK_HISTORY_LIMIT, MAX_BRIEF_REVISIONS, SLIDE_FEEDBACK_LIMIT,
   type BriefData, type Experiment, type FeedbackRequestData, type Proposal, type Task, type Variant,
@@ -47,8 +48,12 @@ export function contractView(e: Pick<Experiment, 'contract'>, brief: BriefData, 
   const changed = new Set((arm?.changedVariables ?? []).map(x => x.name));
   const recast = changed.has('character') && !!brief.character?.trim();
   const identity = recast ? 'invented-consistent' : c.identity;
+  // SLA-891: a recast arm is judged on its own person. Source-arc levers its identity sheet fixes are dropped; the extremes prose was written for all of them.
+  const sheet = identity === 'invented-consistent' ? (brief.character || c.identitySheet) : '';
+  const split = recast && c.sourceArc ? splitLeversByIdentity(c.sourceArc.levers, sheet) : null;
+  const sourceArc = split?.fixed.length ? { ...c.sourceArc!, levers: split.kept, lowVsHigh: '' } : c.sourceArc;
   return {
-    ...c, medium: brief.visualStyle || c.medium, identity,
+    ...c, ...(sourceArc ? { sourceArc } : {}), ...(recast ? { recast: true } : {}), ...(split?.fixed.length ? { fixedLevers: split.fixed } : {}), medium: brief.visualStyle || c.medium, identity,
     identitySheet: identity === 'invented-consistent' ? (brief.character || c.identitySheet) : '',
     keepSourceImage: c.keepSourceImage && !recast && !changed.has('scene') && !changed.has('visualStyle'),
     slides, hook: slides[0]?.overlayText ?? '',
@@ -345,6 +350,17 @@ export function settleQa(e: Experiment, t: Task, rawResult: QaTaskResult): void 
     const view = v.frozenBrief && e.contract ? contractView(e, v.frozenBrief, v) : null;
     const chain = !!view && view.identity === 'invented-consistent' && !view.keepSourceImage;
     const redo = repairSlides(result.failures, n, { chainFromAnchor: chain });
+    const repairCost = redo.reduce((sum, i) => sum + slideUnits(slideWorkFor(e, v, i, fixText(result.failures, i)), isScriptOverlay(e)), 0) * CREDIT_COSTS.experimentSlide
+      + CREDIT_COSTS.experimentPlanningCall;
+    if (e.creditsCharged + repairCost > e.maxCredits) {
+      const reasons = Object.entries(result.failures).flatMap(([k, ms]) => ms.map(m => `${k === 'deck' ? 'deck' : `slide ${Number(k) + 1}`}: ${m}`));
+      const message = `qa_failed: repair skipped, it needs ${repairCost} credits and only ${Math.max(0, e.maxCredits - e.creditsCharged)} of the approved ${e.maxCredits} remain | ${reasons.join(' | ')}`.slice(0, 400);
+      v.qaDeck = { ...record, verdict: 'failed', repaired: v.qaDeck?.repaired ?? [] };
+      v.status = 'failed'; v.error = message;
+      t.status = 'failed'; t.error = message;
+      settleContractCompletion(e);
+      return;
+    }
     for (const i of redo) {
       const slide = v.slides[i]!;
       slide.status = 'pending'; slide.error = null;

@@ -383,7 +383,7 @@ function lifecycleSteps(e: Experiment): NextStep[] {
     case 'review':
     case 'completed':
       return draftVariants.length
-        ? [{ label: 'Price image generation for the reviewed variants', tool: 'estimate_experiment', args: { experimentId: id, stage: 'generate', variantIds: draftVariants.map(v => v.id) }, why: 'Free. Generation is the expensive step; the user approves the number first.' }]
+        ? [{ label: 'Price image generation for the reviewed variants', tool: 'estimate_experiment', args: { experimentId: id, stage: 'generate', variantIds: draftVariants.map(v => v.id) }, why: 'Free. Generation is the expensive step; the user approves the number first. totalCredits is the first pass; correctionCredits is the extra a QA repair round can add (maxTotalCredits is the ceiling). A repair that would pass the approved credits is skipped and the arm fails with qa_failed.' }]
         : [];
     case 'failed':
     case 'paused': {

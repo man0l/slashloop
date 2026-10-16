@@ -48,6 +48,15 @@ function jobError(known:boolean,cause:string|null):string {
   const prefix=known?'provider_result_rejected':'provider_outcome_unknown';
   return cause?`${prefix}:${cause}`:prefix;
 }
+/** Moves the attempt that just ended unverified into `retained`, so one eventual delivery can return it. */
+function retainAttempt(t:Task){
+  const corrections=t.corrections??[];
+  const prior=(t.retained??[]).reduce((n,r)=>n+r.charged,0);
+  const first=t.charged-prior-corrections.reduce((n,c)=>n+c.charged,0);
+  const rows=[...(first>0&&t.chargeRef?[{ref:t.chargeRef,charged:first}]:[]),...corrections.map(c=>({ref:c.ref,charged:c.charged}))];
+  if(rows.length)t.retained=[...(t.retained??[]),...rows];
+  t.corrections=undefined;
+}
 /** Fold a finished task's result into the experiment. Pure with respect to
  *  everything but `e` and `t`, so tests can drive the briefs settlement — where
  *  the planning notices a caller needs to see are recorded — without a database. */
@@ -126,7 +135,7 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
     // The provider request is gone (or settlement stalled). Requeue with backoff while
     // attempts remain — the prior attempt's charge stays retained, so a duplicate
     // delivery costs at most its per-job price. Exhausted receipts pause for review.
-    if(expired.attempts<MAX_TASK_ATTEMPTS){expired.status='pending';expired.error='provider_outcome_unknown';expired.nextAttemptAt=deps.now()+retryBackoffMs(expired.attempts);await deps.save(e);return false;}
+    if(expired.attempts<MAX_TASK_ATTEMPTS){retainAttempt(expired);expired.status='pending';expired.error='provider_outcome_unknown';expired.nextAttemptAt=deps.now()+retryBackoffMs(expired.attempts);await deps.save(e);return false;}
     expired.status='unknown';expired.error='provider_outcome_unknown';e.status='paused';e.error='Provider outcome unknown. Retry individual jobs from the experiment page.';
     await deps.save(e);return false;
   }
@@ -307,6 +316,7 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
           // are refunded above; unknown receipts keep their retained charge.
           // Provider throttles (429 / in-flight budget) carry retry_after=N — honor it.
           const wait=Number(/retry_after=(\d+)/.exec(failure instanceof Error?failure.message:String(failure ?? ''))?.[1] ?? 0);
+          if(!known)retainAttempt(receipt);
           receipt.status='pending';receipt.nextAttemptAt=deps.now()+Math.max(retryBackoffMs(receipt.attempts),wait*1000);
           if(t.kind==='analysis'&&input){input.status='pending';}
           if(v){v.status='generating';v.error=receipt.error;if(t.index!==undefined){v.slides[t.index]!.status='pending';v.slides[t.index]!.error=receipt.error;}}
@@ -321,7 +331,15 @@ export async function step(workspaceId:string,id:string,deps:EngineDeps=defaults
           if(outcome==='failed'&&isContractPipeline(latest)&&(t.kind==='slide'||t.kind==='qa'))settleContractCompletion(latest);
           else if(isActive(latest)&&!(known&&t.kind==='analysis'&&latest.allowPartial)) {latest.status=outcome==='unknown'?'paused':'failed';latest.error=receipt.error;}
         }
-      }else settle(latest,receipt,result);
+      }else{
+        settle(latest,receipt,result);
+        // The slide is delivered once, so the unverified earlier attempts it replaced are returned in the same batch.
+        const retained=receipt.retained??[];
+        if(retained.length&&remainingD1Queries()>=6+2*retained.length){
+          extraRefunds=retained.map(r=>({ref:r.ref,amount:r.charged}));
+          receipt.charged-=retained.reduce((n,r)=>n+r.charged,0);receipt.retained=undefined;
+        }
+      }
       // The batch is all-or-nothing, so a transient failure leaves nothing half-settled and is safe to retry.
       let saved:boolean;
       try{saved=await deps.save(latest,-refund,refund ? receipt.chargeRef : undefined,extraRefunds);}

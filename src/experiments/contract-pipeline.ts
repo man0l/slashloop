@@ -7,7 +7,7 @@ import {
   contractJsonSchema, contractPromptPayload, normalizeContract, pickFramesByArc, qaJsonSchema, qaVerdict, slideRole, tagLocks,
   type BaselineEdit, type ContractInput, type ResolvedContract,
 } from './resolved-contract.js';
-import { briefToArm, contractView, isMorphExperiment, isScriptOverlay, keepsBaselinePerson, proposalsFromContract, slideFeedback, slideUnits, slideWorkFor } from './contract-flow.js';
+import { briefToArm, contractView, isEditArm, isMorphExperiment, isScriptOverlay, keepsBaselinePerson, proposalsFromContract, slideFeedback, slideUnits, slideWorkFor } from './contract-flow.js';
 import { EDIT_SCENE_GOAL, editSceneDirection, validateVariants, type Experiment, type Task } from './schema.js';
 import { CONTENT_FILTER_PATTERN, SafeFailure, contentFilterFailure, SlideMeter, logAiCost, type ExecuteContext, type Prepared, type RenderDeps } from './providers.js';
 import { storySlideCount } from './slide-count.js';
@@ -375,22 +375,24 @@ export async function prepareContractQa(e: Experiment, t: Task, render: RenderDe
     return b;
   }));
   const referenceUse = chooseReferenceUse(view);
-  const frames = listSourceFrames(e, await sourcesOf(e, render));
-  const wanted: SourceFrame[] = [];
-  if (referenceUse === 'edit') {
-    for (const p of pickFramesByArc(view)) { const f = p.frameIndex == null ? undefined : frames[p.frameIndex]; if (f) wanted.push(f); }
-  } else if (view.identity.startsWith('invented')) {
-    const f = frames.find(x => view.sourceFrames.find(s => s.index === x.index)?.showsPerson);
-    if (f) wanted.push(f);
-  }
-  const sourceBytes = await readFrames(render, wanted);
   // An alternate that keeps the baseline's person and changes the scene is judged against the baseline deck: same person and medium, a different setting.
-  const base = keepsBaselinePerson(e, v) ? e.variants.find(x => x.id === v.baselineId) : undefined;
+  // SLA-891: a recast edit arm is judged against the same pictures for framing, pose, setting and outfit only; its person is its own.
+  const recastEdit = !!view.recast && isEditArm(e, v);
+  const base = keepsBaselinePerson(e, v) || recastEdit ? e.variants.find(x => x.id === v.baselineId) : undefined;
   const baselineBytes = base ? await Promise.all(base.slides.map(async s => {
     const b = s.path ? await read({ bucket: thumbBucket(), path: s.path }) : null;
     if (!b) throw new SafeFailure('qa_baseline_unreadable');
     return b;
   })) : [];
+  const frames = listSourceFrames(e, await sourcesOf(e, render));
+  const wanted: SourceFrame[] = [];
+  if (referenceUse === 'edit') {
+    for (const p of pickFramesByArc(view)) { const f = p.frameIndex == null ? undefined : frames[p.frameIndex]; if (f) wanted.push(f); }
+  } else if (view.identity.startsWith('invented') && !(recastEdit && baselineBytes.length)) {
+    const f = frames.find(x => view.sourceFrames.find(s => s.index === x.index)?.showsPerson);
+    if (f) wanted.push(f);
+  }
+  const sourceBytes = await readFrames(render, wanted);
   return {
     execute: async () => {
       const meter = new SlideMeter();
@@ -404,7 +406,7 @@ export async function prepareContractQa(e: Experiment, t: Task, render: RenderDe
       } finally { meter.flush(e.workspaceId, `${e.id}:${v.id}#qa`, render.recordAiCost ?? logAiCost); }
       const parsed = RawQa.safeParse(raw);
       if (!parsed.success) throw new SafeFailure('qa_invalid_response');
-      const verdict = qaVerdict(view, parsed.data, { sceneEdit: baselineBytes.length > 0 });
+      const verdict = qaVerdict(view, parsed.data, { sceneEdit: baselineBytes.length > 0 && !view.recast });
       return { passed: verdict.passed, failures: verdict.failures, warnings: verdict.warnings, calls: { qa: 1 } };
     },
   };
