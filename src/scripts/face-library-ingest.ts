@@ -9,8 +9,11 @@
 //                                            gallery video (calibration set; never drawn on a deck)
 //   commons --title="File:X.jpg" --person="Name" [--sex=male|female]
 //                                            one Commons photo; CC0 / public domain / CC-BY only
-//   synthetic --count=N --batch=<name> --yes generate N unnamed synthetic faces (image-model spend:
-//                                            about 12 credits-worth each; ~300 for a 25-face bank)
+//   synthetic --count=N --batch=<name> [--jaw=weak] --yes
+//                                            generate N unnamed synthetic faces (image-model spend:
+//                                            about 12 credits-worth each; ~300 for a 25-face bank).
+//                                            The default prompt only yields average-to-strong jaws, so
+//                                            a bank needs a second batch with --jaw=weak for ❌ examples.
 //   calibrate [--apply]                      fit thresholds to the labelled gallery frames, report,
 //                                            and with --apply re-label the whole library (no model call)
 //   list                                     library summary
@@ -18,9 +21,13 @@
 import { db } from '../db.js';
 import { callOpenRouterText, generateOpenRouterImage } from '../lib/openrouter.js';
 import { mediaBucket, mediaPath, putObject, signUrl, thumbBucket } from '../lib/storage.js';
+import { FEATURES } from '../experiments/composite/landmarks.js';
 import { prismaFaceStore, usableFaces } from '../experiments/composite/face-store.js';
 import { ingestCommonsFile, ingestGalleryFrames, ingestSyntheticFaces, type FrameExtractor, type IngestDeps } from '../experiments/composite/ingest.js';
 import { LANDMARK_SYSTEM_PROMPT, calibrateThresholds, relabelLibrary } from '../experiments/composite/tagging.js';
+
+const WEAK_JAW_CLAUSE = ' Soft, underdeveloped jawline: a short vertical jaw ramus, a rounded jaw angle, a small recessed chin set back behind the lips.';
+const tallyOf = (vs: string[]) => vs.reduce<Record<string, number>>((m, v) => ({ ...m, [v]: (m[v] ?? 0) + 1 }), {});
 
 const argv = process.argv.slice(2);
 const command = argv[0];
@@ -94,7 +101,7 @@ async function main() {
   if (command === 'list') {
     const rows = await prismaFaceStore.list(workspaceId);
     const usable = usableFaces(rows);
-    console.log(JSON.stringify({ total: rows.length, usableForDecks: usable.length, bySource: Object.fromEntries(['gallery_frame', 'commons', 'synthetic'].map(s => [s, rows.filter(r => r.source === s).length])), named: rows.filter(r => r.personName).length }));
+    console.log(JSON.stringify({ total: rows.length, usableForDecks: usable.length, bySource: Object.fromEntries(['gallery_frame', 'commons', 'synthetic'].map(s => [s, rows.filter(r => r.source === s).length])), named: rows.filter(r => r.personName).length, verdictMix: Object.fromEntries(FEATURES.map(f => [f, tallyOf(usable.map(r => r.verdicts[f]))])) }));
   } else if (command === 'calibrate') {
     const { thresholds, report } = calibrateThresholds(await prismaFaceStore.listCalibration(workspaceId));
     console.log(JSON.stringify(report, null, 2));
@@ -111,11 +118,13 @@ async function main() {
   } else if (command === 'synthetic') {
     const count = Number(need('count'));
     if (!Number.isInteger(count) || count < 1 || count > 40) throw new Error('--count must be 1..40');
+    const jaw = flag('jaw');
+    if (jaw !== undefined && jaw !== 'weak') throw new Error('--jaw must be "weak"');
     if (!has('yes')) throw new Error(`this spends image-model credits (${count} generations); pass --yes to proceed`);
     show(await ingestSyntheticFaces(await liveDeps(workspaceId), workspaceId, need('batch'), count, async i => {
       const sex = i % 2 ? 'woman' : 'man';
       const img = await generateOpenRouterImage({
-        prompt: `Photorealistic studio side-profile portrait of a fictional adult ${sex}, head and shoulders, facing right, plain grey background, ear, jaw and chin fully visible, hair off the face, neutral expression, no glasses, no text, not a real person.`,
+        prompt: `Photorealistic studio side-profile portrait of a fictional adult ${sex}, head and shoulders, facing right, plain grey background, ear, jaw and chin fully visible, hair off the face, neutral expression, no glasses, no text, not a real person.${jaw === 'weak' ? WEAK_JAW_CLAUSE : ''}`,
         quality: 'medium', aspectRatio: '3:4',
       });
       return new Uint8Array(img.buffer);
