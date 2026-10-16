@@ -2,7 +2,7 @@
 // effect (vision, image bytes, storage, frame capture) is injected, so the rules
 // run in tests and the operator CLI supplies the live versions.
 import { randomUUID } from 'node:crypto';
-import { detectAnnotationPattern } from './deck.js';
+import { detectAnnotationPattern, frameSecFor } from './deck.js';
 import { fetchCommonsFile, type FetchLike } from './commons.js';
 import { assertInsertable, type FaceInsert, type FaceStore } from './face-store.js';
 import { CompositeError, type FaceRecord } from './plan.js';
@@ -60,7 +60,7 @@ export async function ingestGalleryFrames(
   const out: IngestResult[] = [];
   for (const slot of pattern.slots) {
     out.push(await ingestImage(deps, workspaceId, {
-      bytes: await extract(videoId, slot.timestampSec), source: 'gallery_frame', sourceRef: `${videoId}@${slot.timestampSec}`,
+      bytes: await extract(videoId, frameSecFor(slot)), source: 'gallery_frame', sourceRef: `${videoId}@${slot.timestampSec}`,
       sourceVerdict: { [slot.feature]: slot.badge },
     }));
   }

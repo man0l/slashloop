@@ -58,7 +58,12 @@ export async function tagFace(
 const MONOTONE: Partial<Record<Feature, 'higher_better'>> = { ramus: 'higher_better', canthal_tilt: 'higher_better', forward_growth: 'higher_better' };
 export const MIN_CALIBRATION_PER_CLASS = 3;
 
-export interface CalibrationReport { feature: Feature; status: 'fitted' | 'kept_default'; reason?: string; pos: number; neg: number }
+export interface CalibrationReport {
+  feature: Feature; status: 'fitted' | 'kept_default'; reason?: string; pos: number; neg: number;
+  /** Measured range of each labelled class, so an overlap can be read off the report. */
+  posRange?: [number, number]; negRange?: [number, number];
+}
+const rangeOf = (vs: number[]): [number, number] | undefined => (vs.length ? [Math.min(...vs), Math.max(...vs)] : undefined);
 
 /**
  * Fit thresholds so the stored measures of the pre-labelled gallery frames
@@ -78,13 +83,16 @@ export function calibrateThresholds(
     });
     const pos = samples.filter(s => s.verdict === 'pos').length;
     const neg = samples.length - pos;
+    const posRange = rangeOf(samples.filter(s => s.verdict === 'pos').map(s => s.value));
+    const negRange = rangeOf(samples.filter(s => s.verdict === 'neg').map(s => s.value));
+    const ranges = { ...(posRange ? { posRange } : {}), ...(negRange ? { negRange } : {}) };
     const direction = MONOTONE[feature];
-    if (!direction) { report.push({ feature, status: 'kept_default', reason: 'band feature', pos, neg }); continue; }
-    if (pos < MIN_CALIBRATION_PER_CLASS || neg < MIN_CALIBRATION_PER_CLASS) { report.push({ feature, status: 'kept_default', reason: 'too few labelled frames', pos, neg }); continue; }
+    if (!direction) { report.push({ feature, status: 'kept_default', reason: 'band feature', pos, neg, ...ranges }); continue; }
+    if (pos < MIN_CALIBRATION_PER_CLASS || neg < MIN_CALIBRATION_PER_CLASS) { report.push({ feature, status: 'kept_default', reason: 'too few labelled frames', pos, neg, ...ranges }); continue; }
     const fitted = calibrateMonotone(samples, direction);
-    if (!fitted) { report.push({ feature, status: 'kept_default', reason: 'labelled classes overlap', pos, neg }); continue; }
+    if (!fitted) { report.push({ feature, status: 'kept_default', reason: 'labelled classes overlap', pos, neg, ...ranges }); continue; }
     thresholds[feature] = fitted;
-    report.push({ feature, status: 'fitted', pos, neg });
+    report.push({ feature, status: 'fitted', pos, neg, ...ranges });
   }
   return { thresholds, report };
 }
