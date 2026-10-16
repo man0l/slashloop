@@ -60,9 +60,20 @@ describe('gallery frames', () => {
     const h = harness();
     const at: number[] = [];
     const out = await ingestGalleryFrames(h.deps, 'ws', 'vid', analysis, async (_v, t) => { at.push(t); return new Uint8Array(1); });
-    expect(at).toEqual([0, 2, 4]);
+    expect(at).toEqual([0.25, 2.25, 4.25]);
     expect(out.every(r => r.status === 'added')).toBe(true);
     expect(usableFaces(h.rows)).toEqual([]);
+  });
+});
+
+describe('gallery frame sampling', () => {
+  test('a frame is cut mid-shot using the analysis shot duration', async () => {
+    const h = harness();
+    const shots = [['short ramus ❌', 3.1, 1.1], ['tall ramus ✅', 4.2, 1.1], ['tall ramus ✅', 5.3, 0.7]].map(([t, ts, d]) => ({ timestampSec: ts, durationSec: d, description: 'face', onScreenText: t }));
+    const at: number[] = [];
+    await ingestGalleryFrames(h.deps, 'ws', 'vid', { shots, onScreenText: [] }, async (_v, t) => { at.push(t); return new Uint8Array(1); });
+    expect(at).toEqual([3.65, 4.75, 5.65]);
+    expect(h.rows.map(r => r.sourceRef)).toEqual(['vid@3.1', 'vid@4.2', 'vid@5.3']);
   });
 });
 

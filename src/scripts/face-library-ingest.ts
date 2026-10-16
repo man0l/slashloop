@@ -5,7 +5,7 @@
 //
 //   bun src/scripts/face-library-ingest.ts <command> --workspace=<id> [options]
 //
-//   gallery-frames --video=<id> [--extractor=stream]
+//   gallery-frames --video=<id> [--extractor=stream] [--replace]
 //                                            cut a frame at every overlay timestamp of a labelled
 //                                            gallery video (calibration set; never drawn on a deck).
 //                                            Default extractor is Playwright + Chrome; "stream" copies
@@ -146,6 +146,10 @@ async function main() {
     if (!analysis?.analysisJson) throw new Error('that video has no analysis');
     const extractor = flag('extractor');
     if (extractor !== undefined && extractor !== 'stream') throw new Error('--extractor must be "stream"');
+    if (has('replace')) {
+      const { count } = await db.faceLibrary.deleteMany({ where: { workspaceId, source: 'gallery_frame', sourceRef: { startsWith: `${videoId}@` } } });
+      console.log(`replaced ${count} earlier gallery frame(s) of ${videoId}`);
+    }
     const frames = extractor === 'stream' ? streamFrames(workspaceId) : playwrightFrames(workspaceId);
     try { show(await ingestGalleryFrames(await liveDeps(workspaceId), workspaceId, videoId, JSON.parse(analysis.analysisJson), frames.extract)); } finally { await frames.close(); }
   } else if (command === 'commons') {

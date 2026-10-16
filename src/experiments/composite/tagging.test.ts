@@ -51,6 +51,7 @@ describe('calibrateThresholds', () => {
     const overlap = calibrateThresholds([...rows, { measures: { ramusLengthRatio: 0.5 }, sourceVerdict: { ramus: 'neg' } }, { measures: { ramusLengthRatio: 0.3 }, sourceVerdict: { ramus: 'pos' } }]);
     expect(overlap.thresholds.ramus).toEqual(DEFAULT_THRESHOLDS.ramus);
     expect(overlap.report.find(r => r.feature === 'ramus')?.reason).toBe('labelled classes overlap');
+    expect(overlap.report.find(r => r.feature === 'ramus')).toMatchObject({ posRange: [0.3, 0.55], negRange: [0.22, 0.5] });
     expect(calibrateThresholds([]).report.every(r => r.status === 'kept_default')).toBe(true);
   });
 });

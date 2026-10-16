@@ -9,7 +9,11 @@ import {
   type CompositePlanT, type FaceRecord, type FaceSlot, type ScoreCardSlideT,
 } from './plan.js';
 
-export interface PatternSlot { timestampSec: number; feature: Feature; badge: 'pos' | 'neg'; label: string }
+export interface PatternSlot { timestampSec: number; durationSec?: number; feature: Feature; badge: 'pos' | 'neg'; label: string }
+
+/** Mid-shot, so a cut that lands a few tenths off the analysis timestamp cannot show the neighbouring shot. */
+export const frameSecFor = (slot: Pick<PatternSlot, 'timestampSec' | 'durationSec'>): number =>
+  Math.round((slot.timestampSec + (slot.durationSec ?? 0.5) / 2) * 100) / 100;
 export interface AnnotationPattern { slots: PatternSlot[]; scoreCard: boolean }
 
 /** At least this many shots must carry a parseable verdict overlay for the source to count as photo-annotation. */
@@ -17,7 +21,7 @@ export const MIN_VERDICT_SHOTS = 3;
 // Only the fields the pattern reads, so an analysis with unrelated drift still counts.
 const PatternSource = z.object({
   shots: z.array(z.object({
-    timestampSec: z.number(), description: z.string().catch(''), onScreenText: z.string().nullable().catch(null),
+    timestampSec: z.number(), durationSec: z.number().positive().optional().catch(undefined), description: z.string().catch(''), onScreenText: z.string().nullable().catch(null),
   })).nullable().catch(null),
   onScreenText: z.array(z.object({ timestampSec: z.number(), text: z.string().catch('') })).nullable().catch(null),
 });
@@ -33,12 +37,17 @@ export function detectAnnotationPattern(analysisJson: unknown): AnnotationPatter
   if (!parsed.success) return null;
   const a = parsed.data;
   const byTime = new Map<number, string>();
-  for (const s of a.shots ?? []) { const t = s.onScreenText?.trim(); if (t) byTime.set(s.timestampSec, t); }
+  const durations = new Map<number, number>();
+  for (const s of a.shots ?? []) {
+    const t = s.onScreenText?.trim();
+    if (t) byTime.set(s.timestampSec, t);
+    if (s.durationSec) durations.set(s.timestampSec, s.durationSec);
+  }
   for (const o of a.onScreenText ?? []) { const t = o.text?.trim(); if (t && !byTime.has(o.timestampSec)) byTime.set(o.timestampSec, t); }
   const slots: PatternSlot[] = [];
   for (const [timestampSec, text] of [...byTime.entries()].sort((x, y) => x[0] - y[0])) {
     const v = parseOverlayVerdict(text);
-    if (v) slots.push({ timestampSec, feature: v.feature, badge: v.verdict, label: v.label });
+    if (v) slots.push({ timestampSec, ...(durations.has(timestampSec) ? { durationSec: durations.get(timestampSec)! } : {}), feature: v.feature, badge: v.verdict, label: v.label });
   }
   if (slots.length < MIN_VERDICT_SHOTS) return null;
   const shots = [...(a.shots ?? [])].sort((x, y) => x.timestampSec - y.timestampSec);
