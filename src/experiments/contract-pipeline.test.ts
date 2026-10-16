@@ -23,7 +23,7 @@ const rawContract = (o: Record<string, unknown> = {}) => ({
   keepSourceImage: true, borrowSourceLook: false, arcAxis: '',
   sourceFrameLevels: [0, 1, 2].map(index => ({ index, level: 'none', showsPerson: false })),
   slides: [slide({ overlayText: 'Hook A' }), slide({ overlayText: 'two' }), slide({ overlayText: 'three' })],
-  variantB: { variable: 'hook', value: 'Hook B', slides: [] },
+  pools: [{ variable: 'hook', values: [{ value: 'Hook B', slides: [] }] }],
   ...o,
 });
 const qaPass = (n = 3) => ({
@@ -120,7 +120,7 @@ describe('briefs: one contract call', () => {
     expect(w.row.error).toBeNull();
     expect(w.row.status).toBe('review');
     expect(w.row.variants).toHaveLength(2);
-    expect(w.row.notices).toContain('The slide contract always compares the direction against one alternative, so this run has 2 variants instead of 1.');
+    expect(w.row.notices).toContain('The slide contract always compares the direction against at least one alternative, so this run has 2 variants instead of 1.');
   });
 
   test('the source default is dropped with a reason and the contract records it', async () => {
@@ -132,21 +132,21 @@ describe('briefs: one contract call', () => {
   });
 });
 
-describe('briefs: a short variantB gets one repair', () => {
-  const shortB = rawContract({ variantB: { variable: 'hook', value: '', slides: [] } });
+describe('briefs: a short value pool gets one repair', () => {
+  const shortB = rawContract({ pools: [{ variable: 'hook', values: [{ value: '', slides: [] }] }] });
 
   test('the model is re-prompted with the missing field and the repaired contract is used', async () => {
     const w = world({ contract: null, contracts: [shortB, rawContract()], qa: [] });
     await w.plan();
     expect(w.calls.contract).toBe(2);
     expect(w.calls.contractUsers[0]).not.toContain('"repair"');
-    expect(w.calls.contractUsers[1]).toContain('Arm B needs a value for');
+    expect(w.calls.contractUsers[1]).toContain('Your previous answer was rejected');
     expect(w.row.status).toBe('review');
     expect(w.row.variants[1]!.brief.hook).toBe('Hook B');
     expect(w.providerCalls).toEqual({ contract: 2 });
   });
 
-  test('a second short variantB fails with contract_variant_missing after exactly one repair', async () => {
+  test('a second short pool fails with contract_variant_missing after exactly one repair', async () => {
     const w = world({ contract: shortB, qa: [] });
     await w.plan().catch(() => undefined);
     expect(w.calls.contract).toBe(2);
@@ -826,7 +826,7 @@ describe('SLA-811: a QA-failed experiment is retried with a model-revised brief'
 describe('scene variable: arm B edits every baseline slide into another setting', () => {
   const OPENER = 'Edit the attached 9:16 frame. Keep the SAME person, medium, lighting and camera. Change ONLY the setting, props and action to the slide scene.';
   const STREET = 'a rainy street at night';
-  const sceneContract = (o: Record<string, unknown> = {}) => rawContract({ variantB: { variable: 'scene', value: STREET, slides: [] }, ...o });
+  const sceneContract = (o: Record<string, unknown> = {}) => rawContract({ pools: [{ variable: 'scene', values: [{ value: STREET, slides: [] }] }], ...o });
   const qaScene = (n = 3, changed = true) => { const q = qaPass(n); q.slides.forEach(s => { (s as Record<string, unknown>).settingChanged = changed; }); return q; };
   const scenario = (qa: Script['qa'] = [() => qaPass(), () => qaScene()]) => ({ contract: sceneContract(), qa });
   const vars: Partial<Experiment['instructions']> = { variables: ['scene'] };
@@ -948,6 +948,20 @@ describe('scene variable: arm B edits every baseline slide into another setting'
       expect(est.pricing.slide).toBe(CREDIT_COSTS.experimentSlide);
     } finally { mock.module('../lib/credits.js', () => ({ ...real })); }
   });
+
+  test('estimate_experiment(plan) quotes the worst-case generation ceiling for every requested variant', async () => {
+    const { CREDIT_COSTS } = await import('../lib/credits.js');
+    const real = { ...(await import('../lib/credits.js')) };
+    mock.module('../lib/credits.js', () => ({ ...real, creditBalance: async () => ({ total: 9999 }) }));
+    try {
+      const { estimate } = await import('./service.js');
+      const w = world(scenario(), vars);
+      w.update(e => { e.variantCount = 9; });
+      const est = await estimate(w.row, 'plan') as Awaited<ReturnType<typeof estimate>> & { projectedGenerationCredits?: number; upperBound?: boolean };
+      expect(est.upperBound).toBe(true);
+      expect(est.projectedGenerationCredits).toBe(9 * (w.row.slideCount * CREDIT_COSTS.experimentSlide + CREDIT_COSTS.experimentPlanningCall));
+    } finally { mock.module('../lib/credits.js', () => ({ ...real })); }
+  });
 });
 
 describe('SLA-867: a morph (ladder) deck end to end', () => {
@@ -958,7 +972,7 @@ describe('SLA-867: a morph (ladder) deck end to end', () => {
     sourceFrameLevels: [0, 1, 2].map(index => ({ index, level: 'none', showsPerson: true })),
     morph: { axis: 'face softens', attributes: ['jaw definition', 'cheek fullness'] },
     slides: [morphSlide('CHAD\n2% of population', 4, 0), morphSlide('HTN\n20% of population', 2, 2), morphSlide('SUB 3\n12% of population', 0, 4)],
-    variantB: { variable: 'morph', value: 'stops halfway', slides: [morphSlide('', 4, 0), morphSlide('', 3, 1), morphSlide('', 2, 2)] },
+    pools: [{ variable: 'morph', values: [{ value: 'stops halfway', slides: [morphSlide('', 4, 0), morphSlide('', 3, 1), morphSlide('', 2, 2)] }] }],
   });
   // A judge that sees every listed morph check and passes it, as one that sees the change would.
   const judge = (pass: boolean) => (n: number, user: string) => {

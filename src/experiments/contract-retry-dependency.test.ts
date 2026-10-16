@@ -28,7 +28,7 @@ const contract = {
   keepSourceImage: false, borrowSourceLook: true, arcAxis: '',
   sourceFrameLevels: Array.from({ length: N }, (_, index) => ({ index, level: 'none', showsPerson: true })),
   slides: Array.from({ length: N }, (_, i) => ({ overlayText: i === 0 ? 'Hook A' : `copy ${i}`, arcLevel: 'none', scene: `frame-${i}-scene`, composition: 'centred', visibleChange: '' })),
-  variantB: { variable: 'hook', value: 'Hook B', slides: [] },
+  pools: [{ variable: 'hook', values: [{ value: 'Hook B', slides: [] }] }],
 };
 
 function world() {

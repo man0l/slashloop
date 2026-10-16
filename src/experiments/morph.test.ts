@@ -6,7 +6,7 @@ import {
   MORPH_ATTRIBUTES, MorphError, assertNoValuationWords, morphBlock, morphChecks, normalizeMorphSlides, redactValuation, valuationWords,
 } from './morph.js';
 import {
-  ContractError, MORPH_CONTRACT_JSON_SCHEMA, buildArmB, compileQaPrompt, compileSlidePrompt, contractFieldGuide, contractJsonSchema, diffArms,
+  ContractError, MORPH_CONTRACT_JSON_SCHEMA, armsOf, buildAlternate, compileQaPrompt, compileSlidePrompt, contractFieldGuide, contractJsonSchema, diffArms,
   morphQaChecks, normalizeContract, qaJsonSchema, qaVerdict, slideRole, tagLocks, pickFramesByArc, type ContractInput, type QaAnswer,
 } from './resolved-contract.js';
 import { universalLocks } from './source-format.js';
@@ -33,7 +33,7 @@ const slideAt = (i: number, grades = GRADES) => ({
   morph: Object.entries(grades).map(([attribute, g]) => ({ attribute, grade: g[i]! })),
 });
 const input = (o: Partial<ContractInput> = {}): ContractInput => ({
-  direction: 'Keep the source format: one invented man graded slide by slide, labels copied exactly.', slideCount: 8, frameCount: 8, variable: 'morph', morph: true,
+  direction: 'Keep the source format: one invented man graded slide by slide, labels copied exactly.', slideCount: 8, frameCount: 8, variables: ['morph'], mode: 'controlled', alternates: 1, morph: true,
   locks: tagLocks([...universalLocks()], universalLocks()), sourceDefaults: [], ...o,
 });
 const raw = (o: Record<string, unknown> = {}) => ({
@@ -43,12 +43,12 @@ const raw = (o: Record<string, unknown> = {}) => ({
   sourceFrameLevels: LABELS.map((_, index) => ({ index, level: 'none', showsPerson: index < 7 })),
   morph: { axis: 'face gets rounder and softer', attributes: Object.keys(GRADES) },
   slides: LABELS.map((_, i) => slideAt(i)),
-  variantB: {
-    variable: 'morph', value: 'the softening starts earlier and stops halfway',
+  pools: [{ variable: 'morph', values: [{
+    value: 'the softening starts earlier and stops halfway',
     slides: LABELS.map((_, i) => slideAt(i, {
       'jaw definition': [4, 3, 3, 2, 2, 2, 2, 2], 'cheek fullness': [0, 1, 1, 2, 2, 2, 2, 2], hairline: [4, 4, 3, 3, 3, 3, 3, 3], expression: [3, 3, 2, 2, 2, 2, 2, 2],
     })),
-  },
+  }] }],
   ...o,
 });
 
@@ -132,16 +132,17 @@ describe('contract compile (morph)', () => {
 
   test('arm B keeps arm A\'s slide 1 and labels and only regrades the later slides', () => {
     const c = normalizeContract(raw(), input());
-    expect(c.variantB.variable).toBe('morph');
-    expect(c.variantB.slides[0]!.morph).toEqual(c.slides[0]!.morph);
-    expect(c.variantB.slides.map(s => s.overlayText)).toEqual(LABELS);
+    const axis = armsOf(c)[0]!.axes[0]!;
+    expect(axis.variable).toBe('morph');
+    expect(axis.slides[0]!.morph).toEqual(c.slides[0]!.morph);
+    expect(axis.slides.map(s => s.overlayText)).toEqual(LABELS);
     const armA = { character: c.identitySheet, visualStyle: c.medium, caption: '', cta: '', morph: c.morph!.axis, slides: c.slides };
-    const armB = buildArmB(armA, c.variantB);
+    const armB = buildAlternate(armA, armsOf(c)[0]!);
     expect(diffArms(armA, armB)).toEqual(['morph']);
   });
 
   test('arm B grading exactly like arm A is refused', () => {
-    expect(() => normalizeContract(raw({ variantB: { variable: 'morph', value: 'same', slides: LABELS.map((_, i) => slideAt(i)) } }), input())).toThrow(/different curve/);
+    expect(() => normalizeContract(raw({ pools: [{ variable: 'morph', values: [{ value: 'same', slides: LABELS.map((_, i) => slideAt(i)) }] }] }), input())).toThrow(/usable, different value for "morph"/);
   });
 
   test('the planner is asked for grades over the fixed vocabulary, without valuation words', () => {

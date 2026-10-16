@@ -122,8 +122,21 @@ characters each; the count must equal the deck's slide count). Arm B edits each
 baseline slide: the same person, medium, lighting, camera and overlay text, only
 where it takes place changes. Omit `hook`, `overlayTexts` and `character`. It
 costs the same as a hook or character edit (one render per slide plus one QA
-check per deck), and QA fails a slide whose setting did not change. Scene is
-tested on its own: it cannot be combined with other variables.
+check per deck), and QA fails a slide whose setting did not change. In edit mode scene is
+tested on its own; combine it with other variables through create mode above.
+To multiply one deck into many slideshows, use create mode with
+`instructions.mode:"exploration"`, `instructions.variables:["hook","character","concept","scene"]`
+(any subset) and `variantCount` 6-12. The run has a baseline plus `variantCount-1`
+alternates: first one clean single-variable control per variable, then rotating
+combinations of two or more, never the same combination twice. `controlled` mode
+keeps every alternate to one variable. With `slides` locked, a `concept` (angle)
+alternate rewrites the copy only and keeps the baseline pictures; scene
+alternates edit the baseline pictures, so no alternate starts a new original
+unless `slides` is also a variable. `estimate_experiment(stage:"plan")` returns
+`projectedGenerationCredits` with `upperBound:true`: the ceiling if every alternate
+re-rendered every slide (`variantCount * (slideCount * 10 + 2)`); the generate
+estimate is the exact charge. If the planner cannot build `variantCount`
+distinct combinations the run says so in its notices.
 Copy edits default to `variables:["hook"]`. Use create mode with
 `instructions.variables:["character"]` and `instructions.direction` when you
 need custom goals or counts. Never put create instructions into edit mode.
