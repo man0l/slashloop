@@ -35,6 +35,11 @@ mock.module('../src/lib/storage.js', () => ({
   deleteObjects: async (_bucket: string, paths: string[]) => { deletedObjects.push(...paths); return paths.length; },
   thumbBucket: () => 'thumbs',
 }));
+const realWorkspaceCategory = { ...(await import('../src/experiments/workspace-category.js')) };
+mock.module('../src/experiments/workspace-category.js', () => ({
+  ...realWorkspaceCategory,
+  workspaceCategoryOf: async () => 'general',
+}));
 const realAuthz = { ...(await import('../src/lib/authz.js')) };
 mock.module('../src/lib/authz.js', () => ({
   ...realAuthz,
@@ -48,6 +53,7 @@ afterAll(() => {
   mock.module('../src/experiments/store.js', () => ({ ...realStore }));
   mock.module('../src/lib/storage.js', () => ({ ...realStorage }));
   mock.module('../src/lib/authz.js', () => ({ ...realAuthz }));
+  mock.module('../src/experiments/workspace-category.js', () => ({ ...realWorkspaceCategory }));
 });
 
 function exp(id: string, status = 'done', slidePaths: string[] = []) {

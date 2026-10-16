@@ -305,7 +305,7 @@ function poolsGuide(input: ContractInput): string {
     slides: `value = ""; slides = the alternative storyline (${n} slides).`,
     morph: `value = the alternative progression in a few neutral words; slides = ${n} slides with the same overlayText, scene and composition as arm A's slides; slide 1 has the same grades as arm A's slide 1, the later slides follow a different curve or end point on the same attributes, still one way only.`,
     scene: input.sceneOverrides?.length
-      ? `the user fixed the setting: return one value, value = that setting; slides = ${n} slides where ONLY scene is filled: arm A's slide re-staged in that setting, with that slide's same person, outfit and pose, so only the setting and props change (overlayText, composition and visibleChange "", arcLevel "none"). Never carry furniture or props of arm A's setting into the new scene.`
+      ? `the user fixed the setting: return one value, value = that setting; slides = ${n} slides where ONLY scene is filled: arm A's slide re-staged in that setting, with that slide's same person, outfit and pose, so only the setting and props change (overlayText, composition and visibleChange "", arcLevel "none").`
       : `value = an alternative setting, props and action in one sentence; slides = ${n} slides where ONLY scene is filled (that setting for that slide's beat; overlayText, composition and visibleChange "", arcLevel "none"). The person, medium, lighting, camera and overlay text stay as in arm A.`,
   };
   const entries = armVariables(input.variables).filter(v => needs[v]).map(v => `${v}: exactly ${needs[v]} distinct value(s). ${help[v]}`);
@@ -444,6 +444,14 @@ function lintMorphContract(c: { identitySheet: string; medium: string; slides: C
 
 interface PoolValue { value: string; slides: ContractSlide[] }
 
+/** SLA-884: arm A's composition and visibleChange name arm A's background, so a slide moved to a new setting drops them; a morph slide's visibleChange is its grades, which have no setting in them. */
+const moveToScene = (s: ContractSlide, scene: string): ContractSlide => scene === s.scene ? s : { ...s, scene, composition: '', visibleChange: s.morph?.length ? s.visibleChange : '' };
+/** The slide without the words that depend on its setting: used to compare two slides that sit in different settings. */
+const settingFree = (s: ContractSlide): ContractSlide => ({ ...s, scene: '', composition: '', visibleChange: s.morph?.length ? s.visibleChange : '' });
+/** `a` and `b` with the setting-bound words removed only when their scenes differ. */
+const withoutSettingWhenMoved = (a: ContractSlide, b: ContractSlide): [ContractSlide, ContractSlide] =>
+  a.scene === b.scene ? [a, b] : [settingFree(a), settingFree(b)];
+
 const canonVariable = (v: string): string => (v.trim() === 'angle' ? 'concept' : v.trim());
 
 /** The alternates: the model's value pools, cleaned and de-duplicated, combined by `planAlternates`. A variable with no usable value cannot be tested, so it fails the contract (one repair round, see the pipeline). */
@@ -471,7 +479,7 @@ function normalizeAlternates(
       const restaged = (raws[0]?.slides ?? []).slice(0, armA.length).map(s => s.scene.trim());
       const usable = restaged.length === armA.length && restaged.every((x, i) => x && norm(x) !== norm(armA[i]!.scene));
       const scenes = usable ? restaged : armA.map((_, i) => given[given.length === 1 ? 0 : i]!);
-      add({ value: given.join(' | '), slides: armA.map((s, i) => ({ ...s, scene: scenes[i]!, composition: '' })) });
+      add({ value: given.join(' | '), slides: armA.map((s, i) => moveToScene(s, scenes[i]!)) });
     } else {
       for (const r of raws) add(poolValue(variable, r, { input, arcOn, framing, armA, kept, base, storyline }));
     }
@@ -504,7 +512,7 @@ function poolValue(
     case 'scene': {
       const scenes = c.armA.map((_, i) => slides[i]?.scene || value);
       if (scenes.some(x => !x) || scenes.every((x, i) => norm(x) === norm(c.armA[i]!.scene))) return null;
-      return { value: value || scenes[0]!, slides: c.armA.map((s, i) => ({ ...s, scene: scenes[i]!, composition: '' })) };
+      return { value: value || scenes[0]!, slides: c.armA.map((s, i) => moveToScene(s, scenes[i]!)) };
     }
     case 'concept': case 'slides': {
       if (slides.length < c.input.slideCount) return null;
@@ -857,8 +865,7 @@ export function buildAlternate(a: ArmBrief, alt: ContractAlternate): ArmBrief {
       case 'cta': next.cta = b.value; break;
       case 'character': next.character = b.value; break;
       case 'visualStyle': next.visualStyle = b.value; break;
-      // SLA-885: arm A's composition names the source setting's furniture; a new setting carries none of it.
-      case 'scene': next.slides = next.slides.map((s, i) => { const scene = b.slides[i]?.scene || b.value; return { ...s, scene, ...(scene !== s.scene ? { composition: '' } : {}) }; }); break;
+      case 'scene': next.slides = next.slides.map((s, i) => moveToScene(s, b.slides[i]?.scene || b.value)); break;
       case 'morph':
         next.morph = b.value;
         next.slides = next.slides.map((s, i) => ({ ...s, morph: b.slides[i]?.morph ?? s.morph, visibleChange: b.slides[i]?.visibleChange ?? s.visibleChange })); break;
@@ -882,9 +889,8 @@ export function diffArms(a: ArmBrief, b: ArmBrief): ArmField[] {
   const morphDiff = same && a.slides.some((s, i) => JSON.stringify(s.morph ?? []) !== JSON.stringify(b.slides[i]!.morph ?? []));
   if ((a.morph ?? '') !== (b.morph ?? '') || morphDiff) out.push('morph');
   // Beyond the hook (slide 1's caption) and the scenes, the slides must be identical for the diff to be named by field.
-  // A slide whose scene changed has no composition of its own (it is cleared with the new setting).
-  const strip = (s: ContractSlide, i: number, restaged: boolean) => slideKey(unmorphed({ ...s, scene: '', ...(restaged ? { composition: '' } : {}), ...(i === 0 ? { overlayText: '' } : {}) }));
-  const onlyHookAndScene = same && a.slides.every((s, i) => { const restaged = s.scene !== b.slides[i]!.scene; return strip(s, i, restaged) === strip(b.slides[i]!, i, restaged); });
+  const strip = (s: ContractSlide, i: number) => slideKey(unmorphed({ ...s, scene: '', ...(i === 0 ? { overlayText: '' } : {}) }));
+  const onlyHookAndScene = same && a.slides.every((s, i) => { const [x, y] = withoutSettingWhenMoved(s, b.slides[i]!); return strip(x, i) === strip(y, i); });
   if (!same || !onlyHookAndScene) { out.push('slides'); return out; }
   if (a.slides.some((s, i) => s.scene !== b.slides[i]!.scene)) out.push('scene');
   if (a.slides[0]!.overlayText !== b.slides[0]!.overlayText) out.push('hook');
@@ -916,7 +922,6 @@ export function slideWork(a: ArmBrief, b: ArmBrief, i: number, editFirst = false
     if (slideKey(sa) === slideKey(sb)) return 'reuse';
     if (slideKey({ ...sa, overlayText: '' }) === slideKey({ ...sb, overlayText: '' })) return 'caption-edit';
   }
-  // A restaged slide's composition is cleared with its scene (SLA-885), so it is not a difference of its own.
-  const restaged = sa.scene !== sb.scene ? { composition: '' } : {};
-  return editFirst && slideKey({ ...sa, scene: '', overlayText: '', ...restaged }) === slideKey({ ...sb, scene: '', overlayText: '', ...restaged }) ? 'baseline-edit' : 'render';
+  const [ka, kb] = withoutSettingWhenMoved(sa, sb);
+  return editFirst && slideKey({ ...ka, scene: '', overlayText: '' }) === slideKey({ ...kb, scene: '', overlayText: '' }) ? 'baseline-edit' : 'render';
 }
