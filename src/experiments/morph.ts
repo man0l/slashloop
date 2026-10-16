@@ -143,13 +143,14 @@ export function morphBlock(anchor: readonly MorphStep[], slide: readonly MorphSt
   ].join('\n');
 }
 
-/** One QA check per graded attribute of a slide after the first, phrased relative to slide 1. */
-export function morphChecks(anchor: readonly MorphStep[], slide: readonly MorphStep[]): Array<{ attribute: MorphAttribute; check: string }> {
+/** One QA check per graded attribute of a slide after the first, phrased relative to slide 1. A one-grade step is `soft`: too subtle to hard-fail a slide on. */
+export function morphChecks(anchor: readonly MorphStep[], slide: readonly MorphStep[]): Array<{ attribute: MorphAttribute; check: string; soft: boolean }> {
   return slide.map(s => {
     const from = anchor.find(a => a.attribute === s.attribute)?.grade ?? s.grade;
+    const soft = Math.abs(s.grade - from) === 1;
     const check = from === s.grade
       ? `${s.attribute} is unchanged from slide 1 (${gradeWords(s)})`
-      : `${s.attribute} has visibly changed from slide 1 (${gradeWords({ attribute: s.attribute, grade: from })}) to ${gradeWords(s)}`;
-    return { attribute: s.attribute, check };
+      : `${s.attribute} has ${soft ? 'changed slightly' : 'visibly changed'} from slide 1 (${gradeWords({ attribute: s.attribute, grade: from })}) to ${gradeWords(s)}`;
+    return { attribute: s.attribute, check, soft };
   });
 }
