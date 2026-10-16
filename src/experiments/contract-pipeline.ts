@@ -8,7 +8,7 @@ import {
   type BaselineEdit, type ContractInput, type ResolvedContract,
 } from './resolved-contract.js';
 import { briefToArm, contractView, isMorphExperiment, isScriptOverlay, keepsBaselinePerson, proposalsFromContract, slideFeedback, slideUnits, slideWorkFor } from './contract-flow.js';
-import { validateVariants, type Experiment, type Task } from './schema.js';
+import { EDIT_SCENE_GOAL, editSceneDirection, validateVariants, type Experiment, type Task } from './schema.js';
 import { CONTENT_FILTER_PATTERN, SafeFailure, contentFilterFailure, SlideMeter, logAiCost, type ExecuteContext, type Prepared, type RenderDeps } from './providers.js';
 import { storySlideCount } from './slide-count.js';
 import { classifyOpenRouterError } from '../lib/openrouter.js';
@@ -61,6 +61,26 @@ export function listSourceFrames(e: Pick<Experiment, 'inputs' | 'workspaceId' | 
 
 const direction = (e: Pick<Experiment, 'instructions'>) => (e.instructions.direction || e.instructions.goal || '').trim();
 
+/** An edit-mode scene test: arm A is the source deck, the user's setting goes to the alternate only. */
+const isEditScene = (e: Pick<Experiment, 'instructions'>) => e.instructions.goal === EDIT_SCENE_GOAL && !!e.instructions.sceneOverrides?.length;
+
+/**
+ * What the contract call is told. SLA-881: an edit-mode scene draft is planned from its scenes, not its stored prose
+ * (drafts before SLA-881 store a direction that staged the baseline in the new setting too), and always carries the
+ * workspace locks (those drafts stored none).
+ */
+export function contractInputOf(e: Experiment, frameCount: number): ContractInput {
+  const editScene = isEditScene(e);
+  return {
+    direction: editScene ? editSceneDirection(e.instructions.sceneOverrides!) : direction(e),
+    locks: tagLocks(editScene ? [...universalLocks(), ...e.instructions.lockedConstraints] : e.instructions.lockedConstraints, universalLocks()),
+    sourceDefaults: e.instructions.sourceDefaults ?? [], slideCount: e.slideCount, frameCount,
+    variables: e.instructions.variables, mode: e.instructions.mode, alternates: Math.max(e.variantCount - 1, 1),
+    ...(e.instructions.sceneOverrides?.length ? { sceneOverrides: e.instructions.sceneOverrides } : {}),
+    ...(isMorphExperiment(e) ? { morph: true } : {}),
+  };
+}
+
 const need = <T>(x: T | undefined, code: string): T => { if (x === undefined || x === null) throw new SafeFailure(code); return x; };
 
 const jpeg = (b: Buffer, label?: string) => ({ mimeType: 'image/jpeg', dataBase64: b.toString('base64'), ...(label ? { label } : {}) });
@@ -102,13 +122,7 @@ export async function prepareContractBriefs(e: Experiment, render: RenderDeps, r
   const bytes = await readFrames(render, frames);
   return {
     execute: async () => {
-      const input: ContractInput = {
-        direction: direction(e), locks: tagLocks(e.instructions.lockedConstraints, universalLocks()),
-        sourceDefaults: e.instructions.sourceDefaults ?? [], slideCount: e.slideCount, frameCount: frames.length,
-        variables: e.instructions.variables, mode: e.instructions.mode, alternates: Math.max(e.variantCount - 1, 1),
-        ...(e.instructions.sceneOverrides?.length ? { sceneOverrides: e.instructions.sceneOverrides } : {}),
-        ...(isMorphExperiment(e) ? { morph: true } : {}),
-      };
+      const input = contractInputOf(e, frames.length);
       const sources = e.inputs.filter(i => i.status === 'ready').map((i, ix) => ({
         // SLA-809: every observed slide, each trimmed, so a ladder's last frames (where the change peaks) are never cut off.
         source: `s${ix}`, observations: i.evidence.slice(0, MAX_CONTRACT_FRAMES + 4).map(v => `${v.location}: ${v.observation.slice(0, 240)}`).join(' | ').slice(0, 3000),

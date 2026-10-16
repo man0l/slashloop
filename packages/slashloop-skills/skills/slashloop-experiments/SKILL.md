@@ -44,7 +44,8 @@ Build `instructions`:
   Do not paste source analysis text into `direction` or `lockedConstraints`
   (it names real people and the source's own brand).
 - `variables`: 1–7 values from `hook`, `character`, `visualStyle`, `caption`,
-  `cta`, `concept`/`angle`, or `slides`. Edit mode (below) also takes `scene`. Required unless a `sourceFormat` is
+  `cta`, `concept`/`angle`, `slides` or `scene` (scene: on its own in `controlled`, or with
+  hook/character/concept in `exploration`; never with `slides`). Required unless a `sourceFormat` is
   given or inferred.
 - `mode`: `controlled` by default; each alternate changes one selected variable.
   `exploration` permits combined changes in a variant; `concept`/`slides` require it.
@@ -116,11 +117,12 @@ casting direction (up to 1000 characters). Omit `hook`, `overlayTexts`, and
 `instructions`: source text, style, setting and story stay locked. Edit mode
 creates two variants with a 100-credit ceiling; the same approval gates apply.
 For a bounded scene edit, call `create_experiment` with `mode:"edit"`,
-`variables:["scene"]` and `scene`: one description of the new setting, props and
-action for every slide, or an array with exactly one per slide (up to 500
+`variables:["scene"]` and `scene`: one description of the new setting and props
+for every slide, or an array with exactly one per slide (up to 500
 characters each; the count must equal the deck's slide count). Arm B edits each
-baseline slide: the same person, medium, lighting, camera and overlay text, only
-where it takes place changes. Omit `hook`, `overlayTexts` and `character`. It
+baseline slide: the same person, outfit, pose, medium, lighting, camera and overlay
+text, only where it takes place changes. The baseline (arm A) is the source deck as
+it is, and the workspace locks apply as in create mode. Omit `hook`, `overlayTexts` and `character`. It
 costs the same as a hook or character edit (one render per slide plus one QA
 check per deck), and QA fails a slide whose setting did not change. In edit mode scene is
 tested on its own; combine it with other variables through create mode above.

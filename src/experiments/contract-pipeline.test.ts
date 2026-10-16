@@ -9,7 +9,8 @@ import { droppedSourceCta, listSourceFrames } from './contract-pipeline.js';
 import { applyRetry } from './service.js';
 import { experimentProgress } from '../tools/experiments.js';
 import { serialize } from './store.js';
-import type { Experiment } from './schema.js';
+import { EDIT_SCENE_GOAL, editSceneDirection, type Experiment } from './schema.js';
+import { universalLocks } from './source-format.js';
 
 const originalEnv = { ...process.env };
 beforeEach(() => { process.env.R2_THUMB_PUBLIC_BASE = 'https://assets.example.test'; });
@@ -824,7 +825,7 @@ describe('SLA-811: a QA-failed experiment is retried with a model-revised brief'
 });
 
 describe('scene variable: arm B edits every baseline slide into another setting', () => {
-  const OPENER = 'Edit the attached 9:16 frame. Keep the SAME person, medium, lighting and camera. Change ONLY the setting, props and action to the slide scene.';
+  const OPENER = 'Edit the attached 9:16 frame. Keep the SAME person, outfit, pose, medium, lighting and camera. Change ONLY the setting and props to the slide scene.';
   const STREET = 'a rainy street at night';
   const sceneContract = (o: Record<string, unknown> = {}) => rawContract({ pools: [{ variable: 'scene', values: [{ value: STREET, slides: [] }] }], ...o });
   const qaScene = (n = 3, changed = true) => { const q = qaPass(n); q.slides.forEach(s => { (s as Record<string, unknown>).settingChanged = changed; }); return q; };
@@ -850,6 +851,36 @@ describe('scene variable: arm B edits every baseline slide into another setting'
     const w = world(scenario(), { ...vars, sceneOverrides: ['a beach', 'a kitchen', 'a train'] });
     await w.plan();
     expect(w.row.variants[1]!.brief.slides.map(s => s.scene)).toEqual(['a beach', 'a kitchen', 'a train']);
+  });
+
+  // SLA-881: a draft stored like 278afe69 (pre-fix prose, no locks) still plans arm A from the source deck.
+  test('an edit-mode scene draft plans arm A from the source: the new setting is the alternate\'s only, workspace locks on', async () => {
+    const LOCKER = 'a gym locker room';
+    const w = world(scenario(), { ...vars, goal: EDIT_SCENE_GOAL, direction: `Scene: ${LOCKER}. Change only the setting, props and action; keep the same person.`, lockedConstraints: [], sceneOverrides: [LOCKER] });
+    await w.plan();
+    const sent = JSON.parse(w.calls.contractUsers[0]!) as { direction: string; locks: Array<{ lock: string; origin: string }> };
+    expect(sent.direction).toBe(editSceneDirection([LOCKER]));
+    expect(sent.direction).not.toContain(`Scene: ${LOCKER}`);
+    expect(sent.direction.indexOf(LOCKER)).toBeGreaterThan(sent.direction.indexOf('alternate only'));
+    expect(sent.locks.map(l => l.lock)).toEqual(universalLocks());
+    expect(sent.locks.every(l => l.origin === 'workspace')).toBe(true);
+    expect(w.row.contract?.hardLocks.map(l => l.text)).toEqual(universalLocks());
+  });
+
+  test('a create-mode scene test keeps its own direction and locks', async () => {
+    const w = world(scenario(), vars);
+    await w.plan();
+    const sent = JSON.parse(w.calls.contractUsers[0]!) as { direction: string; locks: Array<{ lock: string }> };
+    expect(sent.direction).toBe('Keep the photos, change only the caption');
+    expect(sent.locks.map(l => l.lock)).toEqual(['Faceless: no face visible']);
+  });
+
+  test('the model\'s per-slide re-staging of the user\'s setting keeps each slide\'s own outfit and pose', async () => {
+    const restaged = ['locker room, shirtless by the benches', 'locker room, grey hoodie by the lockers', 'locker room, blue tee at the mirror'];
+    const w = world({ ...scenario(), contract: sceneContract({ pools: [{ variable: 'scene', values: [{ value: 'a gym locker room', slides: restaged.map(scene => slide({ scene, composition: '' })) }] }] }) }, { ...vars, sceneOverrides: ['a gym locker room'] });
+    await w.plan();
+    expect(w.row.variants[1]!.brief.slides.map(s => s.scene)).toEqual(restaged);
+    expect(w.row.variants[0]!.brief.slides.map(s => s.scene)).toEqual(['a scene', 'a scene', 'a scene']);
   });
 
   test('a scene count that is neither one nor the slide count fails the plan with contract_scene_count', async () => {
@@ -1061,7 +1092,7 @@ describe('multiplication (SLA-866): hook, character, angle and scene alternates 
   test('a character alternate names the new person and keeps the rest of the frame; a scene alternate keeps the person', async () => {
     const w = await run();
     const characterPrompts = w.calls.images.filter(i => i.prompt.includes('NEW PERSON'));
-    const scenePrompts = w.calls.images.filter(i => i.prompt.includes('Change ONLY the setting, props and action to the slide scene'));
+    const scenePrompts = w.calls.images.filter(i => i.prompt.includes('Change ONLY the setting and props to the slide scene'));
     expect(characterPrompts.length).toBeGreaterThanOrEqual(3);
     expect(characterPrompts.some(p => p.prompt.includes('a red-haired woman in her fifties'))).toBe(true);
     expect(characterPrompts.every(p => !p.prompt.startsWith('Create one new 9:16'))).toBe(true);

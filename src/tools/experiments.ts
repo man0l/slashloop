@@ -30,13 +30,13 @@ import { withNextSteps, type NextStep } from '../lib/next-steps.js';
 import { CREDIT_COSTS, InsufficientCreditsError, insufficientCreditsPayload } from '../lib/credits.js';
 import { CompositeOptions } from '../experiments/composite/options.js';
 import { createExperiment, dedupeSourcePosts, estimate, mutate, fingerprint, estimateFeedback } from '../experiments/service.js';
-import { SOURCE_FORMATS } from '../experiments/source-format.js';
+import { SOURCE_FORMATS, universalLocks } from '../experiments/source-format.js';
 import { ARC_LEVELS } from '../experiments/resolved-contract.js';
 import { load, list, serialize, testSummary } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
 import {
-  CopyOverrides, DIRECTION_MAX, ExperimentError, SCENE_MAX, FEEDBACK_MAX, Id, Instructions, MAX_MANUAL_ATTEMPTS, normalizeTestKey, slideFanout, VARIABLE_FIELDS, type Experiment, type InstructionsData,
+  CopyOverrides, DIRECTION_MAX, EDIT_SCENE_GOAL, editSceneDirection, ExperimentError, SCENE_MAX, FEEDBACK_MAX, Id, Instructions, MAX_MANUAL_ATTEMPTS, normalizeTestKey, slideFanout, TESTED_VARIABLES, type Experiment, type InstructionsData,
 } from '../experiments/schema.js';
 
 // ---- dependencies ----------------------------------------------------------
@@ -86,12 +86,7 @@ export const defaultExperimentToolDeps: ExperimentToolDeps = {
 export const EDIT_GOAL = 'Edit the slideshow overlay text, keeping the same images.';
 export const EDIT_CHARACTER_GOAL = 'Edit the slideshow character, keeping the same overlay text, style, setting and story.';
 export const EDIT_CHARACTER_MAX = 1000;
-export const EDIT_SCENE_GOAL = 'Edit the slideshow scene, keeping the same person, medium, lighting, camera and overlay text.';
-/** The scenes as one sentence for the planner; the exact per-slide values travel in `sceneOverrides`. */
-export function editSceneDirection(scenes: readonly string[]): string {
-  const said = scenes.length === 1 ? scenes[0]!.trim() : scenes.map((x, i) => `slide ${i + 1}: ${x.trim()}`).join('; ');
-  return ('Scene: ' + said).slice(0, 1500) + '. Change only the setting, props and action; keep the same person, medium, lighting, camera and overlay text.';
-}
+export { EDIT_SCENE_GOAL, editSceneDirection };
 export const EDIT_MORPH_GOAL = 'Re-create the ladder slideshow with one new invented subject, graded slide by slide on visible attributes, with the source labels drawn in code.';
 /** SLA-867: edit-mode morph. The source deck is the template: its set-up, framing and labels are kept, its subject is replaced by one invented adult. */
 export function editMorphDirection(morph: string | undefined): string {
@@ -149,7 +144,8 @@ export function editInstructions(hook: string | undefined, overlayTexts: Array<s
     if (hook !== undefined || overlayTexts.some(t => t !== null)) throw new ExperimentError(400, 'invalid_request', 'Scene-only edits keep source copy. Omit hook and overlayTexts, or use create mode.');
     return Instructions.parse({
       goal: EDIT_SCENE_GOAL, brand: '', audience: '', language: language.trim() || 'English',
-      direction: editSceneDirection(scenes), lockedConstraints: [], variables, mode: 'controlled', sceneOverrides: scenes,
+      // SLA-881: the scene edit re-renders every slide, so the always-on workspace locks apply as in create mode.
+      direction: editSceneDirection(scenes), lockedConstraints: universalLocks(), variables, mode: 'controlled', sceneOverrides: scenes,
       ...(options.overlayMode ? { overlayMode: options.overlayMode } : {}),
     });
   }
@@ -484,7 +480,8 @@ const approvedCreditsField = z.number().int().min(0).describe(
   + 'or, under a standing budget (a per-experiment or per-batch credit cap granted in the task), the remaining cap. '
   + 'The step runs only when the fresh estimate is <= this number; if it is higher, nothing is started and the new estimate is returned.',
 );
-const VARIABLE_INPUT = z.enum([...VARIABLE_FIELDS, 'angle', 'ladder']);
+// SLA-881: every tested variable, scene included; the stored Instructions parse already accepts it.
+const VARIABLE_INPUT = z.enum([...TESTED_VARIABLES, 'angle', 'ladder']);
 const instructionsInput = z.object({
   goal: z.string().min(1).max(2000).describe('What the experiment should find out, e.g. "Find an opening hook that earns the first swipe".'),
   brand: z.string().max(2000).default(''),
@@ -500,6 +497,7 @@ const instructionsInput = z.object({
   ),
   variables: z.array(VARIABLE_INPUT).min(1).max(7).optional().describe(
     'What to vary: hook, character, visualStyle, caption, cta, morph/"ladder" (controlled mode), plus concept/"angle" and slides (exploration mode only). Required unless sourceFormat is given or can be inferred. '
+    + 'scene re-stages the baseline slides in other settings (same person, outfit and copy): on its own in controlled mode, or with hook, character and concept in exploration mode; never with slides. '
     + 'morph (alias ladder) reproduces a tier-ladder carousel: one invented subject in one studio set-up, graded slide by slide on visible attributes (jaw definition, cheek fullness, neck width, hairline, under-eye hooding, skin texture, facial hair, expression); every label is drawn in code (overlayMode "script"). Put the progression and any per-slide grades in direction; arm B grades the same subject on a different curve.',
   ),
   mode: z.enum(['controlled', 'exploration']).optional().describe(
@@ -592,7 +590,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     + '• mode "edit" — exactly ONE deck. For a character-only edit pass variables:["character"] and `character` '
     + '(visible casting direction); omit hook/overlayTexts to keep all source copy, style, setting and story locked. '
     + 'For a scene edit pass variables:["scene"] and `scene` (one description for every slide, or one per slide): each slide is an edit of the baseline slide that '
-    + 'keeps the same person, medium, lighting, camera and overlay text and changes only the setting, props and action; omit hook/overlayTexts. '
+    + 'keeps the same person, outfit, pose, medium, lighting, camera and overlay text and changes only the setting and props (the baseline stays the source deck); omit hook/overlayTexts. '
     + 'For a copy edit (variables:["hook"], default), keep the same images and pass `hook` '
     + '(slide 1) and `overlayTexts` (slides 2, 3, … in order; an empty string strips that slide\'s text, null leaves it unchanged) instead of '
     + '`instructions`; the tool assembles the same brief the site sends — fixed goal, one selected variable, '
@@ -618,7 +616,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
         'EDIT mode: ["hook"] for copy, ["character"] for casting only, ["scene"] for the setting, or ["morph"] (alias "ladder") to re-create a tier-ladder deck with one invented subject graded slide by slide, labels drawn in code. Defaults to scene when scene is supplied, then character when character is supplied, then morph when morph is supplied, otherwise hook.',
       ),
       scene: z.union([z.string().trim().min(1).max(SCENE_MAX), z.array(z.string().trim().min(1).max(SCENE_MAX)).min(1).max(8)]).optional().describe(
-        'EDIT mode, scene variable: where the deck takes place instead (setting, props, action). One description for every slide, or an array with one per slide. Keeps the same person, medium, lighting, camera and overlay text. Omit hook/overlayTexts/character.',
+        'EDIT mode, scene variable: where the deck takes place instead (setting and props). One description for every slide, or an array with one per slide. Keeps the same person, outfit, pose, medium, lighting, camera and overlay text. Omit hook/overlayTexts/character.',
       ),
       morph: z.string().trim().min(1).max(EDIT_CHARACTER_MAX).optional().describe(
         'EDIT mode, morph variable: the progression to test in neutral visible words, optionally with per-slide grades 0-4 (e.g. "jaw definition 4,4,3,3,2,1,0; cheek fullness 0,0,1,2,3,3,4"). Omit to follow the source frames.',

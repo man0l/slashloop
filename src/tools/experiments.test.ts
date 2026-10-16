@@ -11,6 +11,7 @@ import { Command, Create, CreateBriefRequest, CreateRequest, EditBrief, Feedback
 import { normalizeBriefCandidates } from '../experiments/providers.js';
 import type { ListFilter } from '../experiments/store.js';
 import { renderContract } from '../experiments/render-prompt.js';
+import { universalLocks } from '../experiments/source-format.js';
 import {
   registerExperimentTools, defaultExperimentCap, derivedKey, editSlideDirection, editInstructions,
   EDIT_COPY_MAX, EDIT_GOAL, EDIT_MAX_CREDITS, EDIT_VARIANT_COUNT, type ExperimentToolDeps,
@@ -345,6 +346,16 @@ describe('create_experiment', () => {
     expect(callsOf('createExperiment')).toHaveLength(0);
   });
 
+  // SLA-881: the multiplication call SKILL.md documents was refused by the input enum.
+  test('create mode accepts the scene variable, alone or in an exploration multiplication', async () => {
+    const instructions = { goal: 'Multiply one deck', variables: ['hook', 'character', 'angle', 'scene'], mode: 'exploration' };
+    expect((await call('create_experiment', { mode: 'create', videoIds: ['vid1'], instructions, variantCount: 8, slideCount: 3 })).isError).toBe(false);
+    const body = callsOf('createExperiment')[0]![0] as any;
+    expect(body.instructions.variables).toEqual(['hook', 'character', 'angle', 'scene']);
+    expect(CreateRequest.parse(body).instructions.variables).toEqual(['hook', 'character', 'concept', 'scene']);
+    expect((await call('create_experiment', { mode: 'create', videoIds: ['vid1'], instructions: { goal: 'Scene only', variables: ['scene'] } })).isError).toBe(false);
+  });
+
   test('SaaS exploration selections survive MCP, planning validation and render locks', async () => {
     const requested = { goal: 'Test hook and casting together', variables: ['hook', 'character', 'visualStyle'], mode: 'exploration', direction: 'Hook: a question; character: short blond hair; style: warm photograph' };
     const request = { mode: 'create', videoIds: ['vid1'], instructions: requested, variantCount: 2, slideCount: 3 };
@@ -414,7 +425,10 @@ describe('create_experiment', () => {
     expect(body.instructions.variables).toEqual(['scene']);
     expect(body.instructions.mode).toBe('controlled');
     expect(body.instructions.sceneOverrides).toEqual(['A rainy street at night']);
-    expect(body.instructions.direction).toContain('Scene: A rainy street at night');
+    // SLA-881: the new setting is named for the alternate only, and the workspace locks travel with the draft.
+    expect(body.instructions.direction).toContain('New setting for the alternate only: A rainy street at night');
+    expect(body.instructions.direction).toContain('Arm A (the baseline) reproduces every source frame as it is');
+    expect(body.instructions.lockedConstraints).toEqual(universalLocks());
     expect(body.instructions).not.toHaveProperty('copyOverrides');
     expect(body.variantCount).toBe(2);
     expect(body.maxCredits).toBe(100);
