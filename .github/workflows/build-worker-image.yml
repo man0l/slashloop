@@ -27,6 +27,8 @@ on:
       - 'src/scoring.ts'
       - 'src/register-tools.ts'
       - 'src/db.ts'
+      # Operator CLIs run inside the worker container (e.g. face-library-ingest)
+      - 'src/scripts/**'
       - 'api/jobs/analyze.ts'
       - 'prisma/**'
       - 'worker/**'
@@ -38,6 +40,10 @@ on:
 jobs:
   docker:
     runs-on: ubuntu-latest
+    # Same environment as deploy-worker: production-environment secrets (e.g.
+    # CLOUDFLARE_STREAM_TOKEN) are only visible to jobs that declare it; repo
+    # secrets still resolve as before.
+    environment: production
     permissions:
       contents: read
       packages: write
@@ -98,6 +104,10 @@ jobs:
           # Contabo worker log shipping (src/worker/ship-logs.ts — indiestack).
           # Full /log/<source-token> URL; unset (or empty) disables shipping.
           INDIESTACK_LOG_URL: ${{ secrets.INDIESTACK_LOG_URL }}
+          # Cloudflare Stream frame extraction (src/lib/stream-frames.ts) —
+          # same secrets deploy-worker syncs into the Worker. Stream-only token.
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_STREAM_TOKEN: ${{ secrets.CLOUDFLARE_STREAM_TOKEN }}
         run: |
           set -e
           out="$GITHUB_WORKSPACE/.worker-env"
@@ -140,11 +150,14 @@ jobs:
           printf 'SCRAPER_PROXY_COUNTRY=US\n'                        >> "$out"
           printf 'RESEND_API_KEY=%s\n' "$RESEND_API_KEY"             >> "$out"
           printf 'INDIESTACK_LOG_URL=%s\n' "$INDIESTACK_LOG_URL"   >> "$out"
+          printf 'CLOUDFLARE_ACCOUNT_ID=%s\n' "$CLOUDFLARE_ACCOUNT_ID" >> "$out"
+          printf 'CLOUDFLARE_STREAM_TOKEN=%s\n' "$CLOUDFLARE_STREAM_TOKEN" >> "$out"
           ls -la "$out"
           echo "lines: $(wc -l < "$out")"
           echo "video-model-marker: $(grep -c '^OPENROUTER_VIDEO_MODEL=' "$out")"
           echo "r2-endpoint-marker: $(grep -c '^R2_ENDPOINT=' "$out")"
           echo "resend-key-marker: $(grep -c '^RESEND_API_KEY=.\+' "$out")"
+          echo "stream-token-marker: $(grep -c '^CLOUDFLARE_STREAM_TOKEN=.\+' "$out")"
 
       - uses: docker/setup-buildx-action@v3
 
