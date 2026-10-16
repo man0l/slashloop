@@ -8,7 +8,7 @@ import {
   videoResourceUri,
 } from './gallery.js';
 import { renderGallery, type GalleryCard } from '../ui/gallery.js';
-import { editInstructions } from './experiments.js';
+import { EDIT_MAX_CREDITS, editInstructions } from './experiments.js';
 import { Create, CreateBriefRequest } from '../experiments/schema.js';
 
 // ── env save/restore (media.test.ts pattern) ──────────────────────────────
@@ -288,6 +288,28 @@ describe('brief (no source video) wizard', () => {
     expect(chat).toMatchObject({ mode: 'brief', slideCount: 6, variantCount: 2 });
     expect(chat).not.toHaveProperty('surveyMode');
     expect(chat).not.toHaveProperty('videoIds');
+  });
+});
+
+// SLA-894: the wizard's character edit and the MCP tool are two producers of one request; they must agree on the prose and the cap.
+describe('character edit wizard payload agrees with the tool', () => {
+  const html = renderGallery([fakeCard({ isSlideshow: true, experimentEligible: true })], undefined, {});
+  const script = html.match(/<script>([\s\S]*)<\/script>/)![1]!;
+  const build = script.slice(script.indexOf('function buildPayload()'), script.indexOf('// sourceSlides is display-only'));
+  const CHARACTER = 'A woman in her fifties with red hair';
+  const fields: Record<string, string> = { 'edit-variable': 'character', 'edit-character': CHARACTER, 'edit-lang': 'English' };
+  const str = (id: string) => (fields[id] ?? '').trim();
+  const payload = () => new Function('selCards', 'selected', 'mode', 'str', 'checkedVars', 'num', build + '; return buildPayload();')(
+    () => [{ getAttribute: () => '8' }], ['vid1'], 'edit', str, () => [], () => 0,
+  );
+
+  test('same direction string and the same credit ceiling as create_experiment mode edit', () => {
+    const p = payload();
+    const tool = editInstructions(undefined, [], 'English', { variables: ['character'], character: CHARACTER });
+    expect(p.instructions.direction).toBe(tool.direction);
+    expect(p.instructions.goal).toBe(tool.goal);
+    expect(p.maxCredits).toBe(EDIT_MAX_CREDITS);
+    expect(p.slideCount).toBe(8);
   });
 });
 

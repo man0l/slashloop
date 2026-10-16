@@ -120,7 +120,7 @@ For a bounded character-only edit of one deck, call `create_experiment` with
 `mode:"edit"`, `variables:["character"]`, and `character` containing visible
 casting direction (up to 1000 characters). Omit `hook`, `overlayTexts`, and
 `instructions`: source text, style, setting and story stay locked. Edit mode
-creates two variants with a 100-credit ceiling; the same approval gates apply.
+creates two variants with a 200-credit ceiling; the same approval gates apply.
 For a bounded scene edit, call `create_experiment` with `mode:"edit"`,
 `variables:["scene"]` and `scene`: one description of the new setting and props
 for every slide, or an array with exactly one per slide (up to 500

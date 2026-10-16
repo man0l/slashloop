@@ -3,6 +3,7 @@
 // with injected fakes (ExperimentToolDeps) and assert the wrapper contract:
 // workspace scoping, one experiment per source, stable idempotency keys, the
 // approvedCredits gate, error shaping, and the read-side progress summary.
+import { CREDIT_COSTS } from '../lib/credits.js';
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -14,7 +15,7 @@ import { renderContract } from '../experiments/render-prompt.js';
 import { universalLocks } from '../experiments/source-format.js';
 import {
   registerExperimentTools, defaultExperimentCap, derivedKey, editSlideDirection, editInstructions,
-  EDIT_COPY_MAX, EDIT_GOAL, EDIT_MAX_CREDITS, EDIT_VARIANT_COUNT, type ExperimentToolDeps,
+  EDIT_CHARACTER_MAX, EDIT_COPY_MAX, EDIT_GOAL, editCharacterDirection, EDIT_MAX_CREDITS, EDIT_VARIANT_COUNT, type ExperimentToolDeps,
 } from './experiments.js';
 
 const TOOLS = [
@@ -399,10 +400,16 @@ describe('create_experiment', () => {
     const body = callsOf('createExperiment')[0]![0] as any;
     expect(Create.safeParse(body).success).toBe(true);
     expect(body.instructions.variables).toEqual(['character']);
-    expect(body.instructions.direction).toContain('Character: Short blond hair');
+    // SLA-894: arm A is the source deck; the requested person is named for the alternate only.
+    expect(body.instructions.direction).toContain('Arm A (the baseline) reproduces every source frame as it is');
+    expect(body.instructions.direction).toContain('Never describe the new person in the slides of arm A');
+    expect(body.instructions.direction.endsWith('alternate only: Short blond hair.')).toBe(true);
+    expect(body.instructions.direction.split('Short blond hair')).toHaveLength(2);
+    expect(body.instructions.direction).not.toContain('Character:');
+    expect(Create.safeParse({ ...body, instructions: { ...body.instructions, direction: editCharacterDirection('x'.repeat(EDIT_CHARACTER_MAX)) } }).success).toBe(true);
     expect(body.instructions).not.toHaveProperty('copyOverrides');
     expect(body.variantCount).toBe(2);
-    expect(body.maxCredits).toBe(100);
+    expect(body.maxCredits).toBe(EDIT_MAX_CREDITS);
     expect(renderContract(body.instructions.variables, [{ name: 'character' }])).toMatchObject({
       kind: 'character', changeFaces: true, changeOverlay: false, changeStyle: false, changeSetting: false, changeStory: false,
     });
@@ -415,6 +422,13 @@ describe('create_experiment', () => {
   test('character infers its variable when omitted', async () => {
     expect((await call('create_experiment', { mode: 'edit', videoIds: ['vid1'], character: 'Short hair' })).isError).toBe(false);
     expect((callsOf('createExperiment')[0]![0] as any).instructions.variables).toEqual(['character']);
+  });
+
+  test('the edit ceiling covers an 8-slide deck at one candidate per slide, renders and QA for both arms (SLA-894)', () => {
+    const renders = EDIT_VARIANT_COUNT * 8 * CREDIT_COSTS.experimentSlide;
+    const planningAndQa = (1 + EDIT_VARIANT_COUNT) * CREDIT_COSTS.experimentPlanningCall + CREDIT_COSTS.analyzeVideo;
+    expect(renders + planningAndQa).toBeLessThanOrEqual(EDIT_MAX_CREDITS);
+    expect(EDIT_VARIANT_COUNT * 6 * CREDIT_COSTS.experimentSlide + 4).toBeGreaterThan(100);
   });
 
   test('scene edit: variables ["scene"] with one description for every slide, priced and shaped like a character edit', async () => {
@@ -431,7 +445,7 @@ describe('create_experiment', () => {
     expect(body.instructions.lockedConstraints).toEqual(universalLocks('general'));
     expect(body.instructions).not.toHaveProperty('copyOverrides');
     expect(body.variantCount).toBe(2);
-    expect(body.maxCredits).toBe(100);
+    expect(body.maxCredits).toBe(EDIT_MAX_CREDITS);
   });
 
   test('scene edit takes one description per slide, and infers its variable when omitted', async () => {

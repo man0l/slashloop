@@ -36,7 +36,7 @@ import { load, list, serialize, testSummary } from '../experiments/store.js';
 import { deleteExperiment, deleteExperiments } from '../experiments/delete.js';
 import { MAX_EXPERIMENT_CREDITS } from '../experiments/budget.js';
 import {
-  CopyOverrides, DIRECTION_MAX, EDIT_SCENE_GOAL, editSceneDirection, ExperimentError, SCENE_MAX, FEEDBACK_MAX, Id, Instructions, MAX_MANUAL_ATTEMPTS, normalizeTestKey, slideFanout, TESTED_VARIABLES, type Experiment, type InstructionsData,
+  CopyOverrides, DIRECTION_MAX, EDIT_MAX_CREDITS, EDIT_SCENE_GOAL, editCharacterDirection, editSceneDirection, ExperimentError, SCENE_MAX, FEEDBACK_MAX, Id, Instructions, MAX_MANUAL_ATTEMPTS, normalizeTestKey, slideFanout, TESTED_VARIABLES, type Experiment, type InstructionsData,
 } from '../experiments/schema.js';
 
 // ---- dependencies ----------------------------------------------------------
@@ -73,7 +73,7 @@ export const defaultExperimentToolDeps: ExperimentToolDeps = {
  * caller write an experiment brief: it takes one slideshow plus replacement
  * overlay copy or a character casting direction, and assembles the rest itself. The goal
  * string is fixed, the varied variable is hook (copy) or character, mode is controlled,
- * there are exactly two variants and the cap is 100 credits. Copy edits lock
+ * there are exactly two variants and the cap is 200 credits. Copy edits lock
  * the images; character edits lock copy, style, setting and story.
  *
  * `copyOverrides` carries the exact requested copy as structured values; the
@@ -94,9 +94,7 @@ export function editMorphDirection(morph: string | undefined): string {
     + 'Replace the person with ONE invented adult shown on every slide, and grade them slide by slide along the visible changes the source frames show, in the same direction and to the same extent.'
     + (morph?.trim() ? ` Progression to test: ${morph.trim()}` : '');
 }
-export function editCharacterDirection(character: string): string {
-  return 'Character: ' + character.trim() + '. Keep the same overlay text, style, setting and story.';
-}
+export { editCharacterDirection };
 /** Two variants: the original and the replacement. */
 export const EDIT_VARIANT_COUNT = 2;
 /** Per-value copy ceiling for an edit request, matching the site's own input
@@ -105,8 +103,7 @@ export const EDIT_VARIANT_COUNT = 2;
  *  cap. The wizard and this tool are two producers of that prose and must
  *  agree, so the bound lives on both. */
 export const EDIT_COPY_MAX = 200;
-/** Hard ceiling for an edit run, as on the site. */
-export const EDIT_MAX_CREDITS = 100;
+export { EDIT_MAX_CREDITS };
 
 /**
  * The wizard's `direction` string for an edit run.
@@ -594,7 +591,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
     + 'For a copy edit (variables:["hook"], default), keep the same images and pass `hook` '
     + '(slide 1) and `overlayTexts` (slides 2, 3, … in order; an empty string strips that slide\'s text, null leaves it unchanged) instead of '
     + '`instructions`; the tool assembles the same brief the site sends — fixed goal, one selected variable, '
-    + 'controlled mode, 2 variants, a 100-credit cap — with the copy quoted per slide in the site\'s wording. '
+    + 'controlled mode, 2 variants, a 200-credit cap — with the copy quoted per slide in the site\'s wording. '
     + 'The source deck\'s own slide count wins when it is known; pass slideCount only if you do not have it.\n'
     + 'Sources must be slideshows or videos with a finished Recreate deck (show_gallery marks them). '
     + 'Photo-annotation videos (face photo + drawn line + ✅/❌ badge + score card) are also accepted: their deck is drawn in code from the tagged face library at 0 image credits. '
@@ -639,7 +636,7 @@ export function registerExperimentTools(server: McpServer, d: ExperimentToolDeps
       variantCount: z.number().int().min(1).max(12).default(3).describe('CREATE mode: variants per experiment, including the baseline (1–12). Edit mode is always 2.'),
       slideCount: z.number().int().min(3).max(8).default(5).describe('Slides per variant (3–8); overridden by the source deck length when known, minus a detected source CTA slide unless instructions.preserveSourceCtaSlide is true. Brief mode has no source deck, so this is exactly the output length.'),
       maxCredits: z.number().int().min(1).max(MAX_EXPERIMENT_CREDITS).optional().describe(
-        'Per-experiment credit ceiling (runaway guard). Default: the site\'s automatic cap, 2× the estimate rounded up; 100 in edit mode. An approved estimate may raise it.',
+        'Per-experiment credit ceiling (runaway guard). Default: the site\'s automatic cap, 2× the estimate rounded up; 200 in edit mode. An approved estimate may raise it.',
       ),
       idempotencyKey: idempotencyKeyField,
       ran_by: ranByField,

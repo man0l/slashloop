@@ -7,7 +7,9 @@ import { prepare, type RenderDeps } from './providers.js';
 import { applyFeedback, applyRevise, generationTasks, reapContractQa, reviseTargets } from './contract-flow.js';
 import { droppedSourceCta, listSourceFrames } from './contract-pipeline.js';
 import { applyRetry } from './service.js';
-import { experimentProgress } from '../tools/experiments.js';
+import { experimentProgress, editInstructions } from '../tools/experiments.js';
+import { contractView } from './contract-flow.js';
+import { chooseReferenceUse } from './resolved-contract.js';
 import { serialize } from './store.js';
 import { EDIT_SCENE_GOAL, editSceneDirection, type Experiment } from './schema.js';
 import { expandPreset, universalLocks, type WorkspaceCategory } from './source-format.js';
@@ -883,6 +885,44 @@ describe('SLA-885: the real-people lock follows the workspace category', () => {
       const sent = JSON.parse(w.calls.contractUsers[0]!) as { locks: Array<{ lock: string }> };
       expect(sent.locks.some(l => REAL_PEOPLE.test(l.lock))).toBe(expected);
     }
+  });
+});
+
+describe('SLA-894: an edit-mode character run keeps the source person on arm A and recasts the alternate only', () => {
+  const NEW_PERSON = 'a red-haired woman in her fifties, freckles, green eyes';
+  const instr = () => { const i = editInstructions(undefined, [], 'English', { variables: ['character'], character: NEW_PERSON }); return { goal: i.goal, direction: i.direction, lockedConstraints: i.lockedConstraints, variables: i.variables, mode: i.mode }; };
+  // What the planner returns for a direction that keeps arm A as the source: the source person, the source frames, one character pool.
+  const sourceKept = () => rawContract({ subject: 'person', identity: 'source', keepSourceImage: true, borrowSourceLook: true,
+    sourceFrameLevels: [0, 1, 2].map(index => ({ index, level: 'none', showsPerson: true })), pools: [{ variable: 'character', values: [{ value: NEW_PERSON, slides: [] }] }] });
+
+  test('the planner is told arm A is the source deck and the new person belongs to the alternate only', async () => {
+    const w = world({ contract: sourceKept(), qa: [] }, instr());
+    await w.plan();
+    const sent = JSON.parse(w.calls.contractUsers[0]!) as { direction: string };
+    expect(sent.direction).toContain('Arm A (the baseline) reproduces every source frame as it is');
+    expect(sent.direction).toContain('Never describe the new person in the slides of arm A');
+    expect(sent.direction.indexOf(NEW_PERSON)).toBeGreaterThan(sent.direction.indexOf('alternate only'));
+    expect(sent.direction.startsWith('Character:')).toBe(false);
+  });
+
+  test('that plan keeps the source frames for arm A (edit reference) and the alternate flips to the requested sheet', async () => {
+    const w = world({ contract: sourceKept(), qa: [] }, instr());
+    await w.plan();
+    expect(w.row.error).toBeNull();
+    const c = w.row.contract!;
+    expect(c.keepSourceImage).toBe(true);
+    expect(c.identity).toBe('source');
+    expect(chooseReferenceUse(c)).toBe('edit');
+    const [a, b] = w.row.variants;
+    expect(a!.brief.character).not.toContain(NEW_PERSON);
+    expect(b!.brief.character).toBe(NEW_PERSON);
+    expect(b!.changedVariables.map(x => x.name)).toEqual(['character']);
+    const armA = contractView(w.row, a!.brief, a);
+    const armB = contractView(w.row, b!.brief, b);
+    expect(armA.identity).toBe('source');
+    expect(armA.keepSourceImage).toBe(true);
+    expect(armB.identity).toBe('invented-consistent');
+    expect(armB.identitySheet).toBe(NEW_PERSON);
   });
 });
 

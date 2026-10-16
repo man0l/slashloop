@@ -27,6 +27,8 @@
 // larger pool server-side so filtering + paging still has material to show.
 // ---------------------------------------------------------------------------
 
+import { EDIT_CHARACTER_DIRECTION_PREFIX, EDIT_MAX_CREDITS } from '../experiments/schema.js';
+
 export interface GalleryCard {
   id: string;
   /** 1-based position in the pool this card was built from — stable across
@@ -895,10 +897,10 @@ ${cards.length ? toolbarHtml(filters) : ''}
             instructions: {
               goal: 'Edit the slideshow character, keeping the same overlay text, style, setting and story.',
               brand: '', audience: '', language: str('edit-lang') || 'English',
-              direction: 'Character: ' + str('edit-character') + '. Keep the same overlay text, style, setting and story.',
+              direction: ${JSON.stringify(EDIT_CHARACTER_DIRECTION_PREFIX)} + str('edit-character') + '.',
               lockedConstraints: [], variables: ['character'], mode: 'controlled',
             },
-            variantCount: 2, slideCount: slideCount, maxCredits: 100,
+            variantCount: 2, slideCount: slideCount, maxCredits: ${EDIT_MAX_CREDITS},
           };
         }
         var n = parseInt(document.getElementById('edit-overlays').dataset.slides || '1', 10);
@@ -947,7 +949,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
             variables: ['hook'], mode: 'controlled',
             copyOverrides: copyOverrides,
           },
-          variantCount: 2, slideCount: slideCount, maxCredits: 100,
+          variantCount: 2, slideCount: slideCount, maxCredits: ${EDIT_MAX_CREDITS},
         };
       }
       var vars = checkedVars();
