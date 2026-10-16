@@ -148,6 +148,11 @@ describe('contract compile (morph)', () => {
   test('the planner is asked for grades over the fixed vocabulary, without valuation words', () => {
     expect(contractJsonSchema(input())).toBe(MORPH_CONTRACT_JSON_SCHEMA);
     expect(contractJsonSchema(input({ morph: false }))).not.toBe(MORPH_CONTRACT_JSON_SCHEMA);
+    // Arm B's grades travel in the pools: a pool slide without a morph field comes back ungraded, i.e. morph_flat.
+    const props = MORPH_CONTRACT_JSON_SCHEMA.properties as any;
+    expect(props.slides.items.properties.morph).toBeDefined();
+    expect(props.pools.items.properties.values.items.properties.slides.items.properties.morph).toBeDefined();
+    expect(props.variantB).toBeUndefined();
     const guide = contractFieldGuide(input());
     expect(guide['slides[].morph']).toContain('moves one way only');
     for (const a of MORPH_ATTRIBUTES) expect(guide.morph).toContain(a);

@@ -134,11 +134,12 @@ export const CONTRACT_JSON_SCHEMA = obj({
 });
 const MORPH_SLIDE_JSON = obj({ overlayText: S, arcLevel: LEVEL, scene: S, composition: S, visibleChange: S,
   morph: arr(obj({ attribute: { type: 'string', enum: [...MORPH_ATTRIBUTES] }, grade: { type: 'integer' } })) });
-/** SLA-867: the morph deck's answer: the same contract plus the morph axis and every slide's grades. */
+/** SLA-867: the morph deck's answer: the same contract plus the morph axis and every slide's grades, arm A's and
+ *  every pool value's (an alternate's slides without grades would all repeat slide 1 and fail as morph_flat). */
 export const MORPH_CONTRACT_JSON_SCHEMA = {
   ...CONTRACT_JSON_SCHEMA,
   properties: { ...CONTRACT_JSON_SCHEMA.properties, morph: obj({ axis: S, attributes: arr({ type: 'string', enum: [...MORPH_ATTRIBUTES] }) }),
-    slides: arr(MORPH_SLIDE_JSON), variantB: obj({ variable: S, value: S, slides: arr(MORPH_SLIDE_JSON) }) },
+    slides: arr(MORPH_SLIDE_JSON), pools: arr(obj({ variable: S, values: arr(obj({ value: S, slides: arr(MORPH_SLIDE_JSON) })) })) },
   required: [...CONTRACT_JSON_SCHEMA.required, 'morph'],
 };
 export const contractJsonSchema = (input: Pick<ContractInput, 'morph'>) => input.morph ? MORPH_CONTRACT_JSON_SCHEMA : CONTRACT_JSON_SCHEMA;
