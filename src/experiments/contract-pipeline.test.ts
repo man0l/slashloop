@@ -1021,3 +1021,76 @@ describe('SLA-867: a morph (ladder) deck end to end', () => {
     expect(JSON.stringify(w.row.variants.map(v => v.qaDeck))).toContain('has visibly changed from slide 1');
   });
 });
+
+describe('multiplication (SLA-866): hook, character, angle and scene alternates edit the baseline, never a fresh opener', () => {
+  const FRESH = 'Create one new 9:16 social carousel image';
+  const angleSlides = (tag: string) => ['one', 'two', 'three'].map(n => slide({ overlayText: `${tag} ${n}` }));
+  const pools = () => [
+    { variable: 'hook', values: [{ value: 'Hook B', slides: [] }, { value: 'Hook C', slides: [] }] },
+    { variable: 'character', values: [{ value: 'a red-haired woman in her fifties', slides: [] }, { value: 'a teenage boy with glasses', slides: [] }] },
+    { variable: 'concept', values: [{ value: 'angle one', slides: angleSlides('A1') }, { value: 'angle two', slides: angleSlides('A2') }] },
+    { variable: 'scene', values: [{ value: 'a rainy street', slides: [] }, { value: 'a crowded train', slides: [] }] },
+  ];
+  const contract = () => rawContract({ identity: 'invented-consistent', identitySheet: 'a tall man in his thirties', subject: 'person', keepSourceImage: false, pools: pools() });
+  const qa = (n = 8) => Array.from({ length: n }, () => () => { const q = qaPass(); q.slides.forEach(s => { (s as Record<string, unknown>).settingChanged = true; }); return q; });
+  const vars: Partial<Experiment['instructions']> = { variables: ['hook', 'character', 'concept', 'scene'], mode: 'exploration' };
+  const run = async (overrides: Partial<Experiment['instructions']> = {}, variantCount = 6) => {
+    const w = world({ contract: contract(), qa: qa(variantCount) }, { ...vars, ...overrides });
+    w.update(e => { e.variantCount = variantCount; });
+    await w.plan();
+    await w.generate();
+    return w;
+  };
+
+  test.each([['model', {}], ['script', { overlayMode: 'script' as const }]])('%s mode: no alternate prompt is a fresh render and every alternate render edits a baseline picture', async (_m, o) => {
+    const w = await run(o);
+    expect(w.row.error).toBeNull();
+    expect(w.row.status).toBe('completed');
+    expect(w.row.variants).toHaveLength(6);
+    const baselineUrls = new Set(w.row.variants[0]!.slides.map(s => s.url));
+    const baselineBases = new Set(w.row.variants[0]!.slides.map(s => `https://assets.example.test/${s.path!.replace(/\.jpg$/, '.base.jpg')}`));
+    const alternateImages = w.calls.images.slice(3);
+    expect(alternateImages.length).toBeGreaterThan(0);
+    for (const img of alternateImages) {
+      expect(img.prompt).not.toContain(FRESH);
+      expect(img.referenceUrl).toBeDefined();
+      expect(baselineUrls.has(img.referenceUrl!) || baselineBases.has(img.referenceUrl!)).toBe(true);
+    }
+  });
+
+  test('a character alternate names the new person and keeps the rest of the frame; a scene alternate keeps the person', async () => {
+    const w = await run();
+    const characterPrompts = w.calls.images.filter(i => i.prompt.includes('NEW PERSON'));
+    const scenePrompts = w.calls.images.filter(i => i.prompt.includes('Change ONLY the setting, props and action to the slide scene'));
+    expect(characterPrompts.length).toBeGreaterThanOrEqual(3);
+    expect(characterPrompts.some(p => p.prompt.includes('a red-haired woman in her fifties'))).toBe(true);
+    expect(characterPrompts.every(p => !p.prompt.startsWith('Create one new 9:16'))).toBe(true);
+    expect(scenePrompts.length).toBeGreaterThanOrEqual(3);
+    expect(scenePrompts.every(p => p.prompt.includes('Keep the SAME person') && !p.prompt.includes('NEW PERSON'))).toBe(true);
+  });
+
+  test('angle and hook alternates are caption edits of the baseline picture, one call per slide in model mode', async () => {
+    const w = await run();
+    const captions = w.calls.images.filter(i => i.prompt.startsWith('Edit the attached image. Keep everything identical'));
+    expect(captions.length).toBeGreaterThanOrEqual(1);
+    expect(w.providerCalls['caption-edit']).toBe(captions.length);
+  });
+
+  test.each([['model', {} as Partial<Experiment['instructions']>], ['script', { overlayMode: 'script' } as Partial<Experiment['instructions']>]])('%s mode: estimate_experiment(generate) equals the credits charged', async (_m, o) => {
+    const { CREDIT_COSTS } = await import('../lib/credits.js');
+    const real = { ...(await import('../lib/credits.js')) };
+    mock.module('../lib/credits.js', () => ({ ...real, creditBalance: async () => ({ total: 9999 }) }));
+    try {
+      const { estimate } = await import('./service.js');
+      const w = world({ contract: contract(), qa: qa(6) }, { ...vars, ...o });
+      w.update(e => { e.variantCount = 6; });
+      await w.plan();
+      const est = await estimate(w.row, 'generate');
+      const before = w.row.creditsCharged;
+      await w.generate();
+      const charged = w.row.creditsCharged - before;
+      expect(est.totalCredits).toBe(charged);
+      if (o.overlayMode === 'script') expect(est.generationCredits).toBeLessThan(18 * CREDIT_COSTS.experimentSlide + 6 * CREDIT_COSTS.experimentPlanningCall);
+    } finally { mock.module('../lib/credits.js', () => ({ ...real })); }
+  });
+});

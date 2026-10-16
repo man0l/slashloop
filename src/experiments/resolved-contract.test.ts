@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   ContractError, armsOf, buildAlternate, captionEditPrompt, chooseReferenceUse, compileQaPrompt, compileSlidePrompt, diffArms, normalizeContract,
   pickFramesByArc, qaVerdict, repairSlides, slideRole, slideWork, tagLocks, assertArmDiffers,
-  type ArmBrief, type ContractInput, type ResolvedContract,
+  baselineEdit, type ArmBrief, type ContractInput, type ResolvedContract,
 } from './resolved-contract.js';
 import { universalLocks } from './source-format.js';
 
@@ -326,6 +326,40 @@ test('the resolved type is exported', () => {
   expect(c.version).toBe(1);
 });
 
+describe('character and combined baseline edits (SLA-866)', () => {
+  const a: ArmBrief = { character: 'a man', visualStyle: 'pencil', caption: 'cap', cta: 'cta', slides: [slide({ overlayText: 'Hook A' }) as never, slide({ overlayText: 'two' }) as never, slide({ overlayText: 'three' }) as never] };
+
+  test('a character-only alternate edits the baseline picture on every slide, and only with edit-first', () => {
+    const b: ArmBrief = { ...a, character: 'a woman' };
+    expect([0, 1, 2].map(i => slideWork(a, b, i, true))).toEqual(['baseline-edit', 'baseline-edit', 'baseline-edit']);
+    expect([0, 1, 2].map(i => slideWork(a, b, i))).toEqual(['render', 'render', 'render']);
+    expect(baselineEdit(a, b, 0)).toEqual({ character: true, scene: false });
+  });
+
+  test('hook + scene edits the picture, hook + character edits it, a copy-only change stays a caption edit', () => {
+    const hookScene: ArmBrief = { ...a, slides: a.slides.map((s, i) => ({ ...s, scene: 'a beach', overlayText: i === 0 ? 'New hook' : s.overlayText })) as never[] };
+    expect([0, 1, 2].map(i => slideWork(a, hookScene, i, true))).toEqual(['baseline-edit', 'baseline-edit', 'baseline-edit']);
+    const hookChar: ArmBrief = { ...a, character: 'a woman', slides: a.slides.map((s, i) => ({ ...s, overlayText: i === 0 ? 'New hook' : s.overlayText })) as never[] };
+    expect([0, 1, 2].map(i => slideWork(a, hookChar, i, true))).toEqual(['baseline-edit', 'baseline-edit', 'baseline-edit']);
+    const copy: ArmBrief = { ...a, slides: a.slides.map(s => ({ ...s, overlayText: `${s.overlayText} !` })) as never[] };
+    expect([0, 1, 2].map(i => slideWork(a, copy, i, true))).toEqual(['caption-edit', 'caption-edit', 'caption-edit']);
+  });
+
+  test('a changed visual style is never an edit of the baseline', () => {
+    expect(slideWork(a, { ...a, visualStyle: 'oil', character: 'a woman' }, 0, true)).toBe('render');
+  });
+
+  test('compileSlidePrompt: a character edit names the new person and never opens like a fresh render', () => {
+    const c = normalizeContract(raw({ identity: 'invented-consistent', identitySheet: 'a tall man in his thirties', subject: 'person' }), input({ variables: ['hook'] }));
+    const view = { ...c, slides: [slide({ overlayText: 'Hook B', scene: 'a kitchen' }) as never], identitySheet: 'a red-haired woman in her fifties' };
+    const p = compileSlidePrompt(view, 0, 'baseline-edit', 'none', '', '', '', { character: true, scene: false });
+    expect(p).toContain('NEW PERSON');
+    expect(p).toContain('a red-haired woman in her fifties');
+    expect(p).not.toContain('SCENE for this image');
+    expect(p.startsWith('Create one new 9:16')).toBe(false);
+  });
+});
+
 describe('scene variable', () => {
   const a: ArmBrief = { character: 'a man', visualStyle: 'pencil', caption: 'cap', cta: 'cta', slides: [slide({ overlayText: 'Hook A' }) as never, slide({ overlayText: 'two' }) as never, slide({ overlayText: 'three' }) as never] };
   const sceneB = (scenes: string[]) => mk('scene', 'a beach', scenes.map((scene, i) => ({ ...a.slides[i]!, scene })) as never[]);
@@ -352,10 +386,10 @@ describe('scene variable', () => {
 
   test('slideWork: an edit of the baseline slide for a scene arm, a fresh render for any other test', () => {
     const b = buildAlternate(a, sceneB(['a beach', 'a kitchen', 'a train']));
-    expect([0, 1, 2].map(i => slideWork(a, b, i, true))).toEqual(['scene-edit', 'scene-edit', 'scene-edit']);
+    expect([0, 1, 2].map(i => slideWork(a, b, i, true))).toEqual(['baseline-edit', 'baseline-edit', 'baseline-edit']);
     expect([0, 1, 2].map(i => slideWork(a, b, i))).toEqual(['render', 'render', 'render']);
     const same = buildAlternate(a, sceneB(['a scene', 'a kitchen', 'a scene']));
-    expect([0, 1, 2].map(i => slideWork(a, same, i, true))).toEqual(['reuse', 'scene-edit', 'reuse']);
+    expect([0, 1, 2].map(i => slideWork(a, same, i, true))).toEqual(['reuse', 'baseline-edit', 'reuse']);
   });
 
   test('normalizeContract: one override fills every slide, N overrides are per slide, any other count is refused', () => {
@@ -371,7 +405,7 @@ describe('scene variable', () => {
   test('compileSlidePrompt: the edit-of-baseline opener, the label rule, the scene, the locked overlay copy', () => {
     const c = normalizeContract(raw({ pools: [{ variable: 'scene', values: [{ value: 'v', slides: [] }] }] }), input({ variables: ['scene'], sceneOverrides: ['a rainy street'] }));
     const view = { ...c, slides: armsOf(c)[0]!.axes[0]!.slides };
-    const p = compileSlidePrompt(view, 0, 'scene-edit', 'none', 'make it rainier', 'more neon', 'LABEL RULE');
+    const p = compileSlidePrompt(view, 0, 'baseline-edit', 'none', 'make it rainier', 'more neon', 'LABEL RULE');
     const lines = p.split('\n');
     expect(lines[0]).toBe('Edit the attached 9:16 frame. Keep the SAME person, medium, lighting and camera. Change ONLY the setting, props and action to the slide scene.');
     expect(lines[1]).toBe('LABEL RULE');

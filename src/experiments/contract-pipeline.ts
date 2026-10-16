@@ -3,11 +3,11 @@ import { experimentSourceKeys, isPhotoPost } from '../lib/media.js';
 import { publicUrl, thumbBucket, thumbPath } from '../lib/storage.js';
 import { universalLocks } from './source-format.js';
 import {
-  CONTRACT_SYSTEM, ContractError, QA_SYSTEM, RawQa, captionEditPrompt, chooseReferenceUse, compileQaPrompt, compileSlidePrompt,
+  CONTRACT_SYSTEM, ContractError, QA_SYSTEM, RawQa, baselineEdit, captionEditPrompt, chooseReferenceUse, compileQaPrompt, compileSlidePrompt,
   contractJsonSchema, contractPromptPayload, normalizeContract, pickFramesByArc, qaJsonSchema, qaVerdict, slideRole, tagLocks,
-  type ContractInput, type ResolvedContract,
+  type BaselineEdit, type ContractInput, type ResolvedContract,
 } from './resolved-contract.js';
-import { contractView, isMorphExperiment, isSceneArm, proposalsFromContract, slideFeedback, slideWorkFor } from './contract-flow.js';
+import { briefToArm, contractView, isMorphExperiment, isScriptOverlay, keepsBaselinePerson, proposalsFromContract, slideFeedback, slideUnits, slideWorkFor } from './contract-flow.js';
 import { validateVariants, type Experiment, type Task } from './schema.js';
 import { CONTENT_FILTER_PATTERN, SafeFailure, contentFilterFailure, SlideMeter, logAiCost, type ExecuteContext, type Prepared, type RenderDeps } from './providers.js';
 import { storySlideCount } from './slide-count.js';
@@ -192,7 +192,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
   // bytes in code, so a word that trips the provider's content filter never reaches it.
   // SLA-867: a morph deck's labels (rank names, percentages) never reach the image model, whatever the stored mode says.
   const morph = isMorphExperiment(e);
-  const scriptMode = e.instructions.overlayMode === 'script' || morph;
+  const scriptMode = isScriptOverlay(e);
   const scriptText = scriptMode ? (view.slides[index]?.overlayText ?? '') : '';
   const copy = scriptMode ? [view.hook, ...view.slides.map(x => x.overlayText), ...(base?.frozenBrief?.slides.map(x => x.overlayText ?? '') ?? [])].filter(x => x.trim().length > 1) : [];
   const promptView: ResolvedContract = scriptMode ? { ...view, hook: '', slides: view.slides.map(x => ({ ...x, overlayText: '' })) } : view;
@@ -217,7 +217,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
     // SLA-867: the text-free base travels with the copy, so a later slide can still edit a picture without words.
     const clean = scriptMode ? await read({ bucket: thumbBucket(), path: basePathOf(baseSlide.path) }) : null;
     return {
-      free: true, units: 0,
+      free: true, units: slideUnits('reuse', scriptMode),
       execute: async () => {
         if (clean) await render.upload({ bucket: thumbBucket(), path: basePathOf(path), body: clean, contentType: 'image/jpeg', upsert: false });
         await upload(bytes, 'image/jpeg');
@@ -232,6 +232,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
   let referenceUrl: string | undefined;
   let referenceNote: { kind: string; videoId: string; index: number | null; path: string } | null = null;
   let prompt: string;
+  let edit: BaselineEdit | undefined;
   if (work === 'caption-edit' && scriptMode) {
     // The baseline's picture is text-free by construction; only the words differ, so nothing needs the model.
     if (!baseSlide?.path) throw new SafeFailure('baseline_slide_missing');
@@ -242,7 +243,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
       : null;
     if (baseBytes) {
       return {
-        free: true, units: 0,
+        free: true, units: slideUnits('caption-edit', scriptMode),
         execute: async () => {
           const composed = await compose(baseBytes);
           await render.upload({ bucket: thumbBucket(), path: basePathOf(path), body: baseBytes, contentType: 'image/jpeg', upsert: false });
@@ -251,9 +252,10 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
         },
       };
     }
-    work = 'render';
+    // No text-free picture to redraw the words on. A model edit here would be a call the quote never counted, so the slide fails closed.
+    throw new SafeFailure('baseline_slide_missing');
   }
-  if (work === 'scene-edit') {
+  if (work === 'baseline-edit') {
     // The baseline's own picture is the reference. In script mode that is its text-free base: the words are drawn again afterwards.
     if (!baseSlide?.path || !baseSlide.url || !base?.frozenBrief) throw new SafeFailure('baseline_slide_missing');
     const withWords = scriptMode && (base.frozenBrief.slides[index]?.overlayText ?? '').trim();
@@ -263,7 +265,8 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
       referenceUrl = publicUrl(thumbBucket(), basePathOf(baseSlide.path));
     } else referenceUrl = baseSlide.url;
     referenceNote = { kind: 'baseline', videoId: base.id, index, path: baseSlide.path };
-    prompt = guard(compileSlidePrompt(promptView, index, 'scene-edit', 'none', t.fix ?? '', guard(human), labelRenderInstruction(labelPolicy(e.instructions.lockedConstraints))));
+    edit = baselineEdit(briefToArm(base.frozenBrief), briefToArm(v.frozenBrief), index);
+    prompt = guard(compileSlidePrompt(promptView, index, 'baseline-edit', 'none', t.fix ?? '', guard(human), labelRenderInstruction(labelPolicy(e.instructions.lockedConstraints)), edit));
   } else if (work === 'caption-edit') {
     if (!baseSlide?.url || !base?.frozenBrief) throw new SafeFailure('baseline_slide_missing');
     referenceUrl = baseSlide.url;
@@ -295,7 +298,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
   const callKind = t.fix || human ? 'render-extra' : work === 'caption-edit' ? 'caption-edit' : 'render';
   const model = process.env.EXPERIMENT_IMAGE_MODEL?.trim() || 'meta/muse-image';
   return {
-    units: 1,
+    units: slideUnits(work, scriptMode),
     execute: async (_ctx?: ExecuteContext) => {
       const meter = new SlideMeter();
       const write = render.recordAiCost ?? logAiCost;
@@ -313,7 +316,7 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
         try { image = await once(prompt); }
         catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          const comparative = work !== 'caption-edit' && work !== 'scene-edit' && role === 'anchor-edit' && !!view.slides[index]?.visibleChange;
+          const comparative = work !== 'caption-edit' && work !== 'baseline-edit' && role === 'anchor-edit' && !!view.slides[index]?.visibleChange;
           const refusal = { overlayMode: scriptMode ? 'script' : 'model', invocations: calls, plainPromptRetry: false } as const;
           if (!FILTERED.test(msg)) renderFailure(err, refusal);
           // A filter hit gets one plain retry: without the repair text or human feedback, and an edit of slide 1 asks
@@ -321,8 +324,8 @@ export async function prepareContractSlide(e: Experiment, t: Task, render: Rende
           const plain = comparative ? { ...promptView, sourceArc: undefined, slides: promptView.slides.map((s, i) => i === index ? { ...s, visibleChange: '' } : s) } : promptView;
           usedPrompt = work === 'caption-edit' && base?.frozenBrief
             ? captionEditPrompt(base.frozenBrief.slides[index]?.overlayText ?? '', view.slides[index]!.overlayText)
-            : work === 'scene-edit'
-              ? guard(compileSlidePrompt(promptView, index, 'scene-edit', 'none', '', '', labelRenderInstruction(labelPolicy(e.instructions.lockedConstraints))))
+            : work === 'baseline-edit'
+              ? guard(compileSlidePrompt(promptView, index, 'baseline-edit', 'none', '', '', labelRenderInstruction(labelPolicy(e.instructions.lockedConstraints)), edit))
               : guard(compileWithin(() => compileSlidePrompt(plain, index, role, referenceUrl && role === 'fresh' ? 'style-only' : pick.referenceUse)));
           try { image = await once(usedPrompt); } catch (err2) { renderFailure(err2, { ...refusal, invocations: calls, plainPromptRetry: true }); }
         }
@@ -366,8 +369,8 @@ export async function prepareContractQa(e: Experiment, t: Task, render: RenderDe
     if (f) wanted.push(f);
   }
   const sourceBytes = await readFrames(render, wanted);
-  // Arm B of a scene test is judged against the baseline deck: same person and medium, a different setting.
-  const base = isSceneArm(e, v) ? e.variants.find(x => x.id === v.baselineId) : undefined;
+  // An alternate that keeps the baseline's person and changes the scene is judged against the baseline deck: same person and medium, a different setting.
+  const base = keepsBaselinePerson(e, v) ? e.variants.find(x => x.id === v.baselineId) : undefined;
   const baselineBytes = base ? await Promise.all(base.slides.map(async s => {
     const b = s.path ? await read({ bucket: thumbBucket(), path: s.path }) : null;
     if (!b) throw new SafeFailure('qa_baseline_unreadable');

@@ -13,7 +13,7 @@ import { applyApprovedEstimate } from './budget.js';
 import { resolveCompositeSource } from './composite/resolve.js';
 import type { DeckRequest } from './composite/options.js';
 import { compileExactEdit } from './exact-edit.js';
-import { applyFeedback, applyRevise, briefToArm, FALLBACK_HOOK, generationTasks, hookForOverlay, isContractPipeline, reviseTargets } from './contract-flow.js';
+import { applyFeedback, applyRevise, briefToArm, FALLBACK_HOOK, generationTasks, hookForOverlay, isContractPipeline, isEditArm, isScriptOverlay, reviseTargets, slideUnits, slideWorkFor } from './contract-flow.js';
 import { slideWork } from './resolved-contract.js';
 import { postKey } from '../lib/post-key.js';
 import { expandPreset, inferSharedFormat } from './source-format.js';
@@ -266,24 +266,33 @@ function selected(e: S.Experiment, ids?: string[]) {
   return variants;
 }
 export function taskCost(t: Pick<S.Task,'kind'>) { return t.kind==='analysis' ? CREDIT_COSTS.analyzeVideo : t.kind==='slide' ? CREDIT_COSTS.experimentSlide : CREDIT_COSTS.experimentPlanningCall; }
-/** Slides of `v` that need an image-model call. A B arm that shares slides with a baseline generated alongside it reuses them for free. */
-function contractRenderCount(e: S.Experiment, v: S.Experiment['variants'][number], generating: readonly S.Experiment['variants'][number][]): number {
+/** Image-model calls the slides of `v` still need, by the same `slideUnits` the preparer charges. Before the briefs are frozen the
+ *  planned briefs stand in; a variant that shares slides with a baseline generated alongside it copies or edits them. */
+function contractSlideUnits(e: S.Experiment, v: S.Experiment['variants'][number], generating: readonly S.Experiment['variants'][number][]): number {
+  const script = isScriptOverlay(e);
+  if (v.slides.length && !v.frozenBrief) return v.slides.filter(s => s.status !== 'done').length;
+  if (v.frozenBrief && v.slides.length) return v.slides.filter(s => s.status !== 'done').reduce((n, s) => n + slideUnits(slideWorkFor(e, v, s.index), script), 0);
   const base = v.baselineId ? e.variants.find(x => x.id === v.baselineId) : undefined;
   const shared = base && (generating.some(x => x.id === base.id) || base.slides.some(s => s.status === 'done'));
   if (!shared) return v.brief.slides.length;
-  const a = briefToArm(base.brief), b = briefToArm(v.brief);
-  return v.brief.slides.filter((_, i) => slideWork(a, b, i) !== 'reuse').length;
+  const a = briefToArm(base.brief), b = briefToArm(v.brief), edit = isEditArm(e, v);
+  return v.brief.slides.reduce((n, _, i) => n + slideUnits(slideWork(a, b, i, edit), script), 0);
 }
 async function contractEstimate(e: S.Experiment, stage: 'plan'|'generate', variants: S.Experiment['variants'], taskIds?: string[]) {
   let analyses = 0, planningCalls = 0, renders = 0, qas = 0;
   if (taskIds) {
     const jobs = e.tasks.filter(t => new Set(taskIds).has(t.id) && t.status !== 'done');
     analyses = jobs.filter(t => t.kind === 'analysis').length; planningCalls = jobs.filter(t => t.kind === 'briefs').length;
-    renders = jobs.filter(t => t.kind === 'slide').length; qas = jobs.filter(t => t.kind === 'qa').length;
+    const script = isScriptOverlay(e);
+    renders = jobs.filter(t => t.kind === 'slide').reduce((n, t) => {
+      const v = e.variants.find(x => x.id === t.target);
+      return n + (v?.frozenBrief ? slideUnits(slideWorkFor(e, v, t.index ?? 0, t.fix), script) : 1);
+    }, 0);
+    qas = jobs.filter(t => t.kind === 'qa').length;
   } else if (stage === 'plan') {
     analyses = e.inputs.filter(x => x.status !== 'ready').length; planningCalls = e.variants.length ? 0 : 1;
   } else {
-    for (const v of variants) { renders += v.slides.length ? v.slides.filter(s => s.status !== 'done').length : contractRenderCount(e, v, variants); qas++; }
+    for (const v of variants) { renders += contractSlideUnits(e, v, variants); qas++; }
   }
   const quote = await contractPrice(e, { analyses, planningCalls, renders, qas, corrections: stage === 'generate' || !!taskIds });
   // Before the plan exists nobody knows how many slides each alternate really re-renders, so quote the ceiling: every alternate rendered and checked in full.
@@ -319,7 +328,7 @@ export async function estimateFeedback(e: S.Experiment, raw: unknown) {
 export async function estimateRevise(e: S.Experiment) {
   reviseTargets(e);
   const arms = e.variants;
-  const renders = arms.reduce((n, v) => n + contractRenderCount(e, v, arms), 0);
+  const renders = arms.reduce((n, v) => n + contractSlideUnits(e, v, arms), 0);
   return contractPrice(e, { analyses: 0, planningCalls: 1, renders, qas: arms.length, corrections: true });
 }
 export async function estimate(e: S.Experiment, stage: 'plan'|'generate'|'revise', ids?: string[], taskIds?: string[]) {
