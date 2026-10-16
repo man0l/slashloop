@@ -305,7 +305,7 @@ function poolsGuide(input: ContractInput): string {
     slides: `value = ""; slides = the alternative storyline (${n} slides).`,
     morph: `value = the alternative progression in a few neutral words; slides = ${n} slides with the same overlayText, scene and composition as arm A's slides; slide 1 has the same grades as arm A's slide 1, the later slides follow a different curve or end point on the same attributes, still one way only.`,
     scene: input.sceneOverrides?.length
-      ? 'the user fixed the setting: return one value, value = that setting; slides [].'
+      ? `the user fixed the setting: return one value, value = that setting; slides = ${n} slides where ONLY scene is filled: arm A's slide re-staged in that setting, with that slide's same person, outfit and pose, so only the setting and props change (overlayText, composition and visibleChange "", arcLevel "none").`
       : `value = an alternative setting, props and action in one sentence; slides = ${n} slides where ONLY scene is filled (that setting for that slide's beat; overlayText, composition and visibleChange "", arcLevel "none"). The person, medium, lighting, camera and overlay text stay as in arm A.`,
   };
   const entries = armVariables(input.variables).filter(v => needs[v]).map(v => `${v}: exactly ${needs[v]} distinct value(s). ${help[v]}`);
@@ -469,7 +469,10 @@ function normalizeAlternates(
       seen.add(key); out.push(v);
     };
     if (variable === 'scene' && given.length) {
-      const scenes = armA.map((_, i) => given[given.length === 1 ? 0 : i]!);
+      // SLA-881: the model's per-slide re-staging keeps each slide's outfit and pose; the bare setting is the fallback.
+      const restaged = (raws[0]?.slides ?? []).slice(0, armA.length).map(s => s.scene.trim());
+      const usable = restaged.length === armA.length && restaged.every((x, i) => x && norm(x) !== norm(armA[i]!.scene));
+      const scenes = usable ? restaged : armA.map((_, i) => given[given.length === 1 ? 0 : i]!);
       add({ value: given.join(' | '), slides: armA.map((s, i) => ({ ...s, scene: scenes[i]! })) });
     } else {
       for (const r of raws) add(poolValue(variable, r, { input, arcOn, framing, armA, kept, base, storyline }));
@@ -646,7 +649,7 @@ export function compileSlidePrompt(c: ResolvedContract, index: number, role: Sli
     const { character, scene } = edit;
     const opener = character
       ? `Edit the attached 9:16 frame. Replace the person with the NEW PERSON below${scene ? ' and change the setting, props and action to the slide scene' : ''}. Keep the medium, lighting, camera, framing and composition${scene ? '' : ', and keep the setting, props and action exactly as they are'}.`
-      : 'Edit the attached 9:16 frame. Keep the SAME person, medium, lighting and camera. Change ONLY the setting, props and action to the slide scene.';
+      : 'Edit the attached 9:16 frame. Keep the SAME person, outfit, pose, medium, lighting and camera. Change ONLY the setting and props to the slide scene.';
     return [
       opener, labelRule,
       character ? `NEW PERSON (the face, hair, build and outfit are theirs; nothing of the person in the attached frame stays): ${c.identitySheet}` : '',

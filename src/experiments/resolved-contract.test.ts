@@ -407,7 +407,7 @@ describe('scene variable', () => {
     const view = { ...c, slides: armsOf(c)[0]!.axes[0]!.slides };
     const p = compileSlidePrompt(view, 0, 'baseline-edit', 'none', 'make it rainier', 'more neon', 'LABEL RULE');
     const lines = p.split('\n');
-    expect(lines[0]).toBe('Edit the attached 9:16 frame. Keep the SAME person, medium, lighting and camera. Change ONLY the setting, props and action to the slide scene.');
+    expect(lines[0]).toBe('Edit the attached 9:16 frame. Keep the SAME person, outfit, pose, medium, lighting and camera. Change ONLY the setting and props to the slide scene.');
     expect(lines[1]).toBe('LABEL RULE');
     expect(p).toContain('SCENE for this image: a rainy street');
     expect(p).toContain('Hook A');

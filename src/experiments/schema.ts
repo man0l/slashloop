@@ -33,6 +33,20 @@ const constraints = z.union([z.array(text.min(1)).max(20), text]).transform(v =>
 export const CopyOverrides = z.record(z.string().regex(/^(?:0|[1-9]\d*)$/), z.string().max(2000))
   .refine(v => Object.keys(v).length <= 8, { message: 'At most 8 per-slide copy overrides: one per slide.' });
 export const SCENE_MAX = 500;
+export const EDIT_SCENE_GOAL = 'Edit the slideshow scene, keeping the same person, medium, lighting, camera and overlay text.';
+/**
+ * The planner's direction for an edit-mode scene test; the exact per-slide values travel in `sceneOverrides`.
+ * SLA-881: arm A is the source deck as it is (the control), so the new setting is named for the alternate only:
+ * a direction that just said "Scene: X" made the planner stage the baseline in X too, leaving no control arm.
+ */
+export function editSceneDirection(scenes: readonly string[]): string {
+  const said = scenes.length === 1 ? scenes[0]!.trim() : scenes.map((x, i) => `slide ${i + 1}: ${x.trim()}`).join('; ');
+  return 'Keep this source deck\'s format exactly. Arm A (the baseline) reproduces every source frame as it is: the same person, '
+    + 'outfit, pose, setting, props, medium, lighting, camera and overlay text, and the same slide-to-slide progression the source frames show. '
+    + 'The only tested variable is the scene: the alternate re-stages each arm A slide in a new setting, keeping that slide\'s person, outfit, '
+    + 'pose, medium, lighting, camera and overlay text, and changing only the setting and props. Never describe the new setting in arm A\'s slides. '
+    + ('New setting for the alternate only: ' + said).slice(0, 1500) + '.';
+}
 const instructionsShape = {
   goal: text.min(1), brand: text, audience: text, language: z.string().trim().min(1).max(80),
   direction: directionText, lockedConstraints: constraints,
