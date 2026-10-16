@@ -149,6 +149,14 @@ export function observedCopy(raw:unknown, photo:boolean, expectedSlides?:number)
   }
   return out;
 }
+/** Stamped into every carousel analysis written after CAROUSEL_TEXT_RULE existed; the parsed JSON cannot tell "never asked" from "asked, none" because a missing onScreenText parses to null. */
+export const CAROUSEL_TEXT_PASS=1;
+/** A carousel analysis from before the text pass that found no words at all cannot be trusted as blank (SLA-885); one re-analysis is allowed, and the stamp stops it repeating. */
+export function staleCarouselText(raw:unknown,photo:boolean):boolean {
+  if(!photo)return false;
+  if((raw as {textPass?:unknown}|null)?.textPass===CAROUSEL_TEXT_PASS)return false;
+  return !observedCopy(raw,true)?.some(c=>c.state==='observed_text');
+}
 export async function compatibleInput(video:Video):Promise<Input> {
   // A video with a Recreate deck behaves like a slideshow everywhere in the
   // experiment pipeline — the recreated slides are the visual source.
@@ -158,6 +166,7 @@ export async function compatibleInput(video:Video):Promise<Input> {
     if(!/^(?:google\/)?gemini-|^x-ai\/grok/.test(a.model) || !['gemini-native','gemini-text','openrouter-video','experiment-gemini','experiment-grok'].includes(a.backend))continue;
     if(!(photo?a.analysisBasis==='slideshow+caption':['video','video+transcript'].includes(a.analysisBasis)))continue;
     let raw:unknown;try{raw=JSON.parse(a.analysisJson);}catch{continue;}
+    if(staleCarouselText(raw,photo))continue;
     const evidence=observations(raw,photo);if(!evidence.length)continue;
     const total=photo?experimentSourceKeys(video.rawJson).length:null;
     if(photo && (!total || evidence.length!==total || evidence.some((s,i)=>s.location!==`slide:${i}`)))continue;
@@ -1221,7 +1230,7 @@ export async function prepare(e:Experiment,t:Task,render=renderDeps):Promise<Pre
             `${photo?`Carousel: ${urls.length} images; shots must describe EVERY slide, timestampSec=0-based index, durationSec=0, no audio claims.\n${CAROUSEL_TEXT_RULE}`:'Watch the full video and describe observed shots with timestamps.'}\nCaption context:${video.caption.slice(0,1000)}\nSchema:${schema}`,parts);
       const data=VideoAnalysisDataSchema.parse(raw);const evidence=observations(data,photo);
       if(!evidence.length || (photo && (evidence.length!==urls.length || evidence.some((v,i)=>v.location!==`slide:${i}`))))throw new SafeFailure('incomplete_visual_analysis');
-      const a=await db.analysis.create({data:{videoId:video.id,schemaVersion:'v3',analysisJson:JSON.stringify(data),analysisBasis:photo?'slideshow+caption':'video',backend:photo&&analysisModel!=='gemini'?'experiment-grok':'experiment-gemini',model:photo&&analysisModel!=='gemini'?analysisModel:MODEL,costCents:0}});
+      const a=await db.analysis.create({data:{videoId:video.id,schemaVersion:'v3',analysisJson:JSON.stringify(photo?{...data,textPass:CAROUSEL_TEXT_PASS}:data),analysisBasis:photo?'slideshow+caption':'video',backend:photo&&analysisModel!=='gemini'?'experiment-grok':'experiment-gemini',model:photo&&analysisModel!=='gemini'?analysisModel:MODEL,costCents:0}});
       return {videoId:video.id,status:'ready',analysisId:a.id,jobId:null,error:null,coverage:{basis:a.analysisBasis,observed:evidence.length,total:photo?urls.length:null,complete:true},evidence,copy:observedCopy(data,photo,photo?urls.length:undefined)} satisfies Input;
     }};
   }
