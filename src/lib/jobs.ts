@@ -275,6 +275,31 @@ export async function enqueueRecreateJob(opts: {
   });
 }
 
+/**
+ * SLA-868: a composite (code-rendered) photo-annotation deck. Same `recreate`
+ * kind, so the gallery's recreate state and the VPS drainer's claim path apply,
+ * but no credits are pre-authorised: rasterising costs no image-model call.
+ * Deduped per (video, deck fingerprint, retry generation).
+ */
+export async function enqueueCompositeDeckJob(opts: {
+  workspaceId: string;
+  videoId: string;
+  fingerprint: string;
+  request: unknown;
+  dedupeKey: string;
+}): Promise<EnqueuedJob> {
+  return enqueueRouted({
+    kind: 'recreate',
+    workspaceId: opts.workspaceId,
+    videoId: opts.videoId,
+    sourceId: null,
+    payload: { mode: 'composite', fingerprint: opts.fingerprint, request: opts.request },
+    opId: null,
+    preAuthCredits: null,
+    dedupeKey: opts.dedupeKey,
+  });
+}
+
 export async function enqueueFetchJob(opts: {
   workspaceId: string;
   videoId: string;

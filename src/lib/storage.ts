@@ -113,6 +113,11 @@ export function recreationPath(workspaceId: string, videoId: string, index: numb
   return `${workspaceId}/${videoId}/recreate/${String(index).padStart(2, '0')}.jpg`;
 }
 
+/** Public thumb-bucket key for one face-library image (SLA-868). */
+export function facePath(workspaceId: string, faceId: string): string {
+  return `${workspaceId}/faces/${faceId}.jpg`;
+}
+
 // ---- R2 / S3 client -------------------------------------------------------
 
 let r2Client: S3Client | null = null;

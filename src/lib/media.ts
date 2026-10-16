@@ -357,12 +357,18 @@ const RECREATION_MODEL = 'meta/muse-image';
 /** Stamp AI-recreated slide keys onto the video's rawJson. Split from
  *  persistRecreation so the Workers-native stepper (which uploads slides to
  *  R2 one per tick) can finalize without re-uploading anything. */
-export async function stampRecreationKeys(videoId: string, keys: string[]): Promise<void> {
+export async function stampRecreationKeys(
+  videoId: string,
+  keys: string[],
+  extra?: { model?: string; compositeDeck?: Record<string, unknown> },
+): Promise<void> {
   const row = await db.video.findUnique({ where: { id: videoId }, select: { rawJson: true } });
   let raw: Record<string, unknown> = {};
   try { raw = JSON.parse(row?.rawJson || '{}') as Record<string, unknown>; } catch { raw = {}; }
   raw.recreationKeys = keys;
-  raw.recreationModel = RECREATION_MODEL;
+  raw.recreationModel = extra?.model ?? RECREATION_MODEL;
+  // A deck stamp describes the current recreation only; an AI restage replaces it.
+  if (extra?.compositeDeck) raw.compositeDeck = extra.compositeDeck; else delete raw.compositeDeck;
   await db.video.update({ where: { id: videoId }, data: { rawJson: JSON.stringify(raw) } });
   console.log(`[media] stored recreation (${keys.length} slides) in R2 for ${videoId}`);
 }
@@ -371,6 +377,7 @@ export async function persistRecreation(
   workspaceId: string,
   videoId: string,
   slides: Array<{ buffer: Buffer; contentType: string }>,
+  stamp?: { model?: string; compositeDeck?: Record<string, unknown> },
 ): Promise<string[]> {
   if (!isStorageEnabled()) {
     throw new Error('media storage disabled — cannot store recreated slides');
@@ -387,7 +394,7 @@ export async function persistRecreation(
     });
     keys.push(path);
   }
-  await stampRecreationKeys(videoId, keys);
+  await stampRecreationKeys(videoId, keys, stamp);
   return keys;
 }
 
@@ -585,6 +592,7 @@ export async function persistSlideshow(
   workspaceId: string,
   videoId: string,
   slides: Array<{ buffer: Buffer; contentType: string }>,
+  stamp?: { model?: string; compositeDeck?: Record<string, unknown> },
 ): Promise<string[]> {
   if (!isStorageEnabled()) {
     throw new Error('media storage disabled — cannot store slideshow slides');

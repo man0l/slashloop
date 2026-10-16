@@ -328,6 +328,41 @@ model Experiment {
   @@index([workspaceId, testKey, createdAt])
 }
 
+/// SLA-868: tagged face library for the composite (photo-annotation) render kind.
+/// One row per photo. Landmarks are image-pixel coordinates from one vision call;
+/// measures and verdicts are computed from them in code (src/experiments/composite/landmarks.ts),
+/// so a verdict can be re-thresholded without a new call. personName is set only for
+/// source = commons, and the planner never places a named person on a negative badge.
+model FaceLibrary {
+  id            String    @id
+  workspaceId   String
+  /// R2 key in the thumbs bucket.
+  imageKey      String
+  /// gallery_frame | commons | synthetic
+  source        String
+  /// gallery_frame: "<videoId>@<timestampSec>"; commons: file title; synthetic: generation seed.
+  sourceRef     String
+  personName    String?
+  /// male | female | unknown
+  sex           String    @default("unknown")
+  /// profile | three_quarter | frontal
+  view          String
+  landmarksJson String    @default("{}")
+  measuresJson  String    @default("{}")
+  verdictsJson  String    @default("{}")
+  /// SPDX-ish licence label: "CC0", "CC BY 4.0", "CC BY-SA 3.0", "Public domain", "synthetic", "gallery".
+  licence       String?
+  /// Credit line CC-BY requires, drawn on the slide. Null when the licence needs none.
+  attribution   String?
+  /// Verdicts a gallery frame arrived with from the source's own overlay, e.g. {"ramus":"neg"}. The calibration set.
+  sourceVerdictJson String?
+  taggedAt      DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@unique([workspaceId, source, sourceRef])
+  @@index([workspaceId, source])
+}
+
 /// SLA-617: one row per non-terminal -> terminal experiment transition that asked for a webhook, written in the same batch as the status change and delivered by the VPS worker.
 model ExperimentWebhookOutbox {
   id             String    @id
