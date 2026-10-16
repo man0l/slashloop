@@ -45,9 +45,11 @@ async function liveDeps(workspaceId: string): Promise<IngestDeps> {
     thresholds,
     imageSize,
     putImage: async (key, body) => { await putObject({ bucket: thumbBucket(), path: key, body, contentType: 'image/jpeg' }); },
+    // Reasoning cannot be disabled on this endpoint and spends ~600-800 tokens even at 'low',
+    // so the budget must leave room for the JSON after it (600 truncated every reply).
     vision: async photo => {
       const { parsed } = await callOpenRouterText(LANDMARK_SYSTEM_PROMPT, 'Locate the landmarks in this photo.', VISION_MODEL, {
-        images: [{ mimeType: 'image/jpeg', dataBase64: Buffer.from(photo).toString('base64') }], temperature: 0, maxTokens: 600, reasoningEffort: 'low',
+        images: [{ mimeType: 'image/jpeg', dataBase64: Buffer.from(photo).toString('base64') }], temperature: 0, maxTokens: 4000, reasoningEffort: 'low',
       });
       return parsed;
     },
