@@ -29,9 +29,12 @@ export function analysisHasCtaSlide(raw: unknown, originalCount: number): boolea
   return false;
 }
 
+export const MIN_STORY_SLIDES = 3;
+export const MAX_STORY_SLIDES = 8;
+
 export function storySlideCount(originalCount: number, hasCta: boolean): number {
   const n = hasCta ? originalCount - 1 : originalCount;
-  return Math.min(8, Math.max(3, n));
+  return Math.min(MAX_STORY_SLIDES, Math.max(MIN_STORY_SLIDES, n));
 }
 
 /** `preserveSourceCtaSlide` is the explicit opt-in (SLA-476): the source deck

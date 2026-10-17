@@ -73,9 +73,23 @@ describe('buildCompositePlan', () => {
     const byId = new Map(withSynthetic.map(f => [f.id, f]));
     plan.slides.forEach((s, i) => { if (s.type === 'face' && s.badge === 'neg') expect(byId.get(faceIds[i]!)!.personName).toBeNull(); });
   });
-  test('deck size stays inside 7..11', () => {
+  test('deck size stays inside 7..8, the most an experiment keeps of any source deck', () => {
     expect(deckSize({ slots: pattern.slots.slice(0, 3), scoreCard: false })).toBe(7);
-    expect(deckSize({ slots: Array.from({ length: 20 }, () => pattern.slots[0]!), scoreCard: true })).toBe(11);
+    expect(deckSize({ slots: Array.from({ length: 20 }, () => pattern.slots[0]!), scoreCard: true })).toBe(8);
+    expect(deckSize({ slots: Array.from({ length: 9 }, () => pattern.slots[0]!), scoreCard: false })).toBe(8);
+  });
+  test('an oversized source builds 7 faces + the card, and the stamp lists each face slide', () => {
+    const big: AnnotationPattern = { slots: Array.from({ length: 12 }, (_, i) => pattern.slots[i % pattern.slots.length]!), scoreCard: true };
+    const { plan, faceIds, slides } = buildCompositePlan(big, library, { seed: 'a' });
+    expect(plan.slides).toHaveLength(8);
+    expect(plan.slides.at(-1)!.type).toBe('score_card');
+    expect(faceIds).toHaveLength(7);
+    expect(slides.map(s => s.index)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(slides.map(s => s.faceId)).toEqual(faceIds);
+    for (const s of slides) {
+      const p = plan.slides[s.index]!;
+      expect(p.type === 'face' && p.badge === s.badge && p.label === s.label).toBe(true);
+    }
   });
 });
 

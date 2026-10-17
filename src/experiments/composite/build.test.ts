@@ -3,6 +3,7 @@ import { buildCompositeDeckForVideo, type BuildDeckDeps } from './build.js';
 import { face } from './fixtures.js';
 import type { FaceStore } from './face-store.js';
 import { CompositeError } from './plan.js';
+import { storySlideCount } from '../slide-count.js';
 
 const shots = ['short ramus ❌', 'tall ramus ✅', 'short ramus ❌', 'tall ramus ✅', 'short ramus ❌', 'tall ramus ✅', 'tall ramus ✅']
   .map((t, i) => ({ timestampSec: i, description: 'face photo', onScreenText: t }));
@@ -33,15 +34,32 @@ function harness(library = [
 }
 
 describe('buildCompositeDeckForVideo (SLA-868)', () => {
-  test('renders a 9-slide deck in code, persists it with a composite stamp, makes no image-model call', async () => {
+  test('renders the deck in code, persists it with a composite stamp, makes no image-model call', async () => {
     const h = harness();
     const out = await buildCompositeDeckForVideo('ws', 'v1', {}, h.deps);
     expect(out.imageModelCalls).toBe(0);
     expect(out.keys).toHaveLength(out.plan.slides.length);
     expect(out.plan.slides.length).toBeGreaterThanOrEqual(7);
-    expect(out.plan.slides.length).toBeLessThanOrEqual(11);
+    expect(out.plan.slides.length).toBeLessThanOrEqual(8);
     expect(h.persisted[0]!.stamp.model).toBe('composite');
     expect((h.persisted[0]!.stamp.compositeDeck as { fingerprint: string }).fingerprint).toBe(out.fingerprint);
+  });
+  test('stamps one {index, faceId, badge, label} per face slide', async () => {
+    const h = harness();
+    const out = await buildCompositeDeckForVideo('ws', 'v1', {}, h.deps);
+    const stamp = h.persisted[0]!.stamp.compositeDeck as { faceIds: string[]; slides: Array<{ index: number; faceId: string; badge: string; label: string }> };
+    expect(stamp.slides).toHaveLength(out.keys.length - 1);
+    expect(stamp.slides.map(s => s.faceId)).toEqual(stamp.faceIds);
+    out.plan.slides.forEach((p, i) => { if (p.type === 'face') expect(stamp.slides[i]).toEqual({ index: i, faceId: p.faceId, badge: p.badge, label: p.label }); });
+  });
+  test('the stored deck is exactly what an experiment keeps of it, however long the source pattern', async () => {
+    const h = harness();
+    h.deps.latestAnalysisJson = async () => ({
+      shots: Array.from({ length: 12 }, (_, i) => ({ timestampSec: i, description: 'face photo', onScreenText: i % 2 ? 'tall ramus ✅' : 'short ramus ❌' })), onScreenText: [],
+    });
+    const out = await buildCompositeDeckForVideo('ws', 'v1', {}, h.deps);
+    expect(out.keys).toHaveLength(8);
+    expect(storySlideCount(out.keys.length, false)).toBe(out.keys.length);
   });
   test('no named real person is drawn on a negative slide', async () => {
     const h = harness();

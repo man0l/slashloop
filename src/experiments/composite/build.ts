@@ -47,7 +47,7 @@ export async function buildCompositeDeckForVideo(
   if (!pattern) throw new CompositeError('not_photo_annotation', 'The latest analysis has no feature + verdict overlays to reproduce.');
   const library = usableFaces(await deps.faces.list(workspaceId));
   const fingerprint = deckFingerprint(videoId, req);
-  const { plan, feature, faceIds } = buildCompositePlan(pattern, library, { ...req, seed: req.seed ?? fingerprint });
+  const { plan, feature, faceIds, slides: deckSlides } = buildCompositePlan(pattern, library, { ...req, seed: req.seed ?? fingerprint });
   const byId = new Map(library.map(f => [f.id, f]));
 
   const slides: RenderedSlide[] = [];
@@ -60,7 +60,7 @@ export async function buildCompositeDeckForVideo(
   }
   const keys = await deps.persist(workspaceId, videoId, slides, {
     model: 'composite',
-    compositeDeck: { fingerprint, feature, faceIds, builtAt: new Date().toISOString() },
+    compositeDeck: { fingerprint, feature, faceIds, slides: deckSlides, builtAt: new Date().toISOString() },
   });
   return { keys, plan, fingerprint, imageModelCalls: 0 };
 }
