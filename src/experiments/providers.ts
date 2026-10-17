@@ -157,20 +157,57 @@ export function staleCarouselText(raw:unknown,photo:boolean):boolean {
   if((raw as {textPass?:unknown}|null)?.textPass===CAROUSEL_TEXT_PASS)return false;
   return !observedCopy(raw,true)?.some(c=>c.state==='observed_text');
 }
+/** SLA-885: words rendered into the mp4 (TikTok text overlay) are not on the carousel photos, so the carousel pass reads none. When the same video already has a video-basis analysis, its timed on-screen text is mapped onto slides by equal time split (slide i covers [i*D/N,(i+1)*D/N) of the D-second video). Returns null when nothing usable. */
+export function slideCopyFromVideoAnalysis(raw:unknown,durationSec:number|null|undefined,slides:number):Map<number,string>|null {
+  if(!durationSec||durationSec<=0||slides<=0)return null;
+  const parsed=VideoAnalysisDataSchema.safeParse(raw);if(!parsed.success)return null;
+  const out=new Map<number,string[]>();
+  for(const [t,text] of overlayByTimestamp(parsed.data)){
+    if(t<0||t>durationSec)continue;
+    const i=Math.min(slides-1,Math.floor(t*slides/durationSec));
+    const list=out.get(i)??[];if(!list.includes(text))list.push(text);out.set(i,list);
+  }
+  if(!out.size)return null;
+  return new Map([...out].map(([i,l])=>[i,l.join(' / ')]));
+}
+/** Fills slides the carousel pass saw as blank with the video-basis text; slides that already carry text keep it. */
+export function mergeVideoSlideCopy(copy:Input['copy'],evidence:Input['evidence'],fromVideo:Map<number,string>):{copy:Input['copy'];evidence:Input['evidence']} {
+  const mergedCopy=(copy??[]).map(c=>{
+    const t=fromVideo.get(c.slideIndex);
+    return t&&c.state!=='observed_text'?{...c,state:'observed_text' as const,text:t}:c;
+  });
+  const mergedEvidence=evidence.map(e=>{
+    const m=/^slide:(\d+)$/.exec(e.location);const t=m?fromVideo.get(Number(m[1])):undefined;
+    return t&&!e.observation.includes('on-image text:')?{...e,observation:`${e.observation} — on-image text: ${JSON.stringify(t.slice(0,300))}`}:e;
+  });
+  return {copy:mergedCopy,evidence:mergedEvidence};
+}
+async function videoBasisSlideCopy(video:Video,slides:number):Promise<Map<number,string>|null> {
+  if(!video.durationSec||slides<=0)return null;
+  const rows=await db.analysis.findMany({where:{videoId:video.id,schemaVersion:'v3',analysisBasis:{in:['video','video+transcript']}},orderBy:{createdAt:'desc'},take:5});
+  for(const a of rows){
+    let raw:unknown;try{raw=JSON.parse(a.analysisJson);}catch{continue;}
+    const map=slideCopyFromVideoAnalysis(raw,video.durationSec,slides);
+    if(map)return map;
+  }
+  return null;
+}
 export async function compatibleInput(video:Video):Promise<Input> {
   // A video with a Recreate deck behaves like a slideshow everywhere in the
   // experiment pipeline — the recreated slides are the visual source.
   const photo=isPhotoPost(video) || experimentSourceKeys(video.rawJson).length > 0;
+  const total=photo?experimentSourceKeys(video.rawJson).length:null;
   const rows=await db.analysis.findMany({where:{videoId:video.id,schemaVersion:'v3'},orderBy:{createdAt:'desc'},take:10});
+  const fromVideo=photo&&total?await videoBasisSlideCopy(video,total):null;
   for(const a of rows){
     if(!/^(?:google\/)?gemini-|^x-ai\/grok/.test(a.model) || !['gemini-native','gemini-text','openrouter-video','experiment-gemini','experiment-grok'].includes(a.backend))continue;
     if(!(photo?a.analysisBasis==='slideshow+caption':['video','video+transcript'].includes(a.analysisBasis)))continue;
     let raw:unknown;try{raw=JSON.parse(a.analysisJson);}catch{continue;}
-    if(staleCarouselText(raw,photo))continue;
+    if(!fromVideo&&staleCarouselText(raw,photo))continue;
     const evidence=observations(raw,photo);if(!evidence.length)continue;
-    const total=photo?experimentSourceKeys(video.rawJson).length:null;
     if(photo && (!total || evidence.length!==total || evidence.some((s,i)=>s.location!==`slide:${i}`)))continue;
-    return {videoId:video.id,status:'ready',analysisId:a.id,jobId:null,error:null,coverage:{basis:a.analysisBasis,observed:evidence.length,total,complete:true},evidence,copy:observedCopy(raw,photo,total??undefined)};
+    const merged=fromVideo?mergeVideoSlideCopy(observedCopy(raw,photo,total??undefined),evidence,fromVideo):null;
+    return {videoId:video.id,status:'ready',analysisId:a.id,jobId:null,error:null,coverage:{basis:a.analysisBasis,observed:evidence.length,total,complete:true},evidence:merged?.evidence??evidence,copy:merged?.copy??observedCopy(raw,photo,total??undefined)};
   }
   return {videoId:video.id,status:'pending',analysisId:null,jobId:null,error:null,coverage:null,evidence:[]};
 }
