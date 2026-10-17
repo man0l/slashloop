@@ -389,6 +389,15 @@ export async function callOpenRouterText(
   }
 }
 
+/** The MIME type the bytes really are. Providers sniff the payload and 400 when it disagrees with the declared type. */
+export function imageMimeOf(bytes: Uint8Array, declared = 'image/jpeg'): string {
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46
+    && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
+  return declared;
+}
+
 /** Default model for image recreation and experiment slides. */
 export const RECREATE_IMAGE_MODEL = 'meta/muse-image';
 
@@ -449,9 +458,10 @@ export async function generateOpenRouterImage(opts: {
   if (data.error?.message) throw new Error(`OpenRouter image error: ${data.error.message}`);
   const b64 = data.data?.[0]?.b64_json;
   if (!b64) throw new Error('OpenRouter returned no image');
-  const contentType = data.data?.[0]?.media_type || 'image/jpeg';
+  const buffer = Buffer.from(b64, 'base64');
+  const contentType = imageMimeOf(buffer, data.data?.[0]?.media_type || 'image/jpeg');
   return {
-    buffer: Buffer.from(b64, 'base64'),
+    buffer,
     contentType,
     costUsd: typeof data.usage?.cost === 'number' ? data.usage.cost : 0,
   };
