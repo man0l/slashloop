@@ -3,7 +3,7 @@
 // reaches the render request and the QA checker.
 import { expect, test } from 'bun:test';
 import type { Video } from '@prisma/client';
-import { CAROUSEL_TEXT_PASS, CAROUSEL_TEXT_RULE, staleCarouselText, observations, observedCopy, prepare, resolvedCopyBlock } from './providers.js';
+import { CAROUSEL_TEXT_PASS, CAROUSEL_TEXT_RULE, mergeVideoSlideCopy, slideCopyFromVideoAnalysis, staleCarouselText, observations, observedCopy, prepare, resolvedCopyBlock } from './providers.js';
 import { VideoAnalysisDataSchema } from '../analysis/schema.js';
 import type { Experiment, Input, Task } from './schema.js';
 import { compileSlideContract, contractCheckPlan, contractChecks, labelPolicy, type SlideContract } from './render-prompt.js';
@@ -67,6 +67,30 @@ test('a blank carousel analysis from before the text pass is stale once; stamped
   texted.shots![0]!.onScreenText = 'week 4';
   expect(staleCarouselText(texted, true)).toBe(false);
   expect(staleCarouselText(blankDeck, false)).toBe(false);
+});
+
+test('text rendered into the mp4 reaches blank carousel slides by equal time split (SLA-885)', () => {
+  // 10s video, 6 slides: ~1.67s each. Cover words at 0.5s; "week 3" at 6s -> slide 3.
+  const video = analysis([{ timestampSec: 0, description: 'cover' }]);
+  video.shots![0]!.onScreenText = 'week 4';
+  video.onScreenText = [{ timestampSec: 6, text: 'week 3', style: 'overlay' }, { timestampSec: 99, text: 'late', style: 'overlay' }];
+  const map = slideCopyFromVideoAnalysis(video, 10, 6)!;
+  expect(map.get(0)).toBe('week 4');
+  expect(map.get(3)).toBe('week 3');
+  expect(map.size).toBe(2);
+  expect(slideCopyFromVideoAnalysis(video, null, 6)).toBeNull();
+  expect(slideCopyFromVideoAnalysis(analysis([{ timestampSec: 0, description: 'x' }]), 10, 6)).toBeNull();
+
+  const deck = analysis(Array.from({ length: 6 }, (_, i) => ({ timestampSec: i, description: `Slide ${i}` })));
+  deck.shots![2]!.onScreenText = 'kept';
+  const evidence = observations(deck, true)!;
+  const merged = mergeVideoSlideCopy(observedCopy(deck, true, 6), evidence, new Map([[0, 'week 4'], [2, 'ignored']]));
+  expect(merged.copy![0]).toMatchObject({ state: 'observed_text', text: 'week 4' });
+  expect(merged.copy![2]).toMatchObject({ state: 'observed_text', text: 'kept' });
+  expect(merged.copy![1]).toMatchObject({ state: 'observed_empty' });
+  expect(merged.evidence[0]!.observation).toContain('on-image text: "week 4"');
+  expect(merged.evidence[2]!.observation).toContain('"kept"');
+  expect(merged.evidence[2]!.observation).not.toContain('ignored');
 });
 
 test('the board prompt is told the resolved copy so a blank slide cannot acquire words', () => {
