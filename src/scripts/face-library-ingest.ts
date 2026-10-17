@@ -14,11 +14,11 @@
 //                                            thumbnails and deletes the copy. No browser needed.
 //   commons --title="File:X.jpg" --person="Name" [--sex=male|female]
 //                                            one Commons photo; CC0 / public domain / CC-BY only
-//   synthetic --count=N --batch=<name> [--jaw=weak] --yes
+//   synthetic --count=N --batch=<name> [--jaw=weak|strong] --yes
 //                                            generate N unnamed synthetic faces (image-model spend:
 //                                            about 12 credits-worth each; ~300 for a 25-face bank).
-//                                            The default prompt only yields average-to-strong jaws, so
-//                                            a bank needs a second batch with --jaw=weak for ❌ examples.
+//                                            The default prompt yields average jaws, so a bank needs
+//                                            --jaw=weak batches for ❌ and --jaw=strong for ✅ examples.
 //   calibrate [--apply]                      fit thresholds to the labelled gallery frames, report,
 //                                            and with --apply re-label the whole library (no model call)
 //   list                                     library summary
@@ -32,7 +32,10 @@ import { ingestCommonsFile, ingestGalleryFrames, ingestSyntheticFaces, type Fram
 import { deleteStreamVideo, fetchStreamThumbnail, streamConfig, streamCopyFromUrl, streamVideoStatus } from '../lib/stream-frames.js';
 import { LANDMARK_SYSTEM_PROMPT, calibrateThresholds, relabelLibrary } from '../experiments/composite/tagging.js';
 
-const WEAK_JAW_CLAUSE = ' Soft, underdeveloped jawline: a short vertical jaw ramus, a rounded jaw angle, a small recessed chin set back behind the lips.';
+const JAW_CLAUSES: Record<string, string> = {
+  weak: ' Soft, underdeveloped jawline: a short vertical jaw ramus, a rounded jaw angle, a small recessed chin set back behind the lips.',
+  strong: ' Strong, well-developed jawline: a tall vertical jaw ramus, a sharply defined jaw angle, a prominent chin projecting forward in line with the lips.',
+};
 const tallyOf = (vs: string[]) => vs.reduce<Record<string, number>>((m, v) => ({ ...m, [v]: (m[v] ?? 0) + 1 }), {});
 
 const argv = process.argv.slice(2);
@@ -58,9 +61,11 @@ async function liveDeps(workspaceId: string): Promise<IngestDeps> {
     thresholds,
     imageSize,
     putImage: async (key, body) => { await putObject({ bucket: thumbBucket(), path: key, body, contentType: 'image/jpeg' }); },
+    // Reasoning cannot be disabled on this endpoint and spends ~600-800 tokens even at 'low',
+    // so the budget must leave room for the JSON after it (600 truncated every reply).
     vision: async photo => {
       const { parsed } = await callOpenRouterText(LANDMARK_SYSTEM_PROMPT, 'Locate the landmarks in this photo.', VISION_MODEL, {
-        images: [{ mimeType: 'image/jpeg', dataBase64: Buffer.from(photo).toString('base64') }], temperature: 0, maxTokens: 600, reasoningEffort: 'low',
+        images: [{ mimeType: 'image/jpeg', dataBase64: Buffer.from(photo).toString('base64') }], temperature: 0, maxTokens: 4000, reasoningEffort: 'low',
       });
       return parsed;
     },
@@ -158,12 +163,12 @@ async function main() {
     const count = Number(need('count'));
     if (!Number.isInteger(count) || count < 1 || count > 40) throw new Error('--count must be 1..40');
     const jaw = flag('jaw');
-    if (jaw !== undefined && jaw !== 'weak') throw new Error('--jaw must be "weak"');
+    if (jaw !== undefined && !(jaw in JAW_CLAUSES)) throw new Error('--jaw must be "weak" or "strong"');
     if (!has('yes')) throw new Error(`this spends image-model credits (${count} generations); pass --yes to proceed`);
     show(await ingestSyntheticFaces(await liveDeps(workspaceId), workspaceId, need('batch'), count, async i => {
       const sex = i % 2 ? 'woman' : 'man';
       const img = await generateOpenRouterImage({
-        prompt: `Photorealistic studio side-profile portrait of a fictional adult ${sex}, head and shoulders, facing right, plain grey background, ear, jaw and chin fully visible, hair off the face, neutral expression, no glasses, no text, not a real person.${jaw === 'weak' ? WEAK_JAW_CLAUSE : ''}`,
+        prompt: `Photorealistic studio side-profile portrait of a fictional adult ${sex}, head and shoulders, facing right, plain grey background, ear, jaw and chin fully visible, hair off the face, neutral expression, no glasses, no text, not a real person.${jaw ? JAW_CLAUSES[jaw] : ''}`,
         quality: 'medium', aspectRatio: '3:4',
       });
       return new Uint8Array(img.buffer);
