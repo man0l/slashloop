@@ -606,6 +606,11 @@ export async function mutate(workspaceId:string,id:string,action:string,raw:unkn
     }
     e.status='generating';
   } else if(action==='retry') {
+    // A budget-paused experiment resumes against its cap: raise it to cover the named jobs, as generate/revise/feedback do, or the guard pauses it again at once.
+    const {variantIds:rv,taskIds:rt}=S.Retry.parse(b);
+    const est=await estimate(e,rt||rv||(e.report||e.pipeline==='contract')&&e.variants.length?'generate':'plan',rt?undefined:rv,rt);
+    await assertTestBudget(e, est.totalCredits);
+    applyApprovedEstimate(e,{...est,totalCredits:Math.max(est.totalCredits,Math.min(est.maxTotalCredits,est.workspaceCredits))});
     retryJobs(e,b);
   } else if(action==='revise') {
     // A QA-failed experiment: the model rewrites the brief against the QA failures, then every arm is rendered and checked again.
