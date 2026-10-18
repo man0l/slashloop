@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
-  armsOf, assertArmDiffers, buildAlternate, fixText, repairSlides, slideRole, pickFramesByArc, slideWork, splitLeversByIdentity,
+  armsOf, assertArmDiffers, buildAlternate, fixText, locksForArm, repairSlides, slideRole, pickFramesByArc, slideWork, splitLeversByIdentity,
   type ArmBrief, type ArmField, type ContractSlide, type ResolvedContract, type SlideWork,
 } from './resolved-contract.js';
 import { persistedOverlayText } from './render-prompt.js';
@@ -49,11 +49,12 @@ export function contractView(e: Pick<Experiment, 'contract'>, brief: BriefData, 
   const recast = changed.has('character') && !!brief.character?.trim();
   const identity = recast ? 'invented-consistent' : c.identity;
   // SLA-891: a recast arm is judged on its own person. Source-arc levers its identity sheet fixes are dropped; the extremes prose was written for all of them.
+  const armLocks = arm ? locksForArm(c.hardLocks, changed) : { kept: c.hardLocks, exempt: [] };
   const sheet = identity === 'invented-consistent' ? (brief.character || c.identitySheet) : '';
   const split = recast && c.sourceArc ? splitLeversByIdentity(c.sourceArc.levers, sheet) : null;
   const sourceArc = split?.fixed.length ? { ...c.sourceArc!, levers: split.kept, lowVsHigh: '' } : c.sourceArc;
   return {
-    ...c, ...(sourceArc ? { sourceArc } : {}), ...(recast ? { recast: true } : {}), ...(split?.fixed.length ? { fixedLevers: split.fixed } : {}), medium: brief.visualStyle || c.medium, identity,
+    ...c, hardLocks: armLocks.kept, ...(armLocks.exempt.length ? { exemptLocks: armLocks.exempt.map(l => l.text) } : {}), ...(sourceArc ? { sourceArc } : {}), ...(recast ? { recast: true } : {}), ...(split?.fixed.length ? { fixedLevers: split.fixed } : {}), medium: brief.visualStyle || c.medium, identity,
     identitySheet: identity === 'invented-consistent' ? (brief.character || c.identitySheet) : '',
     keepSourceImage: c.keepSourceImage && !recast && !changed.has('scene') && !changed.has('visualStyle'),
     slides, hook: slides[0]?.overlayText ?? '',
