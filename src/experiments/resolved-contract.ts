@@ -63,6 +63,8 @@ export interface ResolvedContract {
   /** SLA-891: source-arc levers the recast arm's identity sheet fixes (hair for a buzz cut); they are not asked to change on that arm. */
   fixedLevers?: string[];
   hardLocks: TaggedLock[];
+  /** SLA-917: set on an arm's own view. User locks that describe the alternate's change and do not apply to this arm; never stored on the experiment contract. */
+  exemptLocks?: string[];
   keptSourceDefaults: string[];
   droppedSourceDefaults: Array<{ default: string; reason: string }>;
   droppedLocks: Array<{ lock: string; origin: LockOrigin; reason: string }>;
@@ -105,6 +107,29 @@ const uniq = <T>(xs: T[], key: (x: T) => string) => { const seen = new Set<strin
 export function tagLocks(lockedConstraints: readonly string[], workspaceLocks: readonly string[]): TaggedLock[] {
   const ws = new Set(workspaceLocks.map(norm));
   return uniq(lockedConstraints.map(t => t.trim()).filter(Boolean).map(text => ({ text, origin: (ws.has(norm(text)) ? 'workspace' : 'user') as LockOrigin })), l => norm(l.text));
+}
+
+/** SLA-917: a user lock that describes an alternate's change ("only the person is replaced", "every alternate is...", "the new setting")
+ *  speaks about alternates, not about the baseline. `variable` is the arm variable it constrains, when the text names one. */
+export function lockScope(text: string): { alternateOnly: boolean; variable?: ArmField } {
+  const delta = /\bonly the [a-z ]{1,30}? (is|are) (replaced|changed|swapped)\b|\bthe new (person|character|face|setting|scene|style|medium)\b/i.test(text);
+  const names = /\balternates?\b/i.test(text) && !/\bbaseline\b/i.test(text);
+  const variable: ArmField | undefined = /\b(person|people|character|face|man|woman|body|hair)\b/i.test(text) ? 'character'
+    : /\b(setting|scene|room|background|location|props?)\b/i.test(text) ? 'scene'
+    : /\b(style|medium)\b/i.test(text) ? 'visualStyle' : undefined;
+  return { alternateOnly: delta || names, ...(variable ? { variable } : {}) };
+}
+
+/** SLA-917: split a contract's locks for one arm. Workspace locks bind every arm. The baseline (no changed variables) is not judged on
+ *  a lock that describes an alternate's change, and an alternate is not judged on one about a variable it leaves alone. */
+export function locksForArm(locks: readonly TaggedLock[], changed: ReadonlySet<string>): { kept: TaggedLock[]; exempt: TaggedLock[] } {
+  const kept: TaggedLock[] = [], exempt: TaggedLock[] = [];
+  for (const l of locks) {
+    const sc = l.origin === 'user' ? lockScope(l.text) : { alternateOnly: false, variable: undefined };
+    const exemptHere = sc.alternateOnly && (changed.size === 0 || (!!sc.variable && !changed.has(sc.variable)));
+    (exemptHere ? exempt : kept).push(l);
+  }
+  return { kept, exempt };
 }
 
 // ---- the model's answer -------------------------------------------------------
@@ -653,6 +678,13 @@ export function feedbackLine(feedback: string): string {
     : '';
 }
 
+/** SLA-917: a QA note citing a lock this arm is exempt from would tell the renderer to undo the slide's own contract (keep identical vs replace the person). */
+export function withoutExemptLocks(fix: string, exempt: readonly string[] | undefined): string {
+  if (!fix || !exempt?.length) return fix;
+  const ex = new Set(exempt.map(norm));
+  return fix.split(' | ').filter(part => { const m = /^violates "(.*?)": /s.exec(part); return !(m && ex.has(norm(m[1]!))); }).join(' | ');
+}
+
 /** `labelRule` is the source-label instruction (render-prompt.labelRenderInstruction); it is passed in because that module cannot be imported from here. */
 export function compileSlidePrompt(c: ResolvedContract, index: number, role: SlideRole, referenceUse: ReferenceUse, fix = '', feedback = '', labelRule = '', edit: BaselineEdit = { character: false, scene: true }): string {
   const s = c.slides[index];
@@ -660,7 +692,8 @@ export function compileSlidePrompt(c: ResolvedContract, index: number, role: Sli
   if (c.morph && role !== 'edit') return compileMorphPrompt(c, index, role, referenceUse, fix, feedback);
   const text = textLine(s.overlayText);
   const arc = arcLine(c, s);
-  const fixLine = [feedbackLine(feedback), fix ? `FIX FROM QA: ${fix}` : ''].filter(Boolean).join('\n');
+  const qaFix = withoutExemptLocks(fix, c.exemptLocks);
+  const fixLine = [feedbackLine(feedback), qaFix ? `FIX FROM QA: ${qaFix}` : ''].filter(Boolean).join('\n');
   if (role === 'edit') return [
     'Edit the attached image. Keep the photograph itself identical: same person, face, hair, makeup, jewelry, hands, clothing INCLUDING any print or graphic on clothing, objects and background. Do not re-shoot, reframe or restyle.',
     'Remove only caption text that was overlaid on top of the photo (if any). Do not remove text or graphics that belong to the scene (clothing prints, labels, signs).',
@@ -827,6 +860,8 @@ export function qaVerdict(c: ResolvedContract, q: QaAnswer, opts: { slides?: num
   const warnings: string[] = [];
   const add = (k: string | number, m: string) => { (failures[String(k)] ??= []).push(m); };
   const judged = opts.slides ? new Set(opts.slides) : null;
+  const exempt = new Set((c.exemptLocks ?? []).map(norm));
+  const skippedLocks = new Set<string>();
   q.slides.forEach((s, k) => {
     const i = s.index ?? k;
     if (!c.slides[i] || (judged && !judged.has(i))) return;
@@ -834,7 +869,11 @@ export function qaVerdict(c: ResolvedContract, q: QaAnswer, opts: { slides?: num
     if (!s.sceneMatches) add(i, 'the scene does not match the contract');
     if (!s.mediumMatches) add(i, `the medium must be ${c.medium}`);
     if (opts.sceneEdit && s.settingChanged !== true) add(i, 'the setting, props and action must differ from the baseline slide');
-    for (const l of s.lockResults) if (!l.pass) add(i, `violates "${l.lock}": ${l.note}`);
+    for (const l of s.lockResults) {
+      if (l.pass) continue;
+      if (exempt.has(norm(l.lock))) { skippedLocks.add(l.lock); continue; }
+      add(i, `violates "${l.lock}": ${l.note}`);
+    }
     if (c.morph && i > 0) {
       if (s.samePerson === false) add(i, 'this is not the same person as slide 1; keep slide 1\'s person and change only the listed attributes');
       const answered = new Map((s.morphChecks ?? []).map(m => [norm(m.check), m] as const));
@@ -854,6 +893,7 @@ export function qaVerdict(c: ResolvedContract, q: QaAnswer, opts: { slides?: num
     const want = c.slides[i]!.arcLevel;
     if (want !== 'none' && s.stateLevel !== want && !c.keepSourceImage) add(i, `the visible state reads as ${s.stateLevel}, it must read as ${want} on "${c.arcAxis}"`);
   });
+  for (const l of skippedLocks) warnings.push(`not judged on this arm: "${l}" describes the alternate's change`);
   if ((c.identity === 'invented-consistent' || opts.sceneEdit) && !q.deck.identityConsistent) add('deck', `identity drifts between slides: ${q.deck.notes}`);
   if (c.arcAxis && !q.deck.arcVisibleWithoutText) {
     if (c.keepSourceImage) warnings.push(`The source photos do not show the progression "${c.arcAxis}" on their own: ${q.deck.notes}`);
