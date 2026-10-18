@@ -3,9 +3,10 @@
 // ("short ramus ❌") says which feature and verdict each slot needs, and the
 // library says which faces satisfy it.
 import { z } from 'zod/v4';
+import { MAX_STORY_SLIDES } from '../slide-count.js';
 import { featureFromText, parseOverlayVerdict, type Feature } from './landmarks.js';
 import {
-  CompositeError, CompositePlan, MAX_COMPOSITE_SLIDES, MIN_COMPOSITE_SLIDES, assertValidCompositePlan, faceSlide, selectFaces,
+  CompositeError, CompositePlan, MIN_COMPOSITE_SLIDES, assertValidCompositePlan, faceSlide, selectFaces,
   type CompositePlanT, type FaceRecord, type FaceSlot, type ScoreCardSlideT,
 } from './plan.js';
 
@@ -69,11 +70,18 @@ export interface BuildDeckOptions {
   seed: string;
 }
 
-export interface BuiltDeck { plan: CompositePlanT; feature: Feature | null; faceIds: string[] }
+export interface BuiltDeck { plan: CompositePlanT; feature: Feature | null; faceIds: string[]; slides: DeckStampSlide[] }
 
-/** Deck size: the source's verdict slots (+ a closing card), kept inside the 7..11 a recreated deck is held to. */
+/** One face slide as stamped on the video, so a reader can audit the deck without re-deriving the plan. */
+export interface DeckStampSlide { index: number; faceId: string; badge: 'pos' | 'neg'; label: string }
+
+/**
+ * Deck size: the source's verdict slots (+ a closing card), kept inside 7..8.
+ * Every experiment clamps its source deck to MAX_STORY_SLIDES, so a larger
+ * deck would be stamped whole and then partially dropped by whatever is laid over it.
+ */
 export function deckSize(pattern: AnnotationPattern): number {
-  return Math.min(MAX_COMPOSITE_SLIDES, Math.max(MIN_COMPOSITE_SLIDES, pattern.slots.length + (pattern.scoreCard ? 1 : 0)));
+  return Math.min(MAX_STORY_SLIDES, Math.max(MIN_COMPOSITE_SLIDES, pattern.slots.length + (pattern.scoreCard ? 1 : 0)));
 }
 
 export function buildCompositePlan(pattern: AnnotationPattern, library: readonly FaceRecord[], o: BuildDeckOptions): BuiltDeck {
@@ -101,7 +109,8 @@ export function buildCompositePlan(pattern: AnnotationPattern, library: readonly
   };
   const plan = CompositePlan.parse({ renderKind: 'composite', slides: [...picked.map(p => faceSlide(p.slot, p.face)), scoreCard] });
   assertValidCompositePlan(plan, new Map(library.map(f => [f.id, f])));
-  return { plan, feature: override ?? (new Set(base.map(b => b.feature)).size === 1 ? base[0]!.feature : null), faceIds: picked.map(p => p.face.id) };
+  return { plan, feature: override ?? (new Set(base.map(b => b.feature)).size === 1 ? base[0]!.feature : null), faceIds: picked.map(p => p.face.id),
+    slides: plan.slides.flatMap((s, index): DeckStampSlide[] => s.type === 'face' ? [{ index, faceId: s.faceId, badge: s.badge, label: s.label }] : []) };
 }
 
 /**

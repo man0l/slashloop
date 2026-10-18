@@ -43,13 +43,21 @@ export function deckFingerprint(videoId: string, req: DeckRequest): string {
   return createHash('sha256').update(JSON.stringify(canon)).digest('hex').slice(0, 16);
 }
 
-export interface CompositeDeckStamp { fingerprint: string; feature: string | null; faceIds: string[]; builtAt: string }
+export interface CompositeDeckStamp {
+  fingerprint: string; feature: string | null; faceIds: string[]; builtAt: string;
+  /** Per-face-slide detail; absent on decks built before it was stamped. */
+  slides?: Array<{ index: number; faceId: string; badge: 'pos' | 'neg'; label: string }>;
+}
 
 /** The deck stamped on a video's rawJson, if its current recreation is a composite deck. */
 export function compositeDeckOf(rawJson: string | null | undefined): CompositeDeckStamp | null {
   if (!rawJson) return null;
   try {
     const d = (JSON.parse(rawJson) as { compositeDeck?: Partial<CompositeDeckStamp> }).compositeDeck;
-    return d && typeof d.fingerprint === 'string' ? { fingerprint: d.fingerprint, feature: d.feature ?? null, faceIds: d.faceIds ?? [], builtAt: d.builtAt ?? '' } : null;
+    if (!d || typeof d.fingerprint !== 'string') return null;
+    const slides = Array.isArray(d.slides)
+      ? d.slides.filter(x => x && Number.isInteger(x.index) && typeof x.faceId === 'string' && (x.badge === 'pos' || x.badge === 'neg') && typeof x.label === 'string')
+      : undefined;
+    return { fingerprint: d.fingerprint, feature: d.feature ?? null, faceIds: d.faceIds ?? [], builtAt: d.builtAt ?? '', ...(slides ? { slides } : {}) };
   } catch { return null; }
 }

@@ -11,6 +11,8 @@ import { outstandingJobForVideo } from '../lib/jobs.js';
 import { readStoredBrief } from '../analysis/brief-delivery.js';
 import { readStoredScript } from '../analysis/script-delivery.js';
 import { withNextSteps, costBlock } from '../lib/next-steps.js';
+import { compositeDeckView } from '../experiments/composite/read.js';
+import { recreationKeysFromRaw } from '../lib/scrapers/tiktok-web.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export function registerVideoTools(server: McpServer) {
@@ -115,6 +117,8 @@ export function registerVideoTools(server: McpServer) {
           }
         : null;
 
+      const compositeDeck = await compositeDeckView(workspace.id, video.rawJson, recreationKeysFromRaw(video.rawJson).length);
+
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           id: video.id,
@@ -143,6 +147,7 @@ export function registerVideoTools(server: McpServer) {
           source,
           analysis: latestAnalysis,
           recreation,
+          compositeDeck,
           analysisJob,
           hooks,
           ideaCount,
