@@ -1,0 +1,82 @@
+{
+  "A_base": {
+    "key": "A_base",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The image accurately depicts all requested features, styling, and composition elements.",
+    "tries": 1,
+    "cost": 0.011908750000000001
+  },
+  "B_base": {
+    "key": "B_base",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS: The portrait aligns with all specified subject features, clothing, and studio background requirements.",
+    "tries": 1,
+    "cost": 0.01315075
+  },
+  "A_horseshoe": {
+    "key": "A_horseshoe",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The requested dark horseshoe moustache running down to the jawline was accurately added while preserving the person, pose, and background.",
+    "tries": 1,
+    "cost": 0.012229
+  },
+  "A_mustache": {
+    "key": "A_mustache",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - A neatly trimmed dark chevron moustache was accurately added while preserving the person, pose, and background.",
+    "tries": 1,
+    "cost": 0.0124255
+  },
+  "A_pencil": {
+    "key": "A_pencil",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The thin pencil moustache was accurately added while keeping the subject, pose, and background identical.",
+    "tries": 1,
+    "cost": 0.0125875
+  },
+  "B_thin": {
+    "key": "B_thin",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The requested thin, sparse, light-brown moustache was added cleanly while preserving identity, pose, and background.",
+    "tries": 1,
+    "cost": 0.0123835
+  },
+  "B_thick": {
+    "key": "B_thick",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The edit accurately adds the requested thick, dark moustache while preserving identity, pose, and background.",
+    "tries": 1,
+    "cost": 0.0129415
+  },
+  "A_stubble": {
+    "key": "A_stubble",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - Short dark stubble was accurately added to the jawline, chin, and cheeks while preserving identity, pose, and background.",
+    "tries": 1,
+    "cost": 0.01242475
+  },
+  "A_profile": {
+    "key": "A_profile",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The image accurately shows the same person turned to an exact left-facing side profile while preserving identity, clothing, and background.",
+    "tries": 1,
+    "cost": 0.01240525
+  },
+  "A_neglected": {
+    "key": "A_neglected",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The person, pose, and background remain identical while the moustache accurately reflects the requested neglected, uneven, and patchy styling.",
+    "tries": 1,
+    "cost": 0.012499
+  }
+}

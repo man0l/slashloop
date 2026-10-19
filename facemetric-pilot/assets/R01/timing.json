@@ -1,0 +1,149 @@
+{
+  "beats": [
+    {
+      "file": "R01/vo/a27eb88f4de9.mp3",
+      "hash": "a27eb88f4de9",
+      "vo": "Why do some men look better with a moustache?",
+      "seconds": 2.168163,
+      "lead": 0,
+      "trail": 0.188
+    },
+    {
+      "file": "R01/vo/087e67644e10.mp3",
+      "hash": "087e67644e10",
+      "vo": "While others with one just end up looking creepy?",
+      "seconds": 2.220408,
+      "lead": 0.032,
+      "trail": 0.209
+    },
+    {
+      "file": "R01/vo/7610bd907657.mp3",
+      "hash": "7610bd907657",
+      "vo": "A moustache sits on your upper lip, so a long lip gives it room.",
+      "seconds": 3.291429,
+      "lead": 0,
+      "trail": 0.228
+    },
+    {
+      "file": "R01/vo/4cee099aafc2.mp3",
+      "hash": "4cee099aafc2",
+      "vo": "It fills the gap between a strong nose and a strong chin.",
+      "seconds": 2.821224,
+      "lead": 0,
+      "trail": 0.16
+    },
+    {
+      "file": "R01/vo/01de428677d3.mp3",
+      "hash": "01de428677d3",
+      "vo": "Pick your shape first: a pencil leaves the lip bare.",
+      "seconds": 3.056327,
+      "lead": 0,
+      "trail": 0.284
+    },
+    {
+      "file": "R01/vo/b6c534dc2907.mp3",
+      "hash": "b6c534dc2907",
+      "vo": "A horseshoe drops past the mouth and lengthens the whole face.",
+      "seconds": 2.873469,
+      "lead": 0,
+      "trail": 0.165
+    },
+    {
+      "file": "R01/vo/1d7229d3f4fc.mp3",
+      "hash": "1d7229d3f4fc",
+      "vo": "A chevron follows the lip line and keeps everything level.",
+      "seconds": 2.690612,
+      "lead": 0,
+      "trail": 0.229
+    },
+    {
+      "file": "R01/vo/d55bb80a4260.mp3",
+      "hash": "d55bb80a4260",
+      "vo": "If your brows are thick and dark, that's a good sign.",
+      "seconds": 2.690612,
+      "lead": 0,
+      "trail": 0.216
+    },
+    {
+      "file": "R01/vo/b2278dec4c38.mp3",
+      "hash": "b2278dec4c38",
+      "vo": "A full moustache matches them and balances the face.",
+      "seconds": 3.056327,
+      "lead": 0,
+      "trail": 0.231
+    },
+    {
+      "file": "R01/vo/87370b204390.mp3",
+      "hash": "87370b204390",
+      "vo": "It looks deliberate when it's slightly wider than your mouth.",
+      "seconds": 2.742857,
+      "lead": 0,
+      "trail": 0.218
+    },
+    {
+      "file": "R01/vo/b48de38d5a02.mp3",
+      "hash": "b48de38d5a02",
+      "vo": "And it pairs best with a little stubble along the jaw.",
+      "seconds": 2.586122,
+      "lead": 0,
+      "trail": 0.227
+    },
+    {
+      "file": "R01/vo/a599aad90f24.mp3",
+      "hash": "a599aad90f24",
+      "vo": "Keep it tidy: ragged edges, stray hairs and patchy regrowth look neglected.",
+      "seconds": 4.310204,
+      "lead": 0,
+      "trail": 0.191
+    },
+    {
+      "file": "R01/vo/3355e25e4576.mp3",
+      "hash": "3355e25e4576",
+      "vo": "On a short upper lip, it crowds the nose and the mouth.",
+      "seconds": 3.004082,
+      "lead": 0,
+      "trail": 0.226
+    },
+    {
+      "file": "R01/vo/d85001e5f133.mp3",
+      "hash": "d85001e5f133",
+      "vo": "Add light brows and a soft jaw, and nothing balances it.",
+      "seconds": 2.925714,
+      "lead": 0,
+      "trail": 0.197
+    },
+    {
+      "file": "R01/vo/226d54202e4d.mp3",
+      "hash": "226d54202e4d",
+      "vo": "Thick looks stuck on, and thin just looks creepy on him.",
+      "seconds": 2.951837,
+      "lead": 0,
+      "trail": 0.171
+    },
+    {
+      "file": "R01/vo/88fb22f8089f.mp3",
+      "hash": "88fb22f8089f",
+      "vo": "Because a moustache pulls the eye straight to the middle of the face.",
+      "seconds": 2.925714,
+      "lead": 0,
+      "trail": 0.187
+    },
+    {
+      "file": "R01/vo/fcf75e65539c.mp3",
+      "hash": "fcf75e65539c",
+      "vo": "So a moustache only exaggerates what is already there.",
+      "seconds": 2.690612,
+      "lead": 0,
+      "trail": 0.19
+    },
+    {
+      "file": "R01/vo/7448e0fab354.mp3",
+      "hash": "7448e0fab354",
+      "vo": "Whether it looks better or creepy comes down to the face around it.",
+      "seconds": 3.239184,
+      "lead": 0,
+      "trail": 0.269
+    }
+  ],
+  "voiceSeconds": 53.826896999999974
+}
