@@ -19,7 +19,9 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { chunked, coerceRowDates, dbDialect, rawBatch, type RawStatement } from '../store.js';
-import { isRateLimitedError, loadProducerConfig, publishJobHttp } from '../queue/producer.js';
+import {
+  DEFAULT_RATE_LIMIT_WAIT_BUDGET_MS, isRateLimitedError, loadProducerConfig, publishJobHttp,
+} from '../queue/producer.js';
 import { QueuePublisher } from '../queue/publisher.js';
 import { QUEUE_FALLBACK_STATUS, getQueueFallbackEnabled } from '../queue/transport.js';
 import { CREDIT_COSTS, refundCredits, refundCreditsBatched, type RefundItem } from './credits.js';
@@ -1701,6 +1703,9 @@ export function resetFallbackThrottleLogForTests(): void {
  * Two SLA-349 details make "the first 429" mean the same thing on both sides.
  * `reconcileFallbackRow` publishes with rateLimitWaitBudgetMs 0, so the
  * producer does not sleep out `retry-after` here — this sweep is the wait.
+ * The first row of a pass is the exception (SLA-947): it may wait out one
+ * limiter window, so a limiter kept saturated by fresh producers still lets
+ * every pass publish at least one parked row instead of starving them all.
  * And the refusal is classified through isRateLimitedError (queue/producer.ts),
  * which sees a rate limit even after QueuePublisher has rewrapped it as
  * `pg_failed`, so a limit still stops the batch instead of being counted as a
@@ -1745,7 +1750,7 @@ export async function reconcileFallbackJobs(opts?: {
   const pub = opts?.publisher ?? routedQueuePublisher();
   let reconciled = 0;
   let failed = 0;
-  for (const row of batch) {
+  for (const [index, row] of batch.entries()) {
     try {
       await pub.reconcileFallbackRow({
         id: row.id,
@@ -1758,7 +1763,7 @@ export async function reconcileFallbackJobs(opts?: {
         preAuthCredits: row.preAuthCredits,
         deadlineAt: row.deadlineAt,
         analysisId: row.analysisId,
-      });
+      }, index === 0 ? { rateLimitWaitBudgetMs: DEFAULT_RATE_LIMIT_WAIT_BUDGET_MS } : undefined);
       reconciled++;
     } catch (err) {
       if (isRateLimitedError(err)) {

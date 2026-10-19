@@ -197,22 +197,100 @@ function readChatBody(text: string): OpenRouterChatBody | null {
  * matches to the last '}', so the extreme carving above is unnecessary as long
  * as the wanted JSON is the first object. Returns null when nothing parses.
  */
-export function extractFirstJson(text: string): unknown | null {
+export function extractFirstJson(text: string, opts?: { repairTruncated?: boolean }): unknown | null {
   const fenced = text.replace(/```(?:json)?/gi, '').trim();
   const start = fenced.indexOf('{');
   if (start === -1) return null;
   const end = fenced.lastIndexOf('}');
-  if (end <= start) return null;
-  try {
-    return JSON.parse(fenced.slice(start, end + 1));
-  } catch {
-    return null;
+  if (end > start) {
+    try {
+      return JSON.parse(fenced.slice(start, end + 1));
+    } catch {
+      // Trailing prose that itself contains '}' defeats the lastIndexOf carve.
+    }
   }
+  const balanced = balancedObjectEnd(fenced, start);
+  if (balanced !== -1) {
+    try {
+      return JSON.parse(fenced.slice(start, balanced + 1));
+    } catch {
+      return null;
+    }
+  }
+  return opts?.repairTruncated ? repairTruncatedJson(fenced.slice(start)) : null;
+}
+
+/** Index of the '}' closing the object opened at `start`, string-aware; -1 if it never closes. */
+function balancedObjectEnd(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === '\\') i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** Most recent comma boundaries tried when backing off a cut-off tail. */
+const MAX_REPAIR_CUTS = 64;
+
+/**
+ * Close a JSON object that was cut off mid-stream (finish_reason=length):
+ * drop the incomplete tail at the latest comma boundary and close every open
+ * container. The result is a strict prefix of what the model wrote, so the
+ * caller's schema validation still decides whether it is usable; null when no
+ * prefix parses.
+ */
+export function repairTruncatedJson(text: string): unknown | null {
+  const stack: string[] = [];
+  const cuts: Array<{ at: number; closers: string }> = [];
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === '\\') i++;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === '{') stack.push('}');
+    else if (c === '[') stack.push(']');
+    else if (c === '}' || c === ']') stack.pop();
+    else if (c === ',') cuts.push({ at: i, closers: [...stack].reverse().join('') });
+  }
+  if (stack.length === 0 && !inString) return null;
+  const candidates: string[] = [];
+  const tail = text.replace(/[,:\s]+$/, '');
+  // A cut inside a string would keep a corrupted value ("pro" for "problem"),
+  // so only a cut at a value boundary may keep its tail.
+  if (!inString) candidates.push(tail + [...stack].reverse().join(''));
+  for (const cut of cuts.slice(-MAX_REPAIR_CUTS).reverse()) {
+    candidates.push(text.slice(0, cut.at) + cut.closers);
+  }
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // try the next shorter prefix
+    }
+  }
+  return null;
 }
 
 export interface OpenRouterVideoCallOptions {
   maxTokens?: number;
 }
+
+/** Ceiling for the one larger-budget retry after a length-truncated video analysis. */
+export const VIDEO_RETRY_MAX_TOKENS_CAP = 32_768;
 
 /**
  * How long to wait for an OpenRouter video chat completion before timing out.
@@ -249,9 +327,10 @@ export async function callOpenRouterVideo(
   model: string,
   videoUrl: string,
   options?: OpenRouterVideoCallOptions,
-): Promise<{ rawText: string; inputTokens: number; outputTokens: number; costUsd: number }> {
+): Promise<{ rawText: string; inputTokens: number; outputTokens: number; costUsd: number; finishReason: string | null; maxTokens: number }> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error('OPENROUTER_API_KEY environment variable is not set');
+  const maxTokens = options?.maxTokens ?? videoMaxTokens();
 
   const res = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
     method: 'POST',
@@ -273,7 +352,7 @@ export async function callOpenRouterVideo(
       temperature: 0.3,
       // Reasoning models burn tokens on chain-of-thought; give them room to
       // still emit the full JSON (probed: max_tokens 200 starves them).
-      max_tokens: options?.maxTokens ?? videoMaxTokens(),
+      max_tokens: maxTokens,
       response_format: { type: 'json_object' },
     }),
   });
@@ -284,7 +363,7 @@ export async function callOpenRouterVideo(
   }
 
   const data = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{ message?: { content?: string }; finish_reason?: string | null }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
     error?: { message?: string; code?: number };
   };
@@ -301,6 +380,8 @@ export async function callOpenRouterVideo(
     inputTokens: data.usage?.prompt_tokens ?? 0,
     outputTokens: data.usage?.completion_tokens ?? 0,
     costUsd: Number(data.usage?.cost ?? 0),
+    finishReason: data.choices?.[0]?.finish_reason ?? null,
+    maxTokens,
   };
 }
 

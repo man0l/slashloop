@@ -21,6 +21,7 @@ const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
 const refunds: Array<{ workspaceId: string; amount: number; refId: string }> = [];
 let jobRow: Record<string, unknown> = {};
 let runRefreshResult: Record<string, unknown> = {};
+let runRefreshThrows: Error | null = null;
 
 mock.module('../db.js', () => ({
   db: {
@@ -38,7 +39,7 @@ mock.module('../db.js', () => ({
 
 mock.module('../lib/refresh.js', () => ({
   ...realRefresh,
-  runRefresh: async () => runRefreshResult,
+  runRefresh: async () => { if (runRefreshThrows) throw runRefreshThrows; return runRefreshResult; },
   runBatchedRefresh: async () => [],
 }));
 
@@ -65,6 +66,8 @@ mock.module('../lib/media.js', () => ({
 const { processClaimedJob } = await import('./process-job.js');
 const { MAX_ATTEMPTS } = await import('../lib/jobs.js');
 
+const { withJobBudget } = await import('../lib/job-abort.js');
+
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
 
 function refreshJob(over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -84,6 +87,7 @@ beforeEach(() => {
   refunds.length = 0;
   jobRow = refreshJob();
   runRefreshResult = {};
+  runRefreshThrows = null;
 });
 
 describe('processClaimedJob — refresh refusals', () => {
@@ -116,5 +120,24 @@ describe('processClaimedJob — refresh refusals', () => {
     await processClaimedJob(refreshJob({ attempts: MAX_ATTEMPTS }) as any);
     expect(updates[0]!.data.status).toBe('failed');
     expect(refunds[0]).toMatchObject({ amount: 8 });
+  });
+});
+
+describe('processClaimedJob — job budget timer (SLA-947)', () => {
+  test('a throw after the budget timer fired leaves the row to the worker (no second failJob)', async () => {
+    runRefreshThrows = new Error('impit: Request was aborted through AbortSignal');
+    const budget = new AbortController();
+    budget.abort(new Error('job timed out after 120000ms'));
+    const res = await withJobBudget(budget.signal, Date.now(), () => processClaimedJob(refreshJob() as any));
+    expect(res.ok).toBe(false);
+    expect(updates).toHaveLength(0);
+  });
+
+  test('the same throw with the budget intact still fails the job here', async () => {
+    runRefreshThrows = new Error('impit: Request was aborted through AbortSignal');
+    const budget = new AbortController();
+    const res = await withJobBudget(budget.signal, Date.now() + 120_000, () => processClaimedJob(refreshJob() as any));
+    expect(res.ok).toBe(false);
+    expect(updates[0]!.data.status).toBe('queued');
   });
 });

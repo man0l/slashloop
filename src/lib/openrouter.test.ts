@@ -1,7 +1,7 @@
 // Unit tests for the OpenRouter adapter — pure parts (model mapping, content
 // building, error classification), no network. `bun test`.
 import { describe, expect, test } from 'bun:test';
-import { modelToOpenRouter, buildUserContent, classifyOpenRouterError, extractFirstJson } from './openrouter.js';
+import { modelToOpenRouter, buildUserContent, classifyOpenRouterError, extractFirstJson, repairTruncatedJson } from './openrouter.js';
 import { tagJobFailure, parseJobLastError } from './gemini-errors.js';
 
 describe('modelToOpenRouter', () => {
@@ -47,6 +47,43 @@ describe('extractFirstJson', () => {
 
   test('null when nothing parses', () => {
     expect(extractFirstJson('no json here')).toBeNull();
+  });
+});
+
+describe('extractFirstJson — trailing junk and truncation (SLA-947)', () => {
+  test('trailing prose containing a brace still yields the first object', () => {
+    expect(extractFirstJson('{"a":1} see {braces} for more')).toEqual({ a: 1 });
+  });
+
+  test('braces inside strings do not end the object early', () => {
+    expect(extractFirstJson('{"a":"} not the end","b":2} tail }')).toEqual({ a: '} not the end', b: 2 });
+  });
+
+  const cutOff = '{ "keyMoments": [ { "timestampSec": 0.5, "role": "hook", "note": "opens" }, { "timestampSec": 3, "role": "pro';
+
+  test('truncated JSON is null by default so other callers keep their behaviour', () => {
+    expect(extractFirstJson(cutOff)).toBeNull();
+  });
+
+  test('repairTruncated closes the open containers and drops the cut-off member', () => {
+    expect(extractFirstJson(cutOff, { repairTruncated: true })).toEqual({
+      keyMoments: [
+        { timestampSec: 0.5, role: 'hook', note: 'opens' },
+        { timestampSec: 3 },
+      ],
+    });
+  });
+
+  test('repairs a cut inside a string value, a dangling key and a trailing comma', () => {
+    expect(repairTruncatedJson('{"a":1,"b":"hel')).toEqual({ a: 1 });
+    expect(repairTruncatedJson('{"a":1,"b":2')).toEqual({ a: 1, b: 2 });
+    expect(repairTruncatedJson('{"a":1,"b":')).toEqual({ a: 1 });
+    expect(repairTruncatedJson('{"a":[1,2,')).toEqual({ a: [1, 2] });
+  });
+
+  test('already-complete or non-JSON text is not "repaired"', () => {
+    expect(repairTruncatedJson('{"a":1}')).toBeNull();
+    expect(extractFirstJson('no json here', { repairTruncated: true })).toBeNull();
   });
 });
 

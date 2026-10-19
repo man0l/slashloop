@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs';
 import { VideoAnalysisDataSchema } from './schema.js';
 import type { VideoAnalyzer, AnalysisContext, AnalysisOutput } from './types.js';
 import { loadPromptTemplate, buildUserMessage } from './gemini-native.js';
-import { callOpenRouterVideo, extractFirstJson } from '../lib/openrouter.js';
+import { callOpenRouterVideo, extractFirstJson, VIDEO_RETRY_MAX_TOKENS_CAP } from '../lib/openrouter.js';
 import { openRouterVideoConfig } from '../lib/llm.js';
 
 /** Cap for base64-inlined videos. Above this, base64 bodies get unwieldy and
@@ -62,14 +62,38 @@ export class OpenRouterVideoAnalyzer implements VideoAnalyzer {
     const template = loadPromptTemplate();
     const userText = buildUserMessage(ctx, template);
 
-    const result = await callOpenRouterVideo(template, userText, this.model, videoUrl);
+    let result = await callOpenRouterVideo(template, userText, this.model, videoUrl);
 
     // Reasoning models (qwen3.7, stepfun, glm) pad output with a thinking
     // preamble; extract the first JSON object and validate it like every
     // other backend.
-    const parsed = extractFirstJson(result.rawText);
+    let parsed = extractFirstJson(result.rawText);
+
+    // finish_reason=length means the token budget cut the JSON mid-schema.
+    // Retry once with a larger budget before settling for a repaired prefix.
+    if (!parsed && result.finishReason === 'length' && result.maxTokens < VIDEO_RETRY_MAX_TOKENS_CAP) {
+      const retryTokens = Math.min(result.maxTokens * 2, VIDEO_RETRY_MAX_TOKENS_CAP);
+      console.warn(
+        `[openrouter-video] output truncated (finish_reason=length, rawLen=${result.rawText.length}, `
+        + `maxTokens=${result.maxTokens}) — retrying once with maxTokens=${retryTokens}`,
+      );
+      result = await callOpenRouterVideo(template, userText, this.model, videoUrl, { maxTokens: retryTokens });
+      parsed = extractFirstJson(result.rawText);
+    }
+    if (!parsed && result.finishReason === 'length') {
+      parsed = extractFirstJson(result.rawText, { repairTruncated: true });
+      if (parsed) {
+        console.warn(
+          `[openrouter-video] repaired truncated JSON (finish_reason=length, rawLen=${result.rawText.length}, `
+          + `maxTokens=${result.maxTokens}) — schema validation decides if it is usable`,
+        );
+      }
+    }
     if (!parsed) {
-      throw new Error(`OpenRouter video returned unparsable output: ${result.rawText.slice(0, 140)}`);
+      throw new Error(
+        `OpenRouter video returned unparsable output (finish_reason=${result.finishReason ?? 'unknown'}, `
+        + `rawLen=${result.rawText.length}, maxTokens=${result.maxTokens}): ${result.rawText.slice(0, 140)}`,
+      );
     }
     const validated = VideoAnalysisDataSchema.safeParse(parsed);
     if (!validated.success) {

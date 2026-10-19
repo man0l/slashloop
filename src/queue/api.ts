@@ -108,7 +108,13 @@ export const DEFAULT_RATE_LIMITS: RateLimits = {
   // fetch override so the kind cap is the binding one for fetch bursts
   // (a kind cap at or below the workspace cap can never fire); the per-key
   // 120 remains the outer bound and every non-fetch kind keeps its 10.
-  perKindOverrides: { fetch: 50 },
+  //
+  // `refresh` (SLA-947): a sweep that re-queues sources (and the retry lives of
+  // refreshes that timed out) bursts past 10 for one workspace, parking the
+  // tail on the fallback D1. 30 clears a realistic sweep, stays below the
+  // workspace cap of 60, and refresh spend is gated upstream by the credit
+  // pre-auth, not by this limiter.
+  perKindOverrides: { fetch: 50, refresh: 30 },
 };
 
 export interface RateLimiter {

@@ -54,6 +54,7 @@ import { claimPgJobs, connectPgQueue } from './pg-runtime.js';
 import { processClaimedJob } from './process-job.js';
 import { rescoreStaleTooFresh } from '../scoring.js';
 import { withMeterScope } from '../lib/scrapers/bandwidth.js';
+import { withJobBudget, repeatedTimeoutIsTerminal } from '../lib/job-abort.js';
 import { refundCredits } from '../lib/credits.js';
 import { initLogShipping } from './ship-logs.js';
 import { tick as experimentTick } from '../experiments/engine.js';
@@ -657,11 +658,17 @@ while (!shuttingDown) {
       const jobSnap = snapshotD1Usage();
       const budgetMs = jobTimeoutMs(job.kind);
       let timer: ReturnType<typeof setTimeout> | undefined;
+      const budget = new AbortController();
       try {
         const result = await Promise.race([
-          withMeterScope(() => processClaimedJob(job)),
+          withMeterScope(() => withJobBudget(budget.signal, t + budgetMs, () => processClaimedJob(job))),
           new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error(`job timed out after ${budgetMs}ms`)), budgetMs);
+            timer = setTimeout(() => {
+              // Cancel in-flight fetches before rejecting: the race alone
+              // leaves the scrape retrying TikTok after the row is failed.
+              budget.abort(new Error(`job timed out after ${budgetMs}ms`));
+              reject(new Error(`job timed out after ${budgetMs}ms`));
+            }, budgetMs);
           }),
         ]);
         const secs = ((Date.now() - t) / 1000).toFixed(1);
@@ -683,7 +690,11 @@ while (!shuttingDown) {
         // reclaimStuckJobs (15 min), which is how one hung scrape stalled the
         // whole queue. Fail it here so the next loop iteration can claim.
         try {
-          const { terminal } = await failJob(job.id, message);
+          const { terminal } = await failJob(
+            job.id,
+            message,
+            repeatedTimeoutIsTerminal(job, message) ? { terminal: true } : undefined,
+          );
           if (terminal && job.opId) {
             await refundCredits(
               job.workspaceId,
