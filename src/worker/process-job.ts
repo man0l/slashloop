@@ -29,6 +29,7 @@ import { isVideoCeilingError } from '../lib/scrapers/proxy-adapter.js';
 import { failureLines } from '../lib/refresh-notes.js';
 import { db } from '../db.js';
 import { CompositeError } from '../experiments/composite/plan.js';
+import { jobAborted } from '../lib/job-abort.js';
 
 export interface JobProcessOptions {
   /**
@@ -237,6 +238,9 @@ export async function processClaimedJob(
           console.warn(`[worker] refresh job ${job.id} errored after its videos landed — completing, not retrying`);
           return { ok: true };
         }
+        // The worker's budget timer already failed (or will fail) this row
+        // and owns the refund; a second failJob here double-spends a life.
+        if (jobAborted()) return { ok: false, error: message };
         const { terminal } = await failJob(job.id, message);
         console.warn(`[worker] refresh job ${job.id} failed (terminal=${terminal}): ${message}`);
         return { ok: false, error: message };
@@ -405,6 +409,8 @@ export async function processClaimedJob(
           console.warn(`[worker] refresh job ${j.id} errored after its videos landed — completing, not retrying`);
           continue;
         }
+        // Peers are not the worker's claimed row, so only the leader is left to its timer.
+        if (jobAborted() && j.id === job.id) continue;
         const { terminal } = await failJob(j.id, message);
         console.warn(`[worker] refresh job ${j.id} failed (terminal=${terminal}): ${message}`);
       }

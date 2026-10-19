@@ -185,6 +185,34 @@ describe('reconcileFallbackJobs', () => {
     });
   });
 
+  // SLA-947: with fresh producers keeping the limiter saturated, a sweep that
+  // never waits is refused on its first publish every pass and parked rows
+  // starve. Only the first row of a pass may wait out the window.
+  test('makes progress under a saturated limiter: the first row waits, later rows do not', async () => {
+    seen.rows = ['fb-1', 'fb-2', 'fb-3'];
+    const budgets: Array<number | undefined> = [];
+    const publisher = {
+      reconcileFallbackRow: async (
+        row: { id: string; opId: string | null },
+        opts?: { rateLimitWaitBudgetMs?: number },
+      ) => {
+        budgets.push(opts?.rateLimitWaitBudgetMs);
+        // Saturated limiter: refuses unless the caller is willing to wait the
+        // window out, then lets exactly the waiting publish through.
+        if (!opts?.rateLimitWaitBudgetMs) throw rateLimited();
+        seen.reconcile.push({ id: row.id, opId: row.opId, dedupe: fallbackDedupeKey(row.id) });
+        return { d1JobId: row.id, pgJobId: row.id, transport: 'pg' as const, deduped: false };
+      },
+    };
+    const out = await reconcileFallbackJobs({ take: 50, publisher: publisher as never });
+    expect(out.reconciled).toBe(1);
+    expect(out.failed).toBe(0);
+    expect(out.more).toBe(true);
+    expect(seen.reconcile.map((r) => r.id)).toEqual(['fb-1']);
+    expect(budgets[0]).toBeGreaterThan(0);
+    expect(budgets[1]).toBeUndefined();
+  });
+
   test('a non-429 error still counts as failed and does not stop the batch', async () => {
     seen.rows = ['fb-1', 'fb-2', 'fb-3'];
     const publisher = {

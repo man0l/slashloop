@@ -352,6 +352,11 @@ export class QueuePublisher {
    * WORKER_RECLAIM_INTERVAL_MS cadence, so the window is already being waited
    * out once — sleeping inside the sweep would only push the rest of the batch
    * a minute later for every row that is not rate limited at all.
+   *
+   * The one exception is the sweep's FIRST row (opts.rateLimitWaitBudgetMs):
+   * when fresh producers keep the limiter saturated, a sweep that never waits
+   * is refused every pass and parked rows starve. Waiting once for the first
+   * row guarantees at least one publish per pass.
    */
   async reconcileFallbackRow(row: {
     id: string;
@@ -364,7 +369,7 @@ export class QueuePublisher {
     preAuthCredits: number | null;
     deadlineAt: Date | null;
     analysisId?: string | null;
-  }): Promise<PublishedJobRef> {
+  }, opts?: { rateLimitWaitBudgetMs?: number }): Promise<PublishedJobRef> {
     if (!this.deps.pg) {
       throw new QueuePublishError('pg_unavailable', 'reconciliation needs a PG publisher', true);
     }
@@ -381,7 +386,7 @@ export class QueuePublisher {
           row.opId != null ? { opId: row.opId, preAuthCredits: row.preAuthCredits ?? 0 } : null,
         d1JobId: row.id,
       },
-      { rateLimitWaitBudgetMs: 0 },
+      { rateLimitWaitBudgetMs: opts?.rateLimitWaitBudgetMs ?? 0 },
     );
     await this.deps.d1.markD1ProjectionPg(row.id, accepted.pgJobId);
     return { d1JobId: row.id, pgJobId: accepted.pgJobId, transport: 'pg', deduped: accepted.deduped };

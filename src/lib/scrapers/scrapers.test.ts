@@ -7,6 +7,7 @@ import {
 import { remainingBudgetBytes, vendorRemainingBytes } from './budget.js';
 import { parseProxiesResponse } from './proxy-cheap.js';
 import { proxyAdapter, runTikTokProxyScrape } from './proxy-adapter.js';
+import { withJobBudget } from '../job-abort.js';
 import { IMPIT_FETCH_RETRIES, IMPIT_FETCH_TIMEOUT_MS, fetchThrough, isRetryableFetch, jsonFromBody, resetImpersonatedClient } from './impersonate-http.js';
 import { clearLookupCaches } from './tiktok-web.js';
 import type { TikTokHttp } from './tiktok-web.js';
@@ -359,6 +360,40 @@ describe('tiktok-web helpers', () => {
       expect(d).toBeGreaterThanOrEqual(400 * (i + 1));
       expect(d).toBeLessThan(400 * (i + 1) + 400);
     }
+  });
+
+  test('job-level abort cancels an in-flight fetch and stops the retry loop (SLA-947)', async () => {
+    let calls = 0;
+    let sawSignal: AbortSignal | undefined;
+    const hanging = {
+      fetch: (_url: string, init?: { signal?: AbortSignal }) => {
+        calls++;
+        sawSignal = init?.signal;
+        return new Promise<Response>(() => {});
+      },
+    };
+    const job = new AbortController();
+    const started = Date.now();
+    const pending = withJobBudget(job.signal, Date.now() + 120_000, () =>
+      fetchThrough(hanging as never, 'https://www.tiktok.com/x', {}, async () => {}));
+    setTimeout(() => job.abort(new Error('job timed out')), 20);
+    await expect(pending).rejects.toThrow(/cancelled: job budget exhausted/);
+    expect(Date.now() - started).toBeLessThan(IMPIT_FETCH_TIMEOUT_MS / 2);
+    expect(calls).toBe(1);
+    // The job signal is handed to the client so a real socket is torn down too.
+    job.abort();
+    expect(sawSignal?.aborted).toBe(true);
+  });
+
+  test('fetchThrough skips a retry that cannot fit in the remaining job budget (SLA-947)', async () => {
+    let calls = 0;
+    const flaky = { fetch: async () => { calls++; throw new Error('UnexpectedEof'); } };
+    const job = new AbortController();
+    await expect(
+      withJobBudget(job.signal, Date.now() + IMPIT_FETCH_TIMEOUT_MS - 1, () =>
+        fetchThrough(flaky as never, 'https://www.tiktok.com/x', {}, async () => {})),
+    ).rejects.toThrow('UnexpectedEof');
+    expect(calls).toBe(1);
   });
 
   test('fetchThrough gives up after the retry budget and does not retry a non-transient error', async () => {

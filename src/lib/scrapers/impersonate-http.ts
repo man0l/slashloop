@@ -10,6 +10,7 @@
 // the native binary.
 // ---------------------------------------------------------------------------
 
+import { currentJobSignal, jobBudgetRemainingMs } from '../job-abort.js';
 import { meterBytes } from './bandwidth.js';
 import { proxyConfig } from './proxy-http.js';
 import { signTikTokUrl } from './sign.js';
@@ -89,12 +90,15 @@ function retryDelayMs(retry: number): number {
   return 400 * retry + Math.floor(Math.random() * 400);
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string, jobSignal?: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
+    const onJobAbort = () => reject(new Error(`${label} cancelled: job budget exhausted`));
     const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    jobSignal?.addEventListener('abort', onJobAbort, { once: true });
+    const done = () => { clearTimeout(timer); jobSignal?.removeEventListener('abort', onJobAbort); };
     promise.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); },
+      (v) => { done(); resolve(v); },
+      (e) => { done(); reject(e); },
     );
   });
 }
@@ -106,22 +110,32 @@ export async function fetchThrough(
   headers: Record<string, string>,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise(r => setTimeout(r, ms)),
 ): Promise<Response> {
+  const jobSignal = currentJobSignal();
   let last: unknown;
   for (let attempt = 0; attempt <= IMPIT_FETCH_RETRIES; attempt++) {
+    if (jobSignal?.aborted) throw new Error('[proxy:impit] fetch cancelled: job budget exhausted');
     try {
-      const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+      const timeoutSignal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
         ? AbortSignal.timeout(IMPIT_FETCH_TIMEOUT_MS)
         : undefined;
+      const signal = jobSignal && timeoutSignal && typeof AbortSignal.any === 'function'
+        ? AbortSignal.any([timeoutSignal, jobSignal])
+        : (timeoutSignal ?? jobSignal);
       return await withTimeout(
         client.fetch(url, { headers, redirect: 'follow', ...(signal ? { signal } : {}) }),
         IMPIT_FETCH_TIMEOUT_MS,
         '[proxy:impit] fetch',
+        jobSignal,
       );
     } catch (err) {
       last = err;
-      if (!isRetryableFetch(err) || attempt === IMPIT_FETCH_RETRIES) throw err;
+      if (jobSignal?.aborted || !isRetryableFetch(err) || attempt === IMPIT_FETCH_RETRIES) throw err;
+      // A retry that cannot finish inside the job budget only buys a second
+      // timeout; fail now so the caller sees the real error, not the race.
+      const delay = retryDelayMs(attempt + 1);
+      if (jobBudgetRemainingMs() < delay + IMPIT_FETCH_TIMEOUT_MS) throw err;
       console.warn(`[proxy:impit] fetch failed, retry ${attempt + 1}/${IMPIT_FETCH_RETRIES}: ${(err as Error).message}`);
-      await sleep(retryDelayMs(attempt + 1));
+      await sleep(delay);
     }
   }
   throw last;
