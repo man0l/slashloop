@@ -119,6 +119,20 @@ export const speech = async (input: string) => {
   return Buffer.from(await res.arrayBuffer());
 };
 
+// Word timestamps for a voice clip (ElevenLabs Scribe v2 via OpenRouter, ~$0.0002 per clip).
+export const transcribeWords = async (file: string) => {
+  const fd = new FormData();
+  fd.append('model', 'elevenlabs/scribe-v2');
+  fd.append('file', new Blob([fs.readFileSync(file)], {type: 'audio/mpeg'}), path.basename(file));
+  fd.append('timestamp_granularities[]', 'word');
+  fd.append('response_format', 'verbose_json');
+  const res = await fetch(`${OR_BASE}/audio/transcriptions`, {method: 'POST', headers: {Authorization: `Bearer ${key()}`}, body: fd});
+  const text = await res.text();
+  if (!res.ok) throw new Error(`transcribe ${res.status}: ${text.slice(0, 300)}`);
+  const d = JSON.parse(text) as {words?: {word: string; start: number; end: number}[]; usage?: {cost?: number}};
+  return {words: d.words ?? [], cost: Number(d.usage?.cost ?? 0)};
+};
+
 export const pool = async <T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): Promise<R[]> => {
   const out: R[] = new Array(items.length);
   let i = 0;

@@ -7,13 +7,20 @@ import {AbsoluteFill, CalculateMetadataFunction, Sequence, staticFile, useVideoC
 import {z} from 'zod';
 import {BeatView} from './components/BeatView';
 import {stillSrc} from './components/Card';
-import {Footer} from './components/Text';
+import {Footer, type Word} from './components/Text';
 import {parseScript, type Landmarks, type Resolved, Script} from './schema';
 import {theme} from './theme';
 
 export type ReelProps = z.input<typeof Script> & {debug?: boolean; resolved?: Resolved};
 
-type Timing = {beats: {file: string; vo: string; seconds: number; lead: number; trail: number}[]};
+type Timing = {beats: {file: string; vo: string; seconds: number; lead: number; trail: number; words?: Word[]}[]};
+
+// Average of the stills' background colours: the canvas behind cards, splits and grids.
+const averageHex = (hexes: string[]) => {
+  if (!hexes.length) return theme.canvas.background;
+  const rgb = [0, 1, 2].map((c) => hexes.reduce((s, h) => s + parseInt(h.slice(1 + c * 2, 3 + c * 2), 16), 0) / hexes.length);
+  return '#' + rgb.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+};
 
 const split = (props: ReelProps) => {
   const {debug, resolved, ...raw} = props;
@@ -61,17 +68,16 @@ export const calculateMetadata: CalculateMetadataFunction<ReelProps> = async ({p
   );
   const audio = timing.beats.map((t) => t.file);
   const leads = timing.beats.map((t) => t.lead);
-  const resolved: Resolved = {beatFrames, beatStarts, audio, leads, landmarks, total};
+  // Subtitle word times relative to the beat start (the clip's silent lead is trimmed off).
+  const words = timing.beats.map((t) => (t.words ?? []).map((w) => ({...w, start: w.start - t.lead, end: w.end - t.lead})));
+  const meta = (await getJson<Record<string, {bg: string}>>(`${script.id}/stills.json`)) ?? {};
+  const bg: Record<string, string> = {_reel: averageHex(Object.values(meta).map((m) => m.bg))};
+  for (const [k, m] of Object.entries(meta)) bg[k] = m.bg;
+  const resolved: Resolved = {beatFrames, beatStarts, audio, leads, words, bg, landmarks, total};
   return {durationInFrames: total, fps, width: theme.canvas.width, height: theme.canvas.height, props: {...props, resolved}, defaultOutName: script.id};
 };
 
 const Flash: React.FC = () => <AbsoluteFill style={{background: theme.color.white}} />;
-
-const Vignette: React.FC = () => (
-  <AbsoluteFill
-    style={{background: `radial-gradient(ellipse at center, rgba(11,31,58,0) 55%, rgba(11,31,58,${theme.canvas.vignette * 4}) 100%)`, opacity: 0.5}}
-  />
-);
 
 export const Reel: React.FC<ReelProps> = (props) => {
   const {fps} = useVideoConfig();
@@ -82,8 +88,7 @@ export const Reel: React.FC<ReelProps> = (props) => {
   const sfx = theme.audio.sfx;
 
   return (
-    <AbsoluteFill style={{background: theme.canvas.background}}>
-      <Vignette />
+    <AbsoluteFill style={{background: resolved.bg._reel}}>
       <TransitionSeries>
         {script.beats.flatMap((b, i) => {
           const nodes: React.ReactNode[] = [];
@@ -105,7 +110,7 @@ export const Reel: React.FC<ReelProps> = (props) => {
           }
           nodes.push(
             <TransitionSeries.Sequence key={`b${i}`} name={`Beat ${i + 1}: ${b.caption.replace(/\*/g, '')}`} durationInFrames={beatFrames[i]}>
-              <BeatView beat={b} script={script} landmarks={landmarks} frames={beatFrames[i]} index={i} debug={debug} />
+              <BeatView beat={b} script={script} landmarks={landmarks} bg={resolved.bg} words={resolved.words[i] ?? []} frames={beatFrames[i]} index={i} debug={debug} />
             </TransitionSeries.Sequence>,
           );
           return nodes;

@@ -6,7 +6,54 @@
       "vo": "Why do some men look better with a moustache?",
       "seconds": 2.168163,
       "lead": 0,
-      "trail": 0.188
+      "trail": 0.188,
+      "words": [
+        {
+          "w": "Why",
+          "start": 0.08,
+          "end": 0.2
+        },
+        {
+          "w": "do",
+          "start": 0.22,
+          "end": 0.34
+        },
+        {
+          "w": "some",
+          "start": 0.36,
+          "end": 0.5
+        },
+        {
+          "w": "men",
+          "start": 0.54,
+          "end": 0.68
+        },
+        {
+          "w": "look",
+          "start": 0.72,
+          "end": 0.9
+        },
+        {
+          "w": "better",
+          "start": 0.94,
+          "end": 1.16
+        },
+        {
+          "w": "with",
+          "start": 1.18,
+          "end": 1.28
+        },
+        {
+          "w": "a",
+          "start": 1.3,
+          "end": 1.34
+        },
+        {
+          "w": "moustache?",
+          "start": 1.36,
+          "end": 1.88
+        }
+      ]
     },
     {
       "file": "R01/vo/087e67644e10.mp3",
@@ -14,7 +61,54 @@
       "vo": "While others with one just end up looking creepy?",
       "seconds": 2.220408,
       "lead": 0.032,
-      "trail": 0.209
+      "trail": 0.209,
+      "words": [
+        {
+          "w": "While",
+          "start": 0.08,
+          "end": 0.2
+        },
+        {
+          "w": "others",
+          "start": 0.26,
+          "end": 0.48
+        },
+        {
+          "w": "with",
+          "start": 0.52,
+          "end": 0.64
+        },
+        {
+          "w": "one",
+          "start": 0.68,
+          "end": 0.84
+        },
+        {
+          "w": "just",
+          "start": 0.88,
+          "end": 1
+        },
+        {
+          "w": "end",
+          "start": 1.04,
+          "end": 1.14
+        },
+        {
+          "w": "up",
+          "start": 1.2,
+          "end": 1.28
+        },
+        {
+          "w": "looking",
+          "start": 1.32,
+          "end": 1.5
+        },
+        {
+          "w": "creepy?",
+          "start": 1.58,
+          "end": 1.9
+        }
+      ]
     },
     {
       "file": "R01/vo/7610bd907657.mp3",
@@ -22,7 +116,79 @@
       "vo": "A moustache sits on your upper lip, so a long lip gives it room.",
       "seconds": 3.291429,
       "lead": 0,
-      "trail": 0.228
+      "trail": 0.228,
+      "words": [
+        {
+          "w": "A",
+          "start": 0.06,
+          "end": 0.1
+        },
+        {
+          "w": "moustache",
+          "start": 0.12,
+          "end": 0.6
+        },
+        {
+          "w": "sits",
+          "start": 0.64,
+          "end": 0.82
+        },
+        {
+          "w": "on",
+          "start": 0.86,
+          "end": 0.94
+        },
+        {
+          "w": "your",
+          "start": 0.98,
+          "end": 1.06
+        },
+        {
+          "w": "upper",
+          "start": 1.1,
+          "end": 1.26
+        },
+        {
+          "w": "lip,",
+          "start": 1.3,
+          "end": 1.48
+        },
+        {
+          "w": "so",
+          "start": 1.72,
+          "end": 1.8
+        },
+        {
+          "w": "a",
+          "start": 1.84,
+          "end": 1.88
+        },
+        {
+          "w": "long",
+          "start": 1.92,
+          "end": 2.1
+        },
+        {
+          "w": "lip",
+          "start": 2.14,
+          "end": 2.36
+        },
+        {
+          "w": "gives",
+          "start": 2.4,
+          "end": 2.54
+        },
+        {
+          "w": "it",
+          "start": 2.56,
+          "end": 2.66
+        },
+        {
+          "w": "room.",
+          "start": 2.72,
+          "end": 2.98
+        }
+      ]
     },
     {
       "file": "R01/vo/4cee099aafc2.mp3",
@@ -30,7 +196,69 @@
       "vo": "It fills the gap between a strong nose and a strong chin.",
       "seconds": 2.821224,
       "lead": 0,
-      "trail": 0.16
+      "trail": 0.16,
+      "words": [
+        {
+          "w": "It",
+          "start": 0.06,
+          "end": 0.14
+        },
+        {
+          "w": "fills",
+          "start": 0.18,
+          "end": 0.4
+        },
+        {
+          "w": "the",
+          "start": 0.44,
+          "end": 0.52
+        },
+        {
+          "w": "gap",
+          "start": 0.58,
+          "end": 0.76
+        },
+        {
+          "w": "between",
+          "start": 0.78,
+          "end": 1.02
+        },
+        {
+          "w": "a",
+          "start": 1.06,
+          "end": 1.1
+        },
+        {
+          "w": "strong",
+          "start": 1.16,
+          "end": 1.36
+        },
+        {
+          "w": "nose",
+          "start": 1.44,
+          "end": 1.76
+        },
+        {
+          "w": "and",
+          "start": 1.78,
+          "end": 1.84
+        },
+        {
+          "w": "a",
+          "start": 1.88,
+          "end": 1.94
+        },
+        {
+          "w": "strong",
+          "start": 2,
+          "end": 2.24
+        },
+        {
+          "w": "chin.",
+          "start": 2.28,
+          "end": 2.58
+        }
+      ]
     },
     {
       "file": "R01/vo/01de428677d3.mp3",
@@ -38,7 +266,59 @@
       "vo": "Pick your shape first: a pencil leaves the lip bare.",
       "seconds": 3.056327,
       "lead": 0,
-      "trail": 0.284
+      "trail": 0.284,
+      "words": [
+        {
+          "w": "Pick",
+          "start": 0.04,
+          "end": 0.18
+        },
+        {
+          "w": "your",
+          "start": 0.24,
+          "end": 0.32
+        },
+        {
+          "w": "shape",
+          "start": 0.38,
+          "end": 0.58
+        },
+        {
+          "w": "first:",
+          "start": 0.66,
+          "end": 1.02
+        },
+        {
+          "w": "a",
+          "start": 1.44,
+          "end": 1.5
+        },
+        {
+          "w": "pencil",
+          "start": 1.54,
+          "end": 1.82
+        },
+        {
+          "w": "leaves",
+          "start": 1.88,
+          "end": 2.1
+        },
+        {
+          "w": "the",
+          "start": 2.14,
+          "end": 2.2
+        },
+        {
+          "w": "lip",
+          "start": 2.22,
+          "end": 2.4
+        },
+        {
+          "w": "bare.",
+          "start": 2.46,
+          "end": 2.68
+        }
+      ]
     },
     {
       "file": "R01/vo/b6c534dc2907.mp3",
@@ -46,7 +326,64 @@
       "vo": "A horseshoe drops past the mouth and lengthens the whole face.",
       "seconds": 2.873469,
       "lead": 0,
-      "trail": 0.165
+      "trail": 0.165,
+      "words": [
+        {
+          "w": "A",
+          "start": 0.08,
+          "end": 0.1
+        },
+        {
+          "w": "horseshoe",
+          "start": 0.14,
+          "end": 0.5
+        },
+        {
+          "w": "drops",
+          "start": 0.6,
+          "end": 0.82
+        },
+        {
+          "w": "past",
+          "start": 0.86,
+          "end": 1.08
+        },
+        {
+          "w": "the",
+          "start": 1.12,
+          "end": 1.18
+        },
+        {
+          "w": "mouth",
+          "start": 1.22,
+          "end": 1.44
+        },
+        {
+          "w": "and",
+          "start": 1.48,
+          "end": 1.58
+        },
+        {
+          "w": "lengthens",
+          "start": 1.62,
+          "end": 1.98
+        },
+        {
+          "w": "the",
+          "start": 2.02,
+          "end": 2.06
+        },
+        {
+          "w": "whole",
+          "start": 2.1,
+          "end": 2.26
+        },
+        {
+          "w": "face.",
+          "start": 2.3,
+          "end": 2.6
+        }
+      ]
     },
     {
       "file": "R01/vo/1d7229d3f4fc.mp3",
@@ -54,7 +391,59 @@
       "vo": "A chevron follows the lip line and keeps everything level.",
       "seconds": 2.690612,
       "lead": 0,
-      "trail": 0.229
+      "trail": 0.229,
+      "words": [
+        {
+          "w": "A",
+          "start": 0.06,
+          "end": 0.1
+        },
+        {
+          "w": "chevron",
+          "start": 0.14,
+          "end": 0.44
+        },
+        {
+          "w": "follows",
+          "start": 0.54,
+          "end": 0.78
+        },
+        {
+          "w": "the",
+          "start": 0.82,
+          "end": 0.88
+        },
+        {
+          "w": "lip",
+          "start": 0.92,
+          "end": 1.06
+        },
+        {
+          "w": "line",
+          "start": 1.1,
+          "end": 1.32
+        },
+        {
+          "w": "and",
+          "start": 1.36,
+          "end": 1.44
+        },
+        {
+          "w": "keeps",
+          "start": 1.48,
+          "end": 1.68
+        },
+        {
+          "w": "everything",
+          "start": 1.76,
+          "end": 2.08
+        },
+        {
+          "w": "level.",
+          "start": 2.12,
+          "end": 2.36
+        }
+      ]
     },
     {
       "file": "R01/vo/d55bb80a4260.mp3",
@@ -62,7 +451,64 @@
       "vo": "If your brows are thick and dark, that's a good sign.",
       "seconds": 2.690612,
       "lead": 0,
-      "trail": 0.216
+      "trail": 0.216,
+      "words": [
+        {
+          "w": "If",
+          "start": 0.08,
+          "end": 0.16
+        },
+        {
+          "w": "your",
+          "start": 0.18,
+          "end": 0.32
+        },
+        {
+          "w": "brows",
+          "start": 0.34,
+          "end": 0.62
+        },
+        {
+          "w": "are",
+          "start": 0.64,
+          "end": 0.74
+        },
+        {
+          "w": "thick",
+          "start": 0.8,
+          "end": 1
+        },
+        {
+          "w": "and",
+          "start": 1.02,
+          "end": 1.1
+        },
+        {
+          "w": "dark,",
+          "start": 1.18,
+          "end": 1.48
+        },
+        {
+          "w": "that's",
+          "start": 1.62,
+          "end": 1.76
+        },
+        {
+          "w": "a",
+          "start": 1.82,
+          "end": 1.84
+        },
+        {
+          "w": "good",
+          "start": 1.88,
+          "end": 2.02
+        },
+        {
+          "w": "sign.",
+          "start": 2.08,
+          "end": 2.38
+        }
+      ]
     },
     {
       "file": "R01/vo/b2278dec4c38.mp3",
@@ -70,7 +516,54 @@
       "vo": "A full moustache matches them and balances the face.",
       "seconds": 3.056327,
       "lead": 0,
-      "trail": 0.231
+      "trail": 0.231,
+      "words": [
+        {
+          "w": "A",
+          "start": 0.08,
+          "end": 0.14
+        },
+        {
+          "w": "full",
+          "start": 0.16,
+          "end": 0.3
+        },
+        {
+          "w": "moustache",
+          "start": 0.34,
+          "end": 0.78
+        },
+        {
+          "w": "matches",
+          "start": 0.86,
+          "end": 1.14
+        },
+        {
+          "w": "them",
+          "start": 1.18,
+          "end": 1.32
+        },
+        {
+          "w": "and",
+          "start": 1.72,
+          "end": 1.82
+        },
+        {
+          "w": "balances",
+          "start": 1.86,
+          "end": 2.24
+        },
+        {
+          "w": "the",
+          "start": 2.28,
+          "end": 2.36
+        },
+        {
+          "w": "face.",
+          "start": 2.4,
+          "end": 2.72
+        }
+      ]
     },
     {
       "file": "R01/vo/87370b204390.mp3",
@@ -78,7 +571,59 @@
       "vo": "It looks deliberate when it's slightly wider than your mouth.",
       "seconds": 2.742857,
       "lead": 0,
-      "trail": 0.218
+      "trail": 0.218,
+      "words": [
+        {
+          "w": "It",
+          "start": 0.06,
+          "end": 0.14
+        },
+        {
+          "w": "looks",
+          "start": 0.18,
+          "end": 0.34
+        },
+        {
+          "w": "deliberate",
+          "start": 0.38,
+          "end": 0.76
+        },
+        {
+          "w": "when",
+          "start": 0.94,
+          "end": 1.02
+        },
+        {
+          "w": "it's",
+          "start": 1.06,
+          "end": 1.18
+        },
+        {
+          "w": "slightly",
+          "start": 1.22,
+          "end": 1.48
+        },
+        {
+          "w": "wider",
+          "start": 1.58,
+          "end": 1.84
+        },
+        {
+          "w": "than",
+          "start": 1.86,
+          "end": 1.98
+        },
+        {
+          "w": "your",
+          "start": 2.02,
+          "end": 2.12
+        },
+        {
+          "w": "mouth.",
+          "start": 2.16,
+          "end": 2.44
+        }
+      ]
     },
     {
       "file": "R01/vo/b48de38d5a02.mp3",
@@ -86,7 +631,64 @@
       "vo": "And it pairs best with a little stubble along the jaw.",
       "seconds": 2.586122,
       "lead": 0,
-      "trail": 0.227
+      "trail": 0.227,
+      "words": [
+        {
+          "w": "And",
+          "start": 0.06,
+          "end": 0.14
+        },
+        {
+          "w": "it",
+          "start": 0.16,
+          "end": 0.26
+        },
+        {
+          "w": "pairs",
+          "start": 0.3,
+          "end": 0.5
+        },
+        {
+          "w": "best",
+          "start": 0.6,
+          "end": 0.84
+        },
+        {
+          "w": "with",
+          "start": 0.88,
+          "end": 0.98
+        },
+        {
+          "w": "a",
+          "start": 1.02,
+          "end": 1.04
+        },
+        {
+          "w": "little",
+          "start": 1.08,
+          "end": 1.3
+        },
+        {
+          "w": "stubble",
+          "start": 1.36,
+          "end": 1.56
+        },
+        {
+          "w": "along",
+          "start": 1.62,
+          "end": 1.8
+        },
+        {
+          "w": "the",
+          "start": 1.84,
+          "end": 1.92
+        },
+        {
+          "w": "jaw.",
+          "start": 1.98,
+          "end": 2.26
+        }
+      ]
     },
     {
       "file": "R01/vo/a599aad90f24.mp3",
@@ -94,7 +696,69 @@
       "vo": "Keep it tidy: ragged edges, stray hairs and patchy regrowth look neglected.",
       "seconds": 4.310204,
       "lead": 0,
-      "trail": 0.191
+      "trail": 0.191,
+      "words": [
+        {
+          "w": "Keep",
+          "start": 0.06,
+          "end": 0.2
+        },
+        {
+          "w": "it",
+          "start": 0.24,
+          "end": 0.32
+        },
+        {
+          "w": "tidy:",
+          "start": 0.36,
+          "end": 0.74
+        },
+        {
+          "w": "ragged",
+          "start": 1.06,
+          "end": 1.28
+        },
+        {
+          "w": "edges,",
+          "start": 1.32,
+          "end": 1.62
+        },
+        {
+          "w": "stray",
+          "start": 1.9,
+          "end": 2.08
+        },
+        {
+          "w": "hairs",
+          "start": 2.16,
+          "end": 2.4
+        },
+        {
+          "w": "and",
+          "start": 2.42,
+          "end": 2.5
+        },
+        {
+          "w": "patchy",
+          "start": 2.58,
+          "end": 2.88
+        },
+        {
+          "w": "regrowth",
+          "start": 2.92,
+          "end": 3.3
+        },
+        {
+          "w": "look",
+          "start": 3.42,
+          "end": 3.56
+        },
+        {
+          "w": "neglected.",
+          "start": 3.6,
+          "end": 4.04
+        }
+      ]
     },
     {
       "file": "R01/vo/3355e25e4576.mp3",
@@ -102,7 +766,69 @@
       "vo": "On a short upper lip, it crowds the nose and the mouth.",
       "seconds": 3.004082,
       "lead": 0,
-      "trail": 0.226
+      "trail": 0.226,
+      "words": [
+        {
+          "w": "On",
+          "start": 0.06,
+          "end": 0.12
+        },
+        {
+          "w": "a",
+          "start": 0.18,
+          "end": 0.22
+        },
+        {
+          "w": "short",
+          "start": 0.26,
+          "end": 0.48
+        },
+        {
+          "w": "upper",
+          "start": 0.62,
+          "end": 0.76
+        },
+        {
+          "w": "lip,",
+          "start": 0.82,
+          "end": 1.02
+        },
+        {
+          "w": "it",
+          "start": 1.28,
+          "end": 1.36
+        },
+        {
+          "w": "crowds",
+          "start": 1.4,
+          "end": 1.66
+        },
+        {
+          "w": "the",
+          "start": 1.7,
+          "end": 1.78
+        },
+        {
+          "w": "nose",
+          "start": 1.82,
+          "end": 2.14
+        },
+        {
+          "w": "and",
+          "start": 2.2,
+          "end": 2.28
+        },
+        {
+          "w": "the",
+          "start": 2.32,
+          "end": 2.38
+        },
+        {
+          "w": "mouth.",
+          "start": 2.42,
+          "end": 2.7
+        }
+      ]
     },
     {
       "file": "R01/vo/d85001e5f133.mp3",
@@ -110,7 +836,64 @@
       "vo": "Add light brows and a soft jaw, and nothing balances it.",
       "seconds": 2.925714,
       "lead": 0,
-      "trail": 0.197
+      "trail": 0.197,
+      "words": [
+        {
+          "w": "Add",
+          "start": 0.06,
+          "end": 0.2
+        },
+        {
+          "w": "light",
+          "start": 0.24,
+          "end": 0.46
+        },
+        {
+          "w": "brows",
+          "start": 0.48,
+          "end": 0.84
+        },
+        {
+          "w": "and",
+          "start": 0.86,
+          "end": 0.94
+        },
+        {
+          "w": "a",
+          "start": 0.98,
+          "end": 1.04
+        },
+        {
+          "w": "soft",
+          "start": 1.08,
+          "end": 1.28
+        },
+        {
+          "w": "jaw,",
+          "start": 1.36,
+          "end": 1.68
+        },
+        {
+          "w": "and",
+          "start": 1.7,
+          "end": 1.8
+        },
+        {
+          "w": "nothing",
+          "start": 1.82,
+          "end": 2.04
+        },
+        {
+          "w": "balances",
+          "start": 2.12,
+          "end": 2.48
+        },
+        {
+          "w": "it.",
+          "start": 2.54,
+          "end": 2.64
+        }
+      ]
     },
     {
       "file": "R01/vo/226d54202e4d.mp3",
@@ -118,7 +901,64 @@
       "vo": "Thick looks stuck on, and thin just looks creepy on him.",
       "seconds": 2.951837,
       "lead": 0,
-      "trail": 0.171
+      "trail": 0.171,
+      "words": [
+        {
+          "w": "Thick",
+          "start": 0.08,
+          "end": 0.22
+        },
+        {
+          "w": "looks",
+          "start": 0.3,
+          "end": 0.5
+        },
+        {
+          "w": "stuck",
+          "start": 0.56,
+          "end": 0.76
+        },
+        {
+          "w": "on,",
+          "start": 0.84,
+          "end": 1
+        },
+        {
+          "w": "and",
+          "start": 1.24,
+          "end": 1.32
+        },
+        {
+          "w": "thin",
+          "start": 1.42,
+          "end": 1.66
+        },
+        {
+          "w": "just",
+          "start": 1.72,
+          "end": 1.86
+        },
+        {
+          "w": "looks",
+          "start": 1.88,
+          "end": 2.04
+        },
+        {
+          "w": "creepy",
+          "start": 2.1,
+          "end": 2.36
+        },
+        {
+          "w": "on",
+          "start": 2.4,
+          "end": 2.48
+        },
+        {
+          "w": "him.",
+          "start": 2.52,
+          "end": 2.68
+        }
+      ]
     },
     {
       "file": "R01/vo/88fb22f8089f.mp3",
@@ -126,7 +966,74 @@
       "vo": "Because a moustache pulls the eye straight to the middle of the face.",
       "seconds": 2.925714,
       "lead": 0,
-      "trail": 0.187
+      "trail": 0.187,
+      "words": [
+        {
+          "w": "Because",
+          "start": 0.04,
+          "end": 0.24
+        },
+        {
+          "w": "a",
+          "start": 0.28,
+          "end": 0.3
+        },
+        {
+          "w": "moustache",
+          "start": 0.34,
+          "end": 0.78
+        },
+        {
+          "w": "pulls",
+          "start": 0.88,
+          "end": 1.08
+        },
+        {
+          "w": "the",
+          "start": 1.12,
+          "end": 1.18
+        },
+        {
+          "w": "eye",
+          "start": 1.24,
+          "end": 1.36
+        },
+        {
+          "w": "straight",
+          "start": 1.48,
+          "end": 1.7
+        },
+        {
+          "w": "to",
+          "start": 1.72,
+          "end": 1.78
+        },
+        {
+          "w": "the",
+          "start": 1.82,
+          "end": 1.9
+        },
+        {
+          "w": "middle",
+          "start": 1.94,
+          "end": 2.1
+        },
+        {
+          "w": "of",
+          "start": 2.14,
+          "end": 2.2
+        },
+        {
+          "w": "the",
+          "start": 2.24,
+          "end": 2.32
+        },
+        {
+          "w": "face.",
+          "start": 2.36,
+          "end": 2.64
+        }
+      ]
     },
     {
       "file": "R01/vo/fcf75e65539c.mp3",
@@ -134,7 +1041,54 @@
       "vo": "So a moustache only exaggerates what is already there.",
       "seconds": 2.690612,
       "lead": 0,
-      "trail": 0.19
+      "trail": 0.19,
+      "words": [
+        {
+          "w": "So",
+          "start": 0.06,
+          "end": 0.12
+        },
+        {
+          "w": "a",
+          "start": 0.16,
+          "end": 0.2
+        },
+        {
+          "w": "moustache",
+          "start": 0.24,
+          "end": 0.72
+        },
+        {
+          "w": "only",
+          "start": 0.78,
+          "end": 0.92
+        },
+        {
+          "w": "exaggerates",
+          "start": 0.96,
+          "end": 1.54
+        },
+        {
+          "w": "what",
+          "start": 1.58,
+          "end": 1.68
+        },
+        {
+          "w": "is",
+          "start": 1.72,
+          "end": 1.8
+        },
+        {
+          "w": "already",
+          "start": 1.86,
+          "end": 2.1
+        },
+        {
+          "w": "there.",
+          "start": 2.16,
+          "end": 2.4
+        }
+      ]
     },
     {
       "file": "R01/vo/7448e0fab354.mp3",
@@ -142,7 +1096,74 @@
       "vo": "Whether it looks better or creepy comes down to the face around it.",
       "seconds": 3.239184,
       "lead": 0,
-      "trail": 0.269
+      "trail": 0.269,
+      "words": [
+        {
+          "w": "Whether",
+          "start": 0.1,
+          "end": 0.26
+        },
+        {
+          "w": "it",
+          "start": 0.3,
+          "end": 0.38
+        },
+        {
+          "w": "looks",
+          "start": 0.42,
+          "end": 0.6
+        },
+        {
+          "w": "better",
+          "start": 0.64,
+          "end": 0.86
+        },
+        {
+          "w": "or",
+          "start": 0.9,
+          "end": 1
+        },
+        {
+          "w": "creepy",
+          "start": 1.04,
+          "end": 1.34
+        },
+        {
+          "w": "comes",
+          "start": 1.66,
+          "end": 1.82
+        },
+        {
+          "w": "down",
+          "start": 1.86,
+          "end": 2.02
+        },
+        {
+          "w": "to",
+          "start": 2.06,
+          "end": 2.12
+        },
+        {
+          "w": "the",
+          "start": 2.16,
+          "end": 2.24
+        },
+        {
+          "w": "face",
+          "start": 2.28,
+          "end": 2.44
+        },
+        {
+          "w": "around",
+          "start": 2.5,
+          "end": 2.74
+        },
+        {
+          "w": "it.",
+          "start": 2.78,
+          "end": 2.9
+        }
+      ]
     }
   ],
   "voiceSeconds": 53.826896999999974

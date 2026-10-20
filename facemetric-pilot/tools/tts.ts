@@ -4,7 +4,7 @@
 import {execFileSync, spawnSync} from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import {abs, addSpend, args, loadScript, log, pool, speech, TTS_SPEED} from './lib';
+import {abs, addSpend, args, loadScript, log, pool, speech, transcribeWords, TTS_SPEED} from './lib';
 
 const PRICE_PER_CHAR = 0.00002; // OpenRouter list price for elevenlabs/eleven-flash-v2.5
 
@@ -23,11 +23,32 @@ const silence = (file: string, total: number) => {
   return {lead: +Math.max(0, lead - 0.03).toFixed(3), trail: +Math.max(0, trail - 0.05).toFixed(3)};
 };
 
+type Word = {w: string; start: number; end: number};
+
+// Timings for the script's own words (its spelling is what the subtitles show). When the transcript has the
+// same number of words, take its timings one-to-one; otherwise spread the words over the speech by length.
+const alignWords = (vo: string, heard: {word: string; start: number; end: number}[], fallbackEnd: number): Word[] => {
+  const words = vo.split(/\s+/).filter(Boolean);
+  if (heard.length === words.length) return words.map((w, i) => ({w, start: heard[i].start, end: heard[i].end}));
+  const t0 = heard[0]?.start ?? 0;
+  const t1 = heard[heard.length - 1]?.end ?? fallbackEnd;
+  const total = words.reduce((s, w) => s + w.length + 1, 0);
+  let acc = 0;
+  return words.map((w) => {
+    const start = t0 + ((t1 - t0) * acc) / total;
+    acc += w.length + 1;
+    return {w, start: +start.toFixed(3), end: +(t0 + ((t1 - t0) * acc) / total).toFixed(3)};
+  });
+};
+
 const main = async () => {
   const script = loadScript(args().pos[0] ?? 'R01');
   const dir = abs(`assets/${script.id}/vo`);
   fs.mkdirSync(dir, {recursive: true});
   let chars = 0;
+  const prev = fs.existsSync(abs(`assets/${script.id}/timing.json`))
+    ? (JSON.parse(fs.readFileSync(abs(`assets/${script.id}/timing.json`), 'utf8')).beats as {hash: string; words?: Word[]}[])
+    : [];
   const beats = await pool(script.beats, 4, async (b) => {
     const hash = crypto.createHash('sha1').update(`eleven-flash-v2.5|george|${TTS_SPEED}|${b.vo}`).digest('hex').slice(0, 12);
     const rel = `${script.id}/vo/${hash}.mp3`;
@@ -38,7 +59,13 @@ const main = async () => {
       addSpend(script.id, 'tts', 'elevenlabs/eleven-flash-v2.5', b.vo.length * PRICE_PER_CHAR, {chars: b.vo.length});
     }
     const seconds = duration(file);
-    return {file: rel, hash, vo: b.vo, seconds, ...silence(file, seconds)};
+    let words = prev.find((p) => p.hash === hash)?.words;
+    if (!words) {
+      const t = await transcribeWords(file);
+      addSpend(script.id, 'transcribe', 'elevenlabs/scribe-v2', t.cost);
+      words = alignWords(b.vo, t.words, seconds);
+    }
+    return {file: rel, hash, vo: b.vo, seconds, ...silence(file, seconds), words};
   });
   const used = new Set(beats.map((b) => `${b.hash}.mp3`));
   for (const f of fs.readdirSync(dir)) if (!used.has(f)) fs.unlinkSync(`${dir}/${f}`); // drop stale clips

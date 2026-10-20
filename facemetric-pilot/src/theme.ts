@@ -1,64 +1,84 @@
-// Design tokens for the @facemetricai look. Every component reads from here,
-// so review notes are applied once and every reel inherits them.
+// Design tokens for the @facemetricai look, measured off the reference reels in reference/.
+// Every component reads from here, so review notes are applied once and every reel inherits them.
 
 export const theme = {
   canvas: {
     width: 1080,
     height: 1920,
     fps: 30,
-    background: '#DCE8F3',
-    vignette: 0.02, // edge darkening opacity
+    // Reference background. Full-bleed beats switch to the still's own background (assets/<reel>/stills.json)
+    // so the photo has no visible edge; card / split / grid beats use the reel's average still background.
+    background: '#9CADBB',
   },
   color: {
     navy: '#0B1F3A',
     white: '#FFFFFF',
-    teal: '#1FB6A6',
-    purple: '#8B5CF6',
-    yellow: '#FACC15',
+    teal: '#10738F', // headline highlight ("BETTER", "DELIBERATE")
+    check: '#1A93B0', // check badge on label chips, active-card border
+    purple: '#7C3AED', // "CREEPY"
+    yellow: '#FACC15', // active subtitle word box
+  },
+  font: {
+    headline: 'Anton', // condensed, the reference's top text
+    ui: 'Montserrat', // subtitles and chips
+  },
+  // Top headline: navy condensed caps, highlighted words in the beat's `hl` colour, thin white outline.
+  headline: {
+    fontSize: 104,
+    lineHeight: 1.0,
+    stroke: 3,
+    top: 150,
+    maxWidth: 940,
+    underline: 8, // underline under highlighted words when beat.underline is set
+  },
+  // Voice-synced subtitles: up to 3 words at a time, the word being spoken sits on a yellow box.
+  subtitle: {
+    fontSize: 62,
+    fontWeight: 900,
+    stroke: 4,
+    centerY: 1500,
+    maxWords: 3,
+    maxChars: 18,
+    boxPadX: 10,
+    boxRadius: 10,
   },
   card: {
-    radius: 48,
-    border: 12,
+    radius: 44,
+    border: 8,
     borderColor: '#FFFFFF',
-    shadow: '0 24px 48px rgba(10,30,60,.18)',
-    singleWidth: 900,
-    splitWidth: 440,
-    splitGap: 40,
-    gridWidth: 420,
-    gridGap: 30,
+    shadow: '0 18px 40px rgba(10,30,60,.22)',
+    singleWidth: 900, // rounded-card single view (beat.card = true)
+    splitWidth: 486,
+    splitGap: 24,
+    gridWidth: 400,
+    gridGap: 22,
     imageAspect: 4 / 5, // width / height of the stills
-    activeBorder: 6,
-    dimOpacity: 0.7,
-  },
-  caption: {
-    fontWeight: 800,
-    fontSize: 64,
-    lineHeight: 1.05,
-    stroke: 10, // visible outline width (text-stroke is drawn at 2x behind the fill)
-    maxWidth: 960,
-    letterSpacing: 1.5,
-    wordSpacing: 16, // the outline eats the space between words, so widen it
-    maxLines: 3,
-    topY: 150, // top edge of a top caption
-    bottomY: 1770, // bottom edge of a bottom caption
+    activeBorder: 7,
+    dimOpacity: 0.72,
+    bleedFade: 0.1, // top fade of a full-bleed photo, fraction of its height
   },
   chip: {
-    fontWeight: 700,
-    fontSize: 40,
-    padX: 28,
-    padY: 12,
-    shadow: '0 8px 20px rgba(10,30,60,.22)',
+    fontWeight: 800,
+    fontSize: 34,
+    padX: 22,
+    padY: 9,
+    border: 4,
+    shadow: '0 6px 16px rgba(10,30,60,.18)',
     spring: {damping: 12, stiffness: 180},
     fromScale: 0.6,
+    stackGap: 14, // label chips stacked above the photo
+    checkSize: 34,
   },
   line: {
-    width: 6,
-    tick: 24,
-    halo: 4, // white under-stroke so navy lines read on dark hair / turtleneck (0 = off)
+    color: '#FFFFFF',
+    width: 5,
+    tick: 26,
+    endDot: 8, // teal dot with a white ring at measure ends
     drawFrames: 10,
-    dotSpacing: 26,
-    dotRadius: 6,
-    boxRadius: 28,
+    dotSpacing: 24,
+    dotRadius: 5,
+    bracket: 34, // corner bracket arm length for the brow "box"
+    shadow: 'drop-shadow(0 1px 2px rgba(0,0,0,.45))',
   },
   inset: {
     diameter: 420,
@@ -67,23 +87,26 @@ export const theme = {
     slideFrames: 8,
   },
   stagger: {
-    caption: 0, // frame the caption appears
-    firstAnim: 6, // frame the first anim (line) starts
-    step: 9, // extra frames for every following anim
+    firstAnim: 6, // frame the first anim (line) starts; headline + subtitles start at 0
+    step: 9,
     chipDelay: 8, // a line/box/dots chip pops this many frames after its anim starts (6 + 8 = 14)
     insetDelay: 4,
-    thenFraction: 0.45, // where in the beat a `then` step switches
+    thenFraction: 0.45,
   },
   transition: {
     pushFrames: 6,
     flashFrames: 2,
   },
+  tint: {
+    purple: 'radial-gradient(ellipse at center, rgba(124,58,237,0) 45%, rgba(124,58,237,.38) 100%)',
+    teal: 'radial-gradient(ellipse at center, rgba(16,115,143,0) 45%, rgba(16,115,143,.32) 100%)',
+  },
   footer: {
     text: 'AI-edited images',
-    fontWeight: 500,
-    fontSize: 28,
-    opacity: 0.6,
-    bottom: 34,
+    fontWeight: 700,
+    fontSize: 26,
+    opacity: 0.65,
+    bottom: 30,
   },
   audio: {
     tailSeconds: 0.3,
@@ -93,9 +116,9 @@ export const theme = {
   },
   motion: {
     maxEaseFrames: 12,
-    captionPopFrames: 5,
+    headlinePopFrames: 5,
   },
 } as const;
 
 export type Hl = 'teal' | 'purple' | 'yellow';
-export const hlColor = (hl: Hl | undefined) => (hl ? theme.color[hl] : theme.color.yellow);
+export const hlColor = (hl: Hl | undefined) => (hl ? theme.color[hl] : theme.color.teal);

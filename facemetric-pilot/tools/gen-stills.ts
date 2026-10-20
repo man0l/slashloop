@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import sharp from 'sharp';
 import path from 'node:path';
+import {stillMeta} from './still-meta';
 import {abs, addSpend, args, generateImage, IMAGE_MODELS, loadScript, log, vision} from './lib';
 
 const BASE_PROMPT = (desc: string, profile: boolean) => {
@@ -13,7 +14,7 @@ const BASE_PROMPT = (desc: string, profile: boolean) => {
   return (
     `Photorealistic studio portrait of one ${gender.trim()},${rest.join(',')}, ` +
     `${profile ? 'in exact side profile facing left' : 'front-facing, centred'}, head and shoulders, black turtleneck, ` +
-    'flat dusty blue-grey seamless background, soft even front light, 85mm, neutral expression, no text.'
+    'flat light dusty blue-grey seamless background (#9CADBB), soft even front light, 85mm, neutral expression, no text.'
   );
 };
 const EDIT_PROMPT = (edit: string, retry: boolean) =>
@@ -109,6 +110,7 @@ const main = async () => {
     todo = todo.filter((k) => !wave.includes(k));
   }
   const fails = Object.values(qa).filter((r) => r.verdict === 'FAIL');
+  await stillMeta(script.id);
   log(`done. QA FAILs: ${fails.map((f) => `${f.key} (${f.reason})`).join('; ') || 'none'}`);
 };
 

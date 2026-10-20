@@ -20,7 +20,8 @@ const common = {
 
 export const Anim = z.discriminatedUnion('t', [
   z.strictObject({t: z.literal('measure'), from: Point, to: Point, ...common}),
-  z.strictObject({t: z.literal('chip'), at: Point, text: z.string(), card: common.card, tone: common.tone}),
+  // No `at`: a label chip stacked above the photo (reference: "STRONG NOSE ✓"). With `at`: a small chip on the face.
+  z.strictObject({t: z.literal('chip'), at: Point.optional(), text: z.string(), card: common.card, tone: common.tone, check: z.boolean().optional()}),
   z.strictObject({t: z.literal('box'), from: Point, to: Point, pad: z.number().optional(), ...common}),
   z.strictObject({t: z.literal('dots'), path: z.array(Point).min(2), ...common}),
   z.strictObject({t: z.literal('circle'), at: Point, r: z.number(), ...common}),
@@ -42,23 +43,25 @@ export const Beat = z.strictObject({
   view: z.enum(['front', 'profile', 'closeup']).default('front'),
   focus: Point.optional(),
   zoom: z.number().optional(), // closeup zoom (default 2)
-  caption: z.string(),
-  captionPos: z.enum(['top', 'bottom']).default('bottom'),
-  hl: Hl.default('yellow'),
+  caption: z.string(), // the top headline; **marks** the highlighted words
+  hl: Hl.default('teal'), // teal / purple colour the highlight, yellow puts it on a yellow box
+  underline: z.boolean().optional(), // draw an underline under the highlighted words (hook beats)
+  subs: z.boolean().default(true), // voice-synced subtitles
+  card: z.boolean().optional(), // single layout: rounded card instead of the full-bleed photo
+  tint: z.enum(['purple', 'teal']).optional(), // colour vignette, e.g. purple on "creepy" beats
   vo: z.string(),
   anim: z.array(Anim).optional(),
   inset: Inset.optional(),
   active: z.number().int().optional(),
   labels: z.array(z.string()).optional(), // split chips above each card / strip labels
   row: z.string().optional(), // grid2x2 row header for the bottom row
-  arrows: z.boolean().optional(), // grid2x2: arrows from payoff labels to the cards
+  arrows: z.boolean().optional(), // grid2x2: reveal the payoff labels and coloured rings on the bottom row
   grey: z.boolean().optional(), // selective-colour still (greyscale except the masked colour)
   then: z
     .strictObject({
       at: z.number().min(0).max(1).optional(), // fraction of the beat (default theme.stagger.thenFraction)
       active: z.number().int().optional(),
       caption: z.string().optional(),
-      captionPos: z.enum(['top', 'bottom']).optional(),
       hl: Hl.optional(),
       anim: z.array(Anim).optional(),
     })
@@ -106,6 +109,8 @@ export type Resolved = {
   beatStarts: number[];
   audio: (string | null)[];
   leads: number[]; // seconds of silence trimmed off the start of each clip
+  words: {w: string; start: number; end: number}[][]; // subtitle timings per beat, seconds from the beat start
+  bg: Record<string, string>; // still key -> background colour; `_reel` = average
   landmarks: Record<string, Landmarks>;
   total: number;
 };

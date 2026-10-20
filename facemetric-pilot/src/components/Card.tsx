@@ -5,24 +5,16 @@ import {theme} from '../theme';
 
 export const stillSrc = (path: string) => staticFile(path.replace(/^assets\//, ''));
 
-// The still, framed by the card's zoom/focus, filling a w x h box.
-const Framed: React.FC<{src: string; w: number; h: number; zoom: number; fx: number; fy: number; grey?: boolean}> = ({
-  src,
-  w,
-  h,
-  zoom,
-  fx,
-  fy,
-  grey,
-}) => (
+// The still, cover-fitted and zoomed around the card's focus, filling the card box.
+const Framed: React.FC<{src: string; card: CardRect; grey?: boolean}> = ({src, card, grey}) => (
   <Img
     src={src}
     style={{
       position: 'absolute',
-      width: w * zoom,
-      height: h * zoom,
-      left: w / 2 - fx * w * zoom,
-      top: h / 2 - fy * h * zoom,
+      width: card.dw,
+      height: card.dh,
+      left: card.w / 2 - card.fx * card.dw,
+      top: card.h / 2 - card.fy * card.dh,
       objectFit: 'cover',
       filter: grey ? 'grayscale(1) contrast(1.05)' : undefined,
     }}
@@ -33,13 +25,25 @@ export const Card: React.FC<{
   card: CardRect;
   src: string;
   state?: 'active' | 'dim' | 'normal';
+  ring?: string; // coloured border (grid payoff cards)
   grey?: boolean;
   overlay?: string; // optional selective-colour layer drawn on top of a grey still
-}> = ({card, src, state = 'normal', grey, overlay}) => {
+}> = ({card, src, state = 'normal', ring, grey, overlay}) => {
   const c = theme.card;
-  // Scale the border and radius down with the card so small grid cards keep the same look.
-  const k = Math.max(0.55, card.w / c.singleWidth);
-  const border = Math.round(c.border * (card.w < 600 ? 0.75 : 1));
+  if (card.bleed) {
+    // Full-bleed photo: no chrome; the top edge fades into the canvas (which is painted the still's background colour).
+    const fade = card.y > 0 ? `linear-gradient(to bottom, transparent 0%, #000 ${c.bleedFade * 100}%)` : undefined;
+    return (
+      <div style={{position: 'absolute', left: card.x, top: card.y, width: card.w, height: card.h, overflow: 'hidden', maskImage: fade, WebkitMaskImage: fade}}>
+        <Framed src={src} card={card} grey={grey} />
+        {overlay ? <Framed src={overlay} card={card} /> : null}
+      </div>
+    );
+  }
+  // Scale chrome down with the card so small grid cards keep the same look.
+  const k = Math.max(0.5, card.w / c.singleWidth);
+  const border = Math.max(5, Math.round(c.border * k));
+  const ringColor = ring ?? (state === 'active' ? theme.color.check : null);
   return (
     <div
       style={{
@@ -49,16 +53,15 @@ export const Card: React.FC<{
         width: card.w + border * 2,
         height: card.h + border * 2,
         borderRadius: c.radius * k + border,
-        background: c.borderColor,
-        boxShadow:
-          state === 'active' ? `0 0 0 ${c.activeBorder}px ${theme.color.teal}, ${c.shadow}` : c.shadow,
+        background: ringColor ?? c.borderColor,
+        boxShadow: c.shadow,
         opacity: state === 'dim' ? c.dimOpacity : 1,
         padding: border,
       }}
     >
       <div style={{position: 'relative', width: card.w, height: card.h, borderRadius: c.radius * k, overflow: 'hidden'}}>
-        <Framed src={src} w={card.w} h={card.h} zoom={card.zoom} fx={card.fx} fy={card.fy} grey={grey} />
-        {overlay ? <Framed src={overlay} w={card.w} h={card.h} zoom={card.zoom} fx={card.fx} fy={card.fy} /> : null}
+        <Framed src={src} card={card} grey={grey} />
+        {overlay ? <Framed src={overlay} card={card} /> : null}
       </div>
     </div>
   );
@@ -70,16 +73,14 @@ export const Inset: React.FC<{card: CardRect; src: string; at: Vec; from: number
   if (frame < 0) return null;
   const t = theme.inset;
   const d = t.diameter;
-  const left = card.x + card.w - d + 40;
-  const top = card.y + card.h - d + 40;
+  const left = Math.min(theme.canvas.width - d - 30, card.x + card.w - d + 40);
+  const top = Math.min(theme.canvas.height - d - 260, card.y + card.h - d + 40);
   const slide = interpolate(frame, [0, t.slideFrames], [theme.canvas.width - left + 20, 0], {
     extrapolateRight: 'clamp',
     easing: Easing.out(Easing.cubic),
   });
-  // Zoom is relative to how the card shows the still.
-  const zoom = card.zoom * t.zoom;
-  const iw = card.w * zoom;
-  const ih = card.h * zoom;
+  const iw = card.dw * t.zoom;
+  const ih = card.dh * t.zoom;
   return (
     <div
       style={{
@@ -95,10 +96,7 @@ export const Inset: React.FC<{card: CardRect; src: string; at: Vec; from: number
         background: theme.canvas.background,
       }}
     >
-      <Img
-        src={src}
-        style={{position: 'absolute', width: iw, height: ih, left: d / 2 - at[0] * iw, top: d / 2 - at[1] * ih, objectFit: 'cover'}}
-      />
+      <Img src={src} style={{position: 'absolute', width: iw, height: ih, left: d / 2 - at[0] * iw, top: d / 2 - at[1] * ih, objectFit: 'cover'}} />
     </div>
   );
 };

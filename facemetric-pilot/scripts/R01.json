@@ -15,160 +15,63 @@
     "B_thin": "assets/R01/B_thin.jpg"
   },
   "stills": {
-    "A_base": {"base": "man, age 38, long upper lip, strong straight nose, strong square chin, thick dark eyebrows, short dark brown hair, clean shaven"},
-    "A_mustache": {"from": "A_base", "edit": "add a full, neatly trimmed dark chevron moustache that covers the upper lip and ends at the mouth corners"},
-    "A_pencil": {"from": "A_base", "edit": "add a thin dark pencil moustache, a narrow neat line just above the edge of the upper lip, the rest of the lip bare"},
-    "A_horseshoe": {"from": "A_base", "edit": "add a dark horseshoe moustache whose sides run straight down past the mouth corners to the jawline"},
-    "A_neglected": {"from": "A_mustache", "edit": "make the moustache neglected: ragged uneven edge over the lip, stray long hairs, patchy regrowth"},
-    "A_stubble": {"from": "A_mustache", "edit": "add short dark stubble along the jawline, chin and lower cheeks"},
-    "A_profile": {"from": "A_mustache", "edit": "turn the head to an exact side profile facing left, so the nose, moustache and chin are seen from the side"},
-    "B_base": {"base": "man, age 30, short upper lip, light thin fair eyebrows, soft rounded jaw, light brown hair, clean shaven"},
-    "B_thick": {"from": "B_base", "edit": "add a thick bushy dark moustache that looks too heavy for his face"},
-    "B_thin": {"from": "B_base", "edit": "add a thin, sparse, wispy light-brown moustache with see-through gaps that is still clearly visible at a glance on the upper lip"}
+    "A_base": {
+      "base": "man, age 38, long upper lip, strong straight nose, strong square chin, thick dark eyebrows, short dark brown hair, clean shaven"
+    },
+    "A_mustache": {
+      "from": "A_base",
+      "edit": "add a full, neatly trimmed dark chevron moustache that covers the upper lip and ends at the mouth corners"
+    },
+    "A_pencil": {
+      "from": "A_base",
+      "edit": "add a thin dark pencil moustache, a narrow neat line just above the edge of the upper lip, the rest of the lip bare"
+    },
+    "A_horseshoe": {
+      "from": "A_base",
+      "edit": "add a dark horseshoe moustache whose sides run straight down past the mouth corners to the jawline"
+    },
+    "A_neglected": {
+      "from": "A_mustache",
+      "edit": "make the moustache neglected: ragged uneven edge over the lip, stray long hairs, patchy regrowth"
+    },
+    "A_stubble": {
+      "from": "A_mustache",
+      "edit": "add short dark stubble along the jawline, chin and lower cheeks"
+    },
+    "A_profile": {
+      "from": "A_mustache",
+      "edit": "turn the head to an exact side profile facing left, so the nose, moustache and chin are seen from the side"
+    },
+    "B_base": {
+      "base": "man, age 30, short upper lip, light thin fair eyebrows, soft rounded jaw, light brown hair, clean shaven"
+    },
+    "B_thick": {
+      "from": "B_base",
+      "edit": "add a thick bushy dark moustache that looks too heavy for his face"
+    },
+    "B_thin": {
+      "from": "B_base",
+      "edit": "add a thin, sparse, wispy light-brown moustache with see-through gaps that is still clearly visible at a glance on the upper lip"
+    }
   },
   "beats": [
-    {
-      "img": "A_mustache", "layout": "single", "view": "closeup", "focus": "upper_lip_top",
-      "caption": "WHY DO SOME MEN LOOK **BETTER** WITH ONE?", "captionPos": "top", "hl": "teal",
-      "vo": "Why do some men look better with a moustache?"
-    },
-    {
-      "img": "B_thin", "layout": "single", "view": "closeup", "focus": "upper_lip_top",
-      "caption": "WHILE OTHERS JUST LOOK **CREEPY**?", "captionPos": "top", "hl": "purple",
-      "vo": "While others with one just end up looking creepy?",
-      "transition": "push"
-    },
-    {
-      "img": "A_mustache", "layout": "single",
-      "caption": "A MOUSTACHE SITS ON YOUR **UPPER LIP**", "captionPos": "bottom", "hl": "yellow",
-      "vo": "A moustache sits on your upper lip, so a long lip gives it room.",
-      "anim": [
-        {"t": "measure", "from": "subnasale", "to": "stomion", "chip": "LONG UPPER LIP"},
-        {"t": "chip", "at": ["cheilion_L", -0.1, 0.06], "text": "ROOM TO FILL"}
-      ]
-    },
-    {
-      "img": "A_profile", "layout": "single", "view": "profile",
-      "caption": "IT FILLS THE GAP BETWEEN A **STRONG NOSE** AND CHIN", "captionPos": "bottom", "hl": "yellow",
-      "vo": "It fills the gap between a strong nose and a strong chin.",
-      "anim": [
-        {"t": "measure", "from": ["nose_tip", -0.05, 0], "to": ["pogonion", -0.05, 0]},
-        {"t": "chip", "at": ["nose_tip", 0.02, -0.08], "text": "STRONG NOSE"},
-        {"t": "chip", "at": ["pogonion", 0.02, 0.07], "text": "STRONG CHIN"}
-      ]
-    },
-    {
-      "imgs": ["A_pencil", "A_mustache"], "layout": "split", "labels": ["PENCIL", "CHEVRON"], "active": 0,
-      "caption": "**PICK** YOUR SHAPE", "captionPos": "top", "hl": "yellow",
-      "vo": "Pick your shape first: a pencil leaves the lip bare.",
-      "transition": "flash"
-    },
-    {
-      "imgs": ["A_horseshoe", "A_mustache"], "layout": "split", "labels": ["HORSESHOE", "CHEVRON"], "active": 0,
-      "caption": "A HORSESHOE **LENGTHENS** THE FACE", "captionPos": "bottom", "hl": "purple",
-      "vo": "A horseshoe drops past the mouth and lengthens the whole face.",
-      "anim": [
-        {"t": "measure", "card": 0, "from": ["cheilion_L", -0.07, -0.05], "to": ["chin_bottom", -0.2, 0]}
-      ]
-    },
-    {
-      "imgs": ["A_horseshoe", "A_mustache"], "layout": "split", "labels": ["HORSESHOE", "CHEVRON"], "active": 1,
-      "caption": "A CHEVRON KEEPS IT **LEVEL**", "captionPos": "bottom", "hl": "teal",
-      "vo": "A chevron follows the lip line and keeps everything level.",
-      "anim": [
-        {"t": "measure", "card": 1, "from": ["cheilion_L", -0.03, -0.035], "to": ["cheilion_R", 0.03, -0.035]}
-      ]
-    },
-    {
-      "img": "A_mustache", "layout": "single",
-      "caption": "IF YOUR BROWS ARE **THICK AND DARK**", "captionPos": "bottom", "hl": "yellow",
-      "vo": "If your brows are thick and dark, that's a good sign.",
-      "anim": [
-        {"t": "box", "from": "brow_outer_L", "to": "brow_outer_R", "chip": "THICK, DARK BROWS?"}
-      ],
-      "transition": "push"
-    },
-    {
-      "img": "A_mustache", "layout": "single",
-      "caption": "A FULL ONE **MATCHES** THEM", "captionPos": "bottom", "hl": "teal",
-      "vo": "A full moustache matches them and balances the face.",
-      "anim": [
-        {"t": "measure", "from": "glabella", "to": "subnasale", "chip": "MATCH", "tone": "teal"}
-      ]
-    },
-    {
-      "img": "A_mustache", "layout": "single",
-      "caption": "IT LOOKS DELIBERATE WHEN IT'S **WIDER** THAN YOUR MOUTH", "captionPos": "bottom", "hl": "yellow",
-      "vo": "It looks deliberate when it's slightly wider than your mouth.",
-      "anim": [
-        {"t": "measure", "from": ["cheilion_L", -0.02, 0.025], "to": ["cheilion_R", 0.02, 0.025], "chip": "WIDER"}
-      ]
-    },
-    {
-      "img": "A_stubble", "layout": "single",
-      "caption": "WITH **STUBBLE** ALONG THE JAW", "captionPos": "bottom", "hl": "yellow",
-      "vo": "And it pairs best with a little stubble along the jaw.",
-      "anim": [
-        {"t": "dots", "path": ["jaw_angle_L", ["chin_bottom", -0.14, -0.04], "chin_bottom", ["chin_bottom", 0.14, -0.04], "jaw_angle_R"]}
-      ],
-      "transition": "flash"
-    },
-    {
-      "imgs": ["A_mustache", "A_neglected"], "layout": "split", "labels": ["TRIMMED", "NEGLECTED"], "active": 0,
-      "caption": "KEEP IT **TIDY**", "captionPos": "top", "hl": "teal",
-      "vo": "Keep it tidy: ragged edges, stray hairs and patchy regrowth look neglected.",
-      "then": {
-        "active": 1,
-        "anim": [
-          {"t": "chip", "card": 1, "at": ["cheilion_R", 0.0, -0.09], "text": "RAGGED EDGE"},
-          {"t": "chip", "card": 1, "at": ["cheilion_L", 0.0, 0.07], "text": "STRAY HAIRS"}
-        ]
-      }
-    },
-    {
-      "img": "B_thin", "layout": "single",
-      "caption": "A SHORT LIP MEANS IT **CROWDS** THE NOSE", "captionPos": "bottom", "hl": "purple",
-      "vo": "On a short upper lip, it crowds the nose and the mouth.",
-      "anim": [
-        {"t": "measure", "from": "subnasale", "to": "stomion", "chip": "SHORT UPPER LIP?"}
-      ]
-    },
-    {
-      "img": "B_thin", "layout": "single",
-      "caption": "WITH **LIGHT BROWS** AND A SOFT JAW", "captionPos": "bottom", "hl": "yellow",
-      "vo": "Add light brows and a soft jaw, and nothing balances it.",
-      "anim": [
-        {"t": "box", "from": "brow_outer_L", "to": "brow_outer_R", "chip": "NO MATCH", "tone": "purple"},
-        {"t": "dots", "path": ["jaw_angle_L", ["chin_bottom", -0.14, -0.04], "chin_bottom", ["chin_bottom", 0.14, -0.04], "jaw_angle_R"]}
-      ],
-      "transition": "push"
-    },
-    {
-      "imgs": ["B_thick", "B_thin"], "layout": "split", "labels": ["STUCK ON", "CREEPY"], "active": 0,
-      "caption": "THICK LOOKS **STUCK ON**, THIN LOOKS CREEPY", "captionPos": "bottom", "hl": "purple",
-      "vo": "Thick looks stuck on, and thin just looks creepy on him.",
-      "then": {"active": 1, "at": 0.4}
-    },
-    {
-      "img": "B_thin", "layout": "single",
-      "caption": "A MOUSTACHE PULLS THE EYE TO THE **MIDDLE**", "captionPos": "bottom", "hl": "yellow",
-      "vo": "Because a moustache pulls the eye straight to the middle of the face.",
-      "anim": [
-        {"t": "circle", "at": "subnasale", "r": 0.14}
-      ]
-    },
-    {
-      "grid": [["A_base", "AGE 38"], ["B_base", "AGE 30"], ["A_mustache", "LOOKS BETTER", "teal"], ["B_thin", "LOOKS CREEPY", "purple"]],
-      "layout": "grid2x2", "row": "+ MOUSTACHE",
-      "caption": "**BETTER** OR CREEPY?", "captionPos": "top", "hl": "teal",
-      "vo": "So a moustache only exaggerates what is already there.",
-      "transition": "flash"
-    },
-    {
-      "grid": [["A_base", "AGE 38"], ["B_base", "AGE 30"], ["A_mustache", "LOOKS BETTER", "teal"], ["B_thin", "LOOKS CREEPY", "purple"]],
-      "layout": "grid2x2", "row": "+ MOUSTACHE", "arrows": true,
-      "caption": "IT COMES DOWN TO THE **FACE** AROUND IT", "captionPos": "top", "hl": "yellow",
-      "vo": "Whether it looks better or creepy comes down to the face around it."
-    }
+    {"img": "A_mustache", "view": "closeup", "focus": "nose_tip", "zoom": 1.5, "caption": "WHY DO SOME MEN LOOK **BETTER WITH ONE?**", "hl": "teal", "underline": true, "vo": "Why do some men look better with a moustache?"},
+    {"img": "B_thin", "view": "closeup", "focus": "nose_tip", "zoom": 1.5, "caption": "WHILE OTHERS JUST LOOK **CREEPY?**", "hl": "purple", "underline": true, "tint": "purple", "transition": "push", "vo": "While others with one just end up looking creepy?"},
+    {"img": "A_mustache", "card": true, "caption": "THE **UPPER LIP**", "hl": "teal", "anim": [{"t": "measure", "from": "subnasale", "to": "stomion"}, {"t": "chip", "text": "LONG UPPER LIP"}, {"t": "chip", "at": ["cheilion_R", 0.17, 0.0], "text": "ROOM TO FILL"}], "vo": "A moustache sits on your upper lip, so a long lip gives it room."},
+    {"img": "A_profile", "view": "profile", "card": true, "caption": "FROM THE **SIDE**", "hl": "teal", "anim": [{"t": "dots", "path": [["nose_tip", -0.01, 0], ["subnasale", -0.01, 0], ["upper_lip_top", -0.01, 0], ["stomion", -0.01, 0], ["pogonion", -0.01, 0], ["chin_bottom", 0, 0]]}, {"t": "measure", "from": ["nose_tip", -0.05, 0], "to": ["pogonion", -0.05, 0]}, {"t": "chip", "text": "STRONG NOSE"}, {"t": "chip", "text": "STRONG CHIN"}], "vo": "It fills the gap between a strong nose and a strong chin."},
+    {"imgs": ["A_pencil", "A_mustache"], "layout": "split", "labels": ["PENCIL", "CHEVRON"], "active": 0, "caption": "PICK YOUR **SHAPE**", "hl": "teal", "transition": "flash", "vo": "Pick your shape first: a pencil leaves the lip bare."},
+    {"imgs": ["A_horseshoe", "A_mustache"], "layout": "split", "labels": ["HORSESHOE", "CHEVRON"], "active": 0, "caption": "PICK YOUR **SHAPE**", "hl": "teal", "anim": [{"t": "measure", "card": 0, "from": ["cheilion_L", -0.07, -0.05], "to": ["chin_bottom", -0.2, 0]}], "vo": "A horseshoe drops past the mouth and lengthens the whole face."},
+    {"imgs": ["A_horseshoe", "A_mustache"], "layout": "split", "labels": ["HORSESHOE", "CHEVRON"], "active": 1, "caption": "PICK YOUR **SHAPE**", "hl": "teal", "anim": [{"t": "measure", "card": 1, "from": ["cheilion_L", -0.03, -0.035], "to": ["cheilion_R", 0.03, -0.035]}], "vo": "A chevron follows the lip line and keeps everything level."},
+    {"img": "A_mustache", "caption": "THICK, DARK **BROWS?**", "hl": "teal", "anim": [{"t": "box", "from": "brow_outer_L", "to": "brow_outer_R"}], "transition": "push", "vo": "If your brows are thick and dark, that's a good sign."},
+    {"img": "A_mustache", "caption": "THICK, DARK **BROWS?**", "hl": "teal", "anim": [{"t": "box", "from": "brow_outer_L", "to": "brow_outer_R"}, {"t": "measure", "from": ["brow_outer_L", 0.02, 0.03], "to": ["cheilion_L", -0.03, -0.03], "chip": "MATCH", "tone": "teal"}], "vo": "A full moustache matches them and balances the face."},
+    {"img": "A_mustache", "caption": "LOOKS **DELIBERATE**", "hl": "teal", "anim": [{"t": "measure", "from": ["cheilion_L", -0.02, 0.0], "to": ["cheilion_R", 0.02, 0.0], "chip": "WIDER"}], "vo": "It looks deliberate when it's slightly wider than your mouth."},
+    {"img": "A_stubble", "caption": "LOOKS **DELIBERATE**", "hl": "teal", "anim": [{"t": "dots", "path": ["jaw_angle_L", ["chin_bottom", -0.14, -0.04], "chin_bottom", ["chin_bottom", 0.14, -0.04], "jaw_angle_R"]}], "transition": "flash", "vo": "And it pairs best with a little stubble along the jaw."},
+    {"imgs": ["A_mustache", "A_neglected"], "layout": "split", "labels": ["TRIMMED", "NEGLECTED"], "active": 0, "caption": "KEEP IT **TIDY**", "hl": "teal", "then": {"active": 1, "anim": [{"t": "chip", "card": 1, "at": ["cheilion_R", 0.0, -0.1], "text": "RAGGED EDGE", "tone": "purple"}, {"t": "chip", "card": 1, "at": ["cheilion_L", 0.0, 0.08], "text": "STRAY HAIRS", "tone": "purple"}]}, "vo": "Keep it tidy: ragged edges, stray hairs and patchy regrowth look neglected."},
+    {"img": "B_thin", "caption": "SHORT **UPPER LIP?**", "hl": "purple", "anim": [{"t": "measure", "from": "subnasale", "to": "stomion", "chip": "SHORT"}], "vo": "On a short upper lip, it crowds the nose and the mouth."},
+    {"img": "B_thin", "caption": "SHORT **UPPER LIP?**", "hl": "purple", "anim": [{"t": "box", "from": "brow_outer_L", "to": "brow_outer_R", "chip": "NO MATCH", "tone": "purple"}, {"t": "dots", "path": ["jaw_angle_L", ["chin_bottom", -0.14, -0.04], "chin_bottom", ["chin_bottom", 0.14, -0.04], "jaw_angle_R"]}], "transition": "push", "vo": "Add light brows and a soft jaw, and nothing balances it."},
+    {"imgs": ["B_thick", "B_thin"], "layout": "split", "labels": ["STUCK ON", "CREEPY"], "active": 0, "caption": "**STUCK ON** OR CREEPY", "hl": "purple", "then": {"active": 1, "at": 0.4}, "vo": "Thick looks stuck on, and thin just looks creepy on him."},
+    {"img": "B_thin", "caption": "TO THE **MIDDLE**", "hl": "purple", "tint": "purple", "anim": [{"t": "circle", "at": "subnasale", "r": 0.13}], "vo": "Because a moustache pulls the eye straight to the middle of the face."},
+    {"grid": [["A_base", "AGE 38"], ["B_base", "AGE 30"], ["A_mustache", "LOOKS BETTER", "teal"], ["B_thin", "LOOKS CREEPY", "purple"]], "layout": "grid2x2", "row": "+ MOUSTACHE", "caption": "**BETTER** OR CREEPY?", "hl": "teal", "transition": "flash", "vo": "So a moustache only exaggerates what is already there."},
+    {"grid": [["A_base", "AGE 38"], ["B_base", "AGE 30"], ["A_mustache", "LOOKS BETTER", "teal"], ["B_thin", "LOOKS CREEPY", "purple"]], "layout": "grid2x2", "row": "+ MOUSTACHE", "arrows": true, "caption": "**BETTER** OR CREEPY?", "hl": "teal", "vo": "Whether it looks better or creepy comes down to the face around it."}
   ]
 }

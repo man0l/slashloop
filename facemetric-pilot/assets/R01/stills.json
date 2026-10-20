@@ -1,0 +1,32 @@
+{
+  "A_base": {
+    "bg": "#6e8593"
+  },
+  "A_profile": {
+    "bg": "#6f8697"
+  },
+  "A_mustache": {
+    "bg": "#6c8391"
+  },
+  "A_pencil": {
+    "bg": "#6d8593"
+  },
+  "A_horseshoe": {
+    "bg": "#6d8492"
+  },
+  "A_neglected": {
+    "bg": "#6c8391"
+  },
+  "A_stubble": {
+    "bg": "#6c8492"
+  },
+  "B_base": {
+    "bg": "#6f8291"
+  },
+  "B_thick": {
+    "bg": "#6e8190"
+  },
+  "B_thin": {
+    "bg": "#6e8190"
+  }
+}
