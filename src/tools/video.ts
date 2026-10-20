@@ -6,7 +6,7 @@ import { z } from 'zod/v4';
 import { db } from '../db.js';
 import { workspaceIdField, resolveToolWorkspace } from './workspace-param.js';
 import { analyzeVideoForWorkspace } from '../lib/video-service.js';
-import { resolveThumbUrl, signedMediaUrl, frameUrlAt } from '../lib/media.js';
+import { resolveThumbUrl, signedMediaUrl, frameUrlAt, mediaDownloadView } from '../lib/media.js';
 import { outstandingJobForVideo } from '../lib/jobs.js';
 import { readStoredBrief } from '../analysis/brief-delivery.js';
 import { readStoredScript } from '../analysis/script-delivery.js';
@@ -19,7 +19,10 @@ export function registerVideoTools(server: McpServer) {
 
   // ---- get_video ----
   server.tool('get_video',
-    'Get full details of a video including stats, score, analysis, and available actions.',
+    'Get full details of a video including stats, score, analysis, and available actions. '
+      + 'Also the way to get the video FILE: media.url is a signed, directly downloadable MP4 link '
+      + '(no analysis needed) whenever media.status = "stored". If it is not stored, media.next says '
+      + 'what to call (fetch_videos). Do not scrape the gallery page or the source code for MP4 links.',
     { workspaceId: workspaceIdField, videoId: z.string() },
     async ({ workspaceId, videoId }) => {
       const workspace = await resolveToolWorkspace({ workspaceId });
@@ -84,12 +87,12 @@ export function registerVideoTools(server: McpServer) {
       // stored MP4. One signature, one fragment per moment (see signedMediaUrl).
       // Emitted separately from `analysis` because this is the "go shoot this"
       // surface, not the "why did it work" one.
+      const media = await signedMediaUrl(video);
       let recreation: unknown = null;
       if (latestRow) {
         const parsed = JSON.parse(latestRow.analysisJson) as { keyMoments?: unknown };
         const moments = Array.isArray(parsed.keyMoments) ? parsed.keyMoments : null;
         if (moments?.length) {
-          const media = await signedMediaUrl(video);
           recreation = {
             keyMoments: moments.map((m) => {
               const ts = typeof (m as { timestampSec?: unknown }).timestampSec === 'number'
@@ -128,6 +131,7 @@ export function registerVideoTools(server: McpServer) {
           thumbUrl: resolveThumbUrl(video),
           thumbStatus: video.thumbStatus,
           thumbnailUrl: video.thumbnailUrl,
+          media: mediaDownloadView(video, media),
           creatorHandle: video.creatorHandle,
           creatorFollowers: video.creatorFollowers,
           caption: video.caption,

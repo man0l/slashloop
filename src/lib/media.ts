@@ -750,6 +750,30 @@ export async function signedMediaUrl(
   }
 }
 
+/**
+ * The model-facing "where is the MP4" answer, shared by get_video and
+ * show_gallery. Without it the only signed link an agent could reach was a
+ * key-moment frameUrl — present only after a paid analysis — so agents that
+ * just wanted the file went scraping the gallery page or the source code.
+ * Every non-stored state names the tool that changes it.
+ */
+export function mediaDownloadView(
+  video: { mediaStatus: string; durationSec?: number | null; rawJson?: string | null; thumbnailUrl?: string | null },
+  signed: { url: string | null; reason?: string },
+): { status: string; url: string | null; expiresInSec: number | null; reason: string | null; next: string | null } {
+  if (isPhotoPost(video)) {
+    return { status: video.mediaStatus, url: null, expiresInSec: null, reason: 'photo_post', next: 'Photo post — no MP4. Use the slideshow image URLs instead.' };
+  }
+  if (signed.url) {
+    return { status: 'stored', url: signed.url, expiresInSec: signedUrlTtlSeconds(), reason: null, next: null };
+  }
+  const reason = signed.reason ?? 'media_not_stored';
+  const next = reason === 'media_not_stored' || reason === 'media_expired'
+    ? 'Call fetch_videos with this videoId (scraper spend, no analysis), then poll get_video until media.status = "stored" and download media.url.'
+    : null;
+  return { status: video.mediaStatus, url: null, expiresInSec: null, reason, next };
+}
+
 /** Seek a signed media URL to a timestamp. Fragment only — never re-signs. */
 export function frameUrlAt(signedUrl: string, timestampSec: number): string {
   return `${signedUrl}#t=${Math.max(0, timestampSec).toFixed(2)}`;
