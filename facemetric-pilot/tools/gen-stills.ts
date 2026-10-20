@@ -9,24 +9,31 @@ import path from 'node:path';
 import {stillMeta} from './still-meta';
 import {abs, addSpend, args, generateImage, IMAGE_MODELS, loadScript, log, vision} from './lib';
 
+// Wardrobe comes from the still description (spec v2: constant per face, no house turtleneck).
 const BASE_PROMPT = (desc: string, profile: boolean) => {
   const [gender, ...rest] = desc.split(',');
   return (
     `Photorealistic studio portrait of one ${gender.trim()},${rest.join(',')}, ` +
-    `${profile ? 'in exact side profile facing left' : 'front-facing, centred'}, head and shoulders, black turtleneck, ` +
+    `${profile ? 'in exact side profile facing left' : 'front-facing, centred'}, head and shoulders, ` +
     'flat light dusty blue-grey seamless background (#9CADBB), soft even front light, 85mm, neutral expression, no text.'
   );
 };
 const EDIT_PROMPT = (edit: string, retry: boolean) =>
   `Edit this photo of the same person. Change ONLY this: ${edit}. Keep identity, hair, expression, pose, lighting, ` +
-  `framing, black turtleneck and blue-grey background exactly the same. Photorealistic.` +
+  `framing, clothing and blue-grey background exactly the same. Photorealistic.` +
   (retry ? ' Make the change clearly visible at a glance while staying realistic.' : '');
+// "same man as A_base, in exact side profile facing left, ..." -> generated from A_base's image so the identity holds.
+const SAME_AS = /^same (?:man|woman|person) as (\w+),?\s*(.*)$/i;
+const VIEW_PROMPT = (rest: string) =>
+  `Photograph this same person again. ${rest}. Keep identity, face, skin, hair, clothing, lighting and the flat ` +
+  `light blue-grey seamless background exactly the same. Photorealistic studio portrait, head and shoulders, no text.`;
+const isProfile = (text: string) => /side profile/i.test(text);
 
 const QA_EDIT = (edit: string) =>
   `Image 1 is the original, image 2 is the edit. Is image 2 the same person as image 1, same pose and background, ` +
   `with only this changed: "${edit}"? Answer PASS or FAIL with one reason, on one line, e.g. "PASS - ..." or "FAIL - ...".`;
 const QA_BASE = (desc: string) =>
-  `Is this a single photorealistic studio portrait (head and shoulders, black turtleneck, flat blue-grey background, ` +
+  `Is this a single photorealistic studio portrait (head and shoulders, flat blue-grey background, ` +
   `no text, no visible defects) of: ${desc}? Answer PASS or FAIL with one reason, on one line.`;
 
 // Raw generations are kept at 2:3 (what the models return) as the reference for later edits;
@@ -68,13 +75,17 @@ const main = async () => {
       const model = plan[t];
       const tryFile = abs(`assets/${script.id}/_tries/${k}__${model.split('/')[1]}_${t}.png`);
       try {
-        const ref = 'from' in spec ? rawPath(script.id, spec.from) : undefined;
-        const prompt = 'from' in spec ? EDIT_PROMPT(spec.edit, t > 0) : BASE_PROMPT(spec.base, !!spec.profile);
+        const same = 'base' in spec ? SAME_AS.exec(spec.base) : null;
+        const refKey = 'from' in spec ? spec.from : same?.[1];
+        const ref = refKey ? rawPath(script.id, refKey) : undefined;
+        const prompt =
+          'from' in spec ? EDIT_PROMPT(spec.edit, t > 0) : same ? VIEW_PROMPT(same[2]) : BASE_PROMPT(spec.base, !!spec.profile || isProfile(spec.base));
         const img = await generateImage(model, prompt, ref);
         cost += img.cost;
         addSpend(script.id, 'image', model, img.cost, {still: k});
         fs.writeFileSync(tryFile, img.buffer);
-        const q = await vision('from' in spec ? QA_EDIT(spec.edit) : QA_BASE(spec.base), ref ? [ref, tryFile] : [tryFile]);
+        const qaPrompt = 'from' in spec ? QA_EDIT(spec.edit) : same ? QA_EDIT(same[2]) : QA_BASE(spec.base);
+        const q = await vision(qaPrompt, ref ? [ref, tryFile] : [tryFile]);
         cost += q.cost;
         addSpend(script.id, 'qa', 'vision', q.cost, {still: k});
         const verdict = /^\W*PASS/i.test(q.text) ? 'PASS' : 'FAIL';
@@ -102,7 +113,8 @@ const main = async () => {
   while (todo.length) {
     const wave = todo.filter((k) => {
       const s = specs[k];
-      return !('from' in s) || done.has(s.from);
+      const dep = 'from' in s ? s.from : SAME_AS.exec(s.base)?.[1];
+      return !dep || done.has(dep);
     });
     if (!wave.length) throw new Error(`unresolvable stills: ${todo.join(', ')}`);
     log(`wave: ${wave.join(', ')}`);

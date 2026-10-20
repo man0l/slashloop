@@ -20,7 +20,10 @@ const key = () => {
 export const loadScript = (idOrPath: string): Script => {
   const p = idOrPath.endsWith('.json') ? idOrPath : path.join(ROOT, 'scripts', `${idOrPath}.json`);
   const s = parseScript(JSON.parse(fs.readFileSync(p, 'utf8')));
-  for (const w of lintScript(s)) console.warn(`[lint ${s.id}] ${w}`);
+  for (const w of lintScript(s)) {
+    const why = Object.entries(s.lintAccept ?? {}).find(([k]) => w.startsWith(k))?.[1];
+    console.warn(`[lint ${s.id}] ${w}${why ? `  (accepted: ${why})` : ''}`);
+  }
   return s;
 };
 

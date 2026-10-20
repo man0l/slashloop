@@ -33,9 +33,14 @@ export const BeatView: React.FC<{
 }> = ({beat, script, landmarks, bg, words, frames, index, debug}) => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
-  const cards = cardsFor(beat, landmarks);
   const thenAt = beat.then ? Math.round((beat.then.at ?? theme.stagger.thenFraction) * frames) : Infinity;
   const inThen = frame >= thenAt;
+  // A `then` step can reframe a single still (close-up -> full face). A view change without a zoom resets the zoom.
+  const t = inThen ? beat.then : undefined;
+  const framed = t && (t.view || t.zoom || t.focus)
+    ? {...beat, view: t.view ?? beat.view, zoom: t.zoom ?? (t.view ? undefined : beat.zoom), focus: t.focus ?? (t.view ? undefined : beat.focus)}
+    : beat;
+  const cards = cardsFor(framed, landmarks);
   const active = inThen && beat.then?.active !== undefined ? beat.then.active : beat.active;
   const caption = inThen && beat.then?.caption ? beat.then.caption : beat.caption;
   const hl = (inThen && beat.then?.hl) || beat.hl;

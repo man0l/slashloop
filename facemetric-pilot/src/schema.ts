@@ -63,6 +63,10 @@ export const Beat = z.strictObject({
       active: z.number().int().optional(),
       caption: z.string().optional(),
       hl: Hl.optional(),
+      // Reframe mid-beat (reference hooks cut from a close-up to the full face): single layout only.
+      view: z.enum(['front', 'profile', 'closeup']).optional(),
+      zoom: z.number().optional(),
+      focus: Point.optional(),
       anim: z.array(Anim).optional(),
     })
     .optional(),
@@ -78,11 +82,13 @@ export const StillSpec = z.union([
 
 export const Script = z
   .strictObject({
-    id: z.string().regex(/^R\d\d$/),
+    id: z.string().regex(/^[RM]\d\d$/), // R = original brief reels, M = content-matrix items
     template: z.enum(['A', 'B', 'C', 'Q']),
     title: z.string().optional(),
     faces: z.record(z.string(), z.string()),
     stills: z.record(z.string(), StillSpec).optional(),
+    // Lint warnings the script accepts on purpose: warning prefix (e.g. "beat 18: vo") -> one-line reason.
+    lintAccept: z.record(z.string(), z.string()).optional(),
     beats: z.array(Beat).min(1),
   })
   .superRefine((s, ctx) => {

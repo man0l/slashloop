@@ -1,0 +1,35 @@
+{
+  "A_base": {
+    "bg": "#99acb7"
+  },
+  "A_profile": {
+    "bg": "#9caebc"
+  },
+  "A_buzz": {
+    "bg": "#9aacb9"
+  },
+  "A_fade": {
+    "bg": "#99abb9"
+  },
+  "A_crew": {
+    "bg": "#99abb8"
+  },
+  "A_grownout": {
+    "bg": "#9aadbb"
+  },
+  "A_pbuzz": {
+    "bg": "#9badbb"
+  },
+  "B_base": {
+    "bg": "#93a4b4"
+  },
+  "B_profile": {
+    "bg": "#94a6b5"
+  },
+  "B_buzz": {
+    "bg": "#91a2b2"
+  },
+  "B_crew": {
+    "bg": "#90a4b3"
+  }
+}

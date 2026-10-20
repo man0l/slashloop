@@ -40,6 +40,9 @@ export const PROFILE = {
   chin_bottom: 'lowest point of the chin',
   jaw_angle_L: 'angle of the jaw (gonion)',
   neck_point: 'deepest point where the under-chin meets the neck (cervical point)',
+  forehead_top: 'top of the forehead at the front hairline, on the skull outline',
+  vertex: 'highest point of the top of the head (skull outline, through short hair)',
+  occiput: 'back-most point of the back of the head (skull outline, through short hair)',
 };
 
 const prompt = (names: Record<string, string>) =>
@@ -60,7 +63,14 @@ const main = async () => {
     const out = img.replace(/\.(png|jpe?g)$/i, '.landmarks.json');
     if (!fs.existsSync(img)) return log(`${k}: no still yet, skipped`);
     if (fs.existsSync(out) && !flags.has('--force')) return;
-    const names = profileKeys.has(k) || /profile/i.test(k) ? PROFILE : FRONT;
+    // A still is a profile if a beat shows it as one, its key says so, or its description (or an ancestor's) does.
+    const describesProfile = (key: string, depth = 0): boolean => {
+      const sp = script.stills?.[key];
+      if (!sp || depth > 6) return false;
+      if ('base' in sp) return /side profile/i.test(sp.base);
+      return /side profile/i.test(sp.edit) || describesProfile(sp.from, depth + 1);
+    };
+    const names = profileKeys.has(k) || /profile/i.test(k) || describesProfile(k) ? PROFILE : FRONT;
     let raw: Record<string, [number, number]> | null = null;
     for (let t = 0; t < 3 && !raw; t++) {
       const r = await vision(prompt(names), [img], true);

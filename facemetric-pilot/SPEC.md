@@ -140,7 +140,7 @@ is the model for the "if you said" beat.
 | Ellipse | `{"t":"ellipse","at","rx","ry"}` | todo |
 | Paired circle close-ups | `"layout":"circles"` | todo |
 | One face split down the middle (trimmed / neglected) | `"layout":"halves"` | todo |
-| Close-up -> full face inside one beat | `then.view` | todo |
+| Close-up -> full face inside one beat | `"then":{"at":0.5,"view":"front"}` (also `then.zoom`, `then.focus`) | built |
 
 ---
 
@@ -148,7 +148,8 @@ is the model for the "if you said" beat.
 
 ```jsonc
 {
-  "id": "R01", "template": "C", "title": "optional",
+  "id": "R01" | "M01", "template": "C", "title": "optional",   // R = original brief reels, M = content-matrix items
+  "lintAccept": {"beat 18: vo": "one-line reason a warning is accepted"},
   "faces":  { "A_base": "assets/R01/A_base.jpg", ... },
   "stills": { "A_base": {"base": "man, age 38, <face>"}, "A_mustache": {"from": "A_base", "edit": "<change>"} },
   "beats": [{
@@ -163,7 +164,7 @@ is the model for the "if you said" beat.
     "anim": [ ... see 3.3 ... ],
     "inset": {"at": point, "label": "-12MM"},
     "labels": ["PENCIL", "CHEVRON"], "active": 0, "row": "+ MOUSTACHE", "arrows": true,
-    "then": {"at": 0.45, "active": 1, "caption": "...", "hl": "...", "anim": [...]},
+    "then": {"at": 0.45, "active": 1, "caption": "...", "hl": "...", "anim": [...], "view": "front", "zoom": 1.2, "focus": point},
     "transition": "cut" | "push" | "flash"
   }]
 }
@@ -179,3 +180,7 @@ Hard errors: unknown keys, unknown face keys, layout not matching img/imgs/grid.
 Warnings: headline > 4 words (hook > 9), no `**highlight**`, vo outside 6-16 words, beat count outside the template
 range, a headline used on more than 4 consecutive beats, more than 3 full-bleed beats of one still in a row without a
 zoom change, a beat > 2.5 s with no anim / `then` (needs `timing.json`, checked by `tools/tts.ts`).
+Each accepted warning needs a reason in `lintAccept`. Content-matrix items also get `out/<id>-uniqueness.md`
+(`tools/uniqueness.ts`, run by `tools/render.ts`): structural distance, headline / n-gram overlap, shared stills, and
+visible changes per minute **measured on the MP4** with the same method used on the reference reels (15 fps, 72x128
+grey, > 4% of pixels changing, events 0.3 s apart). Counting every anim in the script overstates it about 2x.

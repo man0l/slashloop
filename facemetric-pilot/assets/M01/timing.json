@@ -1,0 +1,1050 @@
+{
+  "beats": [
+    {
+      "file": "M01/vo/3508f50002c8.mp3",
+      "hash": "3508f50002c8",
+      "vo": "Why do some men look better with a buzz cut?",
+      "seconds": 2.168163,
+      "lead": 0,
+      "trail": 0.234,
+      "words": [
+        {
+          "w": "Why",
+          "start": 0.08,
+          "end": 0.2
+        },
+        {
+          "w": "do",
+          "start": 0.22,
+          "end": 0.32
+        },
+        {
+          "w": "some",
+          "start": 0.36,
+          "end": 0.5
+        },
+        {
+          "w": "men",
+          "start": 0.54,
+          "end": 0.68
+        },
+        {
+          "w": "look",
+          "start": 0.72,
+          "end": 0.9
+        },
+        {
+          "w": "better",
+          "start": 0.94,
+          "end": 1.16
+        },
+        {
+          "w": "with",
+          "start": 1.18,
+          "end": 1.28
+        },
+        {
+          "w": "a",
+          "start": 1.32,
+          "end": 1.36
+        },
+        {
+          "w": "buzz",
+          "start": 1.4,
+          "end": 1.6
+        },
+        {
+          "w": "cut?",
+          "start": 1.64,
+          "end": 1.86
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/9d4039181a40.mp3",
+      "hash": "9d4039181a40",
+      "vo": "While others on the same guard just look like an egg?",
+      "seconds": 2.403265,
+      "lead": 0.039,
+      "trail": 0.185,
+      "words": [
+        {
+          "w": "While",
+          "start": 0.1,
+          "end": 0.2
+        },
+        {
+          "w": "others",
+          "start": 0.28,
+          "end": 0.48
+        },
+        {
+          "w": "on",
+          "start": 0.5,
+          "end": 0.58
+        },
+        {
+          "w": "the",
+          "start": 0.6,
+          "end": 0.7
+        },
+        {
+          "w": "same",
+          "start": 0.76,
+          "end": 0.98
+        },
+        {
+          "w": "guard",
+          "start": 1.02,
+          "end": 1.22
+        },
+        {
+          "w": "just",
+          "start": 1.28,
+          "end": 1.42
+        },
+        {
+          "w": "look",
+          "start": 1.46,
+          "end": 1.58
+        },
+        {
+          "w": "like",
+          "start": 1.62,
+          "end": 1.74
+        },
+        {
+          "w": "an",
+          "start": 1.78,
+          "end": 1.84
+        },
+        {
+          "w": "egg?",
+          "start": 1.92,
+          "end": 2.12
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/3c4a0557a7ba.mp3",
+      "hash": "3c4a0557a7ba",
+      "vo": "No hair, so forehead and jaw do all the talking.",
+      "seconds": 2.638367,
+      "lead": 0,
+      "trail": 0.211,
+      "words": [
+        {
+          "w": "No",
+          "start": 0.06,
+          "end": 0.2
+        },
+        {
+          "w": "hair,",
+          "start": 0.24,
+          "end": 0.44
+        },
+        {
+          "w": "so",
+          "start": 0.74,
+          "end": 0.9
+        },
+        {
+          "w": "forehead",
+          "start": 0.94,
+          "end": 1.2
+        },
+        {
+          "w": "and",
+          "start": 1.22,
+          "end": 1.36
+        },
+        {
+          "w": "jaw",
+          "start": 1.4,
+          "end": 1.6
+        },
+        {
+          "w": "do",
+          "start": 1.64,
+          "end": 1.74
+        },
+        {
+          "w": "all",
+          "start": 1.76,
+          "end": 1.86
+        },
+        {
+          "w": "the",
+          "start": 1.9,
+          "end": 1.96
+        },
+        {
+          "w": "talking.",
+          "start": 2,
+          "end": 2.34
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/fd8de026dc08.mp3",
+      "hash": "fd8de026dc08",
+      "vo": "From the side, a rounded skull keeps the outline smooth.",
+      "seconds": 3.108571,
+      "lead": 0,
+      "trail": 0.214,
+      "words": [
+        {
+          "w": "From",
+          "start": 0.06,
+          "end": 0.16
+        },
+        {
+          "w": "the",
+          "start": 0.2,
+          "end": 0.28
+        },
+        {
+          "w": "side,",
+          "start": 0.32,
+          "end": 0.6
+        },
+        {
+          "w": "a",
+          "start": 0.88,
+          "end": 0.92
+        },
+        {
+          "w": "rounded",
+          "start": 0.98,
+          "end": 1.3
+        },
+        {
+          "w": "skull",
+          "start": 1.38,
+          "end": 1.62
+        },
+        {
+          "w": "keeps",
+          "start": 1.72,
+          "end": 1.88
+        },
+        {
+          "w": "the",
+          "start": 1.92,
+          "end": 2
+        },
+        {
+          "w": "outline",
+          "start": 2.04,
+          "end": 2.34
+        },
+        {
+          "w": "smooth.",
+          "start": 2.46,
+          "end": 2.8
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/588448a5ecc2.mp3",
+      "hash": "588448a5ecc2",
+      "vo": "A skin fade clears the temples and narrows the head.",
+      "seconds": 2.690612,
+      "lead": 0,
+      "trail": 0.17,
+      "words": [
+        {
+          "w": "A",
+          "start": 0.06,
+          "end": 0.12
+        },
+        {
+          "w": "skin",
+          "start": 0.16,
+          "end": 0.38
+        },
+        {
+          "w": "fade",
+          "start": 0.48,
+          "end": 0.72
+        },
+        {
+          "w": "clears",
+          "start": 0.82,
+          "end": 1.06
+        },
+        {
+          "w": "the",
+          "start": 1.1,
+          "end": 1.18
+        },
+        {
+          "w": "temples",
+          "start": 1.24,
+          "end": 1.62
+        },
+        {
+          "w": "and",
+          "start": 1.66,
+          "end": 1.74
+        },
+        {
+          "w": "narrows",
+          "start": 1.78,
+          "end": 2.04
+        },
+        {
+          "w": "the",
+          "start": 2.08,
+          "end": 2.16
+        },
+        {
+          "w": "head.",
+          "start": 2.2,
+          "end": 2.44
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/4cc3a598a8eb.mp3",
+      "hash": "4cc3a598a8eb",
+      "vo": "A number two all over shows the real shape.",
+      "seconds": 2.324898,
+      "lead": 0,
+      "trail": 0.249,
+      "words": [
+        {
+          "w": "A",
+          "start": 0.06,
+          "end": 0.1
+        },
+        {
+          "w": "number",
+          "start": 0.14,
+          "end": 0.36
+        },
+        {
+          "w": "two",
+          "start": 0.4,
+          "end": 0.64
+        },
+        {
+          "w": "all",
+          "start": 0.7,
+          "end": 0.8
+        },
+        {
+          "w": "over",
+          "start": 0.88,
+          "end": 1.06
+        },
+        {
+          "w": "shows",
+          "start": 1.16,
+          "end": 1.38
+        },
+        {
+          "w": "the",
+          "start": 1.42,
+          "end": 1.48
+        },
+        {
+          "w": "real",
+          "start": 1.52,
+          "end": 1.66
+        },
+        {
+          "w": "shape.",
+          "start": 1.74,
+          "end": 2.02
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/71b7e942926e.mp3",
+      "hash": "71b7e942926e",
+      "vo": "A crew cut keeps some length on top.",
+      "seconds": 1.933061,
+      "lead": 0,
+      "trail": 0.22,
+      "words": [
+        {
+          "w": "A",
+          "start": 0.06,
+          "end": 0.1
+        },
+        {
+          "w": "crew",
+          "start": 0.14,
+          "end": 0.26
+        },
+        {
+          "w": "cut",
+          "start": 0.34,
+          "end": 0.5
+        },
+        {
+          "w": "keeps",
+          "start": 0.62,
+          "end": 0.78
+        },
+        {
+          "w": "some",
+          "start": 0.82,
+          "end": 0.96
+        },
+        {
+          "w": "length",
+          "start": 1,
+          "end": 1.2
+        },
+        {
+          "w": "on",
+          "start": 1.24,
+          "end": 1.36
+        },
+        {
+          "w": "top.",
+          "start": 1.4,
+          "end": 1.64
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/feec844bfb0e.mp3",
+      "hash": "feec844bfb0e",
+      "vo": "Short hair needs a solid jaw underneath it.",
+      "seconds": 2.168163,
+      "lead": 0,
+      "trail": 0.218,
+      "words": [
+        {
+          "w": "Short",
+          "start": 0.08,
+          "end": 0.24
+        },
+        {
+          "w": "hair",
+          "start": 0.3,
+          "end": 0.48
+        },
+        {
+          "w": "needs",
+          "start": 0.52,
+          "end": 0.68
+        },
+        {
+          "w": "a",
+          "start": 0.72,
+          "end": 0.78
+        },
+        {
+          "w": "solid",
+          "start": 0.82,
+          "end": 1.08
+        },
+        {
+          "w": "jaw",
+          "start": 1.14,
+          "end": 1.34
+        },
+        {
+          "w": "underneath",
+          "start": 1.38,
+          "end": 1.72
+        },
+        {
+          "w": "it.",
+          "start": 1.78,
+          "end": 1.88
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/a95665011e08.mp3",
+      "hash": "a95665011e08",
+      "vo": "His jaw is nearly as wide as his skull.",
+      "seconds": 2.272653,
+      "lead": 0,
+      "trail": 0.222,
+      "words": [
+        {
+          "w": "His",
+          "start": 0.06,
+          "end": 0.2
+        },
+        {
+          "w": "jaw",
+          "start": 0.26,
+          "end": 0.52
+        },
+        {
+          "w": "is",
+          "start": 0.58,
+          "end": 0.66
+        },
+        {
+          "w": "nearly",
+          "start": 0.7,
+          "end": 0.9
+        },
+        {
+          "w": "as",
+          "start": 0.94,
+          "end": 1.04
+        },
+        {
+          "w": "wide",
+          "start": 1.1,
+          "end": 1.34
+        },
+        {
+          "w": "as",
+          "start": 1.38,
+          "end": 1.44
+        },
+        {
+          "w": "his",
+          "start": 1.48,
+          "end": 1.6
+        },
+        {
+          "w": "skull.",
+          "start": 1.68,
+          "end": 1.96
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/f86c51804c2a.mp3",
+      "hash": "f86c51804c2a",
+      "vo": "Wide cheekbones make the cut look planned, not forced.",
+      "seconds": 2.821224,
+      "lead": 0,
+      "trail": 0.224,
+      "words": [
+        {
+          "w": "Wide",
+          "start": 0.08,
+          "end": 0.3
+        },
+        {
+          "w": "cheekbones",
+          "start": 0.34,
+          "end": 0.76
+        },
+        {
+          "w": "make",
+          "start": 0.84,
+          "end": 0.98
+        },
+        {
+          "w": "the",
+          "start": 1.04,
+          "end": 1.12
+        },
+        {
+          "w": "cut",
+          "start": 1.16,
+          "end": 1.34
+        },
+        {
+          "w": "look",
+          "start": 1.38,
+          "end": 1.54
+        },
+        {
+          "w": "planned,",
+          "start": 1.58,
+          "end": 1.9
+        },
+        {
+          "w": "not",
+          "start": 2,
+          "end": 2.14
+        },
+        {
+          "w": "forced.",
+          "start": 2.18,
+          "end": 2.54
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/a3539b1c4bdb.mp3",
+      "hash": "a3539b1c4bdb",
+      "vo": "Dark stubble puts back the edge the clippers took.",
+      "seconds": 2.45551,
+      "lead": 0,
+      "trail": 0.215,
+      "words": [
+        {
+          "w": "Dark",
+          "start": 0.06,
+          "end": 0.26
+        },
+        {
+          "w": "stubble",
+          "start": 0.36,
+          "end": 0.6
+        },
+        {
+          "w": "puts",
+          "start": 0.68,
+          "end": 0.86
+        },
+        {
+          "w": "back",
+          "start": 0.9,
+          "end": 1.06
+        },
+        {
+          "w": "the",
+          "start": 1.1,
+          "end": 1.22
+        },
+        {
+          "w": "edge",
+          "start": 1.26,
+          "end": 1.46
+        },
+        {
+          "w": "the",
+          "start": 1.5,
+          "end": 1.56
+        },
+        {
+          "w": "clippers",
+          "start": 1.6,
+          "end": 1.9
+        },
+        {
+          "w": "took.",
+          "start": 1.94,
+          "end": 2.16
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/7e4b5cd3cad1.mp3",
+      "hash": "7e4b5cd3cad1",
+      "vo": "Trim often, because three weeks of uneven fuzz looks lazy.",
+      "seconds": 3.343673,
+      "lead": 0,
+      "trail": 0.201,
+      "words": [
+        {
+          "w": "Trim",
+          "start": 0.08,
+          "end": 0.28
+        },
+        {
+          "w": "often,",
+          "start": 0.38,
+          "end": 0.62
+        },
+        {
+          "w": "because",
+          "start": 0.9,
+          "end": 1.14
+        },
+        {
+          "w": "three",
+          "start": 1.16,
+          "end": 1.32
+        },
+        {
+          "w": "weeks",
+          "start": 1.4,
+          "end": 1.58
+        },
+        {
+          "w": "of",
+          "start": 1.62,
+          "end": 1.68
+        },
+        {
+          "w": "uneven",
+          "start": 1.72,
+          "end": 2.02
+        },
+        {
+          "w": "fuzz",
+          "start": 2.14,
+          "end": 2.42
+        },
+        {
+          "w": "looks",
+          "start": 2.46,
+          "end": 2.62
+        },
+        {
+          "w": "lazy.",
+          "start": 2.66,
+          "end": 3.04
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/054ef83531d5.mp3",
+      "hash": "054ef83531d5",
+      "vo": "A taller forehead just looks even taller.",
+      "seconds": 2.168163,
+      "lead": 0,
+      "trail": 0.21,
+      "words": [
+        {
+          "w": "A",
+          "start": 0.06,
+          "end": 0.12
+        },
+        {
+          "w": "taller",
+          "start": 0.16,
+          "end": 0.38
+        },
+        {
+          "w": "forehead",
+          "start": 0.46,
+          "end": 0.84
+        },
+        {
+          "w": "just",
+          "start": 0.9,
+          "end": 1.06
+        },
+        {
+          "w": "looks",
+          "start": 1.1,
+          "end": 1.28
+        },
+        {
+          "w": "even",
+          "start": 1.32,
+          "end": 1.52
+        },
+        {
+          "w": "taller.",
+          "start": 1.56,
+          "end": 1.86
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/8f11a179a4ed.mp3",
+      "hash": "8f11a179a4ed",
+      "vo": "Pale brows and a narrow jaw give the eye nothing.",
+      "seconds": 2.533878,
+      "lead": 0,
+      "trail": 0.199,
+      "words": [
+        {
+          "w": "Pale",
+          "start": 0.06,
+          "end": 0.24
+        },
+        {
+          "w": "brows",
+          "start": 0.32,
+          "end": 0.6
+        },
+        {
+          "w": "and",
+          "start": 0.62,
+          "end": 0.7
+        },
+        {
+          "w": "a",
+          "start": 0.74,
+          "end": 0.78
+        },
+        {
+          "w": "narrow",
+          "start": 0.82,
+          "end": 1.04
+        },
+        {
+          "w": "jaw",
+          "start": 1.16,
+          "end": 1.42
+        },
+        {
+          "w": "give",
+          "start": 1.46,
+          "end": 1.58
+        },
+        {
+          "w": "the",
+          "start": 1.62,
+          "end": 1.68
+        },
+        {
+          "w": "eye",
+          "start": 1.74,
+          "end": 1.88
+        },
+        {
+          "w": "nothing.",
+          "start": 1.92,
+          "end": 2.24
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/ffa704b2faa0.mp3",
+      "hash": "ffa704b2faa0",
+      "vo": "Sideways, his skull drops flat at the back.",
+      "seconds": 2.324898,
+      "lead": 0,
+      "trail": 0.268,
+      "words": [
+        {
+          "w": "Sideways,",
+          "start": 0.08,
+          "end": 0.52
+        },
+        {
+          "w": "his",
+          "start": 0.58,
+          "end": 0.7
+        },
+        {
+          "w": "skull",
+          "start": 0.76,
+          "end": 0.94
+        },
+        {
+          "w": "drops",
+          "start": 1.02,
+          "end": 1.26
+        },
+        {
+          "w": "flat",
+          "start": 1.3,
+          "end": 1.48
+        },
+        {
+          "w": "at",
+          "start": 1.52,
+          "end": 1.58
+        },
+        {
+          "w": "the",
+          "start": 1.6,
+          "end": 1.68
+        },
+        {
+          "w": "back.",
+          "start": 1.72,
+          "end": 2
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/f7da6661386b.mp3",
+      "hash": "f7da6661386b",
+      "vo": "With nothing on top, his forehead takes over the face.",
+      "seconds": 2.533878,
+      "lead": 0,
+      "trail": 0.202,
+      "words": [
+        {
+          "w": "With",
+          "start": 0.08,
+          "end": 0.2
+        },
+        {
+          "w": "nothing",
+          "start": 0.24,
+          "end": 0.48
+        },
+        {
+          "w": "on",
+          "start": 0.52,
+          "end": 0.64
+        },
+        {
+          "w": "top,",
+          "start": 0.68,
+          "end": 0.88
+        },
+        {
+          "w": "his",
+          "start": 0.98,
+          "end": 1.12
+        },
+        {
+          "w": "forehead",
+          "start": 1.14,
+          "end": 1.42
+        },
+        {
+          "w": "takes",
+          "start": 1.46,
+          "end": 1.64
+        },
+        {
+          "w": "over",
+          "start": 1.7,
+          "end": 1.82
+        },
+        {
+          "w": "the",
+          "start": 1.86,
+          "end": 1.92
+        },
+        {
+          "w": "face.",
+          "start": 1.98,
+          "end": 2.24
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/9275609c37a9.mp3",
+      "hash": "9275609c37a9",
+      "vo": "Same clippers, same guard, two very different heads.",
+      "seconds": 2.925714,
+      "lead": 0,
+      "trail": 0.222,
+      "words": [
+        {
+          "w": "Same",
+          "start": 0.08,
+          "end": 0.22
+        },
+        {
+          "w": "clippers,",
+          "start": 0.3,
+          "end": 0.6
+        },
+        {
+          "w": "same",
+          "start": 0.84,
+          "end": 1
+        },
+        {
+          "w": "guard,",
+          "start": 1.08,
+          "end": 1.38
+        },
+        {
+          "w": "two",
+          "start": 1.58,
+          "end": 1.72
+        },
+        {
+          "w": "very",
+          "start": 1.76,
+          "end": 1.98
+        },
+        {
+          "w": "different",
+          "start": 2,
+          "end": 2.3
+        },
+        {
+          "w": "heads.",
+          "start": 2.34,
+          "end": 2.62
+        }
+      ]
+    },
+    {
+      "file": "M01/vo/802657508f08.mp3",
+      "hash": "802657508f08",
+      "vo": "A buzz cut takes the frame away, so whether it helps comes down to the skull underneath.",
+      "seconds": 4.414694,
+      "lead": 0,
+      "trail": 0.233,
+      "words": [
+        {
+          "w": "A",
+          "start": 0.04,
+          "end": 0.1
+        },
+        {
+          "w": "buzz",
+          "start": 0.14,
+          "end": 0.34
+        },
+        {
+          "w": "cut",
+          "start": 0.38,
+          "end": 0.56
+        },
+        {
+          "w": "takes",
+          "start": 0.68,
+          "end": 0.88
+        },
+        {
+          "w": "the",
+          "start": 0.92,
+          "end": 1.02
+        },
+        {
+          "w": "frame",
+          "start": 1.04,
+          "end": 1.22
+        },
+        {
+          "w": "away,",
+          "start": 1.28,
+          "end": 1.58
+        },
+        {
+          "w": "so",
+          "start": 1.96,
+          "end": 2.04
+        },
+        {
+          "w": "whether",
+          "start": 2.08,
+          "end": 2.24
+        },
+        {
+          "w": "it",
+          "start": 2.28,
+          "end": 2.38
+        },
+        {
+          "w": "helps",
+          "start": 2.44,
+          "end": 2.68
+        },
+        {
+          "w": "comes",
+          "start": 2.72,
+          "end": 2.9
+        },
+        {
+          "w": "down",
+          "start": 2.94,
+          "end": 3.12
+        },
+        {
+          "w": "to",
+          "start": 3.16,
+          "end": 3.22
+        },
+        {
+          "w": "the",
+          "start": 3.26,
+          "end": 3.34
+        },
+        {
+          "w": "skull",
+          "start": 3.4,
+          "end": 3.62
+        },
+        {
+          "w": "underneath.",
+          "start": 3.68,
+          "end": 4.1
+        }
+      ]
+    }
+  ],
+  "voiceSeconds": 48.69338499999999
+}

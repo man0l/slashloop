@@ -3,10 +3,11 @@ import {Composition, Folder} from 'remotion';
 import {calculateMetadata, Reel, type ReelProps} from './Reel';
 import {theme} from './theme';
 import R01 from '../scripts/R01.json';
+import M01 from '../scripts/M01.json';
 
 // `Reel` is the one composition the renderer uses: pass any script with --props=./scripts/RXX.json.
 // The "Review" folder registers each script (and a debug copy with landmark dots) for Studio review.
-const scripts = [R01] as unknown as ReelProps[];
+const scripts = [R01, M01] as unknown as ReelProps[];
 
 const common = {
   component: Reel,

@@ -1,0 +1,90 @@
+{
+  "B_base": {
+    "key": "B_base",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS (The portrait meets all specified criteria including subject attributes, clothing, framing, and background).",
+    "tries": 1,
+    "cost": 0.01242175
+  },
+  "A_base": {
+    "key": "A_base",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS",
+    "tries": 2,
+    "cost": 0.02456
+  },
+  "B_buzz": {
+    "key": "B_buzz",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The subject's identity, pose, and background are preserved with only the requested buzz cut applied.",
+    "tries": 1,
+    "cost": 0.012511000000000001
+  },
+  "B_crew": {
+    "key": "B_crew",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The subject's identity, pose, and background are preserved with only the haircut modified as requested.",
+    "tries": 1,
+    "cost": 0.01223575
+  },
+  "A_profile": {
+    "key": "A_profile",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The subject's identity and background are preserved while accurately changing the view to an exact left profile with consistent hair and attire.",
+    "tries": 1,
+    "cost": 0.01312675
+  },
+  "A_buzz": {
+    "key": "A_buzz",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The subject's hair was successfully edited to a buzz cut while maintaining identical identity, facial features, pose, and background.",
+    "tries": 1,
+    "cost": 0.01239475
+  },
+  "B_profile": {
+    "key": "B_profile",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The edit accurately shows the same individual in an exact left side profile against the matching background and attire.",
+    "tries": 1,
+    "cost": 0.01262425
+  },
+  "A_crew": {
+    "key": "A_crew",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The subject, pose, and background are preserved with only the hair updated to a crew cut style.",
+    "tries": 1,
+    "cost": 0.01450825
+  },
+  "A_fade": {
+    "key": "A_fade",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The person, pose, and background are preserved, with only the sides faded to skin while keeping the top length.",
+    "tries": 1,
+    "cost": 0.012196
+  },
+  "A_grownout": {
+    "key": "A_grownout",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The hair has been accurately modified to a grown-out, uneven buzz cut while preserving the person's identity and background.",
+    "tries": 1,
+    "cost": 0.0123655
+  },
+  "A_pbuzz": {
+    "key": "A_pbuzz",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The hair has been accurately trimmed to a buzz cut showing the skull shape while preserving the person, pose, and background.",
+    "tries": 1,
+    "cost": 0.012475
+  }
+}

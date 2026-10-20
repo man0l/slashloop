@@ -117,6 +117,10 @@ const main = async () => {
     const row = `| ${name} | ${new Date().toISOString().slice(0, 16).replace('T', ' ')} | ${(total / 30).toFixed(1)} s | ${total} | ${(r.ms / 1000).toFixed(1)} s | ${(r.peak / 2 ** 30).toFixed(2)} GiB | $${spendSoFar(id).toFixed(3)} ($${spendSoFar().toFixed(3)}) | ${bal0 === null ? '?' : `$${bal0.toFixed(2)}`} | ${fails} |\n`;
     fs.appendFileSync(logFile, row);
   }
+  // Content-matrix items get the uniqueness / format report (brief section 8.3) automatically.
+  if (id.startsWith('M') && !debug) {
+    execFileSync('npx', ['tsx', 'tools/uniqueness.ts', id], {cwd: abs('.'), stdio: 'inherit'});
+  }
 };
 
 main().catch((e) => {
