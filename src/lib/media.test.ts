@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { experimentSourceKeys, hasExperimentSlides, resolveRecreationUrls, resolveSlideshowUrls, resolveThumbUrl, slideshowIsHydrated, slideshowTargetFromNormalized } from './media.js';
+import { experimentSourceKeys, hasExperimentSlides, mediaDownloadView, resolveRecreationUrls, resolveSlideshowUrls, resolveThumbUrl, slideshowIsHydrated, slideshowTargetFromNormalized } from './media.js';
 
 const TIKTOK_COVER =
   'https://p19-common-sign.tiktokcdn-us.com/tos-useast8-p-0068-tx2/x~tplv-tiktokx-origin.image';
@@ -136,5 +136,41 @@ describe('slideshowIsHydrated', () => {
       slideshowKeys: ['ws/v/slides/00.jpg'],
       slideshowHydrated: true,
     }))).toBe(true);
+  });
+});
+
+describe('mediaDownloadView', () => {
+  const plainVideo = { mediaStatus: 'stored', durationSec: 21, rawJson: null, thumbnailUrl: null };
+
+  test('stored video exposes the signed MP4 link with its lifetime', () => {
+    const v = mediaDownloadView(plainVideo, { url: 'https://media.example/v.mp4?t=abc' });
+    expect(v.status).toBe('stored');
+    expect(v.url).toBe('https://media.example/v.mp4?t=abc');
+    expect(v.expiresInSec).toBeGreaterThan(0);
+    expect(v.reason).toBeNull();
+    expect(v.next).toBeNull();
+  });
+
+  test('not-yet-stored video points at fetch_videos rather than analysis', () => {
+    const v = mediaDownloadView({ ...plainVideo, mediaStatus: 'none' }, { url: null, reason: 'media_not_stored' });
+    expect(v).toMatchObject({ status: 'none', url: null, reason: 'media_not_stored' });
+    expect(v.next).toContain('fetch_videos');
+    expect(v.next).not.toContain('analyze_video');
+  });
+
+  test('expired media is recoverable through fetch_videos too', () => {
+    const v = mediaDownloadView({ ...plainVideo, mediaStatus: 'expired' }, { url: null, reason: 'media_expired' });
+    expect(v.reason).toBe('media_expired');
+    expect(v.next).toContain('fetch_videos');
+  });
+
+  test('signing failure is reported without a misleading next step', () => {
+    const v = mediaDownloadView(plainVideo, { url: null, reason: 'sign_failed' });
+    expect(v).toMatchObject({ url: null, reason: 'sign_failed', next: null });
+  });
+
+  test('photo posts have no MP4', () => {
+    const v = mediaDownloadView({ ...plainVideo, mediaStatus: 'slideshow' }, { url: null });
+    expect(v).toMatchObject({ url: null, reason: 'photo_post' });
   });
 });

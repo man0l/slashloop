@@ -478,7 +478,9 @@ export function registerGalleryApp(server: McpServer) {
         + 'Returns a galleryUrl as well: if the gallery does not render inline in this host, '
         + 'surface that URL to the user as a clickable link — it opens the same interactive '
         + 'gallery in their browser. '
-        + 'get_feed remains the text-only answer.',
+        + 'get_feed remains the text-only answer. '
+        + 'This is for viewing only: to get a video\'s MP4 file, call get_video (media.url) — '
+        + 'never fetch or parse the gallery page for links.',
       inputSchema: {
         workspaceId: workspaceIdField,
         sourceId: z
@@ -597,8 +599,12 @@ export function registerGalleryApp(server: McpServer) {
             id: c.id,
             handle: c.creatorHandle,
             outlierScore: c.outlierScore,
+            // Whether get_video will hand back a downloadable MP4 (media.url)
+            // for this one, or fetch_videos has to run first.
+            mp4Stored: Boolean(c.mediaUrl),
           })),
           galleryUrl,
+          mediaNote: 'Need the MP4 files themselves? Call get_video per id and download media.url. Videos with mp4Stored=false need fetch_videos first. Do not scrape the galleryUrl page for links.',
           // Addressed to the model, not the user: hosts that never render the
           // ui:// resource have no other way to know a real gallery exists.
           hostNote: galleryUrl

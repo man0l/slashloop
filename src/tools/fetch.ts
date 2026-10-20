@@ -36,8 +36,9 @@ export function registerFetchTool(server: McpServer) {
       + 'WITHOUT running Gemini analysis. Two modes: (1) minOutlierScore — fetch every video at or above an outlier '
       + 'score that has no stored video yet (e.g. 50 for the standout winners); (2) videoIds — hand-picked videos. '
       + 'Fetch is scraper spend (the residential-proxy worker when configured, billed per GB of proxy traffic; Apify ≈1¢/video otherwise), subject to the '
-      + 'matching spend cap — not AI credits. Runs in the background; poll get_video until mediaStatus = stored. '
-      + 'Use after refresh_source, when the user wants to SEE/scrub specific outliers rather than only thumbnails.',
+      + 'matching spend cap — not AI credits. Runs in the background; poll get_video until media.status = "stored", then download media.url (a signed MP4 link). '
+      + 'Use after refresh_source, when the user wants to SEE/scrub specific outliers rather than only thumbnails, '
+      + 'or whenever the raw MP4 files are needed (reference clips for editing, downloads) — this is the path to the file without paying for analyze_video.',
     {
       workspaceId: workspaceIdField,
       minOutlierScore: z
