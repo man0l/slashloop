@@ -13,7 +13,8 @@
     "B_base": "assets/M01/B_base.jpg",
     "B_profile": "assets/M01/B_profile.jpg",
     "B_buzz": "assets/M01/B_buzz.jpg",
-    "B_crew": "assets/M01/B_crew.jpg"
+    "B_crew": "assets/M01/B_crew.jpg",
+    "B_pbuzz": "assets/M01/B_pbuzz.jpg"
   },
   "stills": {
     "A_base": {
@@ -36,7 +37,7 @@
     },
     "A_grownout": {
       "from": "A_buzz",
-      "edit": "buzz cut grown out three weeks, uneven, fuzzy edges, untidy neckline"
+      "edit": "buzz cut grown out four weeks: uneven length, fuzzy ragged neckline, hair creeping over the ears, scruffy, clearly visible at a glance"
     },
     "A_pbuzz": {
       "from": "A_profile",
@@ -55,6 +56,10 @@
     "B_crew": {
       "from": "B_base",
       "edit": "hair cut to a short crew cut, slightly longer on top"
+    },
+    "B_pbuzz": {
+      "from": "B_profile",
+      "edit": "hair cut to a #2 buzz cut all over, back of skull outline visible"
     }
   },
   "lintAccept": {
@@ -75,7 +80,7 @@
     {"imgs": ["A_buzz", "A_grownout"], "layout": "split", "labels": ["FRESH", "GROWN OUT"], "active": 0, "caption": "KEEP IT **FRESH**", "hl": "teal", "then": {"at": 0.45, "active": 1, "anim": [{"t": "chip", "card": 1, "at": ["hairline", 0.0, -0.06], "text": "FUZZY EDGES", "tone": "purple"}, {"t": "chip", "card": 1, "at": ["jaw_angle_R", 0.02, 0.1], "text": "UNEVEN", "tone": "purple"}]}, "vo": "Trim often, because three weeks of uneven fuzz looks lazy."},
     {"img": "B_buzz", "tint": "purple", "caption": "TALL **FOREHEAD?**", "hl": "purple", "transition": "push", "anim": [{"t": "measure", "from": "hairline", "to": "glabella", "chip": "TALL FOREHEAD", "tone": "purple"}], "vo": "A taller forehead just looks even taller."},
     {"img": "B_buzz", "zoom": 1.2, "focus": "nose_tip", "tint": "purple", "caption": "TALL **FOREHEAD?**", "hl": "purple", "anim": [{"t": "box", "from": "brow_outer_L", "to": "brow_outer_R", "chip": "NO MATCH", "tone": "purple"}, {"t": "measure", "from": "jaw_angle_L", "to": "jaw_angle_R", "chip": "NARROW JAW", "tone": "purple"}], "vo": "Pale brows and a narrow jaw give the eye nothing."},
-    {"img": "B_profile", "view": "profile", "card": true, "tint": "purple", "caption": "FLAT **BACK**", "hl": "purple", "anim": [{"t": "dots", "path": ["forehead_top", "vertex", "occiput"]}, {"t": "chip", "text": "FLAT BACK", "tone": "purple"}], "vo": "Sideways, his skull drops flat at the back."},
+    {"img": "B_pbuzz", "view": "profile", "card": true, "tint": "purple", "caption": "FLAT **BACK**", "hl": "purple", "anim": [{"t": "dots", "path": ["forehead_top", "vertex", "occiput"]}, {"t": "chip", "text": "FLAT BACK", "tone": "purple"}], "vo": "Sideways, his skull drops flat at the back."},
     {"img": "B_buzz", "zoom": 1.1, "focus": "glabella", "tint": "purple", "caption": "ALL **FOREHEAD**", "hl": "purple", "anim": [{"t": "circle", "at": ["glabella", 0, -0.09], "r": 0.17}], "vo": "With nothing on top, his forehead takes over the face."},
     {"grid": [["A_base", "AGE 32"], ["B_base", "AGE 27"], ["A_buzz", "LOOKS BETTER", "teal"], ["B_buzz", "LOOKS LIKE AN EGG", "purple"]], "layout": "grid2x2", "row": "+ BUZZ CUT", "caption": "**BETTER** OR EGG?", "hl": "teal", "transition": "flash", "anim": [{"t": "dots", "card": 2, "path": ["hairline", ["brow_outer_L", 0, -0.12], "brow_outer_L"]}, {"t": "dots", "card": 3, "path": ["hairline", ["brow_outer_L", 0, -0.12], "brow_outer_L"]}], "vo": "Same clippers, same guard, two very different heads."},
     {"grid": [["A_base", "AGE 32"], ["B_base", "AGE 27"], ["A_buzz", "LOOKS BETTER", "teal"], ["B_buzz", "LOOKS LIKE AN EGG", "purple"]], "layout": "grid2x2", "row": "+ BUZZ CUT", "arrows": true, "caption": "**BETTER** OR EGG?", "hl": "teal", "then": {"at": 0.78, "caption": "YOUR **HEAD SHAPE?**", "hl": "teal"}, "vo": "A buzz cut takes the frame away, so whether it helps comes down to the skull underneath."}

@@ -1,0 +1,32 @@
+{
+  "A_base": {
+    "bg": "#98aab7"
+  },
+  "A_profile": {
+    "bg": "#9aabba"
+  },
+  "A_straight": {
+    "bg": "#98aab8"
+  },
+  "A_angle": {
+    "bg": "#99abb9"
+  },
+  "A_arch": {
+    "bg": "#97aab9"
+  },
+  "A_overfilled": {
+    "bg": "#97a9b8"
+  },
+  "B_base": {
+    "bg": "#9babb8"
+  },
+  "B_straight": {
+    "bg": "#9babb9"
+  },
+  "B_angle": {
+    "bg": "#9aabb9"
+  },
+  "B_arch": {
+    "bg": "#9aabb9"
+  }
+}

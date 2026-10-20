@@ -1,5 +1,5 @@
 import {loadFont} from '@remotion/fonts';
-import React from 'react';
+import React, {createContext, useContext} from 'react';
 import {interpolate, spring, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import {clampChip} from '../geometry';
 import {hlColor, theme, type Hl} from '../theme';
@@ -16,6 +16,12 @@ for (const [family, weight, file] of fonts) {
   loadFont({family, url: staticFile(`fonts/${file}.woff2`), weight, format: 'woff2'});
 }
 export const fontFamily = theme.font.ui;
+
+// The beat's subtitle band; chips move themselves above it (brief 9.2).
+export const BandContext = createContext<[number, number] | null>(null);
+// Top of a citation card: under the headline, or higher under a ladder header.
+export const CiteTopContext = createContext<number>(400);
+const CHIP_H = theme.chip.fontSize * 1.1 + theme.chip.padY * 2 + theme.chip.border * 2;
 
 export type Tone = 'white' | 'teal' | 'purple' | 'yellow' | 'navy';
 
@@ -114,7 +120,7 @@ const chunk = (words: Word[]) => {
 };
 
 // Voice-synced subtitles. Times are seconds from the beat start.
-export const Subtitles: React.FC<{words: Word[]}> = ({words}) => {
+export const Subtitles: React.FC<{words: Word[]; centerY?: number}> = ({words, centerY}) => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const t = frame / fps;
@@ -133,7 +139,7 @@ export const Subtitles: React.FC<{words: Word[]}> = ({words}) => {
         position: 'absolute',
         left: 40,
         right: 40,
-        top: st.centerY,
+        top: centerY ?? st.centerY,
         translate: '0 -50%',
         textAlign: 'center',
         fontFamily: theme.font.ui,
@@ -204,7 +210,11 @@ export const Chip: React.FC<{
   if (frame < 0) return null;
   const k = theme.chip;
   const s = spring({frame, fps, config: k.spring, durationInFrames: theme.motion.maxEaseFrames});
-  const [cx, cy] = anchor === 'center' ? clampChip(x, y, text, check) : [x, y];
+  const band = useContext(BandContext);
+  const [cx, cy0] = anchor === 'center' ? clampChip(x, y, text, check) : [x, y];
+  const half = (CHIP_H * (small ? 0.8 : 1)) / 2;
+  // Keep out of the subtitle band: move the chip up (never the line it labels).
+  const cy = band && cy0 + half > band[0] && cy0 - half < band[1] ? band[0] - half - 10 : cy0;
   const tx = anchor === 'center' ? '-50%' : anchor === 'right' ? '-100%' : '0%';
   const ts = toneStyle(tone);
   const checkColor = tone === 'purple' ? theme.color.purple : theme.color.check;
@@ -260,3 +270,91 @@ export const Footer: React.FC = () => (
     {theme.footer.text}
   </div>
 );
+
+// Citation card (reference: "THAYER AND DOBSON, 2010" / "American Journal of Physical Anthropology").
+// Sits top-left under the headline or header; pops with the chip spring.
+export const Cite: React.FC<{title: string; source: string; from: number; top?: number}> = ({title, source, from, top}) => {
+  const frame = useCurrentFrame() - from;
+  const {fps} = useVideoConfig();
+  const ctxTop = useContext(CiteTopContext);
+  if (frame < 0) return null;
+  const s = spring({frame, fps, config: theme.chip.spring, durationInFrames: theme.motion.maxEaseFrames});
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: 60,
+        top: top ?? ctxTop,
+        maxWidth: 760,
+        padding: '16px 24px',
+        borderRadius: 18,
+        background: theme.color.white,
+        boxShadow: theme.chip.shadow,
+        scale: String(interpolate(s, [0, 1], [theme.chip.fromScale, 1])),
+        transformOrigin: '0% 50%',
+        opacity: interpolate(frame, [0, 2], [0, 1], {extrapolateRight: 'clamp'}),
+      }}
+    >
+      <div style={{fontFamily: theme.font.ui, fontWeight: 800, fontSize: 32, color: theme.color.navy, textTransform: 'uppercase', lineHeight: 1.15}}>{title}</div>
+      <div style={{fontFamily: theme.font.ui, fontWeight: 700, fontSize: 25, color: theme.color.teal, lineHeight: 1.25, marginTop: 4}}>{source}</div>
+    </div>
+  );
+};
+
+// Ladder header: one persistent 2-line header, keyword in white on a teal box (reference: "JAW PROJECTION").
+export const Header: React.FC<{text: string}> = ({text}) => {
+  const h = theme.header;
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: (theme.canvas.width - h.maxWidth) / 2,
+        width: h.maxWidth,
+        top: h.top,
+        textAlign: 'center',
+        fontFamily: theme.font.headline,
+        fontSize: h.fontSize,
+        lineHeight: h.lineHeight,
+        textTransform: 'uppercase',
+        color: theme.color.navy,
+        WebkitTextStroke: `${theme.headline.stroke * 2}px ${theme.color.white}`,
+        paintOrder: 'stroke fill',
+      }}
+    >
+      {runs(text).map((r, i) =>
+        r.hl ? (
+          <span key={i} style={{background: theme.color.teal, color: theme.color.white, WebkitTextStroke: '0px transparent', padding: '0 12px', borderRadius: 10, whiteSpace: 'nowrap'}}>
+            {r.t}
+          </span>
+        ) : (
+          <span key={i}>{r.t}</span>
+        ),
+      )}
+    </div>
+  );
+};
+
+// Ladder value above the square inset: plain Anton, no pill (reference "-12MM").
+export const Value: React.FC<{text: string; x: number; y: number; from: number}> = ({text, x, y, from}) => {
+  const frame = useCurrentFrame() - from;
+  if (frame < 0) return null;
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: x,
+        top: y,
+        translate: '-50% -100%',
+        fontFamily: theme.font.headline,
+        fontSize: theme.inset.valueSize,
+        lineHeight: 1,
+        color: theme.color.navy,
+        WebkitTextStroke: `${theme.headline.stroke * 2}px ${theme.color.white}`,
+        paintOrder: 'stroke fill',
+        opacity: interpolate(frame, [0, 3], [0, 1], {extrapolateRight: 'clamp'}),
+      }}
+    >
+      {text}
+    </div>
+  );
+};

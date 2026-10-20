@@ -1,6 +1,6 @@
 import React from 'react';
 import {Easing, Img, interpolate, staticFile, useCurrentFrame} from 'remotion';
-import type {CardRect, Vec} from '../geometry';
+import {SUBTITLE_BAND, type CardRect, type Vec} from '../geometry';
 import {theme} from '../theme';
 
 export const stillSrc = (path: string) => staticFile(path.replace(/^assets\//, ''));
@@ -67,20 +67,37 @@ export const Card: React.FC<{
   );
 };
 
-// Circular 2x close-up of a region, bottom-right of the card, sliding in from the right.
-export const Inset: React.FC<{card: CardRect; src: string; at: Vec; from: number}> = ({card, src, at, from}) => {
+// Close-up of a region, sliding in from the right. circle: bottom-right of the photo (420 px, white ring).
+// square: the ladder inset, a rounded square at the right of the face (reference jaw ladder).
+export const insetBox = (card: CardRect, shape: 'circle' | 'square' = 'circle') => {
+  const t = theme.inset;
+  if (shape === 'square') {
+    const d = t.square;
+    return {d, left: theme.canvas.width - d - 60, top: t.squareTop, radius: t.squareRadius};
+  }
+  const d = t.diameter;
+  return {
+    d,
+    left: Math.min(theme.canvas.width - d - 30, card.x + card.w - d + 40),
+    // Above the subtitle band (brief 9.2), never under the subtitles.
+    top: Math.min(SUBTITLE_BAND[0] - d - 24, card.y + card.h - d + 40),
+    radius: d / 2,
+  };
+};
+
+export const Inset: React.FC<{card: CardRect; src: string; at: Vec; from: number; shape?: 'circle' | 'square'; zoom?: number}> = ({card, src, at, from, shape, zoom}) => {
   const frame = useCurrentFrame() - from;
   if (frame < 0) return null;
   const t = theme.inset;
-  const d = t.diameter;
-  const left = Math.min(theme.canvas.width - d - 30, card.x + card.w - d + 40);
-  const top = Math.min(theme.canvas.height - d - 260, card.y + card.h - d + 40);
-  const slide = interpolate(frame, [0, t.slideFrames], [theme.canvas.width - left + 20, 0], {
-    extrapolateRight: 'clamp',
-    easing: Easing.out(Easing.cubic),
-  });
-  const iw = card.dw * t.zoom;
-  const ih = card.dh * t.zoom;
+  const {d, left, top, radius} = insetBox(card, shape);
+  // The ladder's square inset stays put from level to level (only its content changes); the circle slides in.
+  const slide =
+    shape === 'square'
+      ? 0
+      : interpolate(frame, [0, t.slideFrames], [theme.canvas.width - left + 20, 0], {extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic)});
+  // Zoom is relative to how the photo shows the still.
+  const iw = card.dw * (zoom ?? t.zoom);
+  const ih = card.dh * (zoom ?? t.zoom);
   return (
     <div
       style={{
@@ -89,9 +106,9 @@ export const Inset: React.FC<{card: CardRect; src: string; at: Vec; from: number
         top,
         width: d,
         height: d,
-        borderRadius: '50%',
+        borderRadius: radius,
         overflow: 'hidden',
-        boxShadow: `0 0 0 ${t.ring}px ${theme.color.white}, ${theme.card.shadow}`,
+        boxShadow: `0 0 0 ${shape === 'square' ? 7 : t.ring}px ${theme.color.white}, ${theme.card.shadow}`,
         translate: `${slide}px 0px`,
         background: theme.canvas.background,
       }}

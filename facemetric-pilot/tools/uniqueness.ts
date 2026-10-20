@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 import {lintScript, lintTiming, type Beat, type Script} from '../src/schema';
-import {abs, args, loadScript, log} from './lib';
+import {abs, args, geometryWarnings, loadScript, log} from './lib';
 
 // Template ranges from the item grammar (section 8.2) and spec v2 targets for visible changes per minute.
 const RANGE: Record<Script['template'], {sec: [number, number]; changes: [number, number]}> = {
@@ -173,11 +173,12 @@ const main = async () => {
   const perMin = measured ? measured.events / (measured.seconds / 60) : changes / (duration / 60);
   const range = RANGE[s.template];
   const hl = (t: string) => (t.match(/\*\*([^*]+)\*\*/)?.[1] ?? '').replace(/[?!.]/g, '').trim();
-  const first = [s.beats[0], s.beats[1]].filter(Boolean).map((b) => hl(b.caption));
+  // The hook keyword: beats 1-2's highlight, or the ladder header's when the beats carry no headline.
+  const first = [...[s.beats[0], s.beats[1]].filter(Boolean).map((b) => hl(b.caption)), ...(s.header ? [hl(s.header)] : [])].filter(Boolean);
   const last = s.beats[s.beats.length - 1];
-  const lastWords = plain([last.caption, last.then?.caption ?? ''].join(' '));
+  const lastWords = plain(s.beats.slice(-3).flatMap((b) => [b.caption, b.then?.caption ?? '']).join(' ') + ' ' + (s.header ?? ''));
   const answered = first.some((w) => w && lastWords.includes(w));
-  const warnings = [...lintScript(s), ...lintTiming(s, beatSec)];
+  const warnings = [...lintScript(s), ...lintTiming(s, beatSec), ...geometryWarnings(s)];
   const accepted = (w: string) => Object.entries(s.lintAccept ?? {}).find(([k]) => w.startsWith(k))?.[1];
   const measureBeats = s.beats.filter((b) => [...(b.anim ?? []), ...(b.then?.anim ?? [])].some((a) => a.t === 'measure' || a.t === 'box')).length;
   const hasSplitOrStrip = s.template === 'A' ? s.beats.some((b) => b.layout === 'strip') : s.beats.some((b) => b.layout === 'split');
@@ -191,7 +192,11 @@ const main = async () => {
     row(s.template === 'A' ? '>= 1 strip' : '>= 1 split', hasSplitOrStrip, ''),
     row('grid / strip payoff', payoff, `last beat layout: ${last.layout}`),
     row('footer on every frame', true, 'Footer is rendered at the composition root, outside the beat sequences (src/Reel.tsx)'),
-    row(`duration ${range.sec[0]}-${range.sec[1]} s`, duration >= range.sec[0] && duration <= range.sec[1], `${duration.toFixed(1)} s`),
+    (() => {
+      const ok = duration >= range.sec[0] && duration <= range.sec[1];
+      const why = s.lintAccept?.duration;
+      return `| ${ok ? 'PASS' : why ? 'ACCEPTED' : 'FAIL'} | duration ${range.sec[0]}-${range.sec[1]} s | ${duration.toFixed(1)} s${!ok && why ? ` (${why})` : ''} |`;
+    })(),
     row(`visible changes ${range.changes[0]}-${range.changes[1]}/min`, perMin >= range.changes[0] && perMin <= range.changes[1], measured
       ? `measured on the MP4 like the reference reels: ${measured.events} changes / ${measured.seconds.toFixed(1)} s = ${perMin.toFixed(1)}/min (script count, every anim: ${changes} = ${(changes / (duration / 60)).toFixed(1)}/min)`
       : `${changes} changes / ${duration.toFixed(1)} s = ${perMin.toFixed(1)}/min (script count)`),

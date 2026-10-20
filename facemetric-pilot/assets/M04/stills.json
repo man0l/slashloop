@@ -1,0 +1,17 @@
+{
+  "A_base": {
+    "bg": "#9aaab8"
+  },
+  "A_noring": {
+    "bg": "#9baab8"
+  },
+  "A_yellow": {
+    "bg": "#9aaab8"
+  },
+  "A_both": {
+    "bg": "#9aaab9"
+  },
+  "B_base": {
+    "bg": "#9cacb9"
+  }
+}

@@ -75,9 +75,9 @@
     "key": "A_grownout",
     "model": "meta/muse-image",
     "verdict": "PASS",
-    "reason": "PASS - The hair has been accurately modified to a grown-out, uneven buzz cut while preserving the person's identity and background.",
+    "reason": "A: PASS - Identity, pose, clothing, and background remain consistent while only the hair changed. B: PASS - The grown-out hair transformation is immediately noticeable at 300 pixels.",
     "tries": 1,
-    "cost": 0.0123655
+    "cost": 0.014362
   },
   "A_pbuzz": {
     "key": "A_pbuzz",
@@ -86,5 +86,13 @@
     "reason": "PASS - The hair has been accurately trimmed to a buzz cut showing the skull shape while preserving the person, pose, and background.",
     "tries": 1,
     "cost": 0.012475
+  },
+  "B_pbuzz": {
+    "key": "B_pbuzz",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The subject, pose, and background are maintained while cleanly applying the requested buzz cut.",
+    "tries": 1,
+    "cost": 0.01238875
   }
 }

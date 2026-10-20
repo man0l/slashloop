@@ -1,0 +1,42 @@
+{
+  "B_base": {
+    "key": "B_base",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS: The image accurately satisfies all specified portrait, demographic, styling, and background requirements.",
+    "tries": 1,
+    "cost": 0.011508250000000001
+  },
+  "A_base": {
+    "key": "A_base",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS: The image accurately satisfies all listed criteria, depicting a woman with hair tied back and no make-up in a studio setting.",
+    "tries": 1,
+    "cost": 0.01197175
+  },
+  "A_noring": {
+    "key": "A_noring",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The dark limbal ring around both irises was removed to create a soft fade into the sclera, with no other changes to the person or background.",
+    "tries": 2,
+    "cost": 0.02680025
+  },
+  "A_yellow": {
+    "key": "A_yellow",
+    "model": "meta/muse-image",
+    "verdict": "FAIL",
+    "reason": "FAIL - The edit altered the iris color and added redness to the eyelids instead of modifying only the whites of the eyes.",
+    "tries": 2,
+    "cost": 0.026369000000000004
+  },
+  "A_both": {
+    "key": "A_both",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The edit correctly applies yellowing and faint bloodshot vessels to the whites of the eyes while keeping everything else identical.",
+    "tries": 2,
+    "cost": 0.026267000000000002
+  }
+}

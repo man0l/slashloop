@@ -1,0 +1,45 @@
+{
+  "id": "M05",
+  "template": "A",
+  "title": "Sleep ladder",
+  "header": "HERE IS WHAT YOUR **SLEEP** DOES TO YOUR FACE",
+  "faces": {
+    "S8": "assets/M05/S8.jpg",
+    "S9": "assets/M05/S9.jpg",
+    "S6": "assets/M05/S6.jpg",
+    "S5": "assets/M05/S5.jpg",
+    "S4": "assets/M05/S4.jpg"
+  },
+  "stills": {
+    "S8": {
+      "base": "woman, age 29, hair tied back, no make-up, neutral expression, normal rested skin, grey crew neck"
+    },
+    "S9": {
+      "from": "S8",
+      "edit": "face only: skin slightly brighter and more even, eyes a touch more open"
+    },
+    "S6": {
+      "from": "S8",
+      "edit": "face only: faint shadows under both eyes, skin slightly duller"
+    },
+    "S5": {
+      "from": "S6",
+      "edit": "face only: darker under-eye circles, mild puffiness of the lower lids, skin dull"
+    },
+    "S4": {
+      "from": "S5",
+      "edit": "face only: very tired look after a sleepless night, dark circles under the eyes, puffy lower eyelids, heavy drooping upper eyelids, lips a little paler, dull complexion"
+    }
+  },
+  "beats": [
+    {"img": "S9", "zoom": 1.3, "focus": "nose_tip", "inset": {"at": ["lower_lid_L", 0, 0.015], "shape": "square", "zoom": 2, "value": "9 HOURS", "label": "RESTED"}, "age": "SKIN EVEN", "vo": "Here is what your sleep does to your face, starting with nine full hours in bed.", "then": {"at": 0.5, "zoom": 1.45}},
+    {"img": "S8", "zoom": 1.3, "focus": "nose_tip", "inset": {"at": ["lower_lid_L", 0, 0.015], "shape": "square", "zoom": 2, "value": "8 HOURS", "label": "BASELINE"}, "age": "NO CHANGE", "vo": "Eight hours is her baseline, the face she wakes up with after a completely normal night."},
+    {"img": "S6", "zoom": 1.3, "focus": "nose_tip", "inset": {"at": ["lower_lid_L", 0, 0.015], "shape": "square", "zoom": 2, "value": "6 HOURS", "label": "FIRST SHADOWS"}, "age": "UNDER-EYE", "vo": "At six hours, the first grey shadows settle in under both eyes and the skin dulls.", "anim": [{"t": "box", "from": "lower_lid_L", "to": "cheek_top_L", "pad": 0.02}]},
+    {"img": "S5", "zoom": 1.3, "focus": "nose_tip", "inset": {"at": ["lower_lid_L", 0, 0.015], "shape": "square", "zoom": 2, "value": "5 HOURS", "label": "PUFFY"}, "age": "LIDS SWELL", "vo": "Five hours, and the lower lids start to swell while the skin loses its healthy colour.", "anim": [{"t": "box", "from": "lower_lid_L", "to": "cheek_top_L", "pad": 0.02}, {"t": "box", "from": "lower_lid_R", "to": "cheek_top_R", "pad": 0.02}]},
+    {"img": "S4", "zoom": 1.3, "focus": "nose_tip", "inset": {"at": ["lower_lid_L", 0, 0.015], "shape": "square", "zoom": 2, "value": "4 HOURS", "label": "HANGING LIDS"}, "age": "PALE LIPS", "vo": "At four hours the upper lids hang, the lips go pale and the whole face greys.", "anim": [{"t": "measure", "from": "brow_inner_L", "to": "upper_lid_L"}, {"t": "box", "from": "lower_lid_L", "to": "cheek_top_L", "pad": 0.02}]},
+    {"img": "S4", "zoom": 1.3, "focus": "nose_tip", "anim": [{"t": "cite", "title": "AXELSSON ET AL., 2010", "source": "BMJ"}, {"t": "circle", "at": "nose_tip", "r": 0.3}], "vo": "In one study, the same people looked less healthy and less attractive when sleep deprived."},
+    {"img": "S4", "zoom": 1.3, "focus": "nose_tip", "anim": [{"t": "cite", "title": "SUNDELIN ET AL., 2013", "source": "Sleep"}, {"t": "dots", "path": ["canthus_outer_L", "lower_lid_L", "canthus_inner_L"]}, {"t": "dots", "path": ["canthus_inner_R", "lower_lid_R", "canthus_outer_R"]}], "vo": "Another study found hanging lids, swollen eyes and darker circles after one missed night of sleep."},
+    {"imgs": ["S9", "S8", "S6", "S5", "S4"], "layout": "strip", "focus": "nose_tip", "zoom": 1.4, "labels": ["RESTED", "BASELINE", "FIRST SHADOWS", "PUFFY", "HANGING LIDS"], "values": ["9 HOURS", "8 HOURS", "6 HOURS", "5 HOURS", "4 HOURS"], "then": {"at": 0.5, "active": 0}, "vo": "None of this is bone, and every step of it comes back with sleep."},
+    {"imgs": ["S9", "S8", "S6", "S5", "S4"], "layout": "strip", "focus": "nose_tip", "zoom": 1.4, "labels": ["RESTED", "BASELINE", "FIRST SHADOWS", "PUFFY", "HANGING LIDS"], "values": ["9 HOURS", "8 HOURS", "6 HOURS", "5 HOURS", "4 HOURS"], "active": 4, "vo": "Comment how many hours you got last night."}
+  ]
+}

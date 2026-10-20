@@ -2,7 +2,8 @@
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
-import {lintScript, parseScript, type Script} from '../src/schema';
+import {lintGeometry} from '../src/lintGeometry';
+import {lintScript, parseScript, type Landmarks, type Script} from '../src/schema';
 
 export const ROOT = path.resolve(__dirname, '..');
 export const OR_BASE = process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1';
@@ -28,6 +29,20 @@ export const loadScript = (idOrPath: string): Script => {
 };
 
 export const abs = (rel: string) => path.join(ROOT, rel);
+
+// Landmark files for every still of a script that has one (the "source" tag is dropped).
+export const loadLandmarks = (s: Script): Record<string, Landmarks> => {
+  const out: Record<string, Landmarks> = {};
+  for (const [k, rel] of Object.entries(s.faces)) {
+    const f = path.join(ROOT, rel.replace(/\.(png|jpe?g)$/i, '.landmarks.json'));
+    if (!fs.existsSync(f)) continue;
+    const {source: _s, ...pts} = JSON.parse(fs.readFileSync(f, 'utf8'));
+    void _s;
+    out[k] = pts;
+  }
+  return out;
+};
+export const geometryWarnings = (s: Script) => lintGeometry(s, loadLandmarks(s));
 
 export const log = (...a: unknown[]) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
 
@@ -83,8 +98,8 @@ export const generateImage = async (model: string, prompt: string, ref?: string)
   const body: Record<string, unknown> = {
     model,
     prompt,
-    aspect_ratio: '4:5',
-    output_format: 'png',
+    // Muse takes 4:5 / png; the GPT image fallback only accepts its own ratios and jpeg (as Reel Factory's slides do).
+    ...(model.includes('muse') ? {aspect_ratio: '4:5', output_format: 'png'} : {aspect_ratio: '2:3', output_format: 'jpeg', quality: 'medium'}),
   };
   if (ref) body.input_references = [{type: 'image_url', image_url: {url: dataUrl(ref)}}];
   const res = await post('/images', body);

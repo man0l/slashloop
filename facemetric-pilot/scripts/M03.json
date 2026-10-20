@@ -1,0 +1,76 @@
+{
+  "id": "M03",
+  "template": "C",
+  "title": "Straight brows: expensive or flat?",
+  "faces": {
+    "A_base": "assets/M03/A_base.jpg",
+    "A_profile": "assets/M03/A_profile.jpg",
+    "A_straight": "assets/M03/A_straight.jpg",
+    "A_angle": "assets/M03/A_angle.jpg",
+    "A_arch": "assets/M03/A_arch.jpg",
+    "A_overfilled": "assets/M03/A_overfilled.jpg",
+    "B_base": "assets/M03/B_base.jpg",
+    "B_straight": "assets/M03/B_straight.jpg",
+    "B_angle": "assets/M03/B_angle.jpg",
+    "B_arch": "assets/M03/B_arch.jpg"
+  },
+  "stills": {
+    "A_base": {
+      "base": "woman, age 26, long oval face, tall forehead, wide-set eyes, dark hair pulled back, no make-up, natural medium brows, plain black crew neck"
+    },
+    "A_profile": {
+      "base": "same woman as A_base, in exact side profile facing left, dark hair pulled back, plain black crew neck"
+    },
+    "A_straight": {
+      "from": "A_base",
+      "edit": "eyebrows only: straight, low, full brows with no arch"
+    },
+    "A_angle": {
+      "from": "A_base",
+      "edit": "eyebrows only: soft angled brows with a gentle peak"
+    },
+    "A_arch": {
+      "from": "A_base",
+      "edit": "eyebrows only: high rounded arched brows"
+    },
+    "A_overfilled": {
+      "from": "A_straight",
+      "edit": "eyebrows only: straight brows drawn on too dark, too thick, blocky, obvious pencil, clearly visible at a glance"
+    },
+    "B_base": {
+      "base": "woman, age 24, round face, short forehead, close-set eyes, light brown hair pulled back, no make-up, natural medium brows, grey crew neck"
+    },
+    "B_straight": {
+      "from": "B_base",
+      "edit": "eyebrows only: straight, low, full brows with no arch"
+    },
+    "B_angle": {
+      "from": "B_base",
+      "edit": "eyebrows only: soft angled brows with a gentle peak"
+    },
+    "B_arch": {
+      "from": "B_base",
+      "edit": "eyebrows only: high rounded arched brows"
+    }
+  },
+  "beats": [
+    {"img": "A_straight", "view": "closeup", "focus": "glabella", "zoom": 2.2, "caption": "WHY DO STRAIGHT BROWS LOOK **EXPENSIVE** ON HER?", "hl": "teal", "underline": true, "then": {"at": 0.55, "view": "front", "zoom": 1.25, "focus": "nose_tip"}, "vo": "Why do some women look better with straight brows?"},
+    {"img": "B_straight", "view": "closeup", "focus": "glabella", "zoom": 2.2, "caption": "WHILE ON OTHERS THEY JUST LOOK **FLAT?**", "hl": "purple", "underline": true, "tint": "purple", "transition": "push", "then": {"at": 0.55, "view": "front", "zoom": 1.25, "focus": "nose_tip"}, "vo": "While on others the same brows just look flat?"},
+    {"img": "A_base", "card": true, "caption": "THE **SPACING**", "hl": "teal", "anim": [{"t": "measure", "from": "canthus_inner_L", "to": "canthus_inner_R"}, {"t": "chip", "text": "WIDE SET"}, {"t": "measure", "from": "hairline", "to": "glabella"}, {"t": "chip", "text": "TALL FOREHEAD"}], "vo": "Start with the gaps: eye spacing and forehead height."},
+    {"img": "A_profile", "view": "profile", "card": true, "caption": "THE **LENGTH**", "hl": "teal", "anim": [{"t": "dots", "path": ["hairline", "glabella", "nose_tip", "subnasale", "pogonion", "chin_bottom"]}, {"t": "chip", "text": "LONG FACE"}, {"t": "chip", "text": "TALL FOREHEAD"}], "vo": "In profile, her face runs long from hairline to chin."},
+    {"imgs": ["A_straight", "A_angle"], "layout": "split", "zoom": 1.9, "focus": "glabella", "labels": ["STRAIGHT", "SOFT ANGLE"], "active": 0, "caption": "PICK YOUR **BROW**", "hl": "teal", "transition": "flash", "anim": [{"t": "measure", "card": 0, "from": ["brow_inner_L", 0, -0.005], "to": ["brow_outer_L", 0, -0.005], "chip": "FLAT LINE"}], "vo": "A straight brow draws one flat line and cuts height."},
+    {"imgs": ["A_straight", "A_angle"], "layout": "split", "zoom": 1.9, "focus": "glabella", "labels": ["STRAIGHT", "SOFT ANGLE"], "active": 1, "caption": "PICK YOUR **BROW**", "hl": "teal", "anim": [{"t": "dots", "card": 1, "path": ["brow_inner_L", ["brow_outer_L", 0.06, -0.025], "brow_outer_L"]}], "then": {"at": 0.5, "anim": [{"t": "chip", "card": 1, "at": ["brow_outer_L", 0.04, -0.07], "text": "PEAK"}]}, "vo": "A soft angle adds a small peak that lifts the eye."},
+    {"imgs": ["A_arch", "A_straight"], "layout": "split", "zoom": 1.9, "focus": "glabella", "labels": ["HIGH ARCH", "STRAIGHT"], "active": 0, "caption": "PICK YOUR **BROW**", "hl": "teal", "anim": [{"t": "measure", "card": 0, "from": ["brow_outer_L", 0.06, -0.035], "to": ["upper_lid_L", 0.03, 0], "chip": "MORE LENGTH"}, {"t": "cite", "title": "FESER ET AL., 2007", "source": "Aesthetic Plastic Surgery"}], "vo": "A high arch lengthens the face, a shape researchers have rated."},
+    {"img": "A_straight", "zoom": 1.05, "focus": "nose_tip", "caption": "LONG **FACE?**", "hl": "teal", "transition": "push", "anim": [{"t": "measure", "from": ["hairline", 0.24, 0], "to": ["chin_bottom", 0.24, 0], "chip": "LONG FACE"}], "vo": "On a long face, a flat brow breaks up the height."},
+    {"img": "A_straight", "zoom": 1.6, "focus": "glabella", "caption": "LONG **FACE?**", "hl": "teal", "anim": [{"t": "box", "from": "brow_outer_L", "to": "brow_outer_R", "pad": 0.02, "chip": "MATCH", "tone": "teal"}], "vo": "Her brows sit as wide as her eyes, so they frame them."},
+    {"img": "A_straight", "zoom": 1.3, "focus": "nose_tip", "caption": "LOOKS **POLISHED**", "hl": "teal", "anim": [{"t": "measure", "from": "canthus_outer_L", "to": "canthus_outer_R", "chip": "WIDE GAP"}], "vo": "Wide-set eyes leave calm space between the brows."},
+    {"img": "A_straight", "zoom": 1.15, "focus": "nose_tip", "caption": "LOOKS **POLISHED**", "hl": "teal", "transition": "flash", "anim": [{"t": "circle", "at": "glabella", "r": 0.09}], "vo": "A clean gap between the brows keeps the look light."},
+    {"imgs": ["A_straight", "A_overfilled"], "layout": "split", "labels": ["GROOMED", "OVERFILLED"], "active": 0, "caption": "KEEP IT **GROOMED**", "hl": "teal", "then": {"at": 0.45, "active": 1, "anim": [{"t": "chip", "card": 1, "at": ["brow_outer_L", 0.0, -0.06], "text": "TOO DARK", "tone": "purple"}, {"t": "chip", "card": 1, "at": ["brow_outer_R", 0.0, 0.06], "text": "BLOCKY", "tone": "purple"}]}, "vo": "Overdo the pencil, and dark, blocky brows look drawn on."},
+    {"img": "B_straight", "tint": "purple", "zoom": 1.1, "focus": "nose_tip", "caption": "ROUND **FACE?**", "hl": "purple", "transition": "push", "anim": [{"t": "measure", "from": "canthus_inner_L", "to": "canthus_inner_R", "chip": "CLOSE SET", "tone": "purple"}], "vo": "Now a round face with close-set eyes and the same brows."},
+    {"img": "B_straight", "tint": "purple", "zoom": 1.45, "focus": "glabella", "caption": "ROUND **FACE?**", "hl": "purple", "anim": [{"t": "box", "from": "brow_outer_L", "to": "brow_outer_R", "pad": 0.02, "chip": "NO MATCH", "tone": "purple"}, {"t": "measure", "from": "hairline", "to": "glabella", "chip": "SHORT FOREHEAD", "tone": "purple"}], "vo": "Her short forehead has no height to spare."},
+    {"imgs": ["B_arch", "B_straight"], "layout": "split", "tint": "purple", "labels": ["HIGH ARCH", "STRAIGHT"], "active": 0, "caption": "LIFT **INSTEAD**", "hl": "purple", "anim": [{"t": "dots", "card": 0, "path": ["brow_inner_L", ["brow_outer_L", 0.05, -0.04], "brow_outer_L"]}], "then": {"at": 0.5, "active": 1}, "vo": "On her, an arch adds back the height."},
+    {"img": "B_straight", "tint": "purple", "zoom": 1.2, "focus": "nose_tip", "caption": "ALL **WIDTH**", "hl": "purple", "anim": [{"t": "circle", "at": "nose_tip", "r": 0.27}], "vo": "On a round face, a straight brow only adds width."},
+    {"grid": [["A_base", "AGE 26"], ["B_base", "AGE 24"], ["A_straight", "LOOKS EXPENSIVE", "teal"], ["B_straight", "LOOKS FLAT", "purple"]], "layout": "grid2x2", "row": "+ STRAIGHT BROWS", "caption": "**EXPENSIVE** OR FLAT?", "hl": "teal", "transition": "flash", "anim": [{"t": "measure", "card": 2, "from": ["brow_inner_L", 0, 0], "to": ["brow_outer_L", 0, 0]}, {"t": "measure", "card": 3, "from": ["brow_inner_L", 0, 0], "to": ["brow_outer_L", 0, 0]}], "vo": "A straight brow shortens a long face and flattens a round one."},
+    {"grid": [["A_base", "AGE 26"], ["B_base", "AGE 24"], ["A_straight", "LOOKS EXPENSIVE", "teal"], ["B_straight", "LOOKS FLAT", "purple"]], "layout": "grid2x2", "row": "+ STRAIGHT BROWS", "arrows": true, "caption": "**EXPENSIVE** OR FLAT?", "hl": "teal", "then": {"at": 0.7, "caption": "WHICH **BROW** IS YOURS?", "hl": "teal"}, "vo": "So the brow has to answer the face, not the trend."}
+  ]
+}

@@ -4,7 +4,7 @@
 import {execFileSync, spawn} from 'node:child_process';
 import fs from 'node:fs';
 import sharp from 'sharp';
-import {abs, args, balance, loadScript, log, spendSoFar} from './lib';
+import {abs, args, balance, geometryWarnings, loadScript, log, spendSoFar} from './lib';
 
 // Sum RSS of a process and all its descendants (Linux /proc).
 const treeRss = (pid: number): number => {
@@ -61,6 +61,7 @@ const main = async () => {
   const props = `./scripts/${id}.json`;
   const mp4 = `out/${name}.mp4`;
   fs.mkdirSync(abs('out'), {recursive: true});
+  for (const w of geometryWarnings(script)) console.warn(`[lint ${id}] ${w}`);
   const bal0 = await balance();
 
   let r = {ms: 0, peak: 0};

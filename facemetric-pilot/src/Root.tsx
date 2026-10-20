@@ -4,10 +4,14 @@ import {calculateMetadata, Reel, type ReelProps} from './Reel';
 import {theme} from './theme';
 import R01 from '../scripts/R01.json';
 import M01 from '../scripts/M01.json';
+import M02 from '../scripts/M02.json';
+import M03 from '../scripts/M03.json';
+import M04 from '../scripts/M04.json';
+import M05 from '../scripts/M05.json';
 
 // `Reel` is the one composition the renderer uses: pass any script with --props=./scripts/RXX.json.
 // The "Review" folder registers each script (and a debug copy with landmark dots) for Studio review.
-const scripts = [R01, M01] as unknown as ReelProps[];
+const scripts = [R01, M01, M02, M03, M04, M05] as unknown as ReelProps[];
 
 const common = {
   component: Reel,

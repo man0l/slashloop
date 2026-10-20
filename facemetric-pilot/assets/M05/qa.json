@@ -1,0 +1,42 @@
+{
+  "S8": {
+    "key": "S8",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS: The image fulfills all specified visual, demographic, and styling criteria without defects.",
+    "tries": 1,
+    "cost": 0.01211275
+  },
+  "S6": {
+    "key": "S6",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The edit subtly adds shadows under the eyes and slightly dulls the facial skin tone while keeping everything else identical.",
+    "tries": 1,
+    "cost": 0.01262275
+  },
+  "S9": {
+    "key": "S9",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The edit subtly brightens and evens the facial skin tone and slightly opens the eyes while keeping the person, pose, and background identical.",
+    "tries": 1,
+    "cost": 0.01256875
+  },
+  "S5": {
+    "key": "S5",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The edit precisely applies darker under-eye circles, slight puffiness, and duller skin while preserving identity, pose, and background.",
+    "tries": 1,
+    "cost": 0.01283725
+  },
+  "S4": {
+    "key": "S4",
+    "model": "openai/gpt-image-2.5-sunburst",
+    "verdict": "FAIL",
+    "reason": "image openai/gpt-image-2.5-sunburst 402: {\"error\":{\"message\":\"Insufficient credits. Add more using https://openrouter.ai/settings/credits\",\"code\":402,\"metadata\":{\"limit_source\":\"openrouter_credits\",\"r",
+    "tries": 3,
+    "cost": 0
+  }
+}

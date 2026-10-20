@@ -1,0 +1,760 @@
+{
+  "beats": [
+    {
+      "file": "M02/vo/7a01ef268c8d.mp3",
+      "hash": "7a01ef268c8d",
+      "vo": "Here is what five levels of eye area look like, with hunter eyes at the top.",
+      "seconds": 3.761633,
+      "lead": 0,
+      "trail": 0.216,
+      "words": [
+        {
+          "w": "Here",
+          "start": 0.06,
+          "end": 0.16
+        },
+        {
+          "w": "is",
+          "start": 0.2,
+          "end": 0.3
+        },
+        {
+          "w": "what",
+          "start": 0.32,
+          "end": 0.48
+        },
+        {
+          "w": "five",
+          "start": 0.54,
+          "end": 0.72
+        },
+        {
+          "w": "levels",
+          "start": 0.76,
+          "end": 1
+        },
+        {
+          "w": "of",
+          "start": 1.04,
+          "end": 1.14
+        },
+        {
+          "w": "eye",
+          "start": 1.22,
+          "end": 1.38
+        },
+        {
+          "w": "area",
+          "start": 1.46,
+          "end": 1.66
+        },
+        {
+          "w": "look",
+          "start": 1.7,
+          "end": 1.84
+        },
+        {
+          "w": "like,",
+          "start": 1.88,
+          "end": 2.08
+        },
+        {
+          "w": "with",
+          "start": 2.32,
+          "end": 2.42
+        },
+        {
+          "w": "hunter",
+          "start": 2.44,
+          "end": 2.68
+        },
+        {
+          "w": "eyes",
+          "start": 2.76,
+          "end": 2.96
+        },
+        {
+          "w": "at",
+          "start": 3,
+          "end": 3.06
+        },
+        {
+          "w": "the",
+          "start": 3.1,
+          "end": 3.18
+        },
+        {
+          "w": "top.",
+          "start": 3.22,
+          "end": 3.48
+        }
+      ]
+    },
+    {
+      "file": "M02/vo/afa7f21b7338.mp3",
+      "hash": "afa7f21b7338",
+      "vo": "Hooded eyes still tilt upward, but a heavier upper lid now covers most of the crease.",
+      "seconds": 4.414694,
+      "lead": 0,
+      "trail": 0.191,
+      "words": [
+        {
+          "w": "Hooded",
+          "start": 0.06,
+          "end": 0.28
+        },
+        {
+          "w": "eyes",
+          "start": 0.42,
+          "end": 0.66
+        },
+        {
+          "w": "still",
+          "start": 0.84,
+          "end": 1
+        },
+        {
+          "w": "tilt",
+          "start": 1.1,
+          "end": 1.28
+        },
+        {
+          "w": "upward,",
+          "start": 1.38,
+          "end": 1.66
+        },
+        {
+          "w": "but",
+          "start": 1.9,
+          "end": 1.98
+        },
+        {
+          "w": "a",
+          "start": 2.04,
+          "end": 2.08
+        },
+        {
+          "w": "heavier",
+          "start": 2.12,
+          "end": 2.42
+        },
+        {
+          "w": "upper",
+          "start": 2.48,
+          "end": 2.66
+        },
+        {
+          "w": "lid",
+          "start": 2.7,
+          "end": 2.9
+        },
+        {
+          "w": "now",
+          "start": 2.94,
+          "end": 3.1
+        },
+        {
+          "w": "covers",
+          "start": 3.14,
+          "end": 3.38
+        },
+        {
+          "w": "most",
+          "start": 3.44,
+          "end": 3.62
+        },
+        {
+          "w": "of",
+          "start": 3.66,
+          "end": 3.7
+        },
+        {
+          "w": "the",
+          "start": 3.74,
+          "end": 3.8
+        },
+        {
+          "w": "crease.",
+          "start": 3.84,
+          "end": 4.14
+        }
+      ]
+    },
+    {
+      "file": "M02/vo/9e6f818049eb.mp3",
+      "hash": "9e6f818049eb",
+      "vo": "Neutral is the biggest group, about a third of men, with only a mild upward tilt.",
+      "seconds": 4.545306,
+      "lead": 0,
+      "trail": 0.241,
+      "words": [
+        {
+          "w": "Neutral",
+          "start": 0.06,
+          "end": 0.36
+        },
+        {
+          "w": "is",
+          "start": 0.5,
+          "end": 0.56
+        },
+        {
+          "w": "the",
+          "start": 0.6,
+          "end": 0.68
+        },
+        {
+          "w": "biggest",
+          "start": 0.7,
+          "end": 0.98
+        },
+        {
+          "w": "group,",
+          "start": 1.02,
+          "end": 1.28
+        },
+        {
+          "w": "about",
+          "start": 1.8,
+          "end": 1.96
+        },
+        {
+          "w": "a",
+          "start": 2,
+          "end": 2.08
+        },
+        {
+          "w": "third",
+          "start": 2.12,
+          "end": 2.32
+        },
+        {
+          "w": "of",
+          "start": 2.34,
+          "end": 2.42
+        },
+        {
+          "w": "men,",
+          "start": 2.48,
+          "end": 2.72
+        },
+        {
+          "w": "with",
+          "start": 2.98,
+          "end": 3.08
+        },
+        {
+          "w": "only",
+          "start": 3.12,
+          "end": 3.26
+        },
+        {
+          "w": "a",
+          "start": 3.32,
+          "end": 3.36
+        },
+        {
+          "w": "mild",
+          "start": 3.4,
+          "end": 3.66
+        },
+        {
+          "w": "upward",
+          "start": 3.7,
+          "end": 3.94
+        },
+        {
+          "w": "tilt.",
+          "start": 4,
+          "end": 4.24
+        }
+      ]
+    },
+    {
+      "file": "M02/vo/bf6a9337f157.mp3",
+      "hash": "bf6a9337f157",
+      "vo": "Droopy eyes lose the upward tilt completely, and far more of the upper lid shows.",
+      "seconds": 4.493061,
+      "lead": 0,
+      "trail": 0.228,
+      "words": [
+        {
+          "w": "Droopy",
+          "start": 0.06,
+          "end": 0.3
+        },
+        {
+          "w": "eyes",
+          "start": 0.44,
+          "end": 0.7
+        },
+        {
+          "w": "lose",
+          "start": 0.76,
+          "end": 0.96
+        },
+        {
+          "w": "the",
+          "start": 1.02,
+          "end": 1.12
+        },
+        {
+          "w": "upward",
+          "start": 1.18,
+          "end": 1.42
+        },
+        {
+          "w": "tilt",
+          "start": 1.48,
+          "end": 1.66
+        },
+        {
+          "w": "completely,",
+          "start": 1.7,
+          "end": 2.14
+        },
+        {
+          "w": "and",
+          "start": 2.56,
+          "end": 2.68
+        },
+        {
+          "w": "far",
+          "start": 2.74,
+          "end": 2.94
+        },
+        {
+          "w": "more",
+          "start": 2.98,
+          "end": 3.14
+        },
+        {
+          "w": "of",
+          "start": 3.18,
+          "end": 3.24
+        },
+        {
+          "w": "the",
+          "start": 3.28,
+          "end": 3.36
+        },
+        {
+          "w": "upper",
+          "start": 3.4,
+          "end": 3.56
+        },
+        {
+          "w": "lid",
+          "start": 3.6,
+          "end": 3.78
+        },
+        {
+          "w": "shows.",
+          "start": 3.82,
+          "end": 4.18
+        }
+      ]
+    },
+    {
+      "file": "M02/vo/bd58ad9e2a98.mp3",
+      "hash": "bd58ad9e2a98",
+      "vo": "Prey eyes tilt down at the outer corners, with big exposed lids and brows pulled high.",
+      "seconds": 4.728163,
+      "lead": 0,
+      "trail": 0.198,
+      "words": [
+        {
+          "w": "Prey",
+          "start": 0.06,
+          "end": 0.26
+        },
+        {
+          "w": "eyes",
+          "start": 0.36,
+          "end": 0.64
+        },
+        {
+          "w": "tilt",
+          "start": 0.74,
+          "end": 0.94
+        },
+        {
+          "w": "down",
+          "start": 0.98,
+          "end": 1.18
+        },
+        {
+          "w": "at",
+          "start": 1.22,
+          "end": 1.28
+        },
+        {
+          "w": "the",
+          "start": 1.32,
+          "end": 1.4
+        },
+        {
+          "w": "outer",
+          "start": 1.44,
+          "end": 1.66
+        },
+        {
+          "w": "corners,",
+          "start": 1.7,
+          "end": 1.98
+        },
+        {
+          "w": "with",
+          "start": 2.22,
+          "end": 2.34
+        },
+        {
+          "w": "big",
+          "start": 2.4,
+          "end": 2.52
+        },
+        {
+          "w": "exposed",
+          "start": 2.56,
+          "end": 3
+        },
+        {
+          "w": "lids",
+          "start": 3.06,
+          "end": 3.3
+        },
+        {
+          "w": "and",
+          "start": 3.34,
+          "end": 3.42
+        },
+        {
+          "w": "brows",
+          "start": 3.5,
+          "end": 3.8
+        },
+        {
+          "w": "pulled",
+          "start": 3.88,
+          "end": 4.08
+        },
+        {
+          "w": "high.",
+          "start": 4.12,
+          "end": 4.44
+        }
+      ]
+    },
+    {
+      "file": "M02/vo/fb2692bfd8b6.mp3",
+      "hash": "fb2692bfd8b6",
+      "vo": "One study varied brow thickness and eye size to see what makes a face look masculine.",
+      "seconds": 4.179592,
+      "lead": 0,
+      "trail": 0.181,
+      "words": [
+        {
+          "w": "One",
+          "start": 0.04,
+          "end": 0.14
+        },
+        {
+          "w": "study",
+          "start": 0.24,
+          "end": 0.5
+        },
+        {
+          "w": "varied",
+          "start": 0.54,
+          "end": 0.84
+        },
+        {
+          "w": "brow",
+          "start": 0.86,
+          "end": 1.06
+        },
+        {
+          "w": "thickness",
+          "start": 1.14,
+          "end": 1.5
+        },
+        {
+          "w": "and",
+          "start": 1.52,
+          "end": 1.66
+        },
+        {
+          "w": "eye",
+          "start": 1.7,
+          "end": 1.86
+        },
+        {
+          "w": "size",
+          "start": 1.9,
+          "end": 2.18
+        },
+        {
+          "w": "to",
+          "start": 2.3,
+          "end": 2.38
+        },
+        {
+          "w": "see",
+          "start": 2.42,
+          "end": 2.52
+        },
+        {
+          "w": "what",
+          "start": 2.56,
+          "end": 2.68
+        },
+        {
+          "w": "makes",
+          "start": 2.7,
+          "end": 2.86
+        },
+        {
+          "w": "a",
+          "start": 2.9,
+          "end": 2.96
+        },
+        {
+          "w": "face",
+          "start": 3,
+          "end": 3.24
+        },
+        {
+          "w": "look",
+          "start": 3.28,
+          "end": 3.42
+        },
+        {
+          "w": "masculine.",
+          "start": 3.46,
+          "end": 3.9
+        }
+      ]
+    },
+    {
+      "file": "M02/vo/0e11e777d299.mp3",
+      "hash": "0e11e777d299",
+      "vo": "Most men are in the middle and do not know it, so check yours honestly.",
+      "seconds": 3.343673,
+      "lead": 0,
+      "trail": 0.214,
+      "words": [
+        {
+          "w": "Most",
+          "start": 0.06,
+          "end": 0.26
+        },
+        {
+          "w": "men",
+          "start": 0.3,
+          "end": 0.42
+        },
+        {
+          "w": "are",
+          "start": 0.44,
+          "end": 0.52
+        },
+        {
+          "w": "in",
+          "start": 0.58,
+          "end": 0.64
+        },
+        {
+          "w": "the",
+          "start": 0.68,
+          "end": 0.76
+        },
+        {
+          "w": "middle",
+          "start": 0.8,
+          "end": 1.04
+        },
+        {
+          "w": "and",
+          "start": 1.06,
+          "end": 1.16
+        },
+        {
+          "w": "do",
+          "start": 1.18,
+          "end": 1.26
+        },
+        {
+          "w": "not",
+          "start": 1.3,
+          "end": 1.42
+        },
+        {
+          "w": "know",
+          "start": 1.46,
+          "end": 1.58
+        },
+        {
+          "w": "it,",
+          "start": 1.62,
+          "end": 1.72
+        },
+        {
+          "w": "so",
+          "start": 2,
+          "end": 2.12
+        },
+        {
+          "w": "check",
+          "start": 2.14,
+          "end": 2.34
+        },
+        {
+          "w": "yours",
+          "start": 2.38,
+          "end": 2.6
+        },
+        {
+          "w": "honestly.",
+          "start": 2.62,
+          "end": 3.06
+        }
+      ]
+    },
+    {
+      "file": "M02/vo/08f32208c95c.mp3",
+      "hash": "08f32208c95c",
+      "vo": "Brow bone and lid exposure do most of this, and the middle is where most of you sit.",
+      "seconds": 4.493061,
+      "lead": 0,
+      "trail": 0.233,
+      "words": [
+        {
+          "w": "Brow",
+          "start": 0.08,
+          "end": 0.24
+        },
+        {
+          "w": "bone",
+          "start": 0.3,
+          "end": 0.54
+        },
+        {
+          "w": "and",
+          "start": 0.58,
+          "end": 0.68
+        },
+        {
+          "w": "lid",
+          "start": 0.72,
+          "end": 0.82
+        },
+        {
+          "w": "exposure",
+          "start": 0.86,
+          "end": 1.32
+        },
+        {
+          "w": "do",
+          "start": 1.52,
+          "end": 1.62
+        },
+        {
+          "w": "most",
+          "start": 1.66,
+          "end": 1.84
+        },
+        {
+          "w": "of",
+          "start": 1.88,
+          "end": 1.96
+        },
+        {
+          "w": "this,",
+          "start": 2,
+          "end": 2.2
+        },
+        {
+          "w": "and",
+          "start": 2.74,
+          "end": 2.8
+        },
+        {
+          "w": "the",
+          "start": 2.84,
+          "end": 2.9
+        },
+        {
+          "w": "middle",
+          "start": 2.94,
+          "end": 3.12
+        },
+        {
+          "w": "is",
+          "start": 3.18,
+          "end": 3.26
+        },
+        {
+          "w": "where",
+          "start": 3.3,
+          "end": 3.44
+        },
+        {
+          "w": "most",
+          "start": 3.48,
+          "end": 3.66
+        },
+        {
+          "w": "of",
+          "start": 3.68,
+          "end": 3.76
+        },
+        {
+          "w": "you",
+          "start": 3.8,
+          "end": 3.84
+        },
+        {
+          "w": "sit.",
+          "start": 3.94,
+          "end": 4.18
+        }
+      ]
+    },
+    {
+      "file": "M02/vo/025a231ff269.mp3",
+      "hash": "025a231ff269",
+      "vo": "Comment your level. Be honest.",
+      "seconds": 1.619592,
+      "lead": 0,
+      "trail": 0.208,
+      "words": [
+        {
+          "w": "Comment",
+          "start": 0.06,
+          "end": 0.28
+        },
+        {
+          "w": "your",
+          "start": 0.34,
+          "end": 0.42
+        },
+        {
+          "w": "level.",
+          "start": 0.48,
+          "end": 0.7
+        },
+        {
+          "w": "Be",
+          "start": 0.86,
+          "end": 0.94
+        },
+        {
+          "w": "honest.",
+          "start": 0.96,
+          "end": 1.34
+        }
+      ]
+    }
+  ],
+  "voiceSeconds": 36.368775
+}

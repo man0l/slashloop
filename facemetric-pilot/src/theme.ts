@@ -85,6 +85,30 @@ export const theme = {
     zoom: 2,
     ring: 10,
     slideFrames: 8,
+    square: 300, // ladder inset: rounded square at the right of the face
+    squareRadius: 28,
+    squareTop: 560,
+    valueSize: 76,
+  },
+  // Ladder header (template A): persistent, 2 lines, keyword on a teal box.
+  header: {
+    fontSize: 72,
+    lineHeight: 1.08,
+    top: 120,
+    maxWidth: 960,
+  },
+  cite: {
+    top: 400, // under a 1-2 line headline
+    topUnderHeader: 300, // under a ladder header
+  },
+  strip: {
+    width: 190,
+    gap: 16,
+    top: 700,
+  },
+  agePill: {
+    x: 60,
+    y: 1350,
   },
   stagger: {
     firstAnim: 6, // frame the first anim (line) starts; headline + subtitles start at 0

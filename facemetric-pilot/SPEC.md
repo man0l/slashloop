@@ -131,13 +131,16 @@ is the model for the "if you said" beat.
 | Purple / teal tint | `"tint"` | built |
 | Hook underline | `"underline":true` | built |
 | Full-frame close-up | `"view":"closeup","focus","zoom"` | built |
-| Circular inset (2x) | `"inset":{"at","label"}` | built (circle) |
-| Rounded-square inset + value + level pill + AGE pill (ladder) | `"inset":{"at","label","value","shape":"square"}`, `"age"` | todo |
-| Header variant (72 px, keyword on teal box, persistent) | `"header"` on the script | todo |
+| Circular inset (2x, `zoom` up to 3x for micro-features) | `"inset":{"at","label","zoom"}` | built |
+| Rounded-square inset + value + level pill (ladder) | `"inset":{"at","label","value","shape":"square","zoom":2}` | built |
+| AGE / stat pill bottom-left | `"age":"AGE 28"` or `"age":"10% OF MEN"` | built |
+| Header variant (72 px, keyword on teal box, persistent) | `"header"` on the script; beats then leave `caption` empty | built |
 | Arc gauge | `{"t":"gauge","pos","chip"}` | todo |
-| Citation card | `{"t":"cite","title","source"}` | todo |
+| Citation card | `{"t":"cite","title","source"}` | built |
+| Ladder strip (5 cards, 190 px, value above, label below) | `"layout":"strip","imgs","values","labels"`, `then.active` highlights one | built |
 | Pointer chip with leader line | `{"t":"pointer","at","to","text"}` | todo |
 | Ellipse | `{"t":"ellipse","at","rx","ry"}` | todo |
+| Paired close-ups (two zoomed crops side by side) | split with `"zoom":3,"focus":"iris_centre_L"` (same point on both faces) | built |
 | Paired circle close-ups | `"layout":"circles"` | todo |
 | One face split down the middle (trimmed / neglected) | `"layout":"halves"` | todo |
 | Close-up -> full face inside one beat | `"then":{"at":0.5,"view":"front"}` (also `then.zoom`, `then.focus`) | built |
@@ -184,3 +187,23 @@ Each accepted warning needs a reason in `lintAccept`. Content-matrix items also 
 (`tools/uniqueness.ts`, run by `tools/render.ts`): structural distance, headline / n-gram overlap, shared stills, and
 visible changes per minute **measured on the MP4** with the same method used on the reference reels (15 fps, 72x128
 grey, > 4% of pixels changing, events 0.3 s apart). Counting every anim in the script overstates it about 2x.
+
+---
+
+## 6. Safety rails added in Phase 3b (brief section 9)
+
+- **Landmarks** (`tools/landmarks.ts`): every front still is checked against anatomy rules (vertical order hairline <
+  brows < canthi < nose tip < subnasale < upper lip < stomion < chin; jaw angles between stomion and chin; outer canthi
+  further from the midline than inner). First violation: the vision model is re-asked, naming the rule. Second: MediaPipe
+  Face Landmarker (`tools/mediapipe.ts`, WASM in headless Chromium) replaces the answer. Each file records
+  `"source": "llm" | "llm-retry" | "mediapipe"`. MediaPipe's "hairline" is the top of its mesh (upper forehead), 70-150 px
+  below the real hairline, so hairline metrics prefer the vision model.
+- **Subtitle band**: y 1420-1580 on full-bleed and split/grid beats, the bottom 160 px of a single card. Chips move
+  themselves above it. A full-bleed beat whose lines would enter it zooms in and moves the photo up (up to 1.8x); if that
+  is not enough it renders as a rounded card instead. `lintGeometry` warns if a line still crosses.
+- **Skull / hairline metrics** (hairline, forehead_top, vertex, occiput) must be drawn on a still whose edit removes or
+  flattens the hair (buzz, shave, pulled back...). Lint warns otherwise.
+- **Too-far stills** (grown out, neglected, overfilled, ragged): the edit names three visible signs and says "clearly
+  visible at a glance"; QA answers two questions (only the edit changed / the edit is obvious at 300 px). Regenerate once
+  on either FAIL, then flag.
+- **Grid payoff**: the last grid beat (`arrows: true`) shows the bad-side label in its tone together with the rings.

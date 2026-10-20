@@ -1,0 +1,82 @@
+{
+  "A_base": {
+    "key": "A_base",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS: The image fully satisfies all specified criteria, depicting a photorealistic studio portrait of the woman with all listed attributes.",
+    "tries": 1,
+    "cost": 0.01147975
+  },
+  "B_base": {
+    "key": "B_base",
+    "model": "meta/muse-image",
+    "verdict": "FAIL",
+    "reason": "FAIL - The subject has a high/tall forehead rather than a short forehead.",
+    "tries": 2,
+    "cost": 0.02803925
+  },
+  "B_straight": {
+    "key": "B_straight",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The subject and background remain identical with only the eyebrows modified to be fuller, straighter, and lower without an arch.",
+    "tries": 1,
+    "cost": 0.01252225
+  },
+  "A_straight": {
+    "key": "A_straight",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The person, pose, and background are identical, with only the eyebrows modified to be straight, low, and full.",
+    "tries": 1,
+    "cost": 0.01251475
+  },
+  "A_profile": {
+    "key": "A_profile",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The subject's identity, background, and clothing remain consistent while correctly showing an exact left-side profile.",
+    "tries": 1,
+    "cost": 0.01260625
+  },
+  "A_arch": {
+    "key": "A_arch",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The edit accurately modifies only the eyebrows to high rounded arches while preserving identity, pose, and background.",
+    "tries": 1,
+    "cost": 0.01235725
+  },
+  "B_angle": {
+    "key": "B_angle",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The eyebrows were accurately modified to soft angled brows with a gentle peak while preserving the person, pose, and background.",
+    "tries": 1,
+    "cost": 0.012895750000000001
+  },
+  "B_arch": {
+    "key": "B_arch",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The edit accurately changes only the eyebrows to high rounded arches while preserving the person's identity and background.",
+    "tries": 1,
+    "cost": 0.012406
+  },
+  "A_angle": {
+    "key": "A_angle",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The eyebrows were successfully reshaped with a gentle arch while maintaining the subject's identity, pose, and background.",
+    "tries": 1,
+    "cost": 0.01270075
+  },
+  "A_overfilled": {
+    "key": "A_overfilled",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "A: PASS - The subject, pose, clothing, and background remain consistent with only the eyebrows altered. B: PASS - The thick, dark, and blocky eyebrows are clearly noticeable at low resolution.",
+    "tries": 1,
+    "cost": 0.01346275
+  }
+}

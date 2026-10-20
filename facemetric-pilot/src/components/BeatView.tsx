@@ -1,12 +1,12 @@
 import {Audio} from '@remotion/media';
 import React from 'react';
 import {AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig} from 'remotion';
-import {cardsFor, resolvePoint, type CardRect} from '../geometry';
+import {cardsFor, resolvePoint, subtitleBand, type CardRect} from '../geometry';
 import type {Anim, Beat, Landmarks, Script} from '../schema';
 import {theme} from '../theme';
-import {Card, Inset, stillSrc} from './Card';
+import {Card, Inset, insetBox, stillSrc} from './Card';
 import {AnimView, LandmarkDebug} from './Overlays';
-import {Chip, fontFamily, Headline, Subtitles, type Tone, type Word} from './Text';
+import {BandContext, Chip, CiteTopContext, fontFamily, Headline, Subtitles, Value, type Tone, type Word} from './Text';
 
 const Pop: React.FC<{at: number}> = ({at}) =>
   theme.audio.sfx.pop ? (
@@ -17,7 +17,7 @@ const Pop: React.FC<{at: number}> = ({at}) =>
 
 // Frames at which each anim of a list starts (headline 0, first line 6, then every `step`).
 const starts = (list: Anim[], base: number) => list.map((_, i) => base + theme.stagger.firstAnim + i * theme.stagger.step);
-const hasChip = (a: Anim) => a.t === 'chip' || !!a.chip;
+const hasChip = (a: Anim) => a.t === 'chip' || a.t === 'cite' || ('chip' in a && !!a.chip);
 const chipFrame = (a: Anim, start: number) => (a.t === 'chip' ? start : start + theme.stagger.chipDelay);
 const isLabel = (a: Anim) => a.t === 'chip' && !a.at;
 
@@ -70,7 +70,11 @@ export const BeatView: React.FC<{
   };
   const inside = (c: CardRect) => c.y + c.h - (c.w < 600 ? 34 : 44); // chip line inside the card's bottom edge
 
+  const band = subtitleBand(framed, cards);
+
   return (
+    <BandContext.Provider value={beat.subs ? band : null}>
+    <CiteTopContext.Provider value={script.header ? theme.cite.topUnderHeader : theme.cite.top}>
     <AbsoluteFill style={{background: canvasBg}}>
       {cards.map((c, i) => {
         const ring = isGrid && beat.arrows && i >= 2 ? theme.color[(beat.grid![i][2] as 'teal' | 'purple' | undefined) ?? 'teal'] : undefined;
@@ -80,7 +84,7 @@ export const BeatView: React.FC<{
       {beat.tint ? <AbsoluteFill style={{background: theme.tint[beat.tint]}} /> : null}
 
       {/* split / strip labels: small pills inside the bottom of each card */}
-      {beat.labels && !isGrid
+      {beat.labels && !isGrid && beat.layout !== 'strip'
         ? cards.map((c, i) =>
             beat.labels?.[i] ? (
               <Chip key={`l${i}`} text={beat.labels[i]} x={c.x + c.w / 2} y={inside(c)} from={0} small tone={state(i) === 'active' ? 'teal' : 'white'} />
@@ -115,28 +119,50 @@ export const BeatView: React.FC<{
         return a.t === 'chip' ? <Chip key={`lab${n}`} text={a.text} x={x} y={y} from={from} tone={a.tone} check={a.check ?? true} /> : null;
       })}
 
-      {beat.inset && cards[0] ? (
-        <>
-          <Inset card={cards[0]} src={stillSrc(script.faces[cards[0].key])} at={resolvePoint(beat.inset.at, landmarks[cards[0].key], cards[0].key)} from={theme.stagger.insetDelay} />
-          {beat.inset.label ? (
-            <Chip
-              text={beat.inset.label}
-              x={Math.min(theme.canvas.width - 30 - theme.inset.diameter / 2, cards[0].x + cards[0].w + 40 - theme.inset.diameter / 2)}
-              y={Math.min(theme.canvas.height - 260, cards[0].y + cards[0].h + 40) - theme.inset.diameter - 10}
-              from={theme.stagger.insetDelay + theme.inset.slideFrames}
-              tone={beat.inset.tone}
-            />
-          ) : null}
-        </>
-      ) : null}
+      {beat.inset && cards[0]
+        ? (() => {
+            const ins = beat.inset;
+            const shape = ins.shape ?? 'circle';
+            const box = insetBox(cards[0], shape);
+            const from = shape === 'square' ? 0 : theme.stagger.insetDelay;
+            const after = shape === 'square' ? 3 : theme.stagger.insetDelay + theme.inset.slideFrames;
+            const cx = box.left + box.d / 2;
+            return (
+              <>
+                <Inset card={cards[0]} src={stillSrc(script.faces[cards[0].key])} at={resolvePoint(ins.at, landmarks[cards[0].key], cards[0].key)} from={from} shape={shape} zoom={ins.zoom} />
+                {ins.value ? <Value text={ins.value} x={cx} y={box.top - 14} from={0} /> : null}
+                {ins.label ? (
+                  shape === 'square' ? (
+                    <Chip text={ins.label} x={cx} y={box.top + box.d + 36} from={after} tone={ins.tone} small />
+                  ) : (
+                    <Chip text={ins.label} x={cx} y={box.top - 10} from={after} tone={ins.tone} />
+                  )
+                ) : null}
+              </>
+            );
+          })()
+        : null}
 
-      <Headline key={headlineFrom} text={caption} hl={hl} underline={beat.underline} from={headlineFrom} />
-      {beat.subs ? <Subtitles words={words} /> : null}
+      {/* bottom-left pill: AGE 28, or a ladder stat */}
+      {beat.age ? <Chip text={beat.age} x={theme.agePill.x} y={theme.agePill.y} from={4} anchor="left" small /> : null}
+
+      {/* strip: value above each card, label below (labels alternate rows so long ones do not collide) */}
+      {beat.layout === 'strip'
+        ? cards.map((c, i) => (
+            <React.Fragment key={`s${i}`}>
+              {beat.values?.[i] ? <Value text={beat.values[i]} x={c.x + c.w / 2} y={c.y - 12} from={2 + i * 3} /> : null}
+              {beat.labels?.[i] ? <Chip text={beat.labels[i]} x={c.x + c.w / 2} y={c.y + c.h + 40 + (i % 2) * 58} from={4 + i * 3} small /> : null}
+            </React.Fragment>
+          ))
+        : null}
+
+      {caption ? <Headline key={headlineFrom} text={caption} hl={hl} underline={beat.underline} from={headlineFrom} /> : null}
+      {beat.subs ? <Subtitles words={words} centerY={(band[0] + band[1]) / 2} /> : null}
 
       {/* SFX: a pop on every chip */}
       {anims.map((a, i) => (hasChip(a) ? <Pop key={`s${i}`} at={chipFrame(a, animStarts[i])} /> : null))}
       {thenAnims.map((a, i) => (hasChip(a) ? <Pop key={`st${i}`} at={chipFrame(a, thenStarts[i])} /> : null))}
-      {beat.inset?.label ? <Pop at={theme.stagger.insetDelay + theme.inset.slideFrames} /> : null}
+      {beat.inset?.label ? <Pop at={beat.inset.shape === 'square' ? 3 : theme.stagger.insetDelay + theme.inset.slideFrames} /> : null}
 
       {debug ? (
         <>
@@ -149,5 +175,7 @@ export const BeatView: React.FC<{
         </>
       ) : null}
     </AbsoluteFill>
+    </CiteTopContext.Provider>
+    </BandContext.Provider>
   );
 };

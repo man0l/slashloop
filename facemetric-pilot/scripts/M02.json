@@ -1,0 +1,49 @@
+{
+  "id": "M02",
+  "template": "A",
+  "title": "Five levels of eye area",
+  "header": "HERE IS WHAT FIVE LEVELS OF **EYE AREA** LOOK LIKE",
+  "faces": {
+    "L3_neutral": "assets/M02/L3_neutral.jpg",
+    "L1_hunter": "assets/M02/L1_hunter.jpg",
+    "L2_hooded": "assets/M02/L2_hooded.jpg",
+    "L4_droopy": "assets/M02/L4_droopy.jpg",
+    "L5_prey": "assets/M02/L5_prey.jpg"
+  },
+  "stills": {
+    "L3_neutral": {
+      "base": "man, age 28, dark short hair, neutral expression, average eye area, dark suit, white shirt, no tie"
+    },
+    "L1_hunter": {
+      "from": "L3_neutral",
+      "edit": "eyes only: strong positive canthal tilt, brow bone lower and heavier, almost no upper eyelid visible, slight shadow under the brow"
+    },
+    "L2_hooded": {
+      "from": "L3_neutral",
+      "edit": "eyes only: mild positive canthal tilt, hooded upper lids, little eyelid visible"
+    },
+    "L4_droopy": {
+      "from": "L3_neutral",
+      "edit": "eyes only: neutral canthal tilt, more upper eyelid visible, brows slightly higher"
+    },
+    "L5_prey": {
+      "from": "L3_neutral",
+      "edit": "eyes only: negative canthal tilt with outer corners lower than inner, large exposed upper eyelids, brows raised, light under-eye hollows"
+    }
+  },
+  "lintAccept": {
+    "beat 8: vo": "payoff_line from the matrix row, kept verbatim (18 words)",
+    "beat 9: vo": "cta from the matrix row, kept verbatim (5 words)"
+  },
+  "beats": [
+    {"img": "L1_hunter", "inset": {"at": "iris_centre_L", "shape": "square", "zoom": 2, "value": "+6\u00b0", "label": "HUNTER"}, "age": "10% OF MEN", "vo": "Here is what five levels of eye area look like, with hunter eyes at the top."},
+    {"img": "L2_hooded", "inset": {"at": "iris_centre_L", "shape": "square", "zoom": 2, "value": "+4\u00b0", "label": "HOODED"}, "age": "20% OF MEN", "vo": "Hooded eyes still tilt upward, but a heavier upper lid now covers most of the crease.", "anim": [{"t": "measure", "from": "canthus_inner_L", "to": "canthus_outer_L"}, {"t": "box", "from": ["brow_inner_L", 0, 0], "to": "upper_lid_L", "pad": 0.015}]},
+    {"img": "L3_neutral", "inset": {"at": "iris_centre_L", "shape": "square", "zoom": 2, "value": "+2\u00b0", "label": "NEUTRAL"}, "age": "35% OF MEN", "vo": "Neutral is the biggest group, about a third of men, with only a mild upward tilt.", "anim": [{"t": "box", "from": ["brow_inner_L", 0, 0], "to": "upper_lid_L", "pad": 0.015}, {"t": "measure", "from": "canthus_inner_L", "to": "canthus_outer_L"}]},
+    {"img": "L4_droopy", "inset": {"at": "iris_centre_L", "shape": "square", "zoom": 2, "value": "0\u00b0", "label": "DROOPY"}, "age": "20% OF MEN", "vo": "Droopy eyes lose the upward tilt completely, and far more of the upper lid shows.", "anim": [{"t": "measure", "from": "canthus_inner_L", "to": "canthus_outer_L"}, {"t": "box", "from": ["brow_inner_L", 0, 0], "to": "upper_lid_L", "pad": 0.015}]},
+    {"img": "L5_prey", "inset": {"at": "iris_centre_L", "shape": "square", "zoom": 2, "value": "-3\u00b0", "label": "PREY"}, "age": "15% OF MEN", "vo": "Prey eyes tilt down at the outer corners, with big exposed lids and brows pulled high."},
+    {"img": "L3_neutral", "anim": [{"t": "cite", "title": "MOGILSKI & WELLING, 2018", "source": "Frontiers in Psychology"}, {"t": "box", "from": "brow_outer_L", "to": "brow_outer_R", "pad": 0.02}], "vo": "One study varied brow thickness and eye size to see what makes a face look masculine."},
+    {"img": "L3_neutral", "zoom": 1.25, "focus": "glabella", "age": "35% OF MEN", "anim": [{"t": "box", "from": "canthus_outer_L", "to": "canthus_outer_R", "pad": 0.03}, {"t": "chip", "text": "THE MIDDLE"}], "vo": "Most men are in the middle and do not know it, so check yours honestly."},
+    {"imgs": ["L1_hunter", "L2_hooded", "L3_neutral", "L4_droopy", "L5_prey"], "layout": "strip", "focus": "glabella", "zoom": 1.6, "labels": ["HUNTER", "HOODED", "NEUTRAL", "DROOPY", "PREY"], "values": ["+6\u00b0", "+4\u00b0", "+2\u00b0", "0\u00b0", "-3\u00b0"], "vo": "Brow bone and lid exposure do most of this, and the middle is where most of you sit.", "then": {"at": 0.45, "active": 2}},
+    {"imgs": ["L1_hunter", "L2_hooded", "L3_neutral", "L4_droopy", "L5_prey"], "layout": "strip", "focus": "glabella", "zoom": 1.6, "labels": ["HUNTER", "HOODED", "NEUTRAL", "DROOPY", "PREY"], "values": ["+6\u00b0", "+4\u00b0", "+2\u00b0", "0\u00b0", "-3\u00b0"], "then": {"at": 0.3, "active": 4}, "vo": "Comment your level. Be honest."}
+  ]
+}

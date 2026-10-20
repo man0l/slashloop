@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import sharp from 'sharp';
 import path from 'node:path';
 import {stillMeta} from './still-meta';
+import {TOO_FAR} from '../src/schema';
 import {abs, addSpend, args, generateImage, IMAGE_MODELS, loadScript, log, vision} from './lib';
 
 // Wardrobe comes from the still description (spec v2: constant per face, no house turtleneck).
@@ -28,6 +29,12 @@ const VIEW_PROMPT = (rest: string) =>
   `Photograph this same person again. ${rest}. Keep identity, face, skin, hair, clothing, lighting and the flat ` +
   `light blue-grey seamless background exactly the same. Photorealistic studio portrait, head and shoulders, no text.`;
 const isProfile = (text: string) => /side profile/i.test(text);
+// "Too far" / neglected stills (brief 9.4): the change must be obvious, and QA checks it at 300 px.
+const tooFarEdit = (edit: string) => (/clearly visible at a glance/i.test(edit) ? edit : `${edit}, clearly visible at a glance`);
+const QA_TOO_FAR = (edit: string) =>
+  `Image 1 is the original, image 2 is the edit, image 3 is the edit at 300 px wide. Requested edit: "${edit}". ` +
+  `Answer two lines exactly: "A: PASS|FAIL - reason" for: same person, pose, wardrobe and background, only the edit changed; ` +
+  `"B: PASS|FAIL - reason" for: the edit is obvious in image 3 at a glance.`;
 
 const QA_EDIT = (edit: string) =>
   `Image 1 is the original, image 2 is the edit. Is image 2 the same person as image 1, same pose and background, ` +
@@ -78,17 +85,20 @@ const main = async () => {
         const same = 'base' in spec ? SAME_AS.exec(spec.base) : null;
         const refKey = 'from' in spec ? spec.from : same?.[1];
         const ref = refKey ? rawPath(script.id, refKey) : undefined;
+        const tooFar = 'from' in spec && TOO_FAR.test(`${k} ${spec.edit}`);
         const prompt =
-          'from' in spec ? EDIT_PROMPT(spec.edit, t > 0) : same ? VIEW_PROMPT(same[2]) : BASE_PROMPT(spec.base, !!spec.profile || isProfile(spec.base));
+          'from' in spec ? EDIT_PROMPT(tooFar ? tooFarEdit(spec.edit) : spec.edit, t > 0) : same ? VIEW_PROMPT(same[2]) : BASE_PROMPT(spec.base, !!spec.profile || isProfile(spec.base));
         const img = await generateImage(model, prompt, ref);
         cost += img.cost;
         addSpend(script.id, 'image', model, img.cost, {still: k});
         fs.writeFileSync(tryFile, img.buffer);
-        const qaPrompt = 'from' in spec ? QA_EDIT(spec.edit) : same ? QA_EDIT(same[2]) : QA_BASE(spec.base);
-        const q = await vision(qaPrompt, ref ? [ref, tryFile] : [tryFile]);
+        const qaPrompt = tooFar ? QA_TOO_FAR(spec.edit) : 'from' in spec ? QA_EDIT(spec.edit) : same ? QA_EDIT(same[2]) : QA_BASE(spec.base);
+        const small = tryFile.replace(/\.png$/, '_300.png');
+        if (tooFar) await sharp(tryFile).resize(300).toFile(small);
+        const q = await vision(qaPrompt, ref ? [ref, tryFile, ...(tooFar ? [small] : [])] : [tryFile]);
         cost += q.cost;
         addSpend(script.id, 'qa', 'vision', q.cost, {still: k});
-        const verdict = /^\W*PASS/i.test(q.text) ? 'PASS' : 'FAIL';
+        const verdict = tooFar ? (/A:\s*PASS/i.test(q.text) && /B:\s*PASS/i.test(q.text) ? 'PASS' : 'FAIL') : /^\W*PASS/i.test(q.text) ? 'PASS' : 'FAIL';
         last = {key: k, model, verdict, reason: q.text.replace(/\s+/g, ' ').slice(0, 200), tries: t + 1, cost};
         log(`${k} try ${t + 1} ${model}: ${q.text.slice(0, 120)}`);
         // Keep the first image as the fallback result; replace it only with a PASS.

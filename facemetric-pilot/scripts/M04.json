@@ -1,0 +1,60 @@
+{
+  "id": "M04",
+  "template": "B",
+  "title": "Same face, one thing erased",
+  "faces": {
+    "A_base": "assets/M04/A_base.jpg",
+    "A_noring": "assets/M04/A_noring.jpg",
+    "A_yellow": "assets/M04/A_yellow.jpg",
+    "A_both": "assets/M04/A_both.jpg",
+    "B_base": "assets/M04/B_base.jpg"
+  },
+  "stills": {
+    "A_base": {
+      "base": "woman, age 25, neutral expression, clear bright eyes with dark defined limbal rings, hair tied back, no make-up, plain dark crew neck"
+    },
+    "A_noring": {
+      "from": "A_base",
+      "edit": "eyes only: remove the dark ring around the edge of both irises so the iris fades softly into the white"
+    },
+    "A_yellow": {
+      "from": "A_base",
+      "edit": "eyes only: whites of the eyes slightly yellowed and faintly bloodshot"
+    },
+    "A_both": {
+      "from": "A_noring",
+      "edit": "eyes only: whites of the eyes slightly yellowed and faintly bloodshot"
+    },
+    "B_base": {
+      "base": "woman, age 48, neutral expression, eyes with naturally faint limbal rings, hair tied back, no make-up, grey crew neck"
+    }
+  },
+  "lintAccept": {
+    "beat 22: vo": "cta from the matrix row, kept verbatim",
+    "duration": "item note: accept below 90 s, do not pad"
+  },
+  "beats": [
+    {"imgs": ["A_noring", "A_base"], "layout": "split", "labels": ["FACE 1", "FACE 2"], "active": 0, "caption": "SAME FACE. **ONE THING** CHANGED?", "hl": "teal", "underline": true, "then": {"at": 0.5, "active": 1}, "vo": "Same face, and we erased just one thing, so can you see what changed?"},
+    {"img": "A_base", "view": "closeup", "focus": ["glabella", 0, 0.045], "zoom": 1.6, "caption": "THE **LIMBAL RING**", "hl": "teal", "transition": "push", "anim": [{"t": "circle", "at": "iris_centre_L", "r": 0.034}, {"t": "circle", "at": "iris_centre_R", "r": 0.034}, {"t": "chip", "text": "LIMBAL RING"}], "vo": "Look at the thin dark ring around the outer edge of each iris."},
+    {"img": "A_base", "inset": {"at": "iris_centre_L", "zoom": 3}, "caption": "THE **LIMBAL RING**", "hl": "teal", "anim": [{"t": "circle", "at": "iris_centre_L", "r": 0.034, "chip": "DARK RING"}], "vo": "Up close, that ring frames the iris and makes the eye look sharp and clear."},
+    {"img": "A_noring", "inset": {"at": "iris_centre_L", "zoom": 3}, "tint": "purple", "caption": "THE **LIMBAL RING**", "hl": "purple", "anim": [{"t": "circle", "at": "iris_centre_L", "r": 0.034, "chip": "ERASED", "tone": "purple"}], "vo": "Erase it, and the same eye suddenly looks flatter, softer and a little older."},
+    {"img": "A_base", "zoom": 1.2, "focus": "nose_tip", "caption": "THE **LIMBAL RING**", "hl": "teal", "anim": [{"t": "cite", "title": "PESHEK ET AL., 2011", "source": "Evolutionary Psychology"}, {"t": "circle", "at": "iris_centre_L", "r": 0.034}], "vo": "Faces with visible limbal rings were rated more attractive."},
+    {"img": "A_base", "view": "closeup", "focus": ["glabella", 0, 0.045], "zoom": 1.6, "caption": "THE **WHITES**", "hl": "teal", "transition": "flash", "anim": [{"t": "box", "from": "sclera_L", "to": "sclera_L", "pad": 0.022}, {"t": "box", "from": "sclera_R", "to": "sclera_R", "pad": 0.022}, {"t": "chip", "text": "WHITE"}], "vo": "Now look at the whites, which stay bright and clean in young, healthy eyes."},
+    {"img": "A_base", "inset": {"at": "sclera_L", "zoom": 3}, "caption": "THE **WHITES**", "hl": "teal", "anim": [{"t": "box", "from": "sclera_L", "to": "sclera_L", "pad": 0.02, "chip": "SCLERA"}], "vo": "Doctors call this part the sclera, and its colour shifts with health and age."},
+    {"img": "A_yellow", "inset": {"at": "sclera_L", "zoom": 3}, "tint": "purple", "caption": "THE **WHITES**", "hl": "purple", "anim": [{"t": "box", "from": "sclera_L", "to": "sclera_L", "pad": 0.02, "chip": "YELLOW TINT", "tone": "purple"}], "vo": "Add a faint yellow tint and a few red veins, and she starts to look unwell."},
+    {"img": "A_yellow", "zoom": 1.2, "focus": "nose_tip", "caption": "THE **WHITES**", "hl": "teal", "anim": [{"t": "cite", "title": "RUSSELL ET AL., 2014", "source": "Psychology and Aging"}, {"t": "box", "from": "sclera_R", "to": "sclera_R", "pad": 0.02}], "vo": "Yellower, redder whites made the same faces look older."},
+    {"img": "B_base", "caption": "IT **FADES**", "hl": "purple", "transition": "push", "anim": [{"t": "circle", "at": "iris_centre_L", "r": 0.034, "chip": "FAINT RING", "tone": "purple"}], "vo": "Limbal rings fade on their own with age, which is part of why they matter."},
+    {"img": "B_base", "card": true, "caption": "IT **FADES**", "hl": "purple", "anim": [{"t": "circle", "at": "iris_centre_L", "r": 0.034}, {"t": "circle", "at": "iris_centre_R", "r": 0.034}, {"t": "chip", "text": "THINNER RING", "tone": "purple"}], "vo": "At forty-eight her rings are thinner and paler than they were in her twenties."},
+    {"img": "B_base", "view": "closeup", "focus": ["glabella", 0, 0.045], "zoom": 1.6, "caption": "IT **FADES**", "hl": "purple", "anim": [{"t": "box", "from": "sclera_L", "to": "sclera_L", "pad": 0.022, "chip": "LESS CONTRAST", "tone": "purple"}], "vo": "With less contrast around the iris, the eye blends into the white."},
+    {"img": "B_base", "zoom": 1.35, "focus": "nose_tip", "caption": "IT **FADES**", "hl": "purple", "anim": [{"t": "circle", "at": "glabella", "r": 0.2}], "vo": "Nobody notices the ring itself, only that the face looks a little more tired."},
+    {"imgs": ["A_base", "B_base"], "layout": "split", "zoom": 3, "focus": "iris_centre_L", "labels": ["AGE 25", "AGE 48"], "active": 0, "caption": "**25** VS 48", "hl": "teal", "transition": "flash", "anim": [{"t": "chip", "card": 0, "at": ["iris_centre_L", 0, 0.06], "text": "DARK RING"}], "vo": "Side by side, the younger ring is darker, thicker and far more defined."},
+    {"imgs": ["A_base", "B_base"], "layout": "split", "zoom": 3, "focus": "iris_centre_L", "labels": ["AGE 25", "AGE 48"], "active": 1, "caption": "**25** VS 48", "hl": "teal", "anim": [{"t": "chip", "card": 1, "at": ["iris_centre_L", 0, 0.06], "text": "FAINT RING", "tone": "purple"}], "vo": "The older ring has thinned out, so the iris melts into the white."},
+    {"imgs": ["A_noring", "B_base"], "layout": "split", "zoom": 3, "focus": "iris_centre_L", "labels": ["OUR EDIT", "AGE 48"], "active": 0, "caption": "**25** VS 48", "hl": "teal", "then": {"at": 0.5, "active": 1}, "vo": "Our edit simply copied what time does to every eye eventually."},
+    {"imgs": ["A_base", "A_both"], "layout": "split", "labels": ["ORIGINAL", "BOTH EDITS"], "active": 0, "caption": "**BOTH** EDITS", "hl": "purple", "then": {"at": 0.45, "active": 1, "anim": [{"t": "chip", "card": 1, "text": "NO RING", "tone": "purple"}, {"t": "chip", "card": 1, "text": "YELLOW TINT", "tone": "purple"}]}, "vo": "Now stack both edits on one face and put it next to the original."},
+    {"imgs": ["A_base", "A_both"], "layout": "split", "zoom": 2.2, "focus": "glabella", "labels": ["ORIGINAL", "BOTH EDITS"], "active": 1, "caption": "**BOTH** EDITS", "hl": "purple", "anim": [{"t": "circle", "card": 1, "at": "iris_centre_L", "r": 0.034}, {"t": "circle", "card": 1, "at": "iris_centre_R", "r": 0.034}], "vo": "Same bones, same skin, same expression, and one face looks clearly less healthy."},
+    {"img": "A_both", "tint": "purple", "zoom": 1.15, "focus": "nose_tip", "caption": "**BOTH** EDITS", "hl": "purple", "anim": [{"t": "chip", "at": ["iris_centre_L", -0.05, 0.07], "text": "NO RING", "tone": "purple"}, {"t": "chip", "at": ["iris_centre_R", 0.05, 0.07], "text": "YELLOW TINT", "tone": "purple"}], "vo": "That is the whole trick, and most people cannot name what changed."},
+    {"imgs": ["A_base", "A_both"], "layout": "split", "labels": ["HEALTHY", "EDITED"], "active": 0, "caption": "**ONE THING?**", "hl": "teal", "anim": [{"t": "circle", "card": 0, "at": "iris_centre_L", "r": 0.034}], "vo": "Neither edit touches a single bone."},
+    {"imgs": ["A_base", "A_both"], "layout": "split", "labels": ["HEALTHY", "EDITED"], "active": 0, "caption": "IT'S **HEALTH**", "hl": "teal", "then": {"at": 0.5, "active": 1}, "vo": "Tiny signs of health are what the eye reads as attractive."},
+    {"imgs": ["A_base", "A_both"], "layout": "split", "labels": ["HEALTHY", "EDITED"], "active": 1, "caption": "IT'S **HEALTH**", "hl": "teal", "anim": [{"t": "circle", "card": 1, "at": "iris_centre_L", "r": 0.034}, {"t": "circle", "card": 1, "at": "iris_centre_R", "r": 0.034}], "then": {"at": 0.5, "active": 0}, "vo": "Comment which edit you noticed first."}
+  ]
+}

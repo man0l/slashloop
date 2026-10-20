@@ -1,0 +1,17 @@
+{
+  "L3_neutral": {
+    "bg": "#94a6b2"
+  },
+  "L1_hunter": {
+    "bg": "#95a7b5"
+  },
+  "L2_hooded": {
+    "bg": "#94a6b3"
+  },
+  "L4_droopy": {
+    "bg": "#95a7b5"
+  },
+  "L5_prey": {
+    "bg": "#95a7b5"
+  }
+}

@@ -7,7 +7,7 @@ import {AbsoluteFill, CalculateMetadataFunction, Sequence, staticFile, useVideoC
 import {z} from 'zod';
 import {BeatView} from './components/BeatView';
 import {stillSrc} from './components/Card';
-import {Footer, type Word} from './components/Text';
+import {Footer, Header, type Word} from './components/Text';
 import {parseScript, type Landmarks, type Resolved, Script} from './schema';
 import {theme} from './theme';
 
@@ -63,7 +63,12 @@ export const calculateMetadata: CalculateMetadataFunction<ReelProps> = async ({p
   await Promise.all(
     Object.entries(script.faces).map(async ([k, p]) => {
       const lm = await getJson<Landmarks>(p.replace(/^assets\//, '').replace(/\.(png|jpe?g)$/i, '.landmarks.json'));
-      if (lm) landmarks[k] = lm;
+      if (lm) {
+        // Landmark files carry {source: "llm" | "llm-retry" | "mediapipe"} next to the points.
+        const {source: _source, ...points} = lm as Landmarks & {source?: string};
+        void _source;
+        landmarks[k] = points;
+      }
     }),
   );
   const audio = timing.beats.map((t) => t.file);
@@ -116,6 +121,7 @@ export const Reel: React.FC<ReelProps> = (props) => {
           return nodes;
         })}
       </TransitionSeries>
+      {script.header ? <Header text={script.header} /> : null}
       <Footer />
 
       {/* Voice: one clip per beat, starting on the beat's first frame */}

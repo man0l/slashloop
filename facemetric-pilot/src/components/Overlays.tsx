@@ -3,7 +3,7 @@ import {Easing, interpolate, useCurrentFrame} from 'remotion';
 import {resolvePoint, toCanvas, type CardRect, type Vec} from '../geometry';
 import type {Anim, Landmarks} from '../schema';
 import {theme} from '../theme';
-import {Chip} from './Text';
+import {Chip, Cite} from './Text';
 
 const L = theme.line;
 
@@ -169,6 +169,8 @@ export const AnimView: React.FC<{anim: Anim; card: CardRect; lm: Landmarks | und
         </>
       );
     }
+    case 'cite':
+      return <Cite title={anim.title} source={anim.source} from={from} />;
     case 'circle': {
       const c = P(anim.at);
       const r = anim.r * card.dw;

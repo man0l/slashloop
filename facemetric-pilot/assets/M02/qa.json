@@ -1,0 +1,42 @@
+{
+  "L3_neutral": {
+    "key": "L3_neutral",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS: The image accurately matches all specified attributes, including subject appearance, attire, and background.",
+    "tries": 1,
+    "cost": 0.01174525
+  },
+  "L2_hooded": {
+    "key": "L2_hooded",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The edit accurately introduces hooded eyelids with minimal lid visibility and a mild positive tilt while keeping the rest identical.",
+    "tries": 1,
+    "cost": 0.012415
+  },
+  "L5_prey": {
+    "key": "L5_prey",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The requested eye area modifications, including canthal tilt, exposed lids, and raised brows, were applied accurately while keeping the identity and background intact.",
+    "tries": 1,
+    "cost": 0.012607750000000001
+  },
+  "L4_droopy": {
+    "key": "L4_droopy",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The edit precisely modifies only the eye tilt, eyelid exposure, and brow height while maintaining identity, pose, and background.",
+    "tries": 2,
+    "cost": 0.02550875
+  },
+  "L1_hunter": {
+    "key": "L1_hunter",
+    "model": "meta/muse-image",
+    "verdict": "PASS",
+    "reason": "PASS - The eye and brow region was successfully modified to reflect a heavier brow, hooded lids, and positive tilt while keeping the identity and background intact.",
+    "tries": 2,
+    "cost": 0.0258875
+  }
+}

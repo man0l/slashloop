@@ -15,7 +15,7 @@
     "bg": "#99abb8"
   },
   "A_grownout": {
-    "bg": "#9aadbb"
+    "bg": "#9aacbb"
   },
   "A_pbuzz": {
     "bg": "#9badbb"
@@ -31,5 +31,8 @@
   },
   "B_crew": {
     "bg": "#90a4b3"
+  },
+  "B_pbuzz": {
+    "bg": "#92a7b5"
   }
 }
