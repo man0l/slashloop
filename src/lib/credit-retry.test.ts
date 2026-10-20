@@ -52,7 +52,10 @@ mock.module('../db.js', () => ({
   db: fakeDb,
 }));
 
-const { debitCredits } = await import('./credits.js');
+// A fresh instance: if another file already loaded credits.js, the cached
+// module keeps whatever db/store stubs were live then, not the ones above.
+const freshCredits: string = './credits.js?credit-retry';
+const { debitCredits } = (await import(freshCredits)) as typeof import('./credits.js');
 
 test('a duplicate debit refId replays the unchanged balance without an error log', async () => {
   throwCreditConflict = true;
