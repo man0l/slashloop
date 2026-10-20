@@ -4,6 +4,7 @@
 import {execFileSync, spawnSync} from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import {lintTiming} from '../src/schema';
 import {abs, addSpend, args, loadScript, log, pool, speech, transcribeWords, TTS_SPEED} from './lib';
 
 const PRICE_PER_CHAR = 0.00002; // OpenRouter list price for elevenlabs/eleven-flash-v2.5
@@ -71,6 +72,7 @@ const main = async () => {
   for (const f of fs.readdirSync(dir)) if (!used.has(f)) fs.unlinkSync(`${dir}/${f}`); // drop stale clips
   const total = beats.reduce((s, b) => s + b.seconds - b.lead - b.trail + 0.3, 0);
   fs.writeFileSync(abs(`assets/${script.id}/timing.json`), JSON.stringify({beats, voiceSeconds: total}, null, 2));
+  for (const w of lintTiming(script, beats.map((b) => b.seconds - b.lead - b.trail + 0.3))) console.warn(`[lint ${script.id}] ${w}`);
   log(`${script.id}: ${beats.length} clips, ${chars} new chars, ~${total.toFixed(1)} s with tails`);
 };
 

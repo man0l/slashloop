@@ -4,6 +4,9 @@ Remotion pilot: faceless "face-analysis" reels (1080x1920, 30 fps) in the @facem
 JSON scripts in `scripts/`. Status: **Phase 1 (calibration, R01 only)**. The full guide (how to add a reel, the beat
 catalogue with screenshots) is written at the end of the pilot.
 
+**Format spec: [SPEC.md](SPEC.md)** (v2, measured off the reference reels; replaces the visual spec, schema and reel
+rules of the original brief).
+
 ```bash
 npm i
 echo "OPENROUTER_API_KEY=..." > .env

@@ -116,18 +116,46 @@ export type Resolved = {
 };
 
 // Style rules from the brief that are warnings, not errors (the R01 brief itself has 10-word captions).
+// Format rules from SPEC.md section 5. Warnings, not errors: a script can break a rule on purpose.
+const BEAT_RANGE: Record<Script['template'], [number, number]> = {C: [14, 18], A: [8, 10], B: [25, 35], Q: [12, 16]};
+
 export const lintScript = (s: Script): string[] => {
   const out: string[] = [];
+  const words = (t: string) => (t.replace(/\*/g, '').match(/[A-Z0-9'’+=-]+/gi) ?? []).length;
   s.beats.forEach((b, i) => {
-    const words = (b.caption.match(/[A-Z0-9'’+-]+/gi) ?? []).length;
-    if (words > 9) out.push(`beat ${i + 1}: caption has ${words} words (rule: <= 9)`);
+    const n = words(b.caption);
+    const max = i < 2 ? 9 : 4;
+    if (n > max) out.push(`beat ${i + 1}: headline has ${n} words (rule: <= ${max})`);
+    if (!/\*\*.+\*\*/.test(b.caption)) out.push(`beat ${i + 1}: headline has no **highlight**`);
     const vo = b.vo.split(/\s+/).length;
-    if (vo < 8 || vo > 16) out.push(`beat ${i + 1}: vo has ${vo} words (rule: 8-16)`);
-    if (!/\*\*.+\*\*/.test(b.caption)) out.push(`beat ${i + 1}: caption has no **highlight**`);
+    if (vo < 6 || vo > 16) out.push(`beat ${i + 1}: vo has ${vo} words (rule: 6-16)`);
   });
-  if (s.beats.length < 10 || s.beats.length > 18) out.push(`${s.beats.length} beats (rule: 10-16, R01 brief: 18)`);
+  const [lo, hi] = BEAT_RANGE[s.template];
+  if (s.beats.length < lo || s.beats.length > hi) out.push(`${s.beats.length} beats (template ${s.template}: ${lo}-${hi})`);
+  // Same headline on more than 4 consecutive beats (the ladder's persistent header is exempt).
+  let run = 1;
+  for (let i = 1; i < s.beats.length; i++) {
+    run = s.beats[i].caption === s.beats[i - 1].caption ? run + 1 : 1;
+    if (run === 5 && s.template !== 'A') out.push(`beats ${i - 3}-${i + 1}: same headline on 5+ beats (rule: <= 4)`);
+  }
+  // More than 3 full-bleed beats of one still in a row without a zoom change.
+  const bleedKey = (b: Script['beats'][number]) => (b.layout === 'single' && !b.card && b.view !== 'closeup' ? `${b.img}@${b.zoom ?? 1}` : null);
+  run = 1;
+  for (let i = 1; i < s.beats.length; i++) {
+    const k = bleedKey(s.beats[i]);
+    run = k && k === bleedKey(s.beats[i - 1]) ? run + 1 : 1;
+    if (run === 4) out.push(`beats ${i - 2}-${i + 1}: 4 full-bleed beats of ${s.beats[i].img} at one zoom (rule: <= 3)`);
+  }
   return out;
 };
+
+// Timing-aware rule (needs timing.json): a beat longer than 2.5 s must change something on screen.
+export const lintTiming = (s: Script, seconds: number[]): string[] =>
+  s.beats.flatMap((b, i) =>
+    seconds[i] > 2.5 && !b.anim?.length && !b.then && !b.inset && !(b.layout === 'grid2x2' && b.arrows)
+      ? [`beat ${i + 1}: ${seconds[i].toFixed(1)} s with nothing changing on screen (rule: a change every 2.5 s)`]
+      : [],
+  );
 
 export const parseScript = (raw: unknown): Script => {
   const r = Script.safeParse(raw);
