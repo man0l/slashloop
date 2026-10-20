@@ -139,11 +139,16 @@ function cardHtml(c: GalleryCard): string {
   // The <video> is wrapped so host mode can lay a play overlay over it
   // without geometry guessing. preload="none" so a gallery of them costs
   // nothing until someone actually asks for one — egress is metered on this
-  // plan. poster gives the collapsed player a face before anything loads.
+  // plan. The player is stacked over the cover (see .media) rather than
+  // below it: no poster, so the stored thumbnail underneath is the player's
+  // face and each card shows the 9:16 frame once instead of twice.
   const fetchMsg = c.fetchError ? `${c.fetchError.message} (${c.fetchError.code})` : null;
   const player = c.mediaUrl
     ? `<div class="player-wrap"><video id="v-${esc(c.id)}" class="player" preload="none" controls playsinline
-              src="${esc(c.mediaUrl)}"${c.thumbUrl ? ` poster="${esc(c.thumbUrl)}"` : ''}${c.videoUri ? ` data-video-uri="${esc(c.videoUri)}"` : ''}></video></div>`
+              src="${esc(c.mediaUrl)}"${c.videoUri ? ` data-video-uri="${esc(c.videoUri)}"` : ''}></video></div>`
+    : null;
+  const nomedia = c.mediaUrl
+    ? ''
     : fetchMsg
       ? `<p class="nomedia nomedia-fetch">⛔ Could not scrape this video — ${esc(fetchMsg)}. Frames unavailable.</p>`
       : `<p class="nomedia">No stored video — expired or never analysed. Frames unavailable.</p>`;
@@ -188,7 +193,7 @@ function cardHtml(c: GalleryCard): string {
     ${c.experimentEligible
       ? `<label class="select-wrap" title="Select for experiment"><input type="checkbox" class="select-box" data-select-video="${esc(c.id)}" aria-label="Select video ${c.index} for experiment"/></label>`
       : ''}
-    ${thumb}
+    <div class="media">${thumb}${player ?? ''}</div>
     <div class="body">
       <div class="meta">
         <strong>@${esc(c.creatorHandle)}</strong>
@@ -200,7 +205,7 @@ function cardHtml(c: GalleryCard): string {
         ${c.fetchError ? `<span class="fetch-error" title="Could not be scraped — ${esc(fetchMsg)}" aria-label="scrape error">⛔</span>` : ''}
       </div>
       <p class="caption">${esc(c.caption) || '<em>no caption</em>'}</p>
-      ${player}
+      ${nomedia}
       ${moments}
       <a class="src" href="${esc(c.url)}" target="_blank" rel="noreferrer">open on TikTok</a>
     </div>
@@ -320,10 +325,10 @@ export function renderGallery(
   .count { margin: 0; font-size: 12px; opacity: .7; white-space: nowrap; min-width: 9rem; text-align: center; }
 
   /* ---- density: medium (default) ---- */
-  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
   .card { position: relative; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
   .card[hidden] { display: none !important; }
-  .index-tag { position: absolute; top: 6px; left: 6px; z-index: 1; display: flex; gap: 4px; align-items: center; }
+  .index-tag { position: absolute; top: 6px; left: 6px; z-index: 3; display: flex; gap: 4px; align-items: center; }
   .index-badge { min-width: 18px; height: 18px;
     padding: 0 5px; border-radius: 999px; background: rgba(0,0,0,.65); color: #fff; font-size: 10px;
     font-weight: 700; display: flex; align-items: center; justify-content: center; line-height: 1; }
@@ -333,6 +338,9 @@ export function renderGallery(
   .copy-id:hover { background: rgba(0,0,0,.85); }
   .copy-id:focus { outline: 2px solid #fff; outline-offset: 1px; }
   .density-list .index-tag { position: static; margin-left: 6px; align-self: center; flex-direction: column; }
+  /* Stored covers are TikTok's native 9:16 frames (typically 720x1280); the
+     box keeps that ratio so nothing is cropped or letterboxed. */
+  .media { position: relative; }
   .thumb { width: 100%; aspect-ratio: 9/16; object-fit: cover; display: block; background: var(--line); }
   .thumb.placeholder { display: grid; place-items: center; }
   .body { padding: 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
@@ -342,12 +350,15 @@ export function renderGallery(
   .fetch-error { cursor: help; font-size: 13px; line-height: 1; color: #ff5c5c; }
   .nomedia-fetch { color: #ff5c5c; opacity: .85; }
   .caption { margin: 0; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .player-wrap { position: relative; }
-  .player { width: 100%; border-radius: 6px; background: #000; }
-  /* Host mode only: sits over the player until the blob resource read lands.
-     The glyph makes the click affordance obvious while src is stripped. */
+  .player-wrap { position: absolute; inset: 0; z-index: 2; }
+  /* An idle <video> paints an opaque box over the cover, so it stays
+     invisible until it first plays; the play overlay is the affordance. */
+  .player { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; visibility: hidden; }
+  .media.playing .player { visibility: visible; }
+  /* Sits over the cover until the first play. In host mode that play waits
+     on the blob resource read, so the glyph matters while src is stripped. */
   .play-overlay { position: absolute; inset: 0; display: grid; place-items: center;
-                  cursor: pointer; background: rgba(0,0,0,.35); border-radius: 6px; min-height: 120px; }
+                  cursor: pointer; background: rgba(0,0,0,.25); }
   .play-overlay .glyph { font-size: 34px; color: #fff; line-height: 1;
                          text-shadow: 0 1px 6px rgba(0,0,0,.6); pointer-events: none; }
   .nomedia { margin: 0; font-size: 12px; opacity: .6; }
@@ -359,12 +370,12 @@ export function renderGallery(
   .src { font-size: 12px; opacity: .7; }
 
   /* large thumbs — fewer columns, bigger cover */
-  .density-large .grid { gap: 14px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .density-large .grid { gap: 14px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
   .density-large .body { padding: 12px; gap: 10px; }
   .density-large .caption { font-size: 14px; -webkit-line-clamp: 3; }
 
   /* small thumbs — denser grid */
-  .density-small .grid { gap: 8px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  .density-small .grid { gap: 8px; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
   .density-small .body { padding: 6px; gap: 4px; }
   .density-small .meta { gap: 4px 6px; font-size: 11px; }
   .density-small .caption { font-size: 11px; -webkit-line-clamp: 1; }
@@ -376,9 +387,8 @@ export function renderGallery(
   /* list — smallest thumbs, one row per video */
   .density-list .grid { display: flex; flex-direction: column; gap: 6px; }
   .density-list .card { flex-direction: row; align-items: stretch; border-radius: 8px; }
-  .density-list .thumb { width: 48px; min-width: 48px; max-width: 48px; aspect-ratio: 9/16;
-                         height: auto; max-height: 72px; align-self: center; margin-left: 6px;
-                         border-radius: 4px; }
+  .density-list .media { width: 48px; min-width: 48px; align-self: center; margin-left: 6px; }
+  .density-list .thumb { aspect-ratio: 9/16; border-radius: 4px; }
   .density-list .body { padding: 6px 10px; gap: 2px; flex: 1; justify-content: center; }
   .density-list .meta { gap: 4px 8px; font-size: 12px; }
   .density-list .caption { font-size: 12px; -webkit-line-clamp: 1; }
@@ -391,7 +401,7 @@ export function renderGallery(
   .note { font-size: 12px; margin: 0 0 10px; }
 
   /* ---- experiment survey: selection + stepped wizard ---- */
-  .select-wrap { position: absolute; top: 6px; right: 6px; z-index: 1; }
+  .select-wrap { position: absolute; top: 6px; right: 6px; z-index: 3; }
   .select-box { width: 20px; height: 22px; accent-color: #FF4D00; cursor: pointer; }
   .card.selected { outline: 2px solid #FF4D00; outline-offset: -2px; }
   .exp-bar { position: sticky; bottom: 12px; z-index: 5; display: none; margin: 12px auto 0;
@@ -404,6 +414,9 @@ export function renderGallery(
                     border: none; border-radius: 8px; background: #FF4D00; color: #fff; cursor: pointer; }
   .exp-bar button:disabled { opacity: .4; cursor: not-allowed; }
   .exp-bar .clear { background: none; color: inherit; border: 1px solid var(--line); }
+  /* The host sizes the iframe to the content height (size-changed below), and
+     a fixed modal adds none — reserve room so it is not clipped. */
+  body:has(.modal-backdrop.show) { min-height: 760px; }
   .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: none;
                     background: rgba(0,0,0,.5); padding: 20px; overflow-y: auto; }
   .modal-backdrop.show { display: block; }
@@ -458,7 +471,7 @@ export function renderGallery(
   .fetch-banner strong { font-weight: 600; }
   .card.fetch-eligible { border-color: color-mix(in srgb, currentColor 40%, transparent); position: relative; }
   .card.fetch-eligible .thumb { outline: 2px solid color-mix(in srgb, currentColor 45%, transparent); outline-offset: -2px; }
-  .card.fetch-eligible::after { content: 'fetch ≥50×'; position: absolute; top: 6px; right: 6px;
+  .card.fetch-eligible::after { content: 'fetch ≥50×'; position: absolute; top: 6px; right: 6px; z-index: 3;
     font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
     background: color-mix(in srgb, currentColor 18%, transparent); border: 1px solid var(--line); }
   .empty-filter { display: none; opacity: .7; margin: 24px 0; text-align: center; }
@@ -1245,6 +1258,36 @@ ${cards.length ? toolbarHtml(filters) : ''}
       else p.resolve(d.result);
     });
 
+    // The SDK's App does this by default (autoResize). Without it the host has
+    // no content height and leaves the iframe at the 150px default — the
+    // gallery renders as a cropped strip with an inner scrollbar. Same
+    // measurement as the SDK: html at max-content, batched per frame, only
+    // sent on change.
+    function setupAutoResize() {
+      var queued = false, lastW = 0, lastH = 0;
+      function measure() {
+        if (queued) return;
+        queued = true;
+        requestAnimationFrame(function () {
+          queued = false;
+          var html = document.documentElement;
+          var prev = html.style.height;
+          html.style.height = 'max-content';
+          var h = Math.ceil(html.getBoundingClientRect().height);
+          html.style.height = prev;
+          var w = Math.ceil(window.innerWidth);
+          if (w === lastW && h === lastH) return;
+          lastW = w; lastH = h;
+          send({ jsonrpc: '2.0', method: 'ui/notifications/size-changed', params: { width: w, height: h } });
+        });
+      }
+      measure();
+      if (typeof ResizeObserver === 'undefined') return;
+      var ro = new ResizeObserver(measure);
+      ro.observe(document.documentElement);
+      ro.observe(document.body);
+    }
+
     function ready() {
       if (initPromise) return initPromise;
       initPromise = request('ui/initialize', {
@@ -1256,6 +1299,7 @@ ${cards.length ? toolbarHtml(filters) : ''}
         // blob pattern is unreachable and direct URLs are the only path.
         canRead = Boolean(res && res.hostCapabilities && res.hostCapabilities.serverResources);
         send({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} });
+        setupAutoResize();
         return canRead;
       }, function () { return false; });
       return initPromise;
@@ -1321,6 +1365,12 @@ ${cards.length ? toolbarHtml(filters) : ''}
     g.textContent = '▶';
     o.appendChild(g);
     o.addEventListener('click', function () {
+      if (!MCP.canReadResources() || !v.dataset.videoUri) {
+        // Direct URL (browser route, or host without resource proxying).
+        removeOverlay(v);
+        v.play().catch(function () {});
+        return;
+      }
       loadViaHost(v).then(function (ok) {
         if (ok) v.play().catch(function () {});
       }).catch(function () {
@@ -1384,6 +1434,19 @@ ${cards.length ? toolbarHtml(filters) : ''}
     });
     setupCoverLoader();
   }
+
+  // Every player starts hidden behind its cover with a play overlay; the
+  // first play (overlay click or key-moment seek) reveals it.
+  allCards().forEach(function (card) {
+    var v = card.querySelector('video.player');
+    if (!v) return;
+    attachPlayOverlay(v);
+    v.addEventListener('play', function () {
+      removeOverlay(v);
+      var m = v.closest('.media');
+      if (m) m.classList.add('playing');
+    });
+  });
 
   MCP.ready().then(function (ok) {
     if (ok && MCP.canReadResources()) activateHostMode();

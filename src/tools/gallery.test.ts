@@ -137,7 +137,18 @@ describe('renderGallery media wiring', () => {
     expect(html).toContain('data-cover-uri="covers://slashloop/vid-1"');
     expect(html).toContain('data-video-uri="videos://slashloop/vid-1"');
     expect(html).toContain('class="player-wrap"');
-    expect(html).toContain('poster="https://thumbs.example.com/w/vid-1.jpg"');
+  });
+
+  test('the player sits over the cover instead of repeating it as a poster', () => {
+    const html = renderGallery([fakeCard()], undefined, {});
+    expect(html).toMatch(/<div class="media"><img class="thumb"[^>]*\/><div class="player-wrap"><video id="v-vid-1"/);
+    expect(html).not.toContain('poster=');
+  });
+
+  test('framed pages report their content height so the host sizes the iframe', () => {
+    const html = renderGallery([fakeCard()], undefined, {});
+    expect(html).toContain("method: 'ui/notifications/size-changed'");
+    expect(html).toContain('new ResizeObserver(measure)');
   });
 
   test('every card carries a Copy ID button next to its index badge (SLA-827)', () => {
