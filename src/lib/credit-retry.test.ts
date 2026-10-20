@@ -1,4 +1,4 @@
-import { beforeEach, expect, mock, test } from 'bun:test';
+import { afterAll, beforeEach, expect, mock, test } from 'bun:test';
 
 /**
  * Retry-specific cover for the raw-batch replay branch. The SQL statement
@@ -11,9 +11,18 @@ beforeEach(() => {
 });
 
 const storeBefore = await import('../store.js');
+// Snapshot by value and put back in afterAll: mock.module rewrites the shared
+// registry for the whole `bun test` process, so these stubs would otherwise
+// outlive the file (same pattern as recreate-dedupe.test.ts).
+const STORE_BEFORE = { ...storeBefore };
 let throwCreditConflict = false;
 mock.module('../store.js', () => ({
   ...storeBefore,
+  // Pinned rather than read from DB_DIALECT: mock.module persists across test
+  // files, and queue/transport.test.ts leaves a '../db.js' stub whose
+  // dbDialect is 'postgres' — spread into storeBefore, it would route
+  // debitCredits down the $transaction path this fake db does not have.
+  dbDialect: () => 'sqlite',
   rawBatch: (statements: Parameters<typeof storeBefore.rawBatch>[0]) => {
     if (throwCreditConflict) {
       throw new Error(
@@ -33,6 +42,11 @@ const fakeDb = {
   },
 };
 const dbBefore = await import('../db.js');
+const DB_BEFORE = { ...dbBefore };
+afterAll(() => {
+  mock.module('../store.js', () => ({ ...STORE_BEFORE }));
+  mock.module('../db.js', () => ({ ...DB_BEFORE }));
+});
 mock.module('../db.js', () => ({
   ...dbBefore,
   db: fakeDb,
