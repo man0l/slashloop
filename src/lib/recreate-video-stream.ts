@@ -23,6 +23,7 @@
 
 import { db } from '../db.js';
 import { CREDIT_COSTS, refundCredits } from './credits.js';
+import { retryTransientD1 } from './retry-d1.js';
 import { completeJob, failJob, toMediaJobRow, type MediaJobRow } from './jobs.js';
 import {
   fetchStoredVideoBytes, stampRecreationKeys, signedMediaUrl,
@@ -218,14 +219,17 @@ export function defaultRecreateVideoDeps(): RecreateVideoDeps {
  * whose stepAt lease expired. Null when nothing is resumable.
  */
 export async function takeVideoRecreateJob(): Promise<MediaJobRow | null> {
+  const now = new Date();
   const rows = await db.$queryRaw<Record<string, unknown>[]>`
     UPDATE "MediaJob"
        SET "status" = 'running',
-           "startedAt" = ${new Date()},
+           "startedAt" = ${now},
            "attempts" = "attempts" + 1
      WHERE "id" = (
        SELECT "id" FROM "MediaJob"
         WHERE "status" = 'queued' AND "kind" = 'recreate'
+          AND "queueOwner" = 'd1'
+          AND ("availableAt" IS NULL OR "availableAt" <= ${now})
           AND "payloadJson" LIKE '%"mode":"video"%'
         ORDER BY "createdAt" ASC
         LIMIT 1
@@ -235,7 +239,7 @@ export async function takeVideoRecreateJob(): Promise<MediaJobRow | null> {
   if (rows[0]) return toMediaJobRow(rows[0]);
 
   const running = await db.mediaJob.findFirst({
-    where: { kind: 'recreate', status: 'running', payloadJson: { contains: '"mode":"video"' } },
+    where: { kind: 'recreate', status: 'running', queueOwner: 'd1', payloadJson: { contains: '"mode":"video"' } },
     orderBy: { startedAt: 'asc' },
   });
   if (!running) return null;
@@ -458,7 +462,7 @@ export async function driveRecreateVideoJobs(opts: {
   const startedAt = Date.now();
   let driven = 0;
   while (Date.now() - startedAt < opts.wallBudgetMs) {
-    const job = await takeVideoRecreateJob();
+    const job = await retryTransientD1(() => takeVideoRecreateJob());
     if (!job) break;
     try {
       await driveVideoRecreateJob(job, deps, startedAt + opts.wallBudgetMs, {
