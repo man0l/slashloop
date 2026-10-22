@@ -15,6 +15,9 @@ import { route } from './router.js';
 import { createOAuthProvider } from './oauth.js';
 import { runWithWaitUntil } from './wait-until.js';
 import { withD1Budget } from './d1-budget.js';
+import { installConsoleSpecExpansion } from './console-format.js';
+
+installConsoleSpecExpansion();
 
 // OAuthProvider owns fetch: /mcp (apiHandlers) + /authorize, /token,
 // /register and the OAuth metadata endpoints; everything else falls through
