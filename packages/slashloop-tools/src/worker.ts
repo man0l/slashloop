@@ -1,3 +1,5 @@
+import { handleDnsbl } from "./api/dnsbl";
+import { handleGeo } from "./api/geo";
 import { SITE_ORIGIN } from "./layout";
 
 export interface Env {
@@ -67,6 +69,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     if (pathname === "/tools/api/health" && request.method === "GET") {
       return new Response(JSON.stringify({ ok: true }), { headers: JSON_HEADERS });
     }
+    if (pathname === "/tools/api/geo" && request.method === "GET") return handleGeo(request);
+    if (pathname === "/tools/api/dnsbl" && request.method === "GET") return handleDnsbl(request, env.TOOLS_CACHE);
     return new Response(JSON.stringify({ error: "not found" }), { status: 404, headers: JSON_HEADERS });
   }
 

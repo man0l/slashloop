@@ -1,4 +1,6 @@
 import { cta, escapeHtml, renderPage } from "../layout";
+import { blacklistIpChecker } from "./blacklist-ip-checker";
+import { tiktokRegionChecker } from "./tiktok-region-checker";
 
 export type Category = "calculator" | "checker" | "specs" | "data" | "generator";
 
@@ -54,4 +56,4 @@ const indexPage: ToolPage = {
   },
 };
 
-export const PAGES: ToolPage[] = [indexPage];
+export const PAGES: ToolPage[] = [indexPage, tiktokRegionChecker, blacklistIpChecker];
