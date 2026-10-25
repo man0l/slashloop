@@ -58,6 +58,31 @@ export function trafficCapBytes(): number {
   return Math.round(envNumber('PROXY_TRAFFIC_CAP_GB', DEFAULT_CAP_GB) * BYTES_PER_GB);
 }
 
+/**
+ * The public-tools workspace (slashloop.dev/tools lookups) is capped on its
+ * own: TOOLS_PROXY_CAP_GB per month (default 10) and TOOLS_PROXY_DAILY_CAP_MB
+ * per UTC day (default 400). Every other workspace keeps PROXY_TRAFFIC_CAP_GB
+ * and has no daily guard. Unset TOOLS_WORKSPACE_ID = no tools workspace.
+ */
+export function toolsWorkspaceId(): string | null {
+  const id = (process.env.TOOLS_WORKSPACE_ID ?? '').trim();
+  return id || null;
+}
+
+/** Monthly ceiling for ONE workspace (tools override, else the global rail). */
+export function workspaceCapBytes(workspaceId: string): number {
+  if (workspaceId === toolsWorkspaceId()) {
+    return Math.round(envNumber('TOOLS_PROXY_CAP_GB', 10) * BYTES_PER_GB);
+  }
+  return trafficCapBytes();
+}
+
+/** Per-UTC-day ceiling, or null when the workspace has no daily guard. */
+export function workspaceDailyCapBytes(workspaceId: string): number | null {
+  if (workspaceId !== toolsWorkspaceId()) return null;
+  return Math.round(envNumber('TOOLS_PROXY_DAILY_CAP_MB', 400) * 1024 * 1024);
+}
+
 /** Modelled cost of N bytes, in cents (>=1 whenever any bytes moved). */
 export function bytesToCents(bytes: number): number {
   const perGb = envNumber('PROXY_COST_CENTS_PER_GB', DEFAULT_COST_CENTS_PER_GB);
@@ -152,6 +177,22 @@ export async function monthlyProxyBytes(workspaceId: string): Promise<number> {
   return kb * 1024;
 }
 
+/** Bytes metered since 00:00 UTC. Uncached: only daily-guarded workspaces call it. */
+export async function dailyProxyBytes(workspaceId: string): Promise<number> {
+  const now = new Date();
+  const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const agg = await db.usageLog.aggregate({
+    _sum: { units: true },
+    where: {
+      workspaceId,
+      kind: 'scrape',
+      provider: PROXY_PROVIDER,
+      createdAt: { gte: startOfDay },
+    },
+  });
+  return (agg._sum.units ?? 0) * 1024;
+}
+
 export interface TrafficStatus {
   workspaceId: string;
   capBytes: number;
@@ -164,7 +205,7 @@ export interface TrafficStatus {
 }
 
 export async function trafficStatus(workspaceId: string): Promise<TrafficStatus> {
-  const capBytes = trafficCapBytes();
+  const capBytes = workspaceCapBytes(workspaceId);
   const usedBytes = await monthlyProxyBytes(workspaceId);
   const percentUsed = capBytes > 0 ? Math.round((usedBytes / capBytes) * 100) : 0;
   return {
@@ -191,7 +232,7 @@ export function wouldExceedCap(usedBytes: number, capBytes: number, estimatedByt
 }
 
 export async function assertTrafficCap(workspaceId: string, estimatedBytes: number): Promise<void> {
-  const capBytes = trafficCapBytes();
+  const capBytes = workspaceCapBytes(workspaceId);
   const used = await monthlyProxyBytes(workspaceId);
   if (wouldExceedCap(used, capBytes, estimatedBytes)) {
     console.error(

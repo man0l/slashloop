@@ -22,7 +22,7 @@
 
 import { db } from '../db.js';
 import { CONTROL_CACHE_MS } from '../lib/worker-control.js';
-import { QUEUE_KINDS, type QueueJobKind } from './contract.js';
+import { QUEUE_KINDS, isToolsQueueKind, type QueueJobKind } from './contract.js';
 
 /** Transports that may own a kind. */
 export const QUEUE_TRANSPORTS = ['d1', 'pg'] as const;
@@ -196,6 +196,9 @@ export async function getQueueTransport(
   opts?: { now?: number; env?: NodeJS.ProcessEnv },
 ): Promise<QueueTransport> {
   const env = opts?.env ?? process.env;
+  // Tools lookups have no D1 row to fall back to: PG is the only owner, even
+  // under the emergency D1 override or a stray WorkerControl row.
+  if (isToolsQueueKind(kind)) return 'pg';
   if (isEmergencyD1Override(env)) {
     // Emergency rollback: QUEUE_BACKEND=d1 forces D1 for every kind
     // regardless of per-kind rows. Unset QUEUE_BACKEND is NOT an override —

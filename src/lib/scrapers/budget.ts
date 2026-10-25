@@ -8,7 +8,8 @@
 // ---------------------------------------------------------------------------
 
 import {
-  BYTES_PER_GB, TrafficCapExceededError, fmtBytes, monthlyProxyBytes, trafficCapBytes, wouldExceedCap,
+  BYTES_PER_GB, TrafficCapExceededError, dailyProxyBytes, fmtBytes, monthlyProxyBytes, wouldExceedCap,
+  workspaceCapBytes, workspaceDailyCapBytes,
 } from './bandwidth.js';
 import { proxyCheapBandwidth, type ProxyCheapBandwidth } from './proxy-cheap.js';
 
@@ -30,8 +31,19 @@ export function remainingBudgetBytes(
 }
 
 export async function assertProxyBudget(workspaceId: string, estimatedBytes: number): Promise<void> {
-  const capBytes = trafficCapBytes();
+  const capBytes = workspaceCapBytes(workspaceId);
   const usedBytes = await monthlyProxyBytes(workspaceId);
+  const dailyCap = workspaceDailyCapBytes(workspaceId);
+  if (dailyCap != null) {
+    const usedToday = await dailyProxyBytes(workspaceId);
+    if (wouldExceedCap(usedToday, dailyCap, estimatedBytes)) {
+      console.error(
+        `[proxy:budget] workspace ${workspaceId} refusing ~${fmtBytes(estimatedBytes)} `
+        + `(daily ${fmtBytes(usedToday)}/${fmtBytes(dailyCap)})`,
+      );
+      throw new TrafficCapExceededError(usedToday, dailyCap, estimatedBytes);
+    }
+  }
   let vendor: ProxyCheapBandwidth | null = null;
   try {
     vendor = await proxyCheapBandwidth();
