@@ -1,0 +1,35 @@
+// Public free tools. This Worker never calls TikTok; see SLA-1042 feasibility.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "slashloop-tools",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  // No trailing slash after "tools" so /tools (no slash) is caught too.
+  // Everything outside /tools* keeps going to the Vercel-hosted site.
+  "routes": [{ "pattern": "slashloop.dev/tools*", "zone_name": "slashloop.dev" }],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash",
+    "run_worker_first": ["/tools/api/*", "/tools/sitemap.xml"]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "TOOLS_CACHE",
+      // wrangler kv namespace create TOOLS_CACHE
+      "id": "19b55e21d77649fda3b4048392cdadea"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "TOOLS_DB",
+      "database_name": "slashloop-tools",
+      // wrangler d1 create slashloop-tools --location weur
+      "database_id": "13046669-13d3-4ffe-80ef-35ab5aa178e2",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

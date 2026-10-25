@@ -1,0 +1,66 @@
+# Deploy the free-tools Worker (packages/slashloop-tools) when it changes on
+# master. Separate from deploy-worker.yml on purpose: a tools change must not
+# redeploy the paid product, and the reverse. Needs the same repo secrets
+# CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID.
+#
+# Rollback: `wrangler rollback` in packages/slashloop-tools, or re-run a
+# previous successful run.
+
+name: deploy-tools
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "packages/slashloop-tools/**"
+      - ".github/workflows/deploy-tools.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-tools
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: packages/slashloop-tools
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bunx tsc --noEmit
+
+      - name: Tests
+        run: bun test
+
+      - name: Apply D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bunx wrangler d1 migrations apply slashloop-tools --remote
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bun run deploy
+
+      - name: Smoke check
+        run: |
+          set -e
+          test "$(curl -sS -o /dev/null -w '%{http_code}' https://slashloop.dev/tools/)" = "200"
+          test "$(curl -sS -o /dev/null -w '%{http_code}' https://slashloop.dev/tools/this-does-not-exist)" = "404"
+          curl -sS https://slashloop.dev/tools/sitemap.xml | grep -F '<loc>https://slashloop.dev/tools/</loc>'
