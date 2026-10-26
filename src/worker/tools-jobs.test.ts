@@ -161,13 +161,13 @@ describe('runProfileLite', () => {
 });
 
 describe('callback', () => {
-  const URL_OK = 'https://slashloop.dev/tools/api/internal/result';
+  const URL_OK = 'https://mcp.slashloop.dev/api/tools/internal/result';
 
-  test('host allowlist: https + slashloop.dev only', () => {
+  test('host allowlist: https + mcp.slashloop.dev only', () => {
     expect(callbackHostAllowed(URL_OK, {})).toBe(true);
-    expect(callbackHostAllowed('http://slashloop.dev/x', {})).toBe(false);
+    expect(callbackHostAllowed('http://mcp.slashloop.dev/x', {})).toBe(false);
     expect(callbackHostAllowed('https://evil.example/x', {})).toBe(false);
-    expect(callbackHostAllowed('https://slashloop.dev@evil.example/x', {})).toBe(false);
+    expect(callbackHostAllowed('https://mcp.slashloop.dev@evil.example/x', {})).toBe(false);
     expect(callbackHostAllowed('nope', {})).toBe(false);
     expect(callbackHostAllowed('https://staging.example/x', { TOOLS_CALLBACK_ALLOWED_HOSTS: 'staging.example' })).toBe(true);
   });
@@ -185,12 +185,12 @@ describe('callback', () => {
     expect(c.headers[SLQ_HEADERS.timestamp]).toBe('1760000000');
     expect(c.headers[SLQ_HEADERS.nonce]).toBe('abc123');
     expect(c.headers[SLQ_HEADERS.signature]).toBe(
-      hmacSign('shh', canonicalString('POST', '/tools/api/internal/result', '1760000000', 'abc123', c.body)),
+      hmacSign('shh', canonicalString('POST', '/api/tools/internal/result', '1760000000', 'abc123', c.body)),
     );
     const ok = verifyAuth(
       { ...c.headers, [SLQ_HEADERS.keyId]: 'k' },
       'POST',
-      '/tools/api/internal/result',
+      '/api/tools/internal/result',
       c.body,
       mapKeyStore([{ keyId: 'k', secret: 'shh', state: 'active' }]),
       1_760_000_000,
@@ -227,7 +227,7 @@ describe('processToolsJob', () => {
     payloadJson: JSON.stringify({
       handle: 'Creator',
       requestId: 'req-1',
-      callbackUrl: 'https://slashloop.dev/tools/api/internal/result',
+      callbackUrl: 'https://mcp.slashloop.dev/api/tools/internal/result',
       ...over,
     }),
   });

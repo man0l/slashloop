@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
 // Public-tools lookup jobs (slashloop.dev/tools) — VPS side.
 //
-// The tools Worker never touches tiktok.com: it publishes a signed job to
+// The MCP Worker (src/cf/tools-lookup.ts) never touches tiktok.com: it publishes a signed job to
 // queue-api, a VPS worker (WORKER_KINDS names the tools-* kinds) scrapes
 // through the proxy against the dedicated TOOLS_WORKSPACE_ID budget, and the
-// result is POSTed back to the Worker with the same HMAC envelope queue-api
+// result is POSTed back to /api/tools/internal/result with the same HMAC envelope queue-api
 // uses (src/queue/auth.ts), keyed by TOOLS_CALLBACK_SECRET.
 //
 // No credits, no video, no source: these jobs never reach lib/credits.
@@ -211,7 +211,7 @@ export function callbackHostAllowed(rawUrl: string, env: NodeJS.ProcessEnv = pro
     return false;
   }
   if (u.protocol !== 'https:' || u.username || u.password) return false;
-  const allowed = (env.TOOLS_CALLBACK_ALLOWED_HOSTS ?? 'slashloop.dev')
+  const allowed = (env.TOOLS_CALLBACK_ALLOWED_HOSTS ?? 'mcp.slashloop.dev')
     .split(',')
     .map((h) => h.trim().toLowerCase())
     .filter(Boolean);

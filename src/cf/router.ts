@@ -29,6 +29,7 @@ import * as socialPosts from '../../api/social-posts.js';
 import * as socialUpload from '../../api/social-upload.js';
 import * as internalRawBatch from './internal.js';
 import * as mediaRoutes from './media-routes.js';
+import * as toolsLookup from './tools-lookup.js';
 import * as oauthAuthorize from './oauth-authorize.js';
 import type { Env } from './env.js';
 import { loginPage, consentPage } from '../../remote/pages.js';
@@ -139,6 +140,10 @@ const ROUTES: Route[] = [
   // OAuth authorize completion (SLA-118): mints the provider grant after the
   // Supabase login round-trip and returns the client's redirect_uri target.
   { re: /^\/api\/oauth\/authorize\/complete$/, mod: oauthAuthorize },
+  // Public tools lookup gate (src/cf/tools-lookup.ts): anonymous, Turnstile + limits inside.
+  { re: /^\/api\/tools\/lookup$/, mod: toolsLookup },
+  { re: /^\/api\/tools\/lookup\/[^/]+$/, mod: toolsLookup },
+  { re: /^\/api\/tools\/internal\/result$/, mod: toolsLookup },
   // VPS-side atomic batch bridge (src/cf/internal.ts) — before the catch-all.
   { re: /^\/internal\/raw-batch$/, mod: internalRawBatch },
   // Binding-backed media (src/cf/media-routes.ts) — Workers-only routes.
