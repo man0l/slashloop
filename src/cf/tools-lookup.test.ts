@@ -206,6 +206,30 @@ describe('POST /api/tools/lookup', () => {
     expect(published).toHaveLength(0);
   });
 
+  test('refresh of a snapshot under 24h old is still served from the cache', async () => {
+    const env = makeEnv();
+    const fresh = { handle: 'mrbeast', followers: 5, takenAt: new Date(NOW.getTime() - 3600_000).toISOString() };
+    await env.OAUTH_KV.put('tools:cache:profile-lite:mrbeast', JSON.stringify(fresh));
+    const published: PublishBody[] = [];
+    const res = await handleLookupPost(post({ kind: 'profile-lite', handle: 'mrbeast', refresh: true }), env as never, deps(published));
+    expect(await res.json()).toEqual({ status: 'done', result: fresh, cached: true });
+    expect(published).toHaveLength(0);
+  });
+
+  test('refresh of a 24h+ snapshot needs Turnstile and queues a new job; without refresh it stays cached', async () => {
+    const env = makeEnv();
+    const old = { handle: 'mrbeast', followers: 5, takenAt: new Date(NOW.getTime() - 25 * 3600_000).toISOString() };
+    await env.OAUTH_KV.put('tools:cache:profile-lite:mrbeast', JSON.stringify(old));
+    const published: PublishBody[] = [];
+    const plain = await handleLookupPost(post({ kind: 'profile-lite', handle: 'mrbeast' }), env as never, deps(published));
+    expect((await plain.json() as { cached: boolean }).cached).toBe(true);
+    const noToken = await handleLookupPost(post({ kind: 'profile-lite', handle: 'mrbeast', refresh: true }), env as never, deps(published));
+    expect(noToken.status).toBe(400);
+    const res = await handleLookupPost(post({ ...goodBody(), refresh: true }), env as never, deps(published));
+    expect(await res.json()).toEqual({ status: 'queued', id: 'id1' });
+    expect(published).toHaveLength(1);
+  });
+
   test('publishes one signed-job body for the tools workspace and returns the request id', async () => {
     const env = makeEnv();
     const published: PublishBody[] = [];
