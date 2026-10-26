@@ -41,6 +41,10 @@
       "id": "8e079f9756ab4886b6783b311c2cdb24"
     }
   ],
+  // Public tools lookup gate (src/cf/tools-lookup.ts): 3 lookups/min per client IP.
+  // TOOLS_WORKSPACE_ID (var) and TURNSTILE_SECRET / TOOLS_CALLBACK_SECRET (secrets) are
+  // added at rollout; the queue producer key is the existing QUEUE_API_KEY_*.
+  "ratelimits": [{ "name": "LOOKUP_RL", "namespace_id": "1056", "simple": { "limit": 3, "period": 60 } }],
   // ── Schedulers ──────────────────────────────────────────────────────────
   // Queue drain (`*/1` → POST /api/jobs/analyze) is OFF: Contabo already
   // claims thumb/rescore/analyze/fetch/refresh. The minute tick was racing

@@ -28,6 +28,7 @@ import { tagJobFailure, classifyGeminiError } from '../lib/gemini-errors.js';
 import { isVideoCeilingError } from '../lib/scrapers/proxy-adapter.js';
 import { failureLines } from '../lib/refresh-notes.js';
 import { db } from '../db.js';
+import { isToolsQueueKind } from '../queue/contract.js';
 import { CompositeError } from '../experiments/composite/plan.js';
 import { jobAborted } from '../lib/job-abort.js';
 
@@ -64,6 +65,13 @@ export async function processClaimedJob(
   job: MediaJobRow,
   opts?: JobProcessOptions,
 ): Promise<JobProcessResult> {
+  // tools-* jobs: public slashloop.dev/tools lookups. No video, source or
+  // credits — handled before the video-scoped guard below.
+  if (isToolsQueueKind(job.kind)) {
+    const { processToolsJob, defaultToolsJobDeps } = await import('./tools-jobs.js');
+    return processToolsJob(job, await defaultToolsJobDeps());
+  }
+
   // rescore jobs: recompute scores for every source holding a creator's videos.
   // Split out of runRefresh because it was the step that kept dying — it ran
   // with ~11s of budget left after a 48s scrape. No Apify, no credits, so a

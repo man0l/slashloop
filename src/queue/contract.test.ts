@@ -72,6 +72,10 @@ describe('queue policy constants mirror lib/jobs.ts (compat pins the values)', (
 describe('normalizeKindList', () => {
   test('allowlist + dedupe, rejects injection', () => {
     expect(normalizeKindList(['refresh', 'refresh', 'bogus', "x'; DROP TABLE"])).toEqual(['refresh']);
+    expect(normalizeKindList(['tools-profile-lite', 'tools-bogus', 'tools-video'])).toEqual([
+      'tools-profile-lite',
+      'tools-video',
+    ]);
     expect(normalizeKindList([])).toEqual([]);
     expect(normalizeKindList(['ANALYZE'])).toEqual([]);
   });

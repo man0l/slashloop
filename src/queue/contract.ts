@@ -21,9 +21,24 @@ export const QUEUE_KINDS = [
   'discover',
   'rescore',
   'refresh',
+  'tools-profile-lite',
+  'tools-profile',
+  'tools-video',
 ] as const;
 
 export type QueueJobKind = (typeof QUEUE_KINDS)[number];
+
+/**
+ * Public-tools lookups (slashloop.dev/tools). PG-only: they are published by
+ * the tools Worker straight to queue-api, have no D1 MediaJob row, no video,
+ * no source and no credits, and are claimed only by a worker whose
+ * WORKER_KINDS names them.
+ */
+export const TOOLS_QUEUE_KINDS = ['tools-profile-lite', 'tools-profile', 'tools-video'] as const;
+
+export function isToolsQueueKind(kind: string): boolean {
+  return (TOOLS_QUEUE_KINDS as readonly string[]).includes(kind);
+}
 
 /** PG queue states. Uses D1's `done` (not `completed`) for compatibility. */
 export const QUEUE_STATES = ['queued', 'running', 'done', 'failed', 'cancelled'] as const;
@@ -83,7 +98,7 @@ export function normalizeKindList(kinds: string[]): QueueJobKind[] {
   const out: QueueJobKind[] = [];
   const seen = new Set<string>();
   for (const k of kinds) {
-    if (!/^[a-z][a-z_]*$/.test(k)) continue;
+    if (!/^[a-z][a-z_-]*$/.test(k)) continue;
     if (!(QUEUE_KINDS as readonly string[]).includes(k)) continue;
     if (seen.has(k)) continue;
     seen.add(k);
@@ -196,7 +211,7 @@ export function toMediaJobShape(row: PgQueueJobRow): MediaJobShape {
 
 /**
  * Target invariants (plan rev 4 §Producer API, corrected for rescore):
- * - discover: videoId = null AND sourceId = null
+ * - discover, tools-*: videoId = null AND sourceId = null
  * - refresh, rescore: sourceId set AND videoId = null. Rescore is a
  *   source-scoped tail of a refresh (enqueueRescoreJob takes sourceId, never
  *   videoId — every call site in tools/baselines, lib/refresh,
@@ -210,8 +225,8 @@ export function validateJobTargets(
   videoId: string | null,
   sourceId: string | null,
 ): string | null {
-  if (kind === 'discover') {
-    if (videoId != null || sourceId != null) return 'discover requires videoId=null and sourceId=null';
+  if (kind === 'discover' || isToolsQueueKind(kind)) {
+    if (videoId != null || sourceId != null) return `${kind} requires videoId=null and sourceId=null`;
     return null;
   }
   if (kind === 'refresh' || kind === 'rescore') {
@@ -229,7 +244,7 @@ export function dedupeKeyFor(
   sourceId: string | null,
 ): string {
   if (kind === 'refresh') return `refresh:source:${sourceId}`;
-  if (kind === 'discover') return '';
+  if (kind === 'discover' || isToolsQueueKind(kind)) return '';
   if (sourceId) return `${kind}:source:${sourceId}`;
   return `${kind}:video:${videoId}`;
 }

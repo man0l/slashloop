@@ -13,7 +13,7 @@
 #   2. pg_restore -h <test> -U postgres -d slashloop_queue \
 #        /backups/queue-YYYYmmdd-HHMMSS.dump
 #   3. Verify: SELECT count(*), min(created_at) FROM queue_jobs;
-#      re-run queue/postgres/001_queue_foundation.sql (idempotent);
+#      re-run queue/postgres/001_queue_foundation.sql then 002_tools_kinds.sql (both idempotent);
 #      boot queue-api against the restored DB and GET /readyz.
 #   4. Record the result (dump id, row counts, readyz) in the Phase 0
 #      baseline doc — Phase 1 is not complete until a restore test proves

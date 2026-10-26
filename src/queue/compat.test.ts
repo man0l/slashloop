@@ -14,8 +14,13 @@ mock.module('../db.js', () => ({
   initStoreD1Http: () => {},
 }));
 
+import { readFileSync } from 'node:fs';
 import {
   expandQueueKinds,
+  isToolsQueueKind,
+  QUEUE_KINDS,
+  TOOLS_QUEUE_KINDS,
+  validateJobTargets,
   queueBackoffMs,
   toMediaJobShape,
   QUEUE_CANONICAL_LOCK_TTL_MS,
@@ -56,6 +61,8 @@ describe('policy parity with lib/jobs.ts (fails first on drift)', () => {
       [['analyze', 'refresh'], 'proxy'],
       [['thumb'], 'proxy'],
       [['refresh', 'discover'], 'proxy'],
+      [['refresh', 'tools-profile-lite'], 'proxy'],
+      [['tools-profile-lite', 'tools-profile', 'tools-video'], 'proxy'],
     ];
     for (const [kinds, provider] of cases) {
       const expected = expandWorkerKinds(kinds, provider);
@@ -69,6 +76,25 @@ describe('policy parity with lib/jobs.ts (fails first on drift)', () => {
         else process.env.SCRAPER_PROVIDER = saved;
       }
     }
+  });
+});
+
+describe('tools kinds', () => {
+  test('are queue kinds, PG-only, and need neither video nor source', () => {
+    for (const k of TOOLS_QUEUE_KINDS) {
+      expect((QUEUE_KINDS as readonly string[]).includes(k)).toBe(true);
+      expect(isToolsQueueKind(k)).toBe(true);
+      expect(validateJobTargets(k, null, null)).toBeNull();
+      expect(validateJobTargets(k, 'v', null)).not.toBeNull();
+      expect(validateJobTargets(k, null, 's')).not.toBeNull();
+    }
+    expect(isToolsQueueKind('refresh')).toBe(false);
+  });
+
+  test('the Postgres CHECK lists exactly QUEUE_KINDS after 002', () => {
+    const sql = readFileSync(new URL('../../queue/postgres/002_tools_kinds.sql', import.meta.url), 'utf8');
+    const listed = [...sql.slice(sql.indexOf('CHECK (kind IN')).matchAll(/'([a-z-]+)'/g)].map((m) => m[1]);
+    expect([...listed].sort()).toEqual([...QUEUE_KINDS].sort());
   });
 });
 
