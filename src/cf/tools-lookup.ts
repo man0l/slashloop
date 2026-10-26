@@ -39,6 +39,7 @@ const JOB_DEADLINE_MS = 10 * 60 * 1000;
 const PUBLISH_TIMEOUT_MS = 8_000;
 export const DAILY_IP_LIMIT = 20;
 export const DAILY_HANDLE_LIMIT = 5;
+export const REFRESH_AFTER_MS = 24 * 3600 * 1000;
 const MAX_BODY_BYTES = 8 * 1024;
 const MAX_CALLBACK_BYTES = 256 * 1024;
 
@@ -136,14 +137,17 @@ const bump = (env: ToolsLookupEnv, key: string, current: number): Promise<void> 
 export async function handleLookupPost(request: Request, rawEnv: Env | undefined, deps: ToolsLookupDeps = {}): Promise<Response> {
   const env = toolsEnv(rawEnv);
   const now = (deps.now ?? (() => new Date()))();
-  const body = (await readJson(request)) as { kind?: unknown; handle?: unknown; turnstileToken?: unknown } | null;
+  const body = (await readJson(request)) as { kind?: unknown; handle?: unknown; turnstileToken?: unknown; refresh?: unknown } | null;
   if (!body || typeof body !== 'object') return fail(request, 400, 'Invalid request.');
   if (body.kind !== LOOKUP_KIND) return fail(request, 400, 'Unsupported lookup kind.');
   const handle = normalizeHandle(body.handle);
   if (!handle) return fail(request, 400, 'Enter a TikTok username (letters, numbers, dots and underscores).');
 
-  const cached = await env.OAUTH_KV.get(cacheKey(handle), { type: 'json' });
-  if (cached) return json(request, { status: 'done', result: cached, cached: true });
+  const cached = (await env.OAUTH_KV.get(cacheKey(handle), { type: 'json' })) as { takenAt?: unknown } | null;
+  // `refresh` skips the 7-day cache only for a snapshot 24h or older; younger snapshots are always served from it.
+  const takenAt = typeof cached?.takenAt === 'string' ? Date.parse(cached.takenAt) : NaN;
+  const stale = Number.isFinite(takenAt) && now.getTime() - takenAt >= REFRESH_AFTER_MS;
+  if (cached && !(body.refresh === true && stale)) return json(request, { status: 'done', result: cached, cached: true });
 
   const token = typeof body.turnstileToken === 'string' ? body.turnstileToken : '';
   if (!token || token.length > 2048) return fail(request, 400, 'Verification failed. Reload the page and try again.');
