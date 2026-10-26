@@ -15,8 +15,9 @@ import { canonicalString, hmacSign, SLQ_HEADERS } from '../queue/auth.js';
 import { extractRehydrationJson, type CreatorIdentity, type TikTokHttp } from '../lib/scrapers/tiktok-web.js';
 import { isWafChallenge } from '../lib/scrapers/waf.js';
 import type { MediaJobRow } from '../lib/jobs.js';
+import { parseTrendsPayload, runTrends, type TrendsDeps } from './tools-trends.js';
 
-export type ToolsErrorCode = 'budget' | 'not_found' | 'blocked' | 'error';
+export type ToolsErrorCode = 'budget' | 'not_found' | 'blocked' | 'actor' | 'error';
 
 /** Pre-authorised bytes for one profile-lite lookup (measured ~1.3 MB). */
 export const PROFILE_LITE_ESTIMATE_BYTES = 1.5 * 1024 * 1024;
@@ -288,6 +289,7 @@ export interface ToolsJobDeps {
   /** Runs fn inside a private byte meter and reports what it moved. */
   measure<T>(fn: () => Promise<T>): Promise<{ value: T; bytes: number }>;
   buildLookup(workspaceId: string, onProfile: (p: ProfileProbe) => void): Omit<ProfileLiteDeps, 'probe'>;
+  buildTrends?(workspaceId: string): TrendsDeps;
   recordBytes(workspaceId: string, bytes: number, refId: string): Promise<void>;
   callback: CallbackDeps;
   completeJob(id: string, payloadJson: string): Promise<void>;
@@ -322,7 +324,7 @@ export async function processToolsJob(
     return { ok: false, error: message };
   };
 
-  if (job.kind !== 'tools-profile-lite') {
+  if (job.kind !== 'tools-profile-lite' && job.kind !== 'tools-trends') {
     return terminal(`${job.kind} not implemented yet`);
   }
 
@@ -339,6 +341,8 @@ export async function processToolsJob(
   // The cap and the byte ledger are keyed on the workspace: a job for any
   // other workspace would spend (or dodge) someone else's budget.
   if (job.workspaceId !== toolsWorkspace) return terminal('tools job is not in the tools workspace');
+
+  if (job.kind === 'tools-trends') return processTrendsJob(job, requestId, callbackUrl, secret, deps);
 
   const handle = typeof payload.handle === 'string' ? payload.handle.trim().toLowerCase() : '';
   const started = Date.now();
@@ -384,14 +388,75 @@ export async function processToolsJob(
   return { ok: false, error: `lookup failed: ${outcome.status === 'failed' ? outcome.code : 'unknown'}` };
 }
 
+async function processTrendsJob(
+  job: Pick<MediaJobRow, 'id' | 'workspaceId' | 'payloadJson'>,
+  requestId: string,
+  callbackUrl: string,
+  secret: string,
+  deps: ToolsJobDeps,
+): Promise<ToolsJobResult> {
+  const parsed = parseTrendsPayload(job.payloadJson);
+  if ('error' in parsed) {
+    await deps.failJob(job.id, parsed.error, { terminal: true });
+    return { ok: false, error: parsed.error };
+  }
+  if (!deps.buildTrends) {
+    const message = 'tools-trends is not wired on this worker';
+    await deps.failJob(job.id, message, { terminal: true });
+    return { ok: false, error: message };
+  }
+
+  const started = Date.now();
+  const trends = deps.buildTrends(job.workspaceId);
+  const measured = await deps.measure(() => runTrends(parsed, trends));
+  const outcome = measured.value;
+  const bytes = measured.bytes;
+  if (bytes > 0) {
+    await deps.recordBytes(job.workspaceId, bytes, requestId).catch((err: Error) => {
+      console.warn(`[tools] failed to record ${bytes}B for ${requestId}: ${err.message}`);
+    });
+  }
+
+  const body =
+    outcome.status === 'done'
+      ? { requestId, status: 'done', ...outcome.body }
+      : { requestId, status: 'failed', code: outcome.code };
+  try {
+    await postToolsCallback(callbackUrl, secret, body, deps.callback);
+  } catch (err) {
+    const message = (err as Error).message;
+    console.warn(`[tools] tools-trends job ${job.id.slice(0, 8)} callback undelivered: ${message}`);
+    await deps.failJob(job.id, message);
+    return { ok: false, error: message };
+  }
+
+  console.log(
+    `[tools] tools-trends job ${job.id.slice(0, 8)} -> `
+    + `${outcome.status === 'done' ? `done tags=${outcome.body.hashtags.length} sampledTags=${outcome.sampledTags} posts=${outcome.body.samplePosts.length}` : `failed:${outcome.code}`} `
+    + `bytes=${bytes} duration=${Date.now() - started}ms`,
+  );
+  await deps.completeJob(
+    job.id,
+    JSON.stringify(outcome.status === 'done'
+      ? { status: 'done', hashtags: outcome.body.hashtags.length, samplePosts: outcome.body.samplePosts.length }
+      : outcome),
+  );
+  // A budget stop is policy working, not a broken kind; an actor failure should trip the breaker.
+  return outcome.status === 'done' || outcome.code === 'budget'
+    ? { ok: true }
+    : { ok: false, error: `trends failed: ${outcome.code}` };
+}
+
 /** Production wiring: real scraper, ledger, queue lifecycle and fetch. */
 export async function defaultToolsJobDeps(): Promise<ToolsJobDeps> {
-  const [bandwidth, budget, web, impersonate, jobs] = await Promise.all([
+  const [bandwidth, budget, web, impersonate, jobs, spendCap, apifyTrends] = await Promise.all([
     import('../lib/scrapers/bandwidth.js'),
     import('../lib/scrapers/budget.js'),
     import('../lib/scrapers/tiktok-web.js'),
     import('../lib/scrapers/impersonate-http.js'),
     import('../lib/jobs.js'),
+    import('../lib/spend-cap.js'),
+    import('../lib/apify-trends.js'),
   ]);
   return {
     env: process.env,
@@ -409,6 +474,28 @@ export async function defaultToolsJobDeps(): Promise<ToolsJobDeps> {
         resolveCreator: async (h) => web.withTikTokHttp(probingHttp(await http(), onProfile), () => web.resolveCreator(h)),
         fetchPosts: async (identity, limit) => {
           const { items } = await web.withTikTokHttp(await http(), () => web.fetchCreatorPosts(identity, { limit }));
+          return items;
+        },
+        now: () => new Date(),
+      };
+    },
+    buildTrends: (workspaceId) => {
+      let httpOnce: Promise<TikTokHttp> | null = null;
+      const http = () => (httpOnce ??= impersonate.createImpersonatedHttp().then((h) => h ?? web.unsignedHttp));
+      return {
+        assertBudget: async (proxyBytes) => {
+          await budget.assertProxyBudget(workspaceId, proxyBytes);
+          await spendCap.assertApifyCap(workspaceId, 25);
+        },
+        runActor: (input) => {
+          const token = (process.env.APIFY_API_KEY ?? '').trim();
+          if (!token) throw new Error('APIFY_API_KEY is not configured');
+          return apifyTrends.runApifyActor(token, apifyTrends.trendsActorId(), input);
+        },
+        recordApifySpend: (cents, refId) => spendCap.recordApifySpend(workspaceId, cents, refId, 'tools_trends'),
+        resolveChallengeId: async (tag) => web.withTikTokHttp(await http(), () => web.resolveChallengeId(tag)),
+        fetchTagPosts: async (tag, challengeId, limit) => {
+          const { items } = await web.withTikTokHttp(await http(), () => web.fetchHashtagPosts(tag, challengeId, { limit }));
           return items;
         },
         now: () => new Date(),
