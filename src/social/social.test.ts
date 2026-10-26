@@ -137,7 +137,31 @@ describe('instagram provider', () => {
   test('classify maps Meta error codes', () => {
     expect(provider.classify('{"error":{"code":190,"message":"Session expired"}}', 400)).toBe('refresh-token');
     expect(provider.classify('{"error":{"code":4,"message":"Application request limit reached"}}', 400)).toBe('retry');
-    expect(provider.classify('{"error":{"code":10,"message":"Permission denied"}}', 400)).toBe('bad-body');
+    expect(provider.classify('{"error":{"code":10,"message":"Permission revoked"}}', 400)).toBe('reconnect');
+    // api.instagram.com (token endpoint) error shape
+    expect(provider.classify('{"error_type":"OAuthException","code":400,"error_message":"Invalid token"}', 400)).toBe('refresh-token');
+    expect(provider.classify('{}', 500)).toBe('retry');
+  });
+
+  test('generateAuthUrl uses Instagram Login (instagram.com), not Facebook Login', async () => {
+    // The Meta app is a Business-type app: facebook.com/dialog/oauth without a
+    // config_id returns "Feature unavailable". Instagram Login sidesteps that
+    // and needs no Facebook Page.
+    const url = await provider.generateAuthUrl(
+      { instagram: { clientId: 'IG_APP_ID', clientSecret: 'CS' } },
+      'https://mcp.slashloop.dev/api/social/callback/instagram',
+      'ST',
+    );
+    expect(url.startsWith('https://www.instagram.com/oauth/authorize?')).toBe(true);
+    expect(url).not.toContain('facebook.com');
+    expect(url).toContain('client_id=IG_APP_ID');
+    expect(url).toContain('scope=instagram_business_basic%2Cinstagram_business_content_publish');
+    expect(url).toContain('response_type=code');
+    expect(url).toContain('state=ST');
+  });
+
+  test('generateAuthUrl fails loudly when the Instagram app is not configured', async () => {
+    await expect(provider.generateAuthUrl({}, 'https://x/cb', 'ST')).rejects.toThrow(/not configured/);
   });
 });
 

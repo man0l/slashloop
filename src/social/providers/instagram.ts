@@ -1,7 +1,15 @@
-// Instagram Graph API client (Business/Creator accounts, Facebook Login) —
-// rewritten from Meta's official docs (developers.facebook.com/docs/
-// instagram-api), Postiz's instagram.provider.ts used as a behavioral
-// cross-check only (AGPL — no code copied).
+// Instagram API client using **Instagram Login** (Business/Creator accounts)
+// — written from Meta's official docs (developers.facebook.com/docs/
+// instagram-platform/instagram-api-with-instagram-login). Postiz's
+// instagram.standalone.provider.ts was used as a behavioral cross-check only
+// (AGPL — no code copied).
+//
+// Why Instagram Login and not Facebook Login: the slashloop Meta app is a
+// Business-type app whose "Facebook Login for Business" product requires a
+// config_id (no plain `scope` dialog), and Facebook Login additionally
+// requires the IG account to be linked to a Facebook Page. Instagram Login
+// needs neither — the creator authorizes on instagram.com directly, and the
+// app's "Instagram Tester" role (dev mode) / app review (live) gates access.
 //
 // Flow: create invisible media container(s) by public media URL → poll each
 // container's status_code until FINISHED → media_publish → permalink. The
@@ -9,15 +17,23 @@
 // pendingData, so a retry after a mid-publish crash skips the already-live
 // containers instead of duplicating them.
 //
-// Publishing requires a PAGE access token for the Facebook Page linked to
-// the IG account (graph.facebook.com login) — resolveIgAccount stores that
-// page token as the integration token. Meta has no refresh-token rotation:
-// the long-lived user token renews by exchanging itself, so the current
-// user token is stored as both refresh_token and the re-derivation source.
+// Token model: the code exchange yields a short-lived (~1h) token that is
+// immediately swapped for a long-lived (~60d) one. Meta has no refresh-token
+// rotation — the long-lived token renews by refreshing itself (must be ≥24h
+// old and unexpired), so the current token is stored as both access_token
+// and refresh_token.
+//
+// NOTE: the client id/secret here are the **Instagram app** credentials shown
+// under "API setup with Instagram login" in the Meta app dashboard — NOT the
+// parent Facebook app id/secret. (SOCIAL_META_CLIENT_ID / _SECRET)
 
 import { BadBodyError, RefreshTokenError } from '../errors.js';
 import { assertPublicHttpUrl, providerFetch } from '../fetch.js';
 import type { AuthTokenDetails, PendingCheck, PostDetails, PostResponse, ProviderPostContext, SocialConfig, SocialProvider } from '../types.js';
+
+const AUTH = 'https://www.instagram.com/oauth/authorize';
+const TOKEN = 'https://api.instagram.com/oauth/access_token';
+const GRAPH = 'https://graph.instagram.com';
 
 interface Container {
   creationId: string;
@@ -28,7 +44,7 @@ interface Container {
 export class InstagramProvider implements SocialProvider {
   identifier = 'instagram' as const;
   name = 'Instagram';
-  scopes = ['instagram_basic', 'instagram_content_publish', 'pages_show_list', 'pages_read_engagement', 'business_management'];
+  scopes = ['instagram_business_basic', 'instagram_business_content_publish'];
 
   private graphVersion = 'v21.0';
   private clientId = '';
@@ -43,10 +59,12 @@ export class InstagramProvider implements SocialProvider {
   classify = (body: string, status: number): 'refresh-token' | 'reconnect' | 'bad-body' | 'retry' | undefined => {
     if (status === 401) return 'refresh-token';
     try {
-      const parsed = JSON.parse(body) as { error?: { code?: number; message?: string } };
+      const parsed = JSON.parse(body) as { error?: { code?: number; message?: string }; error_type?: string };
       const code = parsed?.error?.code;
       if (code === 190) return 'refresh-token'; // expired/invalid token
       if (code === 4 || code === 17 || code === 32) return 'retry'; // rate limits
+      if (code === 10) return 'reconnect'; // permission revoked by user
+      if (parsed?.error_type === 'OAuthException') return 'refresh-token'; // api.instagram.com style
     } catch {
       /* non-JSON body */
     }
@@ -62,52 +80,65 @@ export class InstagramProvider implements SocialProvider {
       state,
       response_type: 'code',
       scope: this.scopes.join(','),
+      // Always show the account picker so a creator who is logged into the
+      // wrong Instagram account can switch instead of silently reconnecting it.
+      force_reauth: 'true',
     });
-    return `https://www.facebook.com/${this.graphVersion}/dialog/oauth?${params.toString()}`;
+    return `${AUTH}?${params.toString()}`;
   }
 
   async authenticate(cfg: SocialConfig, code: string, redirectUri: string): Promise<AuthTokenDetails> {
     this.configure(cfg);
     if (!this.clientId || !this.clientSecret) throw new BadBodyError('Instagram app is not configured');
 
-    // Short-lived user token → long-lived (~60d) via fb_exchange_token.
-    const short = await this.graph<{ access_token?: string; error?: { message?: string } }>(`/oauth/access_token`, {
-      client_id: this.clientId,
-      client_secret: this.clientSecret,
-      redirect_uri: redirectUri,
-      code,
-    });
-    if (!short.access_token) throw new BadBodyError(short.error?.message || 'Meta did not return an access token');
+    // Instagram appends "#_" to the redirect; browsers drop fragments but a
+    // code copied from a URL bar may carry it.
+    const cleanCode = code.replace(/#_$/, '');
 
-    const long = await this.graph<{ access_token?: string; expires_in?: number; error?: { message?: string } }>(`/oauth/access_token`, {
-      grant_type: 'fb_exchange_token',
-      client_id: this.clientId,
-      client_secret: this.clientSecret,
-      fb_exchange_token: short.access_token,
-    });
-    if (!long.access_token) throw new BadBodyError(long.error?.message || 'Meta long-lived token exchange failed');
+    // Short-lived user token (~1h) via the code exchange.
+    const short = await providerFetch(TOKEN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: this.clientId,
+        client_secret: this.clientSecret,
+        grant_type: 'authorization_code',
+        redirect_uri: redirectUri,
+        code: cleanCode,
+      }).toString(),
+      classify: this.classify,
+    }).then((r) => r.json() as Promise<Record<string, any>>);
+    if (!short?.access_token) {
+      throw new BadBodyError(short?.error_message || short?.error?.message || 'Instagram did not return an access token');
+    }
 
-    return this.resolveIgAccount(long.access_token, long.expires_in);
+    // Immediately swap for a long-lived token (~60d).
+    const long = await this.graph<Record<string, any>>(`/access_token`, {
+      grant_type: 'ig_exchange_token',
+      client_secret: this.clientSecret,
+      access_token: String(short.access_token),
+    }, { versioned: false });
+    if (!long?.access_token) throw new BadBodyError(long?.error?.message || 'Instagram long-lived token exchange failed');
+
+    return this.withUserInfo(String(long.access_token), Number(long.expires_in) || undefined);
   }
 
   async refreshToken(_cfg: SocialConfig, userToken: string): Promise<AuthTokenDetails> {
-    // Meta long-lived user tokens renew by exchanging themselves (must be
-    // ≥24h old). Failure here means the user must reconnect — there is no
+    // Long-lived tokens renew by refreshing themselves (must be ≥24h old and
+    // not yet expired). Failure means the user must reconnect — there is no
     // refresh-token rotation on this platform.
-    const renewed = await this.graph<{ access_token?: string; expires_in?: number; error?: { message?: string } }>(`/oauth/access_token`, {
-      grant_type: 'fb_exchange_token',
-      client_id: this.clientId,
-      client_secret: this.clientSecret,
-      fb_exchange_token: userToken,
-    }).catch((err) => {
+    const renewed = await this.graph<Record<string, any>>(`/refresh_access_token`, {
+      grant_type: 'ig_refresh_token',
+      access_token: userToken,
+    }, { versioned: false }).catch((err) => {
       if (err instanceof RefreshTokenError) throw err;
-      throw new RefreshTokenError('Meta token renewal failed — please reconnect this account');
+      throw new RefreshTokenError('Instagram token renewal failed — please reconnect this account');
     });
 
-    if (!renewed.access_token) {
-      throw new RefreshTokenError(renewed.error?.message || 'Meta token renewal failed — please reconnect this account');
+    if (!renewed?.access_token) {
+      throw new RefreshTokenError(renewed?.error?.message || 'Instagram token renewal failed — please reconnect this account');
     }
-    return this.resolveIgAccount(renewed.access_token, renewed.expires_in);
+    return this.withUserInfo(String(renewed.access_token), Number(renewed.expires_in) || undefined);
   }
 
   checkValidity(post: PostDetails): string | true {
@@ -131,15 +162,17 @@ export class InstagramProvider implements SocialProvider {
         params.image_url = media.url;
         if (isCarousel) params.media_type = 'IMAGE';
       }
-      if (!isCarousel) {
+      if (isCarousel) {
+        params.is_carousel_item = 'true';
+      } else {
         // Caption rides on the single container — Meta rejects captions on
         // carousel children (the caption goes on the CAROUSEL container).
         params.caption = ctx.post.message;
       }
 
-      const created = await this.graph<{ id?: string }>(`/${igId}/media`, params);
+      const created = await this.graph<{ id?: string }>(`/${igId}/media`, params, { method: 'POST' });
       if (!created.id) throw new BadBodyError('Instagram did not create the media container');
-      containers.push({ creationId: created.id, kind: isCarousel ? 'carousel-child' : 'single', published: false });
+      containers.push({ creationId: String(created.id), kind: isCarousel ? 'carousel-child' : 'single', published: false });
     }
 
     if (isCarousel) {
@@ -148,9 +181,9 @@ export class InstagramProvider implements SocialProvider {
         media_type: 'CAROUSEL',
         children: containers.map((c) => c.creationId).join(','),
         caption: ctx.post.message,
-      });
+      }, { method: 'POST' });
       if (!created.id) throw new BadBodyError('Instagram did not create the carousel container');
-      containers.push({ creationId: created.id, kind: 'carousel', published: false });
+      containers.push({ creationId: String(created.id), kind: 'carousel', published: false });
     }
 
     return { pendingData: { containers, publishedIds: [] } };
@@ -194,7 +227,7 @@ export class InstagramProvider implements SocialProvider {
       const result = await this.graph<{ id?: string }>(`/${igId}/media_publish`, {
         access_token: ctx.token,
         creation_id: container.creationId,
-      });
+      }, { method: 'POST' });
       container.published = true;
       if (result.id) publishedIds.push(String(result.id));
     }
@@ -208,6 +241,7 @@ export class InstagramProvider implements SocialProvider {
       throw new BadBodyError('Instagram publish produced no post id');
     }
 
+    const profile = ctx.integration.profile || '';
     const permalink = await this.graph<{ permalink?: string }>(`/${publishedIds[0]}`, {
       access_token: ctx.token,
       fields: 'permalink',
@@ -215,37 +249,49 @@ export class InstagramProvider implements SocialProvider {
       .then((r) => String(r.permalink ?? ''))
       .catch(() => '');
 
-    return { status: 'completed', postId: publishedIds[publishedIds.length - 1], releaseUrl: permalink || 'https://www.instagram.com/' };
+    return {
+      status: 'completed',
+      postId: publishedIds[publishedIds.length - 1],
+      releaseUrl: permalink || (profile ? `https://www.instagram.com/${profile}/` : 'https://www.instagram.com/'),
+    };
   }
 
-  /** Pick the first Page that has a linked Instagram Business account; the
-   *  PAGE access token (not the user token) is what container/publish calls
-   *  require. internalId = IG user id, profile = IG username. */
-  private async resolveIgAccount(userToken: string, expiresIn?: number): Promise<AuthTokenDetails> {
-    const pages = await this.graph<Record<string, any>>(`/me/accounts`, {
-      access_token: userToken,
-      fields: 'id,name,access_token,instagram_business_account{id,username,profile_picture_url}',
+  /** Resolve the professional account behind the token. `user_id` is the
+   *  Instagram professional account id that /media and /media_publish take;
+   *  `id` is the app-scoped user id (fallback only). */
+  private async withUserInfo(accessToken: string, expiresIn?: number): Promise<AuthTokenDetails> {
+    const me = await this.graph<Record<string, any>>(`/me`, {
+      access_token: accessToken,
+      fields: 'user_id,username,name,profile_picture_url,account_type',
     });
-
-    for (const page of pages?.data ?? []) {
-      const ig = page?.instagram_business_account;
-      if (!ig?.id) continue;
-      return {
-        accessToken: page.access_token ?? userToken,
-        refreshToken: userToken, // the renewable long-lived user token
-        expiresIn: expiresIn ?? 60 * 24 * 3600,
-        internalId: String(ig.id),
-        name: page.name ?? ig.username ?? 'Instagram account',
-        profile: ig.username ?? String(ig.id),
-        picture: ig.profile_picture_url,
-      };
-    }
-    throw new BadBodyError('No Instagram Business/Creator account found — link one to a Facebook Page first');
+    const internalId = String(me?.user_id ?? me?.id ?? '');
+    if (!internalId) throw new BadBodyError('No Instagram professional account found — switch the account to Business or Creator first');
+    return {
+      accessToken,
+      refreshToken: accessToken, // the renewable long-lived token
+      expiresIn: expiresIn ?? 60 * 24 * 3600,
+      internalId,
+      name: me.name ?? me.username ?? 'Instagram account',
+      profile: String(me.username ?? internalId).replace(/^@/, ''),
+      picture: me.profile_picture_url,
+    };
   }
 
-  private async graph<T = Record<string, any>>(path: string, params: Record<string, string>): Promise<T> {
-    const url = `https://graph.facebook.com/${this.graphVersion}${path}?${new URLSearchParams(params).toString()}`;
-    const response = await providerFetch(url, { classify: this.classify });
+  private async graph<T = Record<string, any>>(
+    path: string,
+    params: Record<string, string>,
+    opts: { versioned?: boolean; method?: 'GET' | 'POST' } = {},
+  ): Promise<T> {
+    const base = opts.versioned === false ? GRAPH : `${GRAPH}/${this.graphVersion}`;
+    const query = new URLSearchParams(params).toString();
+    const response = opts.method === 'POST'
+      ? await providerFetch(`${base}${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: query,
+          classify: this.classify,
+        })
+      : await providerFetch(`${base}${path}?${query}`, { classify: this.classify });
     return (await response.json()) as T;
   }
 }
