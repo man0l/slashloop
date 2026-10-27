@@ -317,6 +317,7 @@ describe('processToolsJob: tools-trends', () => {
       measure: async (fn) => ({ value: await fn(), bytes: 3_600_000 }),
       buildLookup: () => { throw new Error('profile lookup must not be built for tools-trends'); },
       buildTrends: () => trends,
+      buildVideo: () => { throw new Error('video deps must not be built for tools-trends'); },
       recordBytes: async (w, b, r) => { recorded.push([w, b, r]); },
       callback: {
         fetch: async (_u, init) => { posted.push({ body: JSON.parse(init.body), headers: init.headers, raw: init.body }); return { status: 204 }; },
