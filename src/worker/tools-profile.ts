@@ -21,7 +21,7 @@ export const OUTLIER_MULTIPLE = 3;
 export const CAPTION_MAX = 140;
 const EASTERN = 'America/New_York';
 
-export type ProfileReason = 'lookup' | 'refresh';
+export type ProfileReason = 'lookup' | 'refresh' | 'seed';
 
 export interface ProfilePost {
   id: string;
