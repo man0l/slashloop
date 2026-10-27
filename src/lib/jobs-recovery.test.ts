@@ -222,6 +222,7 @@ describe('jobTimeoutMs', () => {
     expect(jobTimeoutMs('fetch')).toBe(180_000);
     expect(jobTimeoutMs('recreate')).toBe(420_000); // video mode adds the Gemini slide plan
     expect(jobTimeoutMs('thumb')).toBe(30_000);
+    expect(jobTimeoutMs('tools-trends')).toBe(300_000);
     expect(jobTimeoutMs('refresh')).toBeLessThan(15 * 60_000);
   });
 
