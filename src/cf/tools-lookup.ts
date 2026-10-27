@@ -39,6 +39,9 @@ const JOB_DEADLINE_MS = 10 * 60 * 1000;
 const PUBLISH_TIMEOUT_MS = 8_000;
 export const DAILY_IP_LIMIT = 20;
 export const DAILY_HANDLE_LIMIT = 5;
+/** New lookups per client per rolling minute, counted in D1 (LOOKUP_RL is per-colo and only approximate). */
+export const MINUTE_IP_LIMIT = 3;
+const MINUTE_WINDOW_MS = 60 * 1000;
 export const REFRESH_AFTER_MS = 24 * 3600 * 1000;
 const MAX_BODY_BYTES = 8 * 1024;
 const MAX_CALLBACK_BYTES = 256 * 1024;
@@ -182,6 +185,14 @@ export async function handleLookupPost(request: Request, rawEnv: Env | undefined
     .bind(LOOKUP_KIND, handle, since)
     .first<{ id: string }>();
   if (pending) return json(request, { status: 'queued', id: pending.id });
+
+  const minuteAgo = new Date(now.getTime() - MINUTE_WINDOW_MS).toISOString();
+  const recent = await env.DB_SHARD0.prepare('SELECT COUNT(*) AS n FROM tools_lookups WHERE client_hash = ? AND created_at > ?')
+    .bind(hash, minuteAgo)
+    .first<{ n: number }>();
+  if ((recent?.n ?? 0) >= MINUTE_IP_LIMIT) {
+    return fail(request, 429, 'Too many lookups. Wait a minute and try again.', { retryAfter: 60 });
+  }
 
   const workspaceId = env.TOOLS_WORKSPACE_ID?.trim();
   const cfg = loadProducerConfig({

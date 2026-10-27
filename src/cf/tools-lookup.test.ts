@@ -23,6 +23,7 @@ interface Row {
   result_json: string | null;
   error_code: string | null;
   created_at: string;
+  client_hash?: string;
 }
 
 function fakeKv() {
@@ -60,14 +61,18 @@ function fakeDb() {
             const [kind, subject, id] = args as string[];
             return rows.find((r) => r.kind === kind && r.subject === subject && r.status === 'queued' && r.id !== id) ?? null;
           }
+          if (sql.startsWith('SELECT COUNT(*) AS n FROM tools_lookups')) {
+            const [hash, since] = args as string[];
+            return { n: rows.filter((r) => r.client_hash === hash && r.created_at > since).length };
+          }
           if (sql.startsWith('SELECT id, status, result_json')) return rows.find((r) => r.id === args[0]) ?? null;
           if (sql.startsWith('SELECT subject, status')) return rows.find((r) => r.id === args[0]) ?? null;
           throw new Error(`unexpected first(): ${sql}`);
         },
         async run() {
           if (sql.startsWith('INSERT INTO tools_lookups')) {
-            const [id, kind, subject, created] = args as string[];
-            rows.push({ id, kind, subject, status: 'queued', result_json: null, error_code: null, created_at: created });
+            const [id, kind, subject, created, , client_hash] = args as string[];
+            rows.push({ id, kind, subject, status: 'queued', result_json: null, error_code: null, created_at: created, client_hash });
           } else if (sql.includes("SET status = 'failed'")) {
             const row = rows.find((r) => r.id === args[2])!;
             row.status = 'failed';
@@ -261,6 +266,26 @@ describe('POST /api/tools/lookup', () => {
     const res = await handleLookupPost(post(goodBody()), env as never, deps(published));
     expect(res.status).toBe(429);
     expect(published).toHaveLength(0);
+  });
+
+  test('4th new lookup from one client within a minute -> 429, even when LOOKUP_RL lets it through', async () => {
+    const env = makeEnv();
+    const published: PublishBody[] = [];
+    const d = deps(published);
+    for (const h of ['khaby.lame', 'bellapoarch', 'mrbeast']) {
+      expect((await handleLookupPost(post(goodBody(h)), env as never, d)).status).toBe(200);
+    }
+    const res = await handleLookupPost(post(goodBody('charlidamelio')), env as never, d);
+    expect(res.status).toBe(429);
+    expect(((await res.json()) as { error: string }).error).toBe('Too many lookups. Wait a minute and try again.');
+    expect(published).toHaveLength(3);
+    // Another client is unaffected.
+    expect((await handleLookupPost(post(goodBody('charlidamelio'), '198.51.100.9'), env as never, d)).status).toBe(200);
+    // Following an in-flight lookup is not a new lookup.
+    expect((await handleLookupPost(post(goodBody('mrbeast')), env as never, d)).status).toBe(200);
+    // Lookups older than a minute stop counting.
+    for (const r of env.DB_SHARD0.rows) r.created_at = new Date(NOW.getTime() - 61_000).toISOString();
+    expect((await handleLookupPost(post(goodBody('charlidamelio')), env as never, d)).status).toBe(200);
   });
 
   test('daily per-handle and per-IP caps -> 429', async () => {
