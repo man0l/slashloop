@@ -487,7 +487,7 @@ describe('tiktok-web helpers', () => {
     const id = identityFromUserDetail({
       userInfo: { user: { secUid: 'SEC123', uniqueId: 'JawHacks' }, stats: { followerCount: 99 } },
     }, 'fallback');
-    expect(id).toEqual({ secUid: 'SEC123', handle: 'JawHacks', followers: 99 });
+    expect(id).toEqual({ secUid: 'SEC123', handle: 'JawHacks', followers: 99, following: null, totalLikes: null });
     expect(identityFromUserDetail({ userInfo: {} }, 'x')).toBeNull();
   });
 });
