@@ -3,7 +3,7 @@
 // the library reads process.env or global bindings itself.
 
 export * from './types.js';
-export { BadBodyError, ReconnectError, RefreshTokenError } from './errors.js';
+export { BadBodyError, ReconnectError, RefreshTokenError, connectFailureReason } from './errors.js';
 export { createRegistry, getProvider } from './registry.js';
 export { signOAuthState, verifyOAuthState } from './oauth-state.js';
 export { visibleOwnerIds } from './visibility.js';
