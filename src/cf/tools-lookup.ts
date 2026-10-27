@@ -31,9 +31,16 @@ export const LOOKUP_KIND = 'profile-lite';
 export const QUEUE_KIND = 'tools-profile-lite';
 export const VIDEO_LOOKUP_KIND = 'transcript';
 export const VIDEO_QUEUE_KIND = 'tools-video';
+/** Full analyzer behind the creator pages (SLA-1058): same handle target as profile-lite, own cache, limits and job kind. */
+export const PROFILE_LOOKUP_KIND = 'profile';
+export const PROFILE_QUEUE_KIND = 'tools-profile';
 export const RESULT_PATH = '/api/tools/internal/result';
 const TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 const DEFAULT_ORIGIN = 'https://mcp.slashloop.dev';
+const DEFAULT_SITE_URL = 'https://slashloop.dev';
+export const SITE_CREATOR_PATH = '/tools/api/internal/creator';
+export const SITE_REMOVAL_PATH = '/tools/api/internal/removal';
+const SITE_PUSH_TIMEOUT_MS = 8_000;
 
 export const RESULT_TTL_SECONDS = 7 * 24 * 3600;
 export const VIDEO_RESULT_TTL_SECONDS = 30 * 24 * 3600;
@@ -83,6 +90,10 @@ export interface ToolsLookupEnv {
   TURNSTILE_SECRET?: string;
   TOOLS_CALLBACK_SECRET?: string;
   TOOLS_WORKSPACE_ID?: string;
+  /** Where creator results are pushed (the slashloop-site Worker). */
+  TOOLS_SITE_URL?: string;
+  /** Board mailbox for removal-request notices (src/cf/tools-creators.ts); same ALERT_EMAIL the scrape alerts use. */
+  ALERT_EMAIL?: string;
   PUBLIC_URL?: string;
   QUEUE_API_URL?: string;
   QUEUE_API_KEY_ID?: string;
@@ -96,9 +107,9 @@ export interface ToolsLookupDeps {
   fetchImpl?: typeof fetch;
 }
 
-const toolsEnv = (env: Env | undefined): ToolsLookupEnv => (env ?? {}) as unknown as ToolsLookupEnv;
+export const toolsEnv = (env: Env | undefined): ToolsLookupEnv => (env ?? {}) as unknown as ToolsLookupEnv;
 
-function json(request: Request, body: unknown, status = 200): Response {
+export function json(request: Request, body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
@@ -109,14 +120,14 @@ function json(request: Request, body: unknown, status = 200): Response {
     },
   });
 }
-const fail = (request: Request, status: number, message: string, extra: Record<string, unknown> = {}): Response =>
+export const fail = (request: Request, status: number, message: string, extra: Record<string, unknown> = {}): Response =>
   json(request, { error: message, ...extra }, status);
 
 const cacheKey = (handle: string, kind: string = LOOKUP_KIND): string => `tools:cache:${kind}:${handle}`;
-const yyyymmdd = (d: Date): string => d.toISOString().slice(0, 10).replace(/-/g, '');
-const noContent = (): Response => new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } });
+export const yyyymmdd = (d: Date): string => d.toISOString().slice(0, 10).replace(/-/g, '');
+export const noContent = (): Response => new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } });
 
-async function readJson(request: Request): Promise<unknown | null> {
+export async function readJson(request: Request): Promise<unknown | null> {
   const declared = Number(request.headers.get('content-length') ?? '0');
   if (declared > MAX_BODY_BYTES) return null;
   const text = await request.text();
@@ -128,7 +139,7 @@ async function readJson(request: Request): Promise<unknown | null> {
   }
 }
 
-async function clientHash(env: ToolsLookupEnv, request: Request): Promise<string> {
+export async function clientHash(env: ToolsLookupEnv, request: Request): Promise<string> {
   const ip = request.headers.get('cf-connecting-ip') ?? 'unknown';
   // Keyed so the stored hash cannot be brute-forced back to an IP.
   const key = await crypto.subtle.importKey(
@@ -142,7 +153,7 @@ async function clientHash(env: ToolsLookupEnv, request: Request): Promise<string
   return Array.from(sig.subarray(0, 12), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function verifyTurnstile(env: ToolsLookupEnv, token: string, ip: string | null, fetchImpl: typeof fetch): Promise<boolean> {
+export async function verifyTurnstile(env: ToolsLookupEnv, token: string, ip: string | null, fetchImpl: typeof fetch): Promise<boolean> {
   const form = new FormData();
   form.set('secret', env.TURNSTILE_SECRET ?? '');
   form.set('response', token);
@@ -193,6 +204,25 @@ async function resolveTarget(request: Request, body: LookupBody, deps: ToolsLook
       subjectLimitMessage: 'This account was looked up too many times today. Try again tomorrow.',
       dedupeKey: (day) => `${QUEUE_KIND}:${handle}:${day}`,
       payload: { handle },
+      preview: null,
+      refreshable: true,
+    };
+  }
+  if (body.kind === PROFILE_LOOKUP_KIND) {
+    const handle = normalizeHandle(body.handle);
+    if (!handle) return fail(request, 400, 'Enter a TikTok username (letters, numbers, dots and underscores).');
+    return {
+      kind: PROFILE_LOOKUP_KIND,
+      queueKind: PROFILE_QUEUE_KIND,
+      subject: handle,
+      cacheTtl: RESULT_TTL_SECONDS,
+      ipKey: (hash, day) => `tools:rl:day:profile:${hash}:${day}`,
+      ipLimit: DAILY_IP_LIMIT,
+      subjectKey: (day) => `tools:rl:handle:profile:${handle}:${day}`,
+      subjectLimit: DAILY_HANDLE_LIMIT,
+      subjectLimitMessage: 'This account was looked up too many times today. Try again tomorrow.',
+      dedupeKey: (day) => `${PROFILE_QUEUE_KIND}:${handle}:${day}`,
+      payload: { handle, reason: 'lookup' },
       preview: null,
       refreshable: true,
     };
@@ -366,32 +396,70 @@ export async function handleLookupGet(request: Request, id: string, rawEnv: Env 
 
 type CallbackBody = { requestId?: unknown; status?: unknown; result?: unknown; code?: unknown };
 
-export async function handleResultCallback(request: Request, rawEnv: Env | undefined, deps: ToolsLookupDeps = {}): Promise<Response> {
-  const env = toolsEnv(rawEnv);
+const unauthenticated = (): Response =>
+  new Response(JSON.stringify({ error: 'unauthenticated' }), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
+  });
+
+/** HMAC + timestamp + one-time nonce check shared by every signed internal endpoint. Returns the raw body or a 401. */
+export async function verifySigned(request: Request, env: ToolsLookupEnv, now: Date): Promise<Uint8Array | Response> {
   const secret = env.TOOLS_CALLBACK_SECRET?.trim();
   const timestamp = request.headers.get('x-slq-timestamp') ?? '';
   const nonce = request.headers.get('x-slq-nonce') ?? '';
   const signature = request.headers.get('x-slq-signature') ?? '';
-  const deny = (): Response =>
-    new Response(JSON.stringify({ error: 'unauthenticated' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
-    });
-  if (!secret || !/^\d+$/.test(timestamp) || !/^[A-Za-z0-9_-]{8,64}$/.test(nonce) || !signature) return deny();
-
-  const now = (deps.now ?? (() => new Date()))();
-  if (Math.abs(Math.floor(now.getTime() / 1000) - Number(timestamp)) > AUTH_SKEW_SECONDS) return deny();
+  if (!secret || !/^\d+$/.test(timestamp) || !/^[A-Za-z0-9_-]{8,64}$/.test(nonce) || !signature) return unauthenticated();
+  if (Math.abs(Math.floor(now.getTime() / 1000) - Number(timestamp)) > AUTH_SKEW_SECONDS) return unauthenticated();
 
   const raw = new Uint8Array(await request.arrayBuffer());
-  if (raw.length > MAX_CALLBACK_BYTES) return deny();
+  if (raw.length > MAX_CALLBACK_BYTES) return unauthenticated();
   const expected = Buffer.from(await producerSignature(secret, 'POST', new URL(request.url).pathname, timestamp, nonce, raw));
   const given = Buffer.from(signature);
-  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return deny();
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return unauthenticated();
 
   // Only a correctly signed request may touch the nonce set, so unauthenticated traffic cannot fill it.
   const nonceKey = `tools:nonce:${nonce}`;
-  if (await env.OAUTH_KV.get(nonceKey)) return deny();
+  if (await env.OAUTH_KV.get(nonceKey)) return unauthenticated();
   await env.OAUTH_KV.put(nonceKey, '1', { expirationTtl: NONCE_TTL_SECONDS });
+  return raw;
+}
+
+/** Signed POST to the site Worker; true only on a 2xx. */
+export async function pushToSite(
+  env: ToolsLookupEnv,
+  path: string,
+  payload: unknown,
+  deps: ToolsLookupDeps = {},
+): Promise<boolean> {
+  const secret = env.TOOLS_CALLBACK_SECRET?.trim();
+  if (!secret) return false;
+  const base = (env.TOOLS_SITE_URL ?? '').replace(/\/$/, '') || DEFAULT_SITE_URL;
+  const raw = new TextEncoder().encode(JSON.stringify(payload));
+  const ts = String(Math.floor((deps.now ?? (() => new Date()))().getTime() / 1000));
+  const nonce = crypto.randomUUID().replace(/-/g, '');
+  try {
+    const res = await (deps.fetchImpl ?? fetch)(`${base}${path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-slq-timestamp': ts,
+        'x-slq-nonce': nonce,
+        'x-slq-signature': await producerSignature(secret, 'POST', path, ts, nonce, raw),
+      },
+      body: raw,
+      signal: AbortSignal.timeout(SITE_PUSH_TIMEOUT_MS),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function handleResultCallback(request: Request, rawEnv: Env | undefined, deps: ToolsLookupDeps = {}): Promise<Response> {
+  const env = toolsEnv(rawEnv);
+  const now = (deps.now ?? (() => new Date()))();
+  const raw = await verifySigned(request, env, now);
+  if (raw instanceof Response) return raw;
 
   let body: CallbackBody;
   try {
@@ -414,6 +482,12 @@ export async function handleResultCallback(request: Request, rawEnv: Env | undef
     const isVideo = row.kind === VIDEO_LOOKUP_KIND;
     const subjectField = isVideo ? { videoId: row.subject } : { handle: row.subject };
     const result = JSON.stringify({ ...(body.result as object), ...subjectField });
+    // The creator page must exist before the visitor is told the lookup is done; a failed push
+    // leaves the row queued and answers 5xx so the VPS retries the delivery.
+    if (row.kind === PROFILE_LOOKUP_KIND && !(await pushToSite(env, SITE_CREATOR_PATH, { handle: row.subject, result: JSON.parse(result) }, deps))) {
+      console.warn(`[tools-lookup] site push failed for ${row.subject}`);
+      return fail(request, 502, 'Could not publish the result.');
+    }
     await env.DB_SHARD0.prepare("UPDATE tools_lookups SET status = 'done', result_json = ?, error_code = NULL, updated_at = ? WHERE id = ?")
       .bind(result, stamp, requestId)
       .run();
