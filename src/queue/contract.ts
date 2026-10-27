@@ -24,6 +24,7 @@ export const QUEUE_KINDS = [
   'tools-profile-lite',
   'tools-profile',
   'tools-video',
+  'tools-trends',
 ] as const;
 
 export type QueueJobKind = (typeof QUEUE_KINDS)[number];
@@ -34,7 +35,7 @@ export type QueueJobKind = (typeof QUEUE_KINDS)[number];
  * no source and no credits, and are claimed only by a worker whose
  * WORKER_KINDS names them.
  */
-export const TOOLS_QUEUE_KINDS = ['tools-profile-lite', 'tools-profile', 'tools-video'] as const;
+export const TOOLS_QUEUE_KINDS = ['tools-profile-lite', 'tools-profile', 'tools-video', 'tools-trends'] as const;
 
 export function isToolsQueueKind(kind: string): boolean {
   return (TOOLS_QUEUE_KINDS as readonly string[]).includes(kind);

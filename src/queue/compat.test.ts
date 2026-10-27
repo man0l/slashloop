@@ -62,7 +62,7 @@ describe('policy parity with lib/jobs.ts (fails first on drift)', () => {
       [['thumb'], 'proxy'],
       [['refresh', 'discover'], 'proxy'],
       [['refresh', 'tools-profile-lite'], 'proxy'],
-      [['tools-profile-lite', 'tools-profile', 'tools-video'], 'proxy'],
+      [['tools-profile-lite', 'tools-profile', 'tools-video', 'tools-trends'], 'proxy'],
     ];
     for (const [kinds, provider] of cases) {
       const expected = expandWorkerKinds(kinds, provider);
@@ -91,8 +91,8 @@ describe('tools kinds', () => {
     expect(isToolsQueueKind('refresh')).toBe(false);
   });
 
-  test('the Postgres CHECK lists exactly QUEUE_KINDS after 002', () => {
-    const sql = readFileSync(new URL('../../queue/postgres/002_tools_kinds.sql', import.meta.url), 'utf8');
+  test('the Postgres CHECK lists exactly QUEUE_KINDS after 003', () => {
+    const sql = readFileSync(new URL('../../queue/postgres/003_tools_trends_kind.sql', import.meta.url), 'utf8');
     const listed = [...sql.slice(sql.indexOf('CHECK (kind IN')).matchAll(/'([a-z-]+)'/g)].map((m) => m[1]);
     expect([...listed].sort()).toEqual([...QUEUE_KINDS].sort());
   });
