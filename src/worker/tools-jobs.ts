@@ -504,7 +504,7 @@ export async function defaultToolsJobDeps(): Promise<ToolsJobDeps> {
           return web.withTikTokHttp(probingHttp(await http(), onProfile), () => web.resolveCreator(h));
         },
         fetchPosts: async (identity, limit) => {
-          const { items } = await web.withTikTokHttp(await http(), () => web.fetchCreatorPosts(identity, { limit }));
+          const { items } = await web.withTikTokHttp(await http(), () => web.fetchCreatorPostsWithEmbedFallback(identity, { limit }));
           return items;
         },
         now: () => new Date(),

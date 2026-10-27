@@ -877,6 +877,25 @@ export async function fetchCreatorPosts(
   return { items: [...ssr, ...legacy.items].slice(0, req.limit), notices: legacy.notices };
 }
 
+/**
+ * Creator posts for the tools jobs: the item_list path first, then the public
+ * embed playlist when TikTok's profile page and signed API give nothing. The
+ * embed rows carry the follower count, so a null identity.followers is filled.
+ */
+export async function fetchCreatorPostsWithEmbedFallback(
+  identity: CreatorIdentity,
+  req: PageRequest,
+): Promise<{ items: any[]; notices: string[] }> {
+  const primary = await fetchCreatorPosts(identity, req);
+  if (primary.items.length) return primary;
+  const embed = await fetchEmbedItems('creator', identity.handle, req);
+  if (identity.followers == null) {
+    const f = embed.items.find((it) => typeof it?.authorStats?.followerCount === 'number')?.authorStats.followerCount;
+    if (typeof f === 'number') identity.followers = f;
+  }
+  return { items: embed.items, notices: [...primary.notices, ...embed.notices] };
+}
+
 function statsMissing(item: any): boolean {
   const n = toNum(item?.stats?.diggCount ?? item?.diggCount);
   return n === 0 && !item?.stats?.diggCount && !item?.diggCount;

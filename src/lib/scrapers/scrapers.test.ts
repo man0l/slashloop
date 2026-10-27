@@ -33,6 +33,7 @@ import {
   creatorItemListUrl,
   dedupeItems,
   embedPageUrl,
+  fetchCreatorPostsWithEmbedFallback,
   estimateScrapeBytes,
   extractCollectionId,
   extractFrontityJson,
@@ -888,6 +889,38 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
     expect(result.items[0]?.creatorHandle).toBe('jawhacks');
     expect(result.items[0]?.views).toBe(90_000);
     expect(result.notices).toEqual([]);
+  });
+
+  test('fetchCreatorPostsWithEmbedFallback reads the embed playlist and backfills followers when the profile path is empty', async () => {
+    clearLookupCaches();
+    const payload = {
+      source: {
+        data: {
+          '/embed/@jawhacks': {
+            userInfo: { uniqueId: 'jawhacks', followerCount: 54_321 },
+            videoList: [
+              { id: '7178571592316783915', desc: 'a', coverUrl: 'c', playCount: 10, authorUniqueId: 'jawhacks' },
+              { id: '7178571592316783916', desc: 'b', coverUrl: 'c', playCount: 20, authorUniqueId: 'jawhacks' },
+            ],
+          },
+        },
+      },
+    };
+    const html = `<script id="__FRONTITY_CONNECT_STATE__">${JSON.stringify(payload)}</script>`;
+    const http: TikTokHttp = {
+      async getJson() {
+        return { json: null, status: 200, ok: true, text: '', bytes: 0 };
+      },
+      async getText(url) {
+        const text = url.includes('/embed/') ? html : '<html></html>';
+        return { json: null, status: 200, ok: true, text, bytes: text.length };
+      },
+    };
+    const identity = { secUid: 'sec', handle: 'jawhacks', followers: null as number | null };
+    const { withTikTokHttp } = await import('./tiktok-web.js');
+    const out = await withTikTokHttp(http, () => fetchCreatorPostsWithEmbedFallback(identity, { limit: 30 }));
+    expect(out.items.map((i) => i.id).sort()).toEqual(['7178571592316783915', '7178571592316783916']);
+    expect(identity.followers).toBe(54_321);
   });
 
   test('prefers the embed playlist when Frontity videoList is present', async () => {
