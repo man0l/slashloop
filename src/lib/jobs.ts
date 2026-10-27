@@ -198,6 +198,8 @@ export function jobTimeoutMs(kind: string): number {
   // top, so the cap covers the slower mode for both.
   if (kind === 'recreate') return 420_000;
   if (kind === 'thumb') return 30_000;
+  // 44 sequential Creative Center lists (~2s each) plus 20 tag-page samples through the proxy.
+  if (kind === 'tools-trends') return 300_000;
   if (kind === 'refresh' || kind === 'discover' || kind === 'rescore') return 120_000;
   return 120_000;
 }
