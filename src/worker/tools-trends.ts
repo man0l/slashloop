@@ -19,8 +19,8 @@ import {
 } from '../lib/creative-center.js';
 import type { ToolsErrorCode } from './tools-jobs.js';
 
-/** ~180 KB per /tag page measured; budgeted at 200 KB x 20 tags = 4 MB pre-authorised. */
-export const TRENDS_SAMPLE_BYTES_PER_TAG = 200 * 1024;
+/** ~980 KB per /tag page (30 posts) measured live on the VPS 2026-10-27; budgeted at 1 MB x 20 tags. */
+export const TRENDS_SAMPLE_BYTES_PER_TAG = 1024 * 1024;
 export const TRENDS_SAMPLE_POSTS_PER_TAG = 30;
 export const TRENDS_MAX_SAMPLE_TAGS = 20;
 const MAX_CONSECUTIVE_SAMPLE_FAILURES = 3;

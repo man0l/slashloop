@@ -22,6 +22,7 @@ import { processToolsJob, type ToolsJobDeps } from './tools-jobs.js';
 import {
   mapSampleItem,
   listBytesEstimate,
+  TRENDS_SAMPLE_BYTES_PER_TAG,
   parseTrendsPayload,
   pickSampleTags,
   runTrends,
@@ -228,7 +229,7 @@ describe('runTrends', () => {
     expect(o.body.hashtags).toHaveLength(6);
     expect(o.body.samplePosts.map((p) => p.id)).toEqual(['fyp-1', 'skincare-1', 'chaos-1', 'glow-1']);
     expect(o.sampledTags).toBe(4);
-    expect(d.log[0]).toBe(`budget:${listBytesEstimate(2) + 20 * 200 * 1024}`);
+    expect(d.log[0]).toBe(`budget:${listBytesEstimate(2) + 20 * TRENDS_SAMPLE_BYTES_PER_TAG}`);
     expect(d.log.filter((l) => l.startsWith('list:'))).toHaveLength(2 * (CC_INDUSTRIES.length + 1));
     expect(d.log.indexOf('resolve:fyp')).toBeGreaterThan(d.log.lastIndexOf(`list:30:${CC_INDUSTRIES[20]!.id}`));
   });
