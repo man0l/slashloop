@@ -17,6 +17,10 @@ import {
 /** Pre-authorised bytes for one full profile lookup (measured ~3.5 MB with recent posts). */
 export const PROFILE_ESTIMATE_BYTES = 4 * 1024 * 1024;
 export const PROFILE_POST_LIMIT = 30;
+/** Video pages read to fill likes/comments/shares/sound on embed rows (~85KB each on the wire). */
+export const PROFILE_HYDRATE_PAGES = 10;
+/** Posts with known engagement needed before an engagement rate is shown. */
+export const MIN_ENGAGEMENT_POSTS = 3;
 export const OUTLIER_MULTIPLE = 3;
 export const CAPTION_MAX = 140;
 const EASTERN = 'America/New_York';
@@ -42,6 +46,8 @@ export interface ProfileResult {
   /** Account-wide hearts, when the user detail carries it. */
   totalLikes: number | null;
   sampled: number;
+  /** Posts whose likes/comments/shares were read; the averages and rates use only these. */
+  statsSampled: number;
   avgLikes: number;
   avgComments: number;
   avgShares: number;
@@ -145,12 +151,18 @@ export function shapeProfile(identity: Pick<CreatorIdentity, 'followers' | 'foll
   const posts = sample.map((r) => r.post);
   const n = posts.length;
   const sum = (pick: (p: ProfilePost) => number) => posts.reduce((t, p) => t + pick(p), 0);
-  const likes = sum((p) => p.likes);
-  const comments = sum((p) => p.comments);
-  const shares = sum((p) => p.shares);
+  // Embed rows carry views only; counting their missing likes as 0 would publish a 0% rate.
+  const known = posts.filter((p) => p.likes + p.comments + p.shares > 0);
+  const k = known.length;
+  const sumKnown = (pick: (p: ProfilePost) => number) => known.reduce((t, p) => t + pick(p), 0);
+  const likes = sumKnown((p) => p.likes);
+  const comments = sumKnown((p) => p.comments);
+  const shares = sumKnown((p) => p.shares);
   const views = sum((p) => p.views);
+  const knownViews = sumKnown((p) => p.views);
   const engagement = likes + comments + shares;
-  const avgEngagement = n ? engagement / n : 0;
+  const enough = k >= MIN_ENGAGEMENT_POSTS;
+  const avgEngagement = k ? engagement / k : 0;
   const medianViews = median(posts.map((p) => p.views));
 
   const outliers = medianViews > 0
@@ -195,13 +207,14 @@ export function shapeProfile(identity: Pick<CreatorIdentity, 'followers' | 'foll
     following: identity.following ?? null,
     totalLikes: identity.totalLikes ?? null,
     sampled: n,
-    avgLikes: n ? round(likes / n, 1) : 0,
-    avgComments: n ? round(comments / n, 1) : 0,
-    avgShares: n ? round(shares / n, 1) : 0,
+    statsSampled: k,
+    avgLikes: k ? round(likes / k, 1) : 0,
+    avgComments: k ? round(comments / k, 1) : 0,
+    avgShares: k ? round(shares / k, 1) : 0,
     avgViews: n ? round(views / n, 1) : 0,
     avgEngagement: round(avgEngagement, 1),
-    erByFollowers: followers && followers > 0 && n ? round((avgEngagement / followers) * 100, 2) : null,
-    erByViews: views > 0 ? round((engagement / views) * 100, 2) : null,
+    erByFollowers: enough && followers && followers > 0 ? round((avgEngagement / followers) * 100, 2) : null,
+    erByViews: enough && knownViews > 0 ? round((engagement / knownViews) * 100, 2) : null,
     medianViews: round(medianViews, 0),
     outliers,
     postsPerWeek,
@@ -221,10 +234,21 @@ export async function runProfile(handle: string, deps: ProfileLiteDeps): Promise
     return { status: 'failed', code: classifyToolsError(err) };
   }
   try {
-    const identity = await deps.resolveCreator(handle);
-    if (!identity) return { status: 'failed', code: classifyProfileMiss(deps.probe()) };
-    const items = await deps.fetchPosts(identity, PROFILE_POST_LIMIT);
+    let identity: Pick<CreatorIdentity, 'followers' | 'following' | 'totalLikes'> | null = null;
+    let items: any[] = [];
+    // Embed first: one ~40KB read for counts + posts, no profile page needed.
+    const embed = deps.fetchEmbed ? await deps.fetchEmbed(handle, PROFILE_POST_LIMIT) : null;
+    if (embed?.items.length) {
+      identity = embed.identity;
+      items = embed.items;
+    } else {
+      const resolved = await deps.resolveCreator(handle);
+      if (!resolved) return { status: 'failed', code: classifyProfileMiss(deps.probe()) };
+      identity = resolved;
+      items = await deps.fetchPosts(resolved, PROFILE_POST_LIMIT);
+    }
     if (items.length === 0) return { status: 'failed', code: 'not_found' };
+    if (deps.hydrate) items = await deps.hydrate(items).catch(() => items);
     return { status: 'done', result: shapeProfile(identity, handle, items, deps.now()) };
   } catch (err) {
     return { status: 'failed', code: classifyToolsError(err) };

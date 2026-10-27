@@ -33,6 +33,7 @@ import {
   creatorItemListUrl,
   dedupeItems,
   embedPageUrl,
+  fetchEmbedCreator,
   estimateScrapeBytes,
   extractCollectionId,
   extractFrontityJson,
@@ -903,6 +904,40 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
     expect(result.items[0]?.creatorHandle).toBe('jawhacks');
     expect(result.items[0]?.views).toBe(90_000);
     expect(result.notices).toEqual([]);
+  });
+
+  test('fetchEmbedCreator reads counts and posts from one embed page and drops a wrapped heart count', async () => {
+    clearLookupCaches();
+    const payload = {
+      source: {
+        data: {
+          '/embed/@jawhacks': {
+            userInfo: { uniqueId: 'jawhacks', followerCount: 54_321, followingCount: 12, heartCount: -511_852_547 },
+            videoList: [
+              { id: '7178571592316783915', desc: 'a', coverUrl: 'c', playCount: 10, authorUniqueId: 'jawhacks' },
+              { id: '7178571592316783916', desc: 'b', coverUrl: 'c', playCount: 20, authorUniqueId: 'jawhacks' },
+            ],
+          },
+        },
+      },
+    };
+    const html = `<script id="__FRONTITY_CONNECT_STATE__">${JSON.stringify(payload)}</script>`;
+    const urls: string[] = [];
+    const http: TikTokHttp = {
+      async getJson() {
+        return { json: null, status: 200, ok: true, text: '', bytes: 0 };
+      },
+      async getText(url) {
+        urls.push(url);
+        return { json: null, status: 200, ok: true, text: html, bytes: html.length };
+      },
+    };
+    const { withTikTokHttp } = await import('./tiktok-web.js');
+    const out = await withTikTokHttp(http, () => fetchEmbedCreator('jawhacks', { limit: 30 }));
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain('/embed/@jawhacks');
+    expect(out!.items.map((i) => i.id).sort()).toEqual(['7178571592316783915', '7178571592316783916']);
+    expect(out!.identity).toEqual({ followers: 54_321, following: 12, totalLikes: null });
   });
 
   test('prefers the embed playlist when Frontity videoList is present', async () => {

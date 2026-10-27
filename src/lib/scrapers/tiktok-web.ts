@@ -877,6 +877,54 @@ export async function fetchCreatorPosts(
   return { items: [...ssr, ...legacy.items].slice(0, req.limit), notices: legacy.notices };
 }
 
+/**
+ * One public embed read for the tools profile job: account counts plus the
+ * playlist posts (views only). ~40KB on the wire against ~80KB for the profile
+ * page, and it works when the profile page carries no posts. The embed
+ * `heartCount` is a 32-bit field that wraps negative on big accounts, so it is
+ * dropped unless it is a plausible non-negative count.
+ */
+export async function fetchEmbedCreator(
+  handle: string,
+  req: PageRequest,
+): Promise<{ identity: Pick<CreatorIdentity, 'followers' | 'following' | 'totalLikes'>; items: any[] } | null> {
+  const getter = currentHttp.getText ?? unsignedHttp.getText;
+  const res = await getter!(embedPageUrl('creator', handle), {
+    Accept: 'text/html,application/xhtml+xml',
+    Referer: `${WEB_BASE}/`,
+  });
+  if (!res.ok || !res.text) return null;
+  const items = itemsFromFrontity(res.text);
+  if (!items.length) return null;
+  items.sort((a, b) => Number(b.createTime ?? 0) - Number(a.createTime ?? 0));
+  const info = embedUserInfo(extractFrontityJson(res.text));
+  const heart = statOrNull(info?.heartCount);
+  return {
+    identity: {
+      followers: statOrNull(info?.followerCount),
+      following: statOrNull(info?.followingCount),
+      totalLikes: heart != null && heart >= 0 ? heart : null,
+    },
+    items: items.slice(0, req.limit),
+  };
+}
+
+function embedUserInfo(data: any): Record<string, unknown> | null {
+  let found: Record<string, unknown> | null = null;
+  const walk = (node: unknown): void => {
+    if (found || !node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { for (const n of node) walk(n); return; }
+    const o = node as Record<string, unknown>;
+    if (o.userInfo && typeof o.userInfo === 'object' && typeof (o.userInfo as any).followerCount === 'number') {
+      found = o.userInfo as Record<string, unknown>;
+      return;
+    }
+    for (const k of Object.keys(o)) walk(o[k]);
+  };
+  walk(data);
+  return found;
+}
+
 function statsMissing(item: any): boolean {
   const n = toNum(item?.stats?.diggCount ?? item?.diggCount);
   return n === 0 && !item?.stats?.diggCount && !item?.diggCount;
@@ -911,6 +959,8 @@ export async function hydrateItemStats(items: any[], maxPages = 8): Promise<any[
     if (struct.desc && !item.desc) item.desc = struct.desc;
     if (struct.createTime && !item.createTime) item.createTime = struct.createTime;
     if (struct.video) item.video = { ...item.video, ...struct.video };
+    if (struct.music && !item.music) item.music = struct.music;
+    if (Array.isArray(struct.textExtra) && !item.textExtra) item.textExtra = struct.textExtra;
   }
   return out;
 }
