@@ -35,6 +35,17 @@ const AUTH = 'https://www.instagram.com/oauth/authorize';
 const TOKEN = 'https://api.instagram.com/oauth/access_token';
 const GRAPH = 'https://graph.instagram.com';
 
+// Prefix connect-flow failures with the step that failed — Meta's messages
+// ("Unsupported request - method type: get") don't say which call rejected.
+async function step<T>(label: string, work: Promise<T>): Promise<T> {
+  try {
+    return await work;
+  } catch (err) {
+    if (err instanceof BadBodyError) throw new BadBodyError(`${label}: ${err.message}`, err.detail);
+    throw err;
+  }
+}
+
 interface Container {
   creationId: string;
   kind: 'single' | 'carousel-child' | 'carousel';
@@ -96,7 +107,7 @@ export class InstagramProvider implements SocialProvider {
     const cleanCode = code.replace(/#_$/, '');
 
     // Short-lived user token (~1h) via the code exchange.
-    const short = await providerFetch(TOKEN, {
+    const short = await step('code exchange', providerFetch(TOKEN, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -107,20 +118,20 @@ export class InstagramProvider implements SocialProvider {
         code: cleanCode,
       }).toString(),
       classify: this.classify,
-    }).then((r) => r.json() as Promise<Record<string, any>>);
+    }).then((r) => r.json() as Promise<Record<string, any>>));
     if (!short?.access_token) {
       throw new BadBodyError(short?.error_message || short?.error?.message || 'Instagram did not return an access token');
     }
 
     // Immediately swap for a long-lived token (~60d).
-    const long = await this.graph<Record<string, any>>(`/access_token`, {
+    const long = await step('long-lived token exchange', this.graph<Record<string, any>>(`/access_token`, {
       grant_type: 'ig_exchange_token',
       client_secret: this.clientSecret,
       access_token: String(short.access_token),
-    }, { versioned: false });
+    }, { versioned: false }));
     if (!long?.access_token) throw new BadBodyError(long?.error?.message || 'Instagram long-lived token exchange failed');
 
-    return this.withUserInfo(String(long.access_token), Number(long.expires_in) || undefined);
+    return step('profile lookup', this.withUserInfo(String(long.access_token), Number(long.expires_in) || undefined));
   }
 
   async refreshToken(_cfg: SocialConfig, userToken: string): Promise<AuthTokenDetails> {

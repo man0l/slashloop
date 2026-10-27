@@ -79,10 +79,10 @@ export async function providerFetch(url: string, options: ProviderFetchOptions =
     }
     if (kind === 'refresh-token') throw new RefreshTokenError();
     if (kind === 'reconnect') throw new ReconnectError(extractMessage(lastBody) || 'Please reconnect this account');
-    throw new BadBodyError(extractMessage(lastBody) || `Platform request failed (${lastStatus})`);
+    throw new BadBodyError(extractMessage(lastBody) || `Platform request failed (${lastStatus})`, `HTTP ${lastStatus} ${lastBody.slice(0, 500)}`);
   }
 
-  throw new BadBodyError(extractMessage(lastBody) || `Platform request failed (${lastStatus})`);
+  throw new BadBodyError(extractMessage(lastBody) || `Platform request failed (${lastStatus})`, `HTTP ${lastStatus} ${lastBody.slice(0, 500)}`);
 }
 
 /** Pull the most human-readable message out of the JSON error shapes the

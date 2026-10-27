@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import { signOAuthState, verifyOAuthState } from './oauth-state.js';
 import { assertPublicHttpUrl, extractMessage } from './fetch.js';
-import { BadBodyError, classifyHttpError } from './errors.js';
+import { BadBodyError, classifyHttpError, connectFailureReason } from './errors.js';
 import { TikTokProvider } from './providers/tiktok.js';
 import { YouTubeProvider } from './providers/youtube.js';
 import { InstagramProvider } from './providers/instagram.js';
@@ -158,6 +158,36 @@ describe('instagram provider', () => {
     expect(url).toContain('scope=instagram_business_basic%2Cinstagram_business_content_publish');
     expect(url).toContain('response_type=code');
     expect(url).toContain('state=ST');
+  });
+
+  test('authenticate names the failing step and keeps the raw Meta error for logs', async () => {
+    const realFetch = globalThis.fetch;
+    const metaError = '{"error":{"message":"Unsupported request - method type: get","type":"IGApiException","code":100,"fbtrace_id":"T"}}';
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.startsWith('https://api.instagram.com/')) return new Response('{"access_token":"SHORT","user_id":1}', { status: 200 });
+      return new Response(metaError, { status: 400 });
+    }) as typeof fetch;
+    try {
+      const err = await provider
+        .authenticate({ instagram: { clientId: 'IG_APP_ID', clientSecret: 'CS' } }, 'CODE', 'https://x/cb')
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(BadBodyError);
+      expect(err.message).toBe('long-lived token exchange: Unsupported request - method type: get');
+      expect(err.detail).toBe(`HTTP 400 ${metaError}`);
+      expect(connectFailureReason(err)).toBe('no_role');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test('connectFailureReason maps connect failures to fixed reason codes', () => {
+    expect(connectFailureReason(new BadBodyError('code exchange: Invalid platform app', 'HTTP 400 {}'))).toBe('app_config');
+    expect(connectFailureReason(new BadBodyError('profile lookup: Unsupported request - method type: get'))).toBe('no_role');
+    expect(connectFailureReason(new BadBodyError('profile lookup: x', 'HTTP 400 {"error":{"code":100}}'))).toBe('no_role');
+    expect(connectFailureReason(new BadBodyError('profile lookup: x', 'HTTP 400 {"error":{"code":1001}}'))).toBeUndefined();
+    expect(connectFailureReason(new Error('network down'))).toBeUndefined();
+    expect(connectFailureReason('nope')).toBeUndefined();
   });
 
   test('generateAuthUrl fails loudly when the Instagram app is not configured', async () => {

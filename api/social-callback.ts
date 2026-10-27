@@ -8,7 +8,7 @@
 // module's only handler is GET.
 
 import { socialConfigFromEnv, stateSecret, workerOrigin } from './social.js';
-import { createRegistry, getProvider, socialStore, verifyOAuthState, type ProviderId } from '../src/social/index.js';
+import { connectFailureReason, createRegistry, getProvider, socialStore, verifyOAuthState, type ProviderId } from '../src/social/index.js';
 
 const PROVIDERS: ProviderId[] = ['tiktok', 'youtube', 'instagram', 'threads'];
 
@@ -16,9 +16,12 @@ function siteOrigin(): string {
   return (process.env.SOCIAL_SITE_URL ?? 'https://slashloop.dev').replace(/\/$/, '');
 }
 
-function bounce(status: string, provider?: string): Response {
+// `reason` is always one of connectFailureReason's fixed codes — never platform
+// text — so the site can't be made to render arbitrary copy from the URL.
+function bounce(status: string, provider?: string, reason?: string): Response {
   const params = new URLSearchParams({ connect: status });
   if (provider) params.set('provider', provider);
+  if (reason) params.set('reason', reason);
   return Response.redirect(`${siteOrigin()}/calendar?${params.toString()}`, 302);
 }
 
@@ -28,6 +31,9 @@ export async function GET(request: Request): Promise<Response> {
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
 
+  if (provider && PROVIDERS.includes(provider) && !code && url.searchParams.get('error')) {
+    return bounce('error', provider, 'denied'); // user cancelled the consent screen
+  }
   if (!provider || !PROVIDERS.includes(provider) || !code || !state) {
     return bounce('error');
   }
@@ -57,7 +63,8 @@ export async function GET(request: Request): Promise<Response> {
     });
     return bounce('ok', provider);
   } catch (err) {
-    console.error(`[social] ${provider} connect failed: ${(err as Error).message}`);
-    return bounce('error', provider);
+    const detail = (err as { detail?: string }).detail;
+    console.error(`[social] ${provider} connect failed: ${(err as Error).message}${detail ? ` | ${detail}` : ''}`);
+    return bounce('error', provider, connectFailureReason(err));
   }
 }
