@@ -67,6 +67,8 @@ export interface DownloadOptions {
   videoUrl: string;
   /** Local path to write the MP4 to. */
   outputPath: string;
+  /** Throw SlideshowPostError for photo posts instead of downloading the slides (callers that only want audio/video). */
+  skipSlideshow?: boolean;
 }
 
 export interface DownloadedSlide {

@@ -108,6 +108,8 @@ jobs:
           # same secrets deploy-worker syncs into the Worker. Stream-only token.
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_STREAM_TOKEN: ${{ secrets.CLOUDFLARE_STREAM_TOKEN }}
+          # tools-video Whisper (src/worker/tools-video.ts): token scoped to Workers AI only.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
         run: |
           set -e
           out="$GITHUB_WORKSPACE/.worker-env"
@@ -152,6 +154,7 @@ jobs:
           printf 'INDIESTACK_LOG_URL=%s\n' "$INDIESTACK_LOG_URL"   >> "$out"
           printf 'CLOUDFLARE_ACCOUNT_ID=%s\n' "$CLOUDFLARE_ACCOUNT_ID" >> "$out"
           printf 'CLOUDFLARE_STREAM_TOKEN=%s\n' "$CLOUDFLARE_STREAM_TOKEN" >> "$out"
+          printf 'CLOUDFLARE_API_TOKEN=%s\n' "$CLOUDFLARE_API_TOKEN" >> "$out"
           ls -la "$out"
           echo "lines: $(wc -l < "$out")"
           echo "video-model-marker: $(grep -c '^OPENROUTER_VIDEO_MODEL=' "$out")"

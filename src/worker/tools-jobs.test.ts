@@ -255,6 +255,7 @@ describe('processToolsJob', () => {
           },
         };
       },
+      buildVideo: () => { throw new Error('profile tests never build video deps'); },
       recordBytes: async (w, b, r) => { recorded.push([w, b, r]); },
       callback: {
         fetch: async (_u, init) => { posted.push(JSON.parse(init.body)); return { status: 204 }; },
@@ -311,8 +312,8 @@ describe('processToolsJob', () => {
     expect(h.posted).toEqual([{ requestId: 'req-1', status: 'failed', code: 'not_found' }]);
   });
 
-  test('tools-profile and tools-video fail terminally with a clear message', async () => {
-    for (const kind of ['tools-profile', 'tools-video']) {
+  test('tools-profile fails terminally with a clear message', async () => {
+    for (const kind of ['tools-profile']) {
       const h = harness();
       const r = await processToolsJob(job({}, kind), h.deps);
       expect(r).toEqual({ ok: false, error: `${kind} not implemented yet` });

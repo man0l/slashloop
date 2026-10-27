@@ -4,7 +4,9 @@
 //   GET  /api/tools/lookup/<id>      status / result (never starts a scrape)
 //   POST /api/tools/internal/result  signed callback from the VPS job worker
 //
-// This Worker never calls TikTok: it checks Turnstile and limits, publishes a
+// The `transcript` kind (SLA-1057) takes a video link instead of a handle: it is normalised
+// (short links resolved via HEAD), validated with TikTok oEmbed and queued as `tools-video`.
+// This Worker never scrapes TikTok: it checks Turnstile and limits, publishes a
 // `tools-profile-lite` job to queue-api and later receives the VPS result
 // (src/worker/tools-jobs.ts signs it with TOOLS_CALLBACK_SECRET). State lives
 // in D1 (tools_lookups: status + result, so polling never waits on KV
@@ -14,6 +16,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { corsHeaders, corsPreflight } from '../lib/cors.js';
 import { normalizeHandle } from '../lib/tools-handle.js';
+import { fetchOembed, parseVideoLink, resolveShortLink, type VideoPreview, type VideoRef } from '../lib/tools-video-url.js';
 import {
   loadProducerConfig,
   producerSignature,
@@ -26,11 +29,14 @@ import type { Env } from './env.js';
 
 export const LOOKUP_KIND = 'profile-lite';
 export const QUEUE_KIND = 'tools-profile-lite';
+export const VIDEO_LOOKUP_KIND = 'transcript';
+export const VIDEO_QUEUE_KIND = 'tools-video';
 export const RESULT_PATH = '/api/tools/internal/result';
 const TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 const DEFAULT_ORIGIN = 'https://mcp.slashloop.dev';
 
 export const RESULT_TTL_SECONDS = 7 * 24 * 3600;
+export const VIDEO_RESULT_TTL_SECONDS = 30 * 24 * 3600;
 export const NONCE_TTL_SECONDS = 600;
 const COUNTER_TTL_SECONDS = 2 * 24 * 3600;
 const AUTH_SKEW_SECONDS = 300;
@@ -39,6 +45,8 @@ const JOB_DEADLINE_MS = 10 * 60 * 1000;
 const PUBLISH_TIMEOUT_MS = 8_000;
 export const DAILY_IP_LIMIT = 20;
 export const DAILY_HANDLE_LIMIT = 5;
+export const DAILY_VIDEO_IP_LIMIT = 10;
+export const DAILY_VIDEO_LIMIT = 3;
 /** New lookups per client per rolling minute, counted in D1 (LOOKUP_RL is per-colo and only approximate). */
 export const MINUTE_IP_LIMIT = 3;
 const MINUTE_WINDOW_MS = 60 * 1000;
@@ -46,13 +54,22 @@ export const REFRESH_AFTER_MS = 24 * 3600 * 1000;
 const MAX_BODY_BYTES = 8 * 1024;
 const MAX_CALLBACK_BYTES = 256 * 1024;
 
+export const SLIDESHOW_MESSAGE =
+  'This is a photo slideshow; there is no audio to transcribe. Try the hook extractor in Slashloop instead.';
+const VIDEO_NOT_FOUND = 'Video not found or private.';
+
 const ERROR_MESSAGES: Record<string, string> = {
   budget: 'Daily lookup budget reached. Try again tomorrow.',
   not_found: 'That account does not exist or is private.',
   blocked: 'TikTok is rate limiting us right now. Try again in a few minutes.',
+  slideshow: SLIDESHOW_MESSAGE,
+  too_long: 'That video is too long to transcribe. Try one under 10 minutes.',
   error: 'The lookup failed. Please try again in a few minutes.',
 };
-export const errorMessage = (code: string | null | undefined): string => ERROR_MESSAGES[code ?? ''] ?? ERROR_MESSAGES.error;
+export const errorMessage = (code: string | null | undefined, kind?: string | null): string => {
+  if (kind === VIDEO_LOOKUP_KIND && code === 'not_found') return VIDEO_NOT_FOUND;
+  return ERROR_MESSAGES[code ?? ''] ?? ERROR_MESSAGES.error;
+};
 
 interface RateLimitBinding {
   limit(opts: { key: string }): Promise<{ success: boolean }>;
@@ -84,13 +101,18 @@ const toolsEnv = (env: Env | undefined): ToolsLookupEnv => (env ?? {}) as unknow
 function json(request: Request, body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) },
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Robots-Tag': 'noindex',
+      ...corsHeaders(request),
+    },
   });
 }
 const fail = (request: Request, status: number, message: string, extra: Record<string, unknown> = {}): Response =>
   json(request, { error: message, ...extra }, status);
 
-const cacheKey = (handle: string): string => `tools:cache:${LOOKUP_KIND}:${handle}`;
+const cacheKey = (handle: string, kind: string = LOOKUP_KIND): string => `tools:cache:${kind}:${handle}`;
 const yyyymmdd = (d: Date): string => d.toISOString().slice(0, 10).replace(/-/g, '');
 const noContent = (): Response => new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } });
 
@@ -137,20 +159,98 @@ async function verifyTurnstile(env: ToolsLookupEnv, token: string, ip: string | 
 const bump = (env: ToolsLookupEnv, key: string, current: number): Promise<void> =>
   env.OAUTH_KV.put(key, String(current + 1), { expirationTtl: COUNTER_TTL_SECONDS });
 
+interface Target {
+  kind: string;
+  queueKind: string;
+  subject: string;
+  cacheTtl: number;
+  ipKey: (hash: string, day: string) => string;
+  ipLimit: number;
+  subjectKey: (day: string) => string;
+  subjectLimit: number;
+  subjectLimitMessage: string;
+  dedupeKey: (day: string) => string;
+  payload: Record<string, unknown>;
+  preview: VideoPreview | null;
+  refreshable: boolean;
+}
+
+type LookupBody = { kind?: unknown; handle?: unknown; url?: unknown; turnstileToken?: unknown; refresh?: unknown };
+
+async function resolveTarget(request: Request, body: LookupBody, deps: ToolsLookupDeps): Promise<Target | Response> {
+  if (body.kind === LOOKUP_KIND) {
+    const handle = normalizeHandle(body.handle);
+    if (!handle) return fail(request, 400, 'Enter a TikTok username (letters, numbers, dots and underscores).');
+    return {
+      kind: LOOKUP_KIND,
+      queueKind: QUEUE_KIND,
+      subject: handle,
+      cacheTtl: RESULT_TTL_SECONDS,
+      ipKey: (hash, day) => `tools:rl:day:${hash}:${day}`,
+      ipLimit: DAILY_IP_LIMIT,
+      subjectKey: (day) => `tools:rl:handle:${handle}:${day}`,
+      subjectLimit: DAILY_HANDLE_LIMIT,
+      subjectLimitMessage: 'This account was looked up too many times today. Try again tomorrow.',
+      dedupeKey: (day) => `${QUEUE_KIND}:${handle}:${day}`,
+      payload: { handle },
+      preview: null,
+      refreshable: true,
+    };
+  }
+  if (body.kind === VIDEO_LOOKUP_KIND) {
+    const fetchImpl = deps.fetchImpl ?? fetch;
+    const parsed = parseVideoLink(body.url);
+    if (parsed.kind === 'invalid') return fail(request, 400, 'Paste a TikTok video link (tiktok.com/@user/video/..., vm.tiktok.com/... or tiktok.com/t/...).');
+    if (parsed.kind === 'photo') return fail(request, 400, SLIDESHOW_MESSAGE, { code: 'slideshow' });
+    let ref: VideoRef;
+    if (parsed.kind === 'video') ref = parsed.ref;
+    else {
+      const resolved = await resolveShortLink(parsed.url, fetchImpl);
+      if (!resolved) return fail(request, 400, VIDEO_NOT_FOUND, { code: 'not_found' });
+      if ('photo' in resolved) return fail(request, 400, SLIDESHOW_MESSAGE, { code: 'slideshow' });
+      ref = resolved;
+    }
+    const oembed = await fetchOembed(ref.url, fetchImpl);
+    if (!oembed.ok && oembed.notFound) return fail(request, 404, VIDEO_NOT_FOUND, { code: 'not_found' });
+    const preview = oembed.ok ? oembed.preview : null;
+    return {
+      kind: VIDEO_LOOKUP_KIND,
+      queueKind: VIDEO_QUEUE_KIND,
+      subject: ref.videoId,
+      cacheTtl: VIDEO_RESULT_TTL_SECONDS,
+      ipKey: (hash, day) => `tools:rl:day:video:${hash}:${day}`,
+      ipLimit: DAILY_VIDEO_IP_LIMIT,
+      subjectKey: (day) => `tools:rl:video:${ref.videoId}:${day}`,
+      subjectLimit: DAILY_VIDEO_LIMIT,
+      subjectLimitMessage: 'This video was transcribed too many times today. Try again tomorrow.',
+      dedupeKey: () => `${VIDEO_QUEUE_KIND}:${ref.videoId}`,
+      payload: { videoUrl: ref.url, videoId: ref.videoId, caption: preview?.title ?? '' },
+      preview,
+      refreshable: false,
+    };
+  }
+  return fail(request, 400, 'Unsupported lookup kind.');
+}
+
 export async function handleLookupPost(request: Request, rawEnv: Env | undefined, deps: ToolsLookupDeps = {}): Promise<Response> {
   const env = toolsEnv(rawEnv);
   const now = (deps.now ?? (() => new Date()))();
-  const body = (await readJson(request)) as { kind?: unknown; handle?: unknown; turnstileToken?: unknown; refresh?: unknown } | null;
+  const body = (await readJson(request)) as LookupBody | null;
   if (!body || typeof body !== 'object') return fail(request, 400, 'Invalid request.');
-  if (body.kind !== LOOKUP_KIND) return fail(request, 400, 'Unsupported lookup kind.');
-  const handle = normalizeHandle(body.handle);
-  if (!handle) return fail(request, 400, 'Enter a TikTok username (letters, numbers, dots and underscores).');
+  const target = await resolveTarget(request, body, deps);
+  if (target instanceof Response) return target;
+  const { subject } = target;
+  // The preview (title/thumbnail) is never cached: TikTok's thumbnail URLs are signed and expire.
+  const withPreview = (payload: Record<string, unknown>): Record<string, unknown> =>
+    target.preview ? { ...payload, preview: target.preview } : payload;
 
-  const cached = (await env.OAUTH_KV.get(cacheKey(handle), { type: 'json' })) as { takenAt?: unknown } | null;
+  const cached = (await env.OAUTH_KV.get(cacheKey(subject, target.kind), { type: 'json' })) as { takenAt?: unknown } | null;
   // `refresh` skips the 7-day cache only for a snapshot 24h or older; younger snapshots are always served from it.
   const takenAt = typeof cached?.takenAt === 'string' ? Date.parse(cached.takenAt) : NaN;
   const stale = Number.isFinite(takenAt) && now.getTime() - takenAt >= REFRESH_AFTER_MS;
-  if (cached && !(body.refresh === true && stale)) return json(request, { status: 'done', result: cached, cached: true });
+  if (cached && !(target.refreshable && body.refresh === true && stale)) {
+    return json(request, withPreview({ status: 'done', result: cached, cached: true }));
+  }
 
   const token = typeof body.turnstileToken === 'string' ? body.turnstileToken : '';
   if (!token || token.length > 2048) return fail(request, 400, 'Verification failed. Reload the page and try again.');
@@ -167,24 +267,22 @@ export async function handleLookupPost(request: Request, rawEnv: Env | undefined
 
   const day = yyyymmdd(now);
   const hash = await clientHash(env, request);
-  const ipKey = `tools:rl:day:${hash}:${day}`;
-  const handleKey = `tools:rl:handle:${handle}:${day}`;
-  const [ipCount, handleCount] = await Promise.all([
+  const ipKey = target.ipKey(hash, day);
+  const subjectKey = target.subjectKey(day);
+  const [ipCount, subjectCount] = await Promise.all([
     env.OAUTH_KV.get(ipKey).then((v) => Number(v) || 0),
-    env.OAUTH_KV.get(handleKey).then((v) => Number(v) || 0),
+    env.OAUTH_KV.get(subjectKey).then((v) => Number(v) || 0),
   ]);
-  if (ipCount >= DAILY_IP_LIMIT) return fail(request, 429, 'Daily lookup limit reached. Try again tomorrow.');
-  if (handleCount >= DAILY_HANDLE_LIMIT) {
-    return fail(request, 429, 'This account was looked up too many times today. Try again tomorrow.');
-  }
+  if (ipCount >= target.ipLimit) return fail(request, 429, 'Daily lookup limit reached. Try again tomorrow.');
+  if (subjectCount >= target.subjectLimit) return fail(request, 429, target.subjectLimitMessage);
 
   const since = new Date(now.getTime() - PENDING_WINDOW_MS).toISOString();
   const pending = await env.DB_SHARD0.prepare(
     "SELECT id FROM tools_lookups WHERE kind = ? AND subject = ? AND status = 'queued' AND created_at > ? ORDER BY created_at DESC LIMIT 1",
   )
-    .bind(LOOKUP_KIND, handle, since)
+    .bind(target.kind, subject, since)
     .first<{ id: string }>();
-  if (pending) return json(request, { status: 'queued', id: pending.id });
+  if (pending) return json(request, withPreview({ status: 'queued', id: pending.id }));
 
   const minuteAgo = new Date(now.getTime() - MINUTE_WINDOW_MS).toISOString();
   const recent = await env.DB_SHARD0.prepare('SELECT COUNT(*) AS n FROM tools_lookups WHERE client_hash = ? AND created_at > ?')
@@ -210,7 +308,7 @@ export async function handleLookupPost(request: Request, rawEnv: Env | undefined
   await env.DB_SHARD0.prepare(
     "INSERT INTO tools_lookups (id, kind, subject, status, result_json, error_code, created_at, updated_at, client_hash) VALUES (?, ?, ?, 'queued', NULL, NULL, ?, ?, ?)",
   )
-    .bind(id, LOOKUP_KIND, handle, stamp, stamp, hash)
+    .bind(id, target.kind, subject, stamp, stamp, hash)
     .run();
 
   const busy = async (code: string): Promise<Response> => {
@@ -224,44 +322,44 @@ export async function handleLookupPost(request: Request, rawEnv: Env | undefined
   try {
     const publish = deps.publish ?? ((c, b) => publishJobHttp(c, b));
     const accepted = await publish(cfg, {
-      kind: QUEUE_KIND,
+      kind: target.queueKind,
       workspaceId,
       videoId: null,
       sourceId: null,
-      dedupeKey: `${QUEUE_KIND}:${handle}:${day}`,
+      dedupeKey: target.dedupeKey(day),
       deadlineAt: new Date(now.getTime() + JOB_DEADLINE_MS).toISOString(),
-      payload: { handle, requestId: id, callbackUrl: `${origin}${RESULT_PATH}` },
+      payload: { ...target.payload, requestId: id, callbackUrl: `${origin}${RESULT_PATH}` },
     });
     if (accepted.deduped) {
-      // The same handle is already in flight (the key is released when the job ends); follow that request instead.
+      // The same subject is already in flight (the key is released when the job ends); follow that request instead.
       const earlier = await env.DB_SHARD0.prepare(
         "SELECT id FROM tools_lookups WHERE kind = ? AND subject = ? AND status = 'queued' AND id != ? ORDER BY created_at DESC LIMIT 1",
       )
-        .bind(LOOKUP_KIND, handle, id)
+        .bind(target.kind, subject, id)
         .first<{ id: string }>();
       if (!earlier) return busy('queue');
       await env.DB_SHARD0.prepare('DELETE FROM tools_lookups WHERE id = ?').bind(id).run();
-      return json(request, { status: 'queued', id: earlier.id });
+      return json(request, withPreview({ status: 'queued', id: earlier.id }));
     }
   } catch (err) {
     console.warn(`[tools-lookup] publish failed: ${(err as { code?: string }).code ?? (err as Error).name}`);
     return busy('queue');
   }
 
-  await Promise.all([bump(env, ipKey, ipCount), bump(env, handleKey, handleCount)]);
-  return json(request, { status: 'queued', id });
+  await Promise.all([bump(env, ipKey, ipCount), bump(env, subjectKey, subjectCount)]);
+  return json(request, withPreview({ status: 'queued', id }));
 }
 
 export async function handleLookupGet(request: Request, id: string, rawEnv: Env | undefined): Promise<Response> {
   const env = toolsEnv(rawEnv);
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return fail(request, 404, 'Lookup not found.');
-  const row = await env.DB_SHARD0.prepare('SELECT id, status, result_json, error_code FROM tools_lookups WHERE id = ?')
+  const row = await env.DB_SHARD0.prepare('SELECT id, status, result_json, error_code, kind FROM tools_lookups WHERE id = ?')
     .bind(id)
-    .first<{ id: string; status: string; result_json: string | null; error_code: string | null }>();
+    .first<{ id: string; status: string; result_json: string | null; error_code: string | null; kind: string }>();
   if (!row) return fail(request, 404, 'Lookup not found.');
   if (row.status === 'done' && row.result_json) return json(request, { status: 'done', result: JSON.parse(row.result_json) });
   if (row.status === 'failed') {
-    return json(request, { status: 'failed', code: row.error_code ?? 'error', message: errorMessage(row.error_code) });
+    return json(request, { status: 'failed', code: row.error_code ?? 'error', message: errorMessage(row.error_code, row.kind) });
   }
   return json(request, { status: 'queued', id: row.id });
 }
@@ -303,21 +401,23 @@ export async function handleResultCallback(request: Request, rawEnv: Env | undef
   }
   const requestId = typeof body.requestId === 'string' ? body.requestId : '';
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(requestId)) return fail(request, 400, 'Invalid requestId.');
-  const row = await env.DB_SHARD0.prepare('SELECT subject, status FROM tools_lookups WHERE id = ?')
+  const row = await env.DB_SHARD0.prepare('SELECT subject, status, kind FROM tools_lookups WHERE id = ?')
     .bind(requestId)
-    .first<{ subject: string; status: string }>();
+    .first<{ subject: string; status: string; kind: string }>();
   if (!row) return fail(request, 404, 'Unknown request.');
   // A retried delivery after the row settled is acknowledged, not applied twice.
   if (row.status !== 'queued') return noContent();
 
   const stamp = now.toISOString();
   if (body.status === 'done' && body.result && typeof body.result === 'object') {
-    // The handle is the one we asked about, not whatever the callback names.
-    const result = JSON.stringify({ ...(body.result as object), handle: row.subject });
+    // The subject is the one we asked about, not whatever the callback names.
+    const isVideo = row.kind === VIDEO_LOOKUP_KIND;
+    const subjectField = isVideo ? { videoId: row.subject } : { handle: row.subject };
+    const result = JSON.stringify({ ...(body.result as object), ...subjectField });
     await env.DB_SHARD0.prepare("UPDATE tools_lookups SET status = 'done', result_json = ?, error_code = NULL, updated_at = ? WHERE id = ?")
       .bind(result, stamp, requestId)
       .run();
-    await env.OAUTH_KV.put(cacheKey(row.subject), result, { expirationTtl: RESULT_TTL_SECONDS });
+    await env.OAUTH_KV.put(cacheKey(row.subject, row.kind), result, { expirationTtl: isVideo ? VIDEO_RESULT_TTL_SECONDS : RESULT_TTL_SECONDS });
     return noContent();
   }
   const code = typeof body.code === 'string' && body.code in ERROR_MESSAGES ? body.code : 'error';
