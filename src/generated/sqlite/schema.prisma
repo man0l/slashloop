@@ -126,6 +126,9 @@ model WorkspaceMember {
   /// Supabase sub of the owner who sent the invite.
   invitedBy   String
   createdAt   DateTime  @default(now())
+  /// First time the invitee loaded their workspace list (listWorkspacesForUser).
+  /// NULL = invited, not yet seen.
+  acceptedAt  DateTime?
 
   @@unique([workspaceId, email])
   @@index([email])
