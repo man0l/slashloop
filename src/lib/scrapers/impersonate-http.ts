@@ -134,7 +134,10 @@ export async function fetchThrough(
       // timeout; fail now so the caller sees the real error, not the race.
       const delay = retryDelayMs(attempt + 1);
       if (jobBudgetRemainingMs() < delay + IMPIT_FETCH_TIMEOUT_MS) throw err;
-      console.warn(`[proxy:impit] fetch failed, retry ${attempt + 1}/${IMPIT_FETCH_RETRIES}: ${(err as Error).message}`);
+      // Early resets/timeouts are routine on a residential proxy; only the last retry is worth a warn.
+      const line = `[proxy:impit] fetch failed, retry ${attempt + 1}/${IMPIT_FETCH_RETRIES}: ${(err as Error).message}`;
+      if (attempt + 1 >= IMPIT_FETCH_RETRIES) console.warn(line);
+      else console.info(line);
       await sleep(delay);
     }
   }

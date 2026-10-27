@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { d1BindParam } from '../store.js';
-import { serializeD1, timedD1 } from './serialize-d1.js';
+import { callerHint, serializeD1, timedD1 } from './serialize-d1.js';
 import { withD1Budget, remainingD1Queries } from './d1-budget.js';
 
 describe('d1BindParam', () => {
@@ -156,6 +156,36 @@ describe('timedD1 (timeout-only, no gate)', () => {
     expect(Date.now() - t0).toBeLessThan(1000);
     // No shared wedge state: the next call gets its own race, not a rejection.
     await expect(d1.prepare('SELECT 1').all()).rejects.toThrow(/timed out/);
+  });
+
+  test('timeout log keeps a 500-char query and names the caller', async () => {
+    const mock = mockD1({ hang: true });
+    const d1 = timedD1(mock.d1, { timeoutMs: 20 });
+    const sql = `SELECT * FROM "MediaJob" WHERE ${'x = 1 AND '.repeat(40)}status = 'queued'`;
+    const errors: string[] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+    try {
+      await expect(d1.prepare(sql).all()).rejects.toThrow(/timed out/);
+    } finally {
+      console.error = orig;
+    }
+    const line = errors.find((l) => l.startsWith('[d1-timeout]'))!;
+    expect(line).toContain(sql.slice(0, 400));
+    expect(line).toContain('| caller: ');
+    expect(line).not.toContain('caller: unknown');
+    expect(line).toContain('serialize-d1.test.ts');
+  });
+
+  test('callerHint skips frames from serialize-d1 and falls back to unknown', () => {
+    const stack = [
+      'Error',
+      '    at guard (/app/src/cf/serialize-d1.ts:140:5)',
+      '    at first (/app/src/cf/serialize-d1.ts:170:9)',
+      '    at claimJob (/app/src/worker/jobs.ts:12:3)',
+    ].join('\n');
+    expect(callerHint(stack)).toBe('claimJob (/app/src/worker/jobs.ts:12:3)');
+    expect(callerHint(undefined)).toBe('unknown');
   });
 
   test('batch unwraps wrapped statements for the real binding', async () => {
