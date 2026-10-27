@@ -160,6 +160,26 @@ describe('instagram provider', () => {
     expect(url).toContain('state=ST');
   });
 
+  test('authenticate names the failing step and keeps the raw Meta error for logs', async () => {
+    const realFetch = globalThis.fetch;
+    const metaError = '{"error":{"message":"Unsupported request - method type: get","type":"IGApiException","code":100,"fbtrace_id":"T"}}';
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.startsWith('https://api.instagram.com/')) return new Response('{"access_token":"SHORT","user_id":1}', { status: 200 });
+      return new Response(metaError, { status: 400 });
+    }) as typeof fetch;
+    try {
+      const err = await provider
+        .authenticate({ instagram: { clientId: 'IG_APP_ID', clientSecret: 'CS' } }, 'CODE', 'https://x/cb')
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(BadBodyError);
+      expect(err.message).toBe('long-lived token exchange: Unsupported request - method type: get');
+      expect(err.detail).toBe(`HTTP 400 ${metaError}`);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   test('generateAuthUrl fails loudly when the Instagram app is not configured', async () => {
     await expect(provider.generateAuthUrl({}, 'https://x/cb', 'ST')).rejects.toThrow(/not configured/);
   });

@@ -57,7 +57,8 @@ export async function GET(request: Request): Promise<Response> {
     });
     return bounce('ok', provider);
   } catch (err) {
-    console.error(`[social] ${provider} connect failed: ${(err as Error).message}`);
+    const detail = (err as { detail?: string }).detail;
+    console.error(`[social] ${provider} connect failed: ${(err as Error).message}${detail ? ` | ${detail}` : ''}`);
     return bounce('error', provider);
   }
 }

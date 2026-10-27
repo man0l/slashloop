@@ -18,9 +18,15 @@ export class ReconnectError extends Error {
 }
 
 export class BadBodyError extends Error {
-  constructor(message: string) {
+  // Raw platform status + body (truncated) for server logs only — never shown
+  // to the user. Carries the platform's error code/subcode/trace id, which the
+  // human-readable message drops.
+  detail?: string;
+
+  constructor(message: string, detail?: string) {
     super(message);
     this.name = 'BadBodyError';
+    this.detail = detail;
   }
 }
 
