@@ -15,6 +15,7 @@ import { canonicalString, hmacSign, SLQ_HEADERS } from '../queue/auth.js';
 import { extractRehydrationJson, type CreatorIdentity, type TikTokHttp } from '../lib/scrapers/tiktok-web.js';
 import { isWafChallenge } from '../lib/scrapers/waf.js';
 import type { MediaJobRow } from '../lib/jobs.js';
+import { runProfile } from './tools-profile.js';
 import { parseTrendsPayload, runTrends, type TrendsDeps } from './tools-trends.js';
 import { defaultVideoDeps, parseVideoPayload, runVideoLookup, type VideoDeps, type VideoOutcome } from './tools-video.js';
 
@@ -58,7 +59,7 @@ export interface ProfileLiteResult {
 }
 
 export type ToolsOutcome =
-  | { status: 'done'; result: ProfileLiteResult }
+  | { status: 'done'; result: { sampled: number } }
   | { status: 'failed'; code: ToolsErrorCode };
 
 function num(v: unknown): number {
@@ -165,7 +166,10 @@ export interface ProfileLiteDeps {
   now(): Date;
 }
 
-export async function runProfileLite(handle: string, deps: ProfileLiteDeps): Promise<ToolsOutcome> {
+export async function runProfileLite(
+  handle: string,
+  deps: ProfileLiteDeps,
+): Promise<{ status: 'done'; result: ProfileLiteResult } | { status: 'failed'; code: ToolsErrorCode }> {
   try {
     await deps.assertBudget(PROFILE_LITE_ESTIMATE_BYTES);
   } catch (err) {
@@ -285,6 +289,8 @@ export interface ToolsJobPayload {
   caption?: unknown;
   callbackUrl?: unknown;
   requestId?: unknown;
+  /** 'lookup' (a visitor asked) or 'refresh' (weekly cron); logged only. */
+  reason?: unknown;
 }
 
 export interface ToolsJobDeps {
@@ -292,7 +298,8 @@ export interface ToolsJobDeps {
   now(): Date;
   /** Runs fn inside a private byte meter and reports what it moved. */
   measure<T>(fn: () => Promise<T>): Promise<{ value: T; bytes: number }>;
-  buildLookup(workspaceId: string, onProfile: (p: ProfileProbe) => void): Omit<ProfileLiteDeps, 'probe'>;
+  /** `fresh` re-reads the profile even when its secUid is cached, so the follower count is always present. */
+  buildLookup(workspaceId: string, onProfile: (p: ProfileProbe) => void, opts?: { fresh?: boolean }): Omit<ProfileLiteDeps, 'probe'>;
   buildTrends?(workspaceId: string): TrendsDeps;
   buildVideo(workspaceId: string): VideoDeps;
   recordBytes(workspaceId: string, bytes: number, refId: string): Promise<void>;
@@ -329,7 +336,7 @@ export async function processToolsJob(
     return { ok: false, error: message };
   };
 
-  if (job.kind !== 'tools-profile-lite' && job.kind !== 'tools-trends' && job.kind !== 'tools-video') {
+  if (job.kind !== 'tools-profile-lite' && job.kind !== 'tools-profile' && job.kind !== 'tools-trends' && job.kind !== 'tools-video') {
     return terminal(`${job.kind} not implemented yet`);
   }
 
@@ -372,12 +379,14 @@ export async function processToolsJob(
     if (!HANDLE_RE.test(handle)) {
       outcome = { status: 'failed', code: 'not_found' };
     } else {
-      const lookup = deps.buildLookup(job.workspaceId, (p) => { probe = p; });
-      const measured = await deps.measure(() => runProfileLite(handle, { ...lookup, probe: () => probe }));
+      const full = job.kind === 'tools-profile';
+      const lookup = deps.buildLookup(job.workspaceId, (p) => { probe = p; }, { fresh: full });
+      const run: (h: string, d: ProfileLiteDeps) => Promise<ToolsOutcome> = full ? runProfile : runProfileLite;
+      const measured = await deps.measure(() => run(handle, { ...lookup, probe: () => probe }));
       outcome = measured.value;
       bytes = measured.bytes;
     }
-    if (outcome.status === 'done') doneNote = { sampled: (outcome.result as ProfileLiteResult).sampled };
+    if (outcome.status === 'done') doneNote = { sampled: (outcome.result as { sampled: number }).sampled };
     if (bytes > 0) {
       await deps.recordBytes(job.workspaceId, bytes, requestId).catch((err: Error) => {
         console.warn(`[tools] failed to record ${bytes}B for ${requestId}: ${err.message}`);
@@ -401,7 +410,7 @@ export async function processToolsJob(
   console.log(
     `[tools] ${job.kind} job ${job.id.slice(0, 8)} ${subject} -> `
     + `${outcome.status === 'done' ? 'done' : `failed:${outcome.code}`} `
-    + `duration=${Date.now() - started}ms`,
+    + `${payload.reason === 'refresh' ? 'reason=refresh ' : ''}duration=${Date.now() - started}ms`,
   );
   await deps.completeJob(job.id, JSON.stringify(outcome.status === 'done' ? { status: 'done', ...doneNote } : outcome));
   if (isHealthyOutcome(outcome)) return { ok: true };
@@ -485,12 +494,15 @@ export async function defaultToolsJobDeps(): Promise<ToolsJobDeps> {
         const value = await fn();
         return { value, bytes: bandwidth.scopeBytesUsed() };
       }),
-    buildLookup: (workspaceId, onProfile) => {
+    buildLookup: (workspaceId, onProfile, opts) => {
       let httpOnce: Promise<TikTokHttp> | null = null;
       const http = () => (httpOnce ??= impersonate.createImpersonatedHttp().then((h) => h ?? web.unsignedHttp));
       return {
         assertBudget: (estimate) => budget.assertProxyBudget(workspaceId, estimate),
-        resolveCreator: async (h) => web.withTikTokHttp(probingHttp(await http(), onProfile), () => web.resolveCreator(h)),
+        resolveCreator: async (h) => {
+          if (opts?.fresh) web.forgetCreator(h);
+          return web.withTikTokHttp(probingHttp(await http(), onProfile), () => web.resolveCreator(h));
+        },
         fetchPosts: async (identity, limit) => {
           const { items } = await web.withTikTokHttp(await http(), () => web.fetchCreatorPosts(identity, { limit }));
           return items;

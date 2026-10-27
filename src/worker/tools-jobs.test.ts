@@ -312,14 +312,26 @@ describe('processToolsJob', () => {
     expect(h.posted).toEqual([{ requestId: 'req-1', status: 'failed', code: 'not_found' }]);
   });
 
-  test('tools-profile fails terminally with a clear message', async () => {
-    for (const kind of ['tools-profile']) {
-      const h = harness();
-      const r = await processToolsJob(job({}, kind), h.deps);
-      expect(r).toEqual({ ok: false, error: `${kind} not implemented yet` });
-      expect(h.failed).toEqual([['job-12345678', true]]);
-      expect(h.posted).toEqual([]);
-    }
+  test('tools-profile runs the full analysis: 30-post sample, 4 MB budget, fresh identity', async () => {
+    const budgets: number[] = [];
+    let limit = 0;
+    let fresh: boolean | undefined;
+    const h = harness({
+      assertBudget: async (b) => { budgets.push(b); },
+      fetchPosts: async (_i, l) => { limit = l; return Array.from({ length: 30 }, (_, i) => item(i)); },
+    });
+    const build = h.deps.buildLookup;
+    h.deps.buildLookup = (w, onProfile, opts) => { fresh = opts?.fresh; return build(w, onProfile, opts); };
+    const r = await processToolsJob(job({ reason: 'refresh' }, 'tools-profile'), h.deps);
+    expect(r.ok).toBe(true);
+    expect(budgets).toEqual([4 * 1024 * 1024]);
+    expect(limit).toBe(30);
+    expect(fresh).toBe(true);
+    const body = h.posted[0] as any;
+    expect(body.status).toBe('done');
+    expect(body.result.sampled).toBe(30);
+    expect(body.result.medianViews).toBe(2000);
+    expect(JSON.stringify(body)).not.toMatch(/tiktokcdn|https?:\/\//);
   });
 
   test('guards: foreign callback host, foreign workspace, missing secret/workspace', async () => {

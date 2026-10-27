@@ -127,6 +127,13 @@ function cacheSet<T>(map: Map<string, CacheEntry<T>>, key: string, value: T): vo
   map.set(key, { value, expiresAt: Date.now() + DEFAULT_TTL_MS });
 }
 
+/** Drop one handle's cached secUid so the next resolveCreator() re-reads the profile (and its follower count). */
+export function forgetCreator(handle: string): void {
+  const clean = handle.replace(/^@/, '').trim().toLowerCase();
+  secUidCache.delete(clean);
+  ssrItemCache.delete(clean);
+}
+
 /** Test seam. */
 export function clearLookupCaches(): void {
   secUidCache.clear();
@@ -618,6 +625,13 @@ export interface CreatorIdentity {
   secUid: string;
   handle: string;
   followers: number | null;
+  /** Account totals from the same user-detail read; absent on the SSR-only and cached paths. */
+  following?: number | null;
+  totalLikes?: number | null;
+}
+
+function statOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
 /**
@@ -637,6 +651,8 @@ export function identityFromUserDetail(json: any, fallbackHandle: string): Creat
     secUid,
     handle: typeof inner?.uniqueId === 'string' ? inner.uniqueId : fallbackHandle,
     followers: typeof followers === 'number' ? followers : null,
+    following: statOrNull(info?.stats?.followingCount),
+    totalLikes: statOrNull(info?.stats?.heartCount ?? info?.stats?.heart),
   };
 }
 
@@ -668,6 +684,8 @@ export async function resolveCreator(handle: string): Promise<CreatorIdentity | 
         secUid,
         handle: user?.user?.uniqueId ?? clean,
         followers: typeof followers === 'number' ? followers : null,
+        following: statOrNull(user?.stats?.followingCount),
+        totalLikes: statOrNull(user?.stats?.heartCount ?? user?.stats?.heart),
       };
     }
     if (ssrItems.length) {
