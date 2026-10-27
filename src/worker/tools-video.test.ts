@@ -13,6 +13,7 @@ import {
   classifyVideoError,
   hookUserMessage,
   HOOK_INPUT_WORDS,
+  HOOK_MAX_TOKENS,
   MAX_AUDIO_SECONDS,
   parseHook,
   parseVideoPayload,
@@ -156,6 +157,10 @@ describe('hook', () => {
     const body = msg.split('## Transcript\n')[1]!;
     expect(body.split(' ')).toHaveLength(HOOK_INPUT_WORDS);
     expect(body.endsWith(`w${HOOK_INPUT_WORDS - 1}`)).toBe(true);
+  });
+
+  test('hook token budget leaves room for the model to reason before the JSON', () => {
+    expect(HOOK_MAX_TOKENS).toBeGreaterThanOrEqual(2_000);
   });
 });
 
