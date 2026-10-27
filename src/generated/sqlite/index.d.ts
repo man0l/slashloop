@@ -4611,6 +4611,7 @@ export namespace Prisma {
     failureCountsJson: string | null
     createdAt: Date | null
     updatedAt: Date | null
+    publicToken: string | null
     planKey: string | null
     planCredits: number | null
     packCredits: number | null
@@ -4641,6 +4642,7 @@ export namespace Prisma {
     failureCountsJson: string | null
     createdAt: Date | null
     updatedAt: Date | null
+    publicToken: string | null
     planKey: string | null
     planCredits: number | null
     packCredits: number | null
@@ -4671,6 +4673,7 @@ export namespace Prisma {
     failureCountsJson: number
     createdAt: number
     updatedAt: number
+    publicToken: number
     planKey: number
     planCredits: number
     packCredits: number
@@ -4719,6 +4722,7 @@ export namespace Prisma {
     failureCountsJson?: true
     createdAt?: true
     updatedAt?: true
+    publicToken?: true
     planKey?: true
     planCredits?: true
     packCredits?: true
@@ -4749,6 +4753,7 @@ export namespace Prisma {
     failureCountsJson?: true
     createdAt?: true
     updatedAt?: true
+    publicToken?: true
     planKey?: true
     planCredits?: true
     packCredits?: true
@@ -4779,6 +4784,7 @@ export namespace Prisma {
     failureCountsJson?: true
     createdAt?: true
     updatedAt?: true
+    publicToken?: true
     planKey?: true
     planCredits?: true
     packCredits?: true
@@ -4896,6 +4902,7 @@ export namespace Prisma {
     failureCountsJson: string
     createdAt: Date
     updatedAt: Date
+    publicToken: string | null
     planKey: string
     planCredits: number
     packCredits: number
@@ -4945,6 +4952,7 @@ export namespace Prisma {
     failureCountsJson?: boolean
     createdAt?: boolean
     updatedAt?: boolean
+    publicToken?: boolean
     planKey?: boolean
     planCredits?: boolean
     packCredits?: boolean
@@ -4984,6 +4992,7 @@ export namespace Prisma {
     failureCountsJson?: boolean
     createdAt?: boolean
     updatedAt?: boolean
+    publicToken?: boolean
     planKey?: boolean
     planCredits?: boolean
     packCredits?: boolean
@@ -5014,6 +5023,7 @@ export namespace Prisma {
     failureCountsJson?: boolean
     createdAt?: boolean
     updatedAt?: boolean
+    publicToken?: boolean
     planKey?: boolean
     planCredits?: boolean
     packCredits?: boolean
@@ -5044,6 +5054,7 @@ export namespace Prisma {
     failureCountsJson?: boolean
     createdAt?: boolean
     updatedAt?: boolean
+    publicToken?: boolean
     planKey?: boolean
     planCredits?: boolean
     packCredits?: boolean
@@ -5064,7 +5075,7 @@ export namespace Prisma {
     digestJson?: boolean
   }
 
-  export type WorkspaceOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "ownerId" | "name" | "monthlyBudgetCents" | "autoAnalyzeRulesJson" | "analysisConfigJson" | "failureCountsJson" | "createdAt" | "updatedAt" | "planKey" | "planCredits" | "packCredits" | "billingStatus" | "periodStart" | "periodEnd" | "autoTopUp" | "stripeCustomerId" | "stripeSubscriptionId" | "stripeTestCustomerId" | "stripeTestSubscriptionId" | "thumbRetentionDays" | "mediaRetentionDays" | "category" | "digestEnabled" | "digestEmail" | "lastDigestAt" | "digestJson", ExtArgs["result"]["workspace"]>
+  export type WorkspaceOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "ownerId" | "name" | "monthlyBudgetCents" | "autoAnalyzeRulesJson" | "analysisConfigJson" | "failureCountsJson" | "createdAt" | "updatedAt" | "publicToken" | "planKey" | "planCredits" | "packCredits" | "billingStatus" | "periodStart" | "periodEnd" | "autoTopUp" | "stripeCustomerId" | "stripeSubscriptionId" | "stripeTestCustomerId" | "stripeTestSubscriptionId" | "thumbRetentionDays" | "mediaRetentionDays" | "category" | "digestEnabled" | "digestEmail" | "lastDigestAt" | "digestJson", ExtArgs["result"]["workspace"]>
   export type WorkspaceInclude<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
     sources?: boolean | Workspace$sourcesArgs<ExtArgs>
     boards?: boolean | Workspace$boardsArgs<ExtArgs>
@@ -5111,6 +5122,10 @@ export namespace Prisma {
       failureCountsJson: string
       createdAt: Date
       updatedAt: Date
+      /**
+       * Read-only public gallery link (SLA-1093): 32 random bytes base64url. NULL = not shared.
+       */
+      publicToken: string | null
       /**
        * free | creator | pro. Server-controlled — never set this from a
        * user-facing tool input. Changed only by the Stripe webhook (Phase 2)
@@ -5623,6 +5638,7 @@ export namespace Prisma {
     readonly failureCountsJson: FieldRef<"Workspace", 'String'>
     readonly createdAt: FieldRef<"Workspace", 'DateTime'>
     readonly updatedAt: FieldRef<"Workspace", 'DateTime'>
+    readonly publicToken: FieldRef<"Workspace", 'String'>
     readonly planKey: FieldRef<"Workspace", 'String'>
     readonly planCredits: FieldRef<"Workspace", 'Int'>
     readonly packCredits: FieldRef<"Workspace", 'Int'>
@@ -34592,6 +34608,7 @@ export namespace Prisma {
     failureCountsJson: 'failureCountsJson',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
+    publicToken: 'publicToken',
     planKey: 'planKey',
     planCredits: 'planCredits',
     packCredits: 'packCredits',
@@ -35110,6 +35127,7 @@ export namespace Prisma {
     failureCountsJson?: StringFilter<"Workspace"> | string
     createdAt?: DateTimeFilter<"Workspace"> | Date | string
     updatedAt?: DateTimeFilter<"Workspace"> | Date | string
+    publicToken?: StringNullableFilter<"Workspace"> | string | null
     planKey?: StringFilter<"Workspace"> | string
     planCredits?: IntFilter<"Workspace"> | number
     packCredits?: IntFilter<"Workspace"> | number
@@ -35148,6 +35166,7 @@ export namespace Prisma {
     failureCountsJson?: SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
+    publicToken?: SortOrderInput | SortOrder
     planKey?: SortOrder
     planCredits?: SortOrder
     packCredits?: SortOrder
@@ -35178,6 +35197,7 @@ export namespace Prisma {
 
   export type WorkspaceWhereUniqueInput = Prisma.AtLeast<{
     id?: string
+    publicToken?: string
     stripeCustomerId?: string
     stripeSubscriptionId?: string
     stripeTestCustomerId?: string
@@ -35215,7 +35235,7 @@ export namespace Prisma {
     mediaJobs?: MediaJobListRelationFilter
     suggestionDismissals?: SuggestionDismissalListRelationFilter
     members?: WorkspaceMemberListRelationFilter
-  }, "id" | "stripeCustomerId" | "stripeSubscriptionId" | "stripeTestCustomerId" | "stripeTestSubscriptionId">
+  }, "id" | "publicToken" | "stripeCustomerId" | "stripeSubscriptionId" | "stripeTestCustomerId" | "stripeTestSubscriptionId">
 
   export type WorkspaceOrderByWithAggregationInput = {
     id?: SortOrder
@@ -35227,6 +35247,7 @@ export namespace Prisma {
     failureCountsJson?: SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
+    publicToken?: SortOrderInput | SortOrder
     planKey?: SortOrder
     planCredits?: SortOrder
     packCredits?: SortOrder
@@ -35265,6 +35286,7 @@ export namespace Prisma {
     failureCountsJson?: StringWithAggregatesFilter<"Workspace"> | string
     createdAt?: DateTimeWithAggregatesFilter<"Workspace"> | Date | string
     updatedAt?: DateTimeWithAggregatesFilter<"Workspace"> | Date | string
+    publicToken?: StringNullableWithAggregatesFilter<"Workspace"> | string | null
     planKey?: StringWithAggregatesFilter<"Workspace"> | string
     planCredits?: IntWithAggregatesFilter<"Workspace"> | number
     packCredits?: IntWithAggregatesFilter<"Workspace"> | number
@@ -37283,6 +37305,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -37321,6 +37344,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -37359,6 +37383,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -37397,6 +37422,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -37435,6 +37461,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -37465,6 +37492,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -37495,6 +37523,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -39866,6 +39895,7 @@ export namespace Prisma {
     failureCountsJson?: SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
+    publicToken?: SortOrder
     planKey?: SortOrder
     planCredits?: SortOrder
     packCredits?: SortOrder
@@ -39904,6 +39934,7 @@ export namespace Prisma {
     failureCountsJson?: SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
+    publicToken?: SortOrder
     planKey?: SortOrder
     planCredits?: SortOrder
     packCredits?: SortOrder
@@ -39934,6 +39965,7 @@ export namespace Prisma {
     failureCountsJson?: SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
+    publicToken?: SortOrder
     planKey?: SortOrder
     planCredits?: SortOrder
     packCredits?: SortOrder
@@ -43224,6 +43256,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -43261,6 +43294,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -43314,6 +43348,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -43351,6 +43386,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -43388,6 +43424,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -43425,6 +43462,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -43478,6 +43516,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -43515,6 +43554,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -43552,6 +43592,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -43589,6 +43630,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -43642,6 +43684,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -43679,6 +43722,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -43716,6 +43760,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -43753,6 +43798,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -43924,6 +43970,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -43961,6 +44008,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -45279,6 +45327,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -45316,6 +45365,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -45394,6 +45444,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -45431,6 +45482,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -46221,6 +46273,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -46258,6 +46311,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -46311,6 +46365,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -46348,6 +46403,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -46473,6 +46529,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -46510,6 +46567,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -46563,6 +46621,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -46600,6 +46659,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -46637,6 +46697,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -46674,6 +46735,7 @@ export namespace Prisma {
     failureCountsJson?: string
     createdAt?: Date | string
     updatedAt?: Date | string
+    publicToken?: string | null
     planKey?: string
     planCredits?: number
     packCredits?: number
@@ -46727,6 +46789,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number
@@ -46764,6 +46827,7 @@ export namespace Prisma {
     failureCountsJson?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    publicToken?: NullableStringFieldUpdateOperationsInput | string | null
     planKey?: StringFieldUpdateOperationsInput | string
     planCredits?: IntFieldUpdateOperationsInput | number
     packCredits?: IntFieldUpdateOperationsInput | number

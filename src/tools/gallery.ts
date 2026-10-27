@@ -140,6 +140,15 @@ export async function buildCards(
   opts: BuildCardsOptions = {},
 ): Promise<{ cards: GalleryCard[]; note?: string; sourceId?: string; filters: GalleryFilters }> {
   const workspace = await requireWorkspace(opts.workspaceId ? { workspaceId: opts.workspaceId } : undefined);
+  return buildCardsForWorkspace(workspace, opts);
+}
+
+/** Cards for an already-resolved workspace — the anonymous public-link path
+ *  (api/gallery.ts) has no user context for requireWorkspace(). */
+export function buildCardsForWorkspace(
+  workspace: { id: string },
+  opts: BuildCardsOptions = {},
+): Promise<{ cards: GalleryCard[]; note?: string; sourceId?: string; filters: GalleryFilters }> {
   // Cached 30s: the heaviest read on the site (buffer + maps + signs).
   return getOrFill(galleryCacheKey(workspace.id, opts), 30_000, () =>
     buildCardsUncached(workspace, opts),

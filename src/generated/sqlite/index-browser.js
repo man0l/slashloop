@@ -135,6 +135,7 @@ exports.Prisma.WorkspaceScalarFieldEnum = {
   failureCountsJson: 'failureCountsJson',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt',
+  publicToken: 'publicToken',
   planKey: 'planKey',
   planCredits: 'planCredits',
   packCredits: 'packCredits',

@@ -8,6 +8,8 @@
 // GET    /api/workspaces/:id/members           — list teammates (owner or member).
 // POST   /api/workspaces/:id/members { email } — invite a teammate (owner only).
 // DELETE /api/workspaces/:id/members?email=…   — remove a teammate (owner only).
+// POST   /api/workspaces/:id/public-link       — mint a read-only public gallery link (owner only).
+// DELETE /api/workspaces/:id/public-link       — stop sharing (owner only).
 // POST   /api/workspaces?action=invite-all { email } — invite to EVERY owned
 //       workspace at once (basic teams); teammate signs up with that email
 //       and all workspaces appear in their switcher.
@@ -16,7 +18,7 @@
 // cap). vercel.json rewrites /api/workspaces/:id here with an `id` query param.
 import { corsPreflight } from '../src/lib/cors.js';
 import { requireAuth, requireWorkspaceAccess, jsonResponse } from '../src/lib/authz.js';
-import { listWorkspacesForUser, createWorkspaceForUser, renameWorkspaceForUser, resolveAccountPlanKey, WorkspaceLimitError } from '../src/lib/workspaces.js';
+import { listWorkspacesForUser, createWorkspaceForUser, renameWorkspaceForUser, resolveAccountPlanKey, enablePublicLink, disablePublicLink, WorkspaceLimitError } from '../src/lib/workspaces.js';
 import { listMembers, inviteMember, inviteMemberToAllWorkspaces, listTeamRoster, removeMember, removeMemberFromAllWorkspaces, TeamError } from '../src/lib/team.js';
 import { db } from '../src/db.js';
 import { buildWeeklyRetro } from '../src/lib/posts.js';
@@ -74,6 +76,27 @@ async function handleMembers(method: string, request: Request, id: string | null
   return jsonResponse(405, { error: 'method_not_allowed' }, request);
 }
 
+/** Public gallery link under /api/workspaces/:id/public-link (owner only).
+ *  Assumption (SLA-1093): "share publicly" = the workspace's outlier gallery,
+ *  read-only, served by api/gallery.ts ?publicToken=. */
+async function handlePublicLink(method: string, request: Request, id: string | null): Promise<Response> {
+  const auth = await requireAuth(request);
+  if (!auth.ok) return auth.response;
+  if (!id) return jsonResponse(404, { error: 'workspace_not_found' }, request);
+
+  if (method === 'POST') {
+    const token = await enablePublicLink(auth.userId, id);
+    if (!token) return jsonResponse(404, { error: 'workspace_not_found' }, request);
+    const site = (process.env.SOCIAL_SITE_URL ?? 'https://slashloop.dev').replace(/\/$/, '');
+    return jsonResponse(200, { token, url: `${site}/s/${token}` }, request);
+  }
+  if (method === 'DELETE') {
+    if (!(await disablePublicLink(auth.userId, id))) return jsonResponse(404, { error: 'workspace_not_found' }, request);
+    return jsonResponse(200, { ok: true }, request);
+  }
+  return jsonResponse(405, { error: 'method_not_allowed' }, request);
+}
+
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const resource = url.searchParams.get('resource');
@@ -112,12 +135,16 @@ export async function GET(request: Request): Promise<Response> {
     name: w.name,
     planKey: w.planKey,
     role: w.role,
+    publicToken: w.role === 'owner' ? w.publicToken : null,
     createdAt: w.createdAt.toISOString(),
   })), request);
 }
 
 export async function POST(request: Request): Promise<Response> {
   const url = new URL(request.url);
+  if (url.searchParams.get('resource') === 'public-link') {
+    return handlePublicLink('POST', request, url.searchParams.get('id'));
+  }
   if (url.searchParams.get('resource') === 'members') {
     return handleMembers('POST', request, url.searchParams.get('id'));
   }
@@ -198,6 +225,9 @@ export async function PATCH(request: Request): Promise<Response> {
 
 export async function DELETE(request: Request): Promise<Response> {
   const url = new URL(request.url);
+  if (url.searchParams.get('resource') === 'public-link') {
+    return handlePublicLink('DELETE', request, url.searchParams.get('id'));
+  }
   if (url.searchParams.get('resource') === 'members') {
     return handleMembers('DELETE', request, url.searchParams.get('id'));
   }

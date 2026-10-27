@@ -37,6 +37,7 @@ import { buildGalleryHtml, buildCards } from '../src/tools/gallery.js';
 import { buildCreatorPreview } from '../src/lib/creator-preview.js';
 import { verifyGalleryToken, isGalleryLinkEnabled } from '../src/lib/gallery-link.js';
 import { corsPreflight } from '../src/lib/cors.js';
+import { GALLERY_SORT_VALUES, handlePublicGalleryData } from '../src/lib/public-gallery.js';
 import { requireWorkspaceAccess, jsonResponse } from '../src/lib/authz.js';
 import { createExperiment, estimate, fingerprint } from '../src/experiments/service.js';
 import { ExperimentError } from '../src/experiments/schema.js';
@@ -190,9 +191,11 @@ export async function POST(request: Request): Promise<Response> {
   }
 }
 
-const SORT_VALUES = new Set<GalleryFilters['sortBy']>(['outlier_score', 'views', 'newest']);
 
 async function handleData(request: Request, url: URL): Promise<Response> {
+  const publicToken = url.searchParams.get('publicToken');
+  if (publicToken) return handlePublicGalleryData(request, url, publicToken);
+
   const auth = await requireWorkspaceAccess(request, url.searchParams.get('workspaceId'));
   if (!auth.ok) return auth.response;
 
@@ -206,7 +209,7 @@ async function handleData(request: Request, url: URL): Promise<Response> {
   }
 
   const sortByRaw = url.searchParams.get('sortBy') ?? 'outlier_score';
-  const sortBy = SORT_VALUES.has(sortByRaw as GalleryFilters['sortBy'])
+  const sortBy = GALLERY_SORT_VALUES.has(sortByRaw as GalleryFilters['sortBy'])
     ? (sortByRaw as GalleryFilters['sortBy'])
     : 'outlier_score';
 
