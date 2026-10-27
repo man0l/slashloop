@@ -17,7 +17,7 @@ import { isWafChallenge } from '../lib/scrapers/waf.js';
 import type { MediaJobRow } from '../lib/jobs.js';
 import { parseTrendsPayload, runTrends, type TrendsDeps } from './tools-trends.js';
 
-export type ToolsErrorCode = 'budget' | 'not_found' | 'blocked' | 'actor' | 'error';
+export type ToolsErrorCode = 'budget' | 'not_found' | 'blocked' | 'source' | 'error';
 
 /** Pre-authorised bytes for one profile-lite lookup (measured ~1.3 MB). */
 export const PROFILE_LITE_ESTIMATE_BYTES = 1.5 * 1024 * 1024;
@@ -441,7 +441,7 @@ async function processTrendsJob(
       ? { status: 'done', hashtags: outcome.body.hashtags.length, samplePosts: outcome.body.samplePosts.length }
       : outcome),
   );
-  // A budget stop is policy working, not a broken kind; an actor failure should trip the breaker.
+  // A budget stop is policy working, not a broken kind; a source failure should trip the breaker.
   return outcome.status === 'done' || outcome.code === 'budget'
     ? { ok: true }
     : { ok: false, error: `trends failed: ${outcome.code}` };
@@ -449,14 +449,13 @@ async function processTrendsJob(
 
 /** Production wiring: real scraper, ledger, queue lifecycle and fetch. */
 export async function defaultToolsJobDeps(): Promise<ToolsJobDeps> {
-  const [bandwidth, budget, web, impersonate, jobs, spendCap, apifyTrends] = await Promise.all([
+  const [bandwidth, budget, web, impersonate, jobs, creativeCenter] = await Promise.all([
     import('../lib/scrapers/bandwidth.js'),
     import('../lib/scrapers/budget.js'),
     import('../lib/scrapers/tiktok-web.js'),
     import('../lib/scrapers/impersonate-http.js'),
     import('../lib/jobs.js'),
-    import('../lib/spend-cap.js'),
-    import('../lib/apify-trends.js'),
+    import('../lib/creative-center.js'),
   ]);
   return {
     env: process.env,
@@ -483,16 +482,8 @@ export async function defaultToolsJobDeps(): Promise<ToolsJobDeps> {
       let httpOnce: Promise<TikTokHttp> | null = null;
       const http = () => (httpOnce ??= impersonate.createImpersonatedHttp().then((h) => h ?? web.unsignedHttp));
       return {
-        assertBudget: async (proxyBytes) => {
-          await budget.assertProxyBudget(workspaceId, proxyBytes);
-          await spendCap.assertApifyCap(workspaceId, 25);
-        },
-        runActor: (input) => {
-          const token = (process.env.APIFY_API_KEY ?? '').trim();
-          if (!token) throw new Error('APIFY_API_KEY is not configured');
-          return apifyTrends.runApifyActor(token, apifyTrends.trendsActorId(), input);
-        },
-        recordApifySpend: (cents, refId) => spendCap.recordApifySpend(workspaceId, cents, refId, 'tools_trends'),
+        assertBudget: (proxyBytes) => budget.assertProxyBudget(workspaceId, proxyBytes),
+        fetchHashtagList: (period, industryId) => creativeCenter.fetchHashtagList(period, industryId),
         resolveChallengeId: async (tag) => web.withTikTokHttp(await http(), () => web.resolveChallengeId(tag)),
         fetchTagPosts: async (tag, challengeId, limit) => {
           const { items } = await web.withTikTokHttp(await http(), () => web.fetchHashtagPosts(tag, challengeId, { limit }));

@@ -9,10 +9,19 @@ mock.module('../db.js', () => ({
 }));
 
 import { canonicalString, hmacSign, SLQ_HEADERS, verifyAuth, mapKeyStore } from '../queue/auth.js';
-import { ApifyRunError, mapCreativeCenterItems, runCostCents, runApifyActor, type ApifyDeps } from '../lib/apify-trends.js';
+import {
+  CC_INDUSTRIES,
+  CC_LIST_LIMIT,
+  CreativeCenterError,
+  curveMomentum,
+  fetchHashtagList,
+  mapHashtagLists,
+  type ListResult,
+} from '../lib/creative-center.js';
 import { processToolsJob, type ToolsJobDeps } from './tools-jobs.js';
 import {
   mapSampleItem,
+  listBytesEstimate,
   parseTrendsPayload,
   pickSampleTags,
   runTrends,
@@ -22,47 +31,30 @@ import {
 const NOW = new Date('2026-10-26T06:00:00Z');
 const CALLBACK = 'https://slashloop.dev/tools/api/trends/ingest';
 
-// Shape of the merged Creative Center actor output: one row per hashtag and
-// period, every list the tag ranks in under `lists`, plus the top-creators
-// fields we must never forward.
-const ACTOR_ITEMS = [
+// Raw Creative Center list items (GetHashtagList): numbers arrive as strings,
+// topCreators carries handles and avatars we must never forward.
+const rawItem = (name: string, rank: number, posts: number, curve: number[], industryIDs: string[] = []) => ({
+  hashtagID: `id-${name}`,
+  hashtagName: name,
+  rankIndex: String(rank),
+  publishCnt: String(posts),
+  vv: String(posts * 1000),
+  industryIDs,
+  popularityCurve: curve.map((value, i) => ({ timestamp: String(1_790_000_000 + i * 86400), value })),
+  topCreators: [{ handleName: 'someone.private', nickname: 'Someone', avatarURL: 'https://x/a.jpg', ttUID: '1' }],
+});
+const BEAUTY = CC_INDUSTRIES.find((i) => i.name === 'Beauty & Personal Care')!;
+const LISTS: ListResult[] = [
   {
-    record_id: 'hashtag_us_7_fyp',
-    hashtag_name: 'fyp',
-    period: 7,
-    posts: 1200000,
-    views: 98000000000,
-    trend_direction: 'up',
-    trend_momentum_pct: 12.5,
-    popularity_curve: [{ time: 1, value: 80 }, { time: 2, value: '95' }],
-    industries: ['Beauty & Personal Care'],
-    lists: [{ list: 'overall', rank: 1 }, { list: 'Beauty & Personal Care', rank: 2 }],
-    top_creators: [{ nickname: 'Someone', avatar: 'https://x/a.jpg' }],
+    period: 7, scope: 'overall',
+    items: [
+      rawItem('fyp', 1, 1_200_000, [10, 20, 40, 60, 80, 90, 100]),
+      rawItem('SkinCare', 2, 50_000, [50, 50, 50, 50, 50, 50, 50], [BEAUTY.id]),
+      rawItem('chaos', 3, 900, [0, 0, 0, 5, 10, 40, 100]),
+    ],
   },
-  {
-    record_id: 'hashtag_us_7_skincare',
-    hashtag_name: '#SkinCare',
-    period: 7,
-    posts: 50000,
-    views: 700000000,
-    trend_direction: 'flat',
-    trend_momentum_pct: null,
-    popularity_curve: [],
-    industries: ['Beauty & Personal Care'],
-    lists: [{ list: 'Beauty & Personal Care', rank: 1 }],
-    top_creators: [],
-  },
-  { record_id: 'not_listed_x', row_type: 'not_listed', hashtag_name: 'ghost', period: 7, lists: [] },
-  {
-    record_id: 'hashtag_us_30_fyp',
-    hashtag_name: 'fyp',
-    period: 30,
-    posts: 4000000,
-    views: 5,
-    trend_direction: 'down',
-    lists: [{ list: 'overall', rank: 3 }],
-  },
-  { record_id: 'hashtag_us_90_old', hashtag_name: 'old', period: 90, lists: [{ list: 'overall', rank: 1 }] },
+  { period: 7, scope: 'Beauty & Personal Care', items: [rawItem('skincare', 1, 50_000, [50, 50, 50, 50, 50, 50, 50], [BEAUTY.id]), rawItem('glow', 2, 700, [100, 80, 60, 40, 20, 10, 0], [BEAUTY.id])] },
+  { period: 30, scope: 'overall', items: [rawItem('fyp', 1, 4_000_000, [1, 2, 3, 4])] },
 ];
 
 describe('parseTrendsPayload', () => {
@@ -85,86 +77,84 @@ describe('parseTrendsPayload', () => {
   });
 });
 
-describe('mapCreativeCenterItems (actor fixture)', () => {
-  const out = mapCreativeCenterItems(ACTOR_ITEMS);
+describe('mapHashtagLists (list fixture)', () => {
+  const out = mapHashtagLists(LISTS, [7, 30]);
 
-  test('one record per tag, list and period; 90-day and not-listed rows dropped', () => {
-    expect(out.map((h) => `${h.tag}|${h.scope}|${h.period}|${h.rank}`)).toEqual([
-      'fyp|overall|7|1',
-      'fyp|Beauty & Personal Care|7|2',
-      'skincare|Beauty & Personal Care|7|1',
-      'fyp|overall|30|3',
+  test('one record per tag, list and period', () => {
+    expect(out.map((h) => `${h.tag}|${h.scope}|${h.period}|${h.rank}|${h.mergedRank}`)).toEqual([
+      'fyp|overall|7|1|1',
+      'skincare|overall|7|2|2',
+      'skincare|Beauty & Personal Care|7|1|2',
+      'chaos|overall|7|3|3',
+      'glow|Beauty & Personal Care|7|2|4',
+      'fyp|overall|30|1|1',
     ]);
   });
 
-  test('keeps the required fields and coerces numeric strings in the curve', () => {
-    const first = out[0]!;
-    expect(first).toEqual({
+  test('keeps rank, posts, views, curve and industries; coerces string numbers', () => {
+    expect(out[0]).toEqual({
       tag: 'fyp', scope: 'overall', period: 7, rank: 1, mergedRank: 1,
-      posts: 1200000, views: 98000000000, curve: [80, 95],
-      trendDirection: 'rising', momentumPct: 12.5,
-      industries: ['Beauty & Personal Care'], creators: null,
+      posts: 1_200_000, views: 1_200_000_000, curve: [10, 20, 40, 60, 80, 90, 100],
+      trendDirection: 'rising', momentumPct: 285.7, industries: [], creators: null,
     });
-    const flat = out.find((h) => h.tag === 'skincare')!;
-    expect(flat.trendDirection).toBe('stable');
-    expect(flat.momentumPct).toBeNull();
-    expect(flat.mergedRank).toBe(2);
-    expect(out.find((h) => h.period === 30)!.trendDirection).toBe('falling');
+    const skin = out.find((h) => h.tag === 'skincare')!;
+    expect(skin.industries).toEqual(['Beauty & Personal Care']);
+    expect(skin.trendDirection).toBe('stable');
+    expect(out.find((h) => h.tag === 'glow')!.trendDirection).toBe('falling');
   });
 
   test('never carries top-creator fields', () => {
-    expect(JSON.stringify(out)).not.toMatch(/top_creators|Someone|avatar/);
-  });
-
-  test('an error row from the actor is surfaced', () => {
-    expect(() => mapCreativeCenterItems([{ error: true, code: 'invalid_input' }])).toThrow(/invalid_input/);
+    expect(JSON.stringify(out)).not.toMatch(/topCreators|someone|Someone|avatar|handleName/);
   });
 });
 
-describe('runCostCents', () => {
-  test('uses the larger of platform usage and pay-per-event charges, rounded up', () => {
-    expect(runCostCents({ usageTotalUsd: 0.002, chargedEventCounts: { item: 100 }, pricingInfo: { pricingPerEvent: { actorChargeEvents: { item: { eventPriceUsd: 0.0017 } } } } })).toBe(17);
-    expect(runCostCents({ usageTotalUsd: 0.001 })).toBe(1);
-    expect(runCostCents({})).toBe(0);
+describe('curveMomentum', () => {
+  test('compares the second half of the curve with the first', () => {
+    expect(curveMomentum([10, 10, 20, 20])).toEqual({ direction: 'rising', pct: 100 });
+    expect(curveMomentum([20, 20, 10, 10])).toEqual({ direction: 'falling', pct: -50 });
+    expect(curveMomentum([10, 10, 10, 10])).toEqual({ direction: 'stable', pct: 0 });
+    expect(curveMomentum([0, 0, 5, 9])).toEqual({ direction: 'rising', pct: null });
+    expect(curveMomentum([1, 2])).toEqual({ direction: null, pct: null });
   });
 });
 
-describe('runApifyActor', () => {
-  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+describe('CC_INDUSTRIES', () => {
+  test('21 distinct top-level industries', () => {
+    expect(CC_INDUSTRIES).toHaveLength(21);
+    expect(new Set(CC_INDUSTRIES.map((i) => i.id)).size).toBe(21);
+    expect(CC_INDUSTRIES.every((i) => /^\d\d000000000$/.test(i.id))).toBe(true);
+  });
+});
 
-  test('starts, polls to a terminal status and reads the dataset with a bearer header', async () => {
-    const calls: Array<{ url: string; auth: string | null }> = [];
-    const answers = [
-      json({ data: { id: 'run1', status: 'RUNNING' } }),
-      json({ data: { id: 'run1', status: 'SUCCEEDED', defaultDatasetId: 'ds1', usageTotalUsd: 0.18 } }),
-      json([{ hashtag_name: 'fyp' }]),
-    ];
-    const deps: ApifyDeps = {
-      fetch: async (url, init) => {
-        calls.push({ url, auth: new Headers(init?.headers).get('authorization') });
-        return answers.shift()!;
-      },
-      sleep: async () => {},
-      now: () => 0,
+describe('fetchHashtagList', () => {
+  const reply = (text: string, status = 200) => async () => ({ status, ok: status < 400, text });
+
+  test('posts the unsigned request body and returns items', async () => {
+    const seen: Array<{ url: string; body: any; headers: Record<string, string> }> = [];
+    const post = async (url: string, body: string, headers: Record<string, string>) => {
+      seen.push({ url, body: JSON.parse(body), headers });
+      return { status: 200, ok: true, text: JSON.stringify({ BaseResp: { StatusCode: 0 }, items: [{ hashtagName: 'a' }] }) };
     };
-    const run = await runApifyActor('apify-secret-xyz', 'hyperbach/tiktok-creative-center-scraper', { a: 1 }, deps);
-    expect(run.costCents).toBe(18);
-    expect(run.items).toEqual([{ hashtag_name: 'fyp' }]);
-    expect(calls[0]!.url).toContain('/acts/hyperbach~tiktok-creative-center-scraper/runs');
-    expect(calls[0]!.url).toContain('maxTotalChargeUsd=0.25');
-    expect(calls.every((c) => c.auth === 'Bearer apify-secret-xyz')).toBe(true);
-    expect(calls.some((c) => c.url.includes('apify-secret-xyz'))).toBe(false);
+    expect(await fetchHashtagList(7, BEAUTY.id, post)).toEqual([{ hashtagName: 'a' }]);
+    await fetchHashtagList(30, null, post);
+    expect(seen[0]!.url).toBe('https://ads.tiktok.com/CreativeOne/KnowledgeAPI/GetHashtagList');
+    expect(seen[0]!.body).toEqual({ timeRange: 7, countryCode: 'US', industryID: BEAUTY.id, page: 1, limit: CC_LIST_LIMIT });
+    expect(seen[1]!.body).toEqual({ timeRange: 30, countryCode: 'US', page: 1, limit: CC_LIST_LIMIT });
+    expect(Object.keys(seen[0]!.headers).sort()).toEqual(['accept', 'agw-js-conv', 'content-type']);
   });
 
-  test('a failed run throws with the billed cents attached', async () => {
-    const deps: ApifyDeps = {
-      fetch: async () => json({ data: { id: 'r', status: 'FAILED', usageTotalUsd: 0.04 } }),
-      sleep: async () => {},
-      now: () => 0,
-    };
-    const err = await runApifyActor('tok', 'a/b', {}, deps).catch((e) => e);
-    expect(err).toBeInstanceOf(ApifyRunError);
-    expect(err.costCents).toBe(4);
+  test('http errors, non-JSON bodies and non-zero StatusCode throw CreativeCenterError', async () => {
+    for (const post of [
+      reply('{}', 500),
+      reply('<html>'),
+      reply(JSON.stringify({ BaseResp: { StatusCode: 10001 } })),
+    ]) {
+      expect(await fetchHashtagList(7, null, post).catch((e) => e)).toBeInstanceOf(CreativeCenterError);
+    }
+  });
+
+  test('a body without items is an empty list', async () => {
+    expect(await fetchHashtagList(7, null, reply(JSON.stringify({ BaseResp: { StatusCode: 0 } })))).toEqual([]);
   });
 });
 
@@ -203,8 +193,8 @@ describe('mapSampleItem (sampler fixture)', () => {
 
 describe('pickSampleTags', () => {
   test('orders by merged rank, de-duplicates across scopes and caps', () => {
-    const hs = mapCreativeCenterItems(ACTOR_ITEMS);
-    expect(pickSampleTags(hs, 7, 20)).toEqual(['fyp', 'skincare']);
+    const hs = mapHashtagLists(LISTS, [7, 30]);
+    expect(pickSampleTags(hs, 7, 20)).toEqual(['fyp', 'skincare', 'chaos', 'glow']);
     expect(pickSampleTags(hs, 7, 1)).toEqual(['fyp']);
   });
 });
@@ -214,8 +204,11 @@ function trendsDeps(over: Partial<TrendsDeps> = {}): TrendsDeps & { log: string[
   return {
     log,
     assertBudget: async (b) => { log.push(`budget:${b}`); },
-    runActor: async () => { log.push('actor'); return { runId: 'r', status: 'SUCCEEDED', costCents: 18, items: ACTOR_ITEMS }; },
-    recordApifySpend: async (c, r) => { log.push(`spend:${c}:${r}`); },
+    fetchHashtagList: async (period, industryId) => {
+      log.push(`list:${period}:${industryId ?? 'overall'}`);
+      const scope = industryId === null ? 'overall' : CC_INDUSTRIES.find((i) => i.id === industryId)!.name;
+      return LISTS.find((l) => l.period === period && l.scope === scope)?.items ?? [];
+    },
     resolveChallengeId: async (t) => { log.push(`resolve:${t}`); return `1${t.length}000`; },
     fetchTagPosts: async (t) => { log.push(`posts:${t}`); return [{ id: `${t}-1`, music: { id: 'm', title: 's', authorName: 'a' }, stats: { playCount: 5 }, video: { duration: 9 } }]; },
     now: () => NOW,
@@ -226,21 +219,21 @@ function trendsDeps(over: Partial<TrendsDeps> = {}): TrendsDeps & { log: string[
 describe('runTrends', () => {
   const payload = { requestId: 'req-1', callbackUrl: CALLBACK, country: 'US' as const, periods: [7, 30], sampleTags: 20 };
 
-  test('happy path: actor, spend, then one sample per tag', async () => {
+  test('happy path: budget first, overall plus every industry per period, then one sample per tag', async () => {
     const d = trendsDeps();
     const o = await runTrends(payload, d);
     expect(o.status).toBe('done');
     if (o.status !== 'done') return;
     expect(o.body.takenAt).toBe(NOW.toISOString());
-    expect(o.body.hashtags).toHaveLength(4);
-    expect(o.body.samplePosts.map((p) => p.id)).toEqual(['fyp-1', 'skincare-1']);
-    expect(o.sampledTags).toBe(2);
-    expect(d.log[0]).toBe(`budget:${20 * 200 * 1024}`);
-    expect(d.log.indexOf('actor')).toBeGreaterThan(0);
-    expect(d.log).toContain('spend:18:req-1');
+    expect(o.body.hashtags).toHaveLength(6);
+    expect(o.body.samplePosts.map((p) => p.id)).toEqual(['fyp-1', 'skincare-1', 'chaos-1', 'glow-1']);
+    expect(o.sampledTags).toBe(4);
+    expect(d.log[0]).toBe(`budget:${listBytesEstimate(2) + 20 * 200 * 1024}`);
+    expect(d.log.filter((l) => l.startsWith('list:'))).toHaveLength(2 * (CC_INDUSTRIES.length + 1));
+    expect(d.log.indexOf('resolve:fyp')).toBeGreaterThan(d.log.lastIndexOf(`list:30:${CC_INDUSTRIES[20]!.id}`));
   });
 
-  test('budget guard fails with code budget before any actor run or fetch', async () => {
+  test('budget guard fails with code budget before any fetch', async () => {
     const err = new Error('cap');
     err.name = 'TrafficCapExceededError';
     const d = trendsDeps({ assertBudget: async () => { throw err; } });
@@ -248,38 +241,50 @@ describe('runTrends', () => {
     expect(d.log).toEqual([]);
   });
 
-  test('actor failure retries once, records both runs, then fails with code actor', async () => {
-    let runs = 0;
+  test('an unreadable overall list retries once then fails with code source and samples nothing', async () => {
+    let calls = 0;
     const d = trendsDeps({
-      runActor: async () => { runs++; throw new ApifyRunError('apify run failed', 3); },
+      fetchHashtagList: async () => { calls++; throw new CreativeCenterError('creative center http 503'); },
     });
-    expect(await runTrends(payload, d)).toEqual({ status: 'failed', code: 'actor' });
-    expect(runs).toBe(2);
-    expect(d.log.filter((l) => l.startsWith('spend:3'))).toHaveLength(2);
+    expect(await runTrends(payload, d)).toEqual({ status: 'failed', code: 'source' });
+    expect(calls).toBe(2);
     expect(d.log.some((l) => l.startsWith('resolve:'))).toBe(false);
   });
 
-  test('a flaky first actor run succeeds on the retry', async () => {
-    let runs = 0;
+  test('a flaky list succeeds on the retry', async () => {
+    let first = true;
+    const base = trendsDeps();
     const d = trendsDeps({
-      runActor: async () => {
-        runs++;
-        if (runs === 1) throw new ApifyRunError('apify 503', 0);
-        return { runId: 'r2', status: 'SUCCEEDED', costCents: 18, items: ACTOR_ITEMS };
+      fetchHashtagList: async (p, i) => {
+        if (first) { first = false; throw new CreativeCenterError('creative center http 503'); }
+        return base.fetchHashtagList(p, i);
       },
     });
     expect((await runTrends(payload, d)).status).toBe('done');
-    expect(runs).toBe(2);
+  });
+
+  test('an industry list that keeps failing is skipped; the ranking still ships', async () => {
+    const base = trendsDeps();
+    const d = trendsDeps({
+      fetchHashtagList: async (p, i) => {
+        if (i === BEAUTY.id) throw new CreativeCenterError('creative center status 10001');
+        return base.fetchHashtagList(p, i);
+      },
+    });
+    const o = await runTrends(payload, d);
+    expect(o.status).toBe('done');
+    if (o.status !== 'done') return;
+    expect(o.body.hashtags.map((h) => h.tag).sort()).toEqual(['chaos', 'fyp', 'fyp', 'skincare']);
   });
 
   test('sampling stops after three tags in a row fail but the ranking still ships', async () => {
-    const many = Array.from({ length: 8 }, (_, i) => ({
-      record_id: `h${i}`, hashtag_name: `tag${i}`, period: 7, posts: 1, lists: [{ list: 'overall', rank: i + 1 }],
-    }));
-    let actorRuns = 0;
+    const many: ListResult[] = [{
+      period: 7, scope: 'overall',
+      items: Array.from({ length: 8 }, (_, i) => rawItem(`tag${i}`, i + 1, 10, [1, 2, 3, 4])),
+    }];
     let resolves = 0;
     const d = trendsDeps({
-      runActor: async () => { actorRuns++; return { runId: 'r', status: 'SUCCEEDED', costCents: 5, items: many }; },
+      fetchHashtagList: async (p, i) => (i === null && p === 7 ? many[0]!.items : []),
       resolveChallengeId: async () => { resolves++; return null; },
     });
     const o = await runTrends({ ...payload, periods: [7] }, d);
@@ -287,7 +292,6 @@ describe('runTrends', () => {
     if (o.status !== 'done') return;
     expect(o.body.hashtags).toHaveLength(8);
     expect(o.body.samplePosts).toEqual([]);
-    expect(actorRuns).toBe(1);
     expect(resolves).toBe(3);
   });
 });
@@ -308,7 +312,7 @@ describe('processToolsJob: tools-trends', () => {
     const completed: string[] = [];
     const failed: Array<[string, boolean]> = [];
     const deps: ToolsJobDeps = {
-      env: { TOOLS_WORKSPACE_ID: WS, TOOLS_CALLBACK_SECRET: SECRET } as NodeJS.ProcessEnv,
+      env: { TOOLS_WORKSPACE_ID: WS, TOOLS_CALLBACK_SECRET: SECRET, TOOLS_CALLBACK_ALLOWED_HOSTS: 'mcp.slashloop.dev,slashloop.dev' } as NodeJS.ProcessEnv,
       now: () => NOW,
       measure: async (fn) => ({ value: await fn(), bytes: 3_600_000 }),
       buildLookup: () => { throw new Error('profile lookup must not be built for tools-trends'); },
@@ -333,8 +337,8 @@ describe('processToolsJob: tools-trends', () => {
     expect(h.posted).toHaveLength(1);
     const { body, headers, raw } = h.posted[0]!;
     expect(body).toMatchObject({ requestId: 'req-1', status: 'done', country: 'US', takenAt: NOW.toISOString() });
-    expect(body.hashtags).toHaveLength(4);
-    expect(body.samplePosts).toHaveLength(2);
+    expect(body.hashtags).toHaveLength(6);
+    expect(body.samplePosts).toHaveLength(4);
     expect(h.recorded).toEqual([[WS, 3_600_000, 'req-1']]);
     expect(h.completed).toEqual(['job-trends-1']);
 
@@ -363,14 +367,14 @@ describe('processToolsJob: tools-trends', () => {
     expect(r.ok).toBe(true);
   });
 
-  test('actor failure posts failed/actor and reports the kind as unhealthy', async () => {
-    const h = harness(trendsDeps({ runActor: async () => { throw new ApifyRunError('apify run failed', 0); } }));
+  test('source failure posts failed/source and reports the kind as unhealthy', async () => {
+    const h = harness(trendsDeps({ fetchHashtagList: async () => { throw new CreativeCenterError('creative center http 503'); } }));
     const r = await processToolsJob(job(), h.deps);
-    expect(h.posted[0]!.body).toEqual({ requestId: 'req-1', status: 'failed', code: 'actor' });
+    expect(h.posted[0]!.body).toEqual({ requestId: 'req-1', status: 'failed', code: 'source' });
     expect(r.ok).toBe(false);
   });
 
-  test('invalid payload and foreign workspace never reach the actor', async () => {
+  test('invalid payload and foreign workspace never reach the source', async () => {
     const d = trendsDeps();
     const h = harness(d);
     expect((await processToolsJob(job({ periods: [90] }), h.deps)).ok).toBe(false);

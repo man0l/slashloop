@@ -253,11 +253,9 @@ export type ApifySpendActivity =
   /** A listing scrape for a source refresh (clockworks profile/hashtag/search). */
   | 'source_scrape'
   /** One video's MP4 pulled for gemini-native analysis. */
-  | 'video_download'
-  /** The daily Creative Center trends run for slashloop.dev/tools. */
-  | 'tools_trends';
+  | 'video_download';
 
-const APIFY_SPEND_ACTIVITIES: ApifySpendActivity[] = ['source_scrape', 'video_download', 'tools_trends'];
+const APIFY_SPEND_ACTIVITIES: ApifySpendActivity[] = ['source_scrape', 'video_download'];
 
 export function encodeApifyRefId(
   activity: ApifySpendActivity,
@@ -307,7 +305,6 @@ export async function getApifySpendBreakdown(
   const byActivity = {
     source_scrape: { cents: 0, charges: 0 },
     video_download: { cents: 0, charges: 0 },
-    tools_trends: { cents: 0, charges: 0 },
     legacy: { cents: 0, charges: 0 },
   } as ApifySpendBreakdown['byActivity'];
 

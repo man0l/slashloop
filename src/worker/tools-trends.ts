@@ -1,21 +1,22 @@
 // ---------------------------------------------------------------------------
 // tools-trends job (slashloop.dev/tools trends pages) — VPS side.
 //
-// One run per day: the Creative Center actor for the hashtag ranking, then a
-// first-page sample of /tag/<name> for the top tags (sounds and formats come
-// from those posts). One signed snapshot goes back to the tools Worker; the
-// Worker never touches TikTok, and nothing here costs credits or writes
-// workspace video rows.
+// One run per day: the Creative Center lists (overall plus every top-level
+// industry, per period) for the hashtag ranking, then a first-page sample of
+// /tag/<name> for the top tags (sounds and formats come from those posts). All
+// of it goes through the proxy. One signed snapshot goes back to the tools
+// Worker; the Worker never touches TikTok, and nothing here costs credits or
+// writes workspace video rows.
 // ---------------------------------------------------------------------------
 
 import { webItemToApifyShape } from '../lib/scrapers/tiktok-web.js';
 import {
-  ApifyRunError,
-  creativeCenterInput,
-  mapCreativeCenterItems,
-  type ApifyRunResult,
+  CC_INDUSTRIES,
+  CC_LIST_BYTES_ESTIMATE,
+  mapHashtagLists,
+  type ListResult,
   type TrendHashtag,
-} from '../lib/apify-trends.js';
+} from '../lib/creative-center.js';
 import type { ToolsErrorCode } from './tools-jobs.js';
 
 /** ~180 KB per /tag page measured; budgeted at 200 KB x 20 tags = 4 MB pre-authorised. */
@@ -106,10 +107,10 @@ export function mapSampleItem(item: any, tag: string): SamplePost | null {
 }
 
 export interface TrendsDeps {
-  /** Throws on a proxy-budget or Apify-cap breach; called before any network use. */
+  /** Throws on a proxy-budget breach; called before any network use. */
   assertBudget(proxyBytes: number): Promise<void>;
-  runActor(input: Record<string, unknown>): Promise<ApifyRunResult>;
-  recordApifySpend(costCents: number, refId: string): Promise<void>;
+  /** Raw Creative Center items for one list; industryId null = the overall list. */
+  fetchHashtagList(period: number, industryId: string | null): Promise<any[]>;
   resolveChallengeId(tag: string): Promise<string | null>;
   fetchTagPosts(tag: string, challengeId: string, limit: number): Promise<any[]>;
   now(): Date;
@@ -131,7 +132,7 @@ export type TrendsOutcome =
 function errorCode(err: unknown): ToolsErrorCode {
   const e = err as { name?: string; message?: string } | null;
   if (e?.name === 'TrafficCapExceededError' || e?.name === 'SpendCapExceededError') return 'budget';
-  if (e?.name === 'ApifyRunError') return 'actor';
+  if (e?.name === 'CreativeCenterError') return 'source';
   if (/\b(429|403)\b|waf|captcha|challenge|rate.?limit|blocked/i.test(String(e?.message ?? err ?? ''))) return 'blocked';
   return 'error';
 }
@@ -150,35 +151,55 @@ export function pickSampleTags(hashtags: TrendHashtag[], period: number, n: numb
     .map(([tag]) => tag);
 }
 
+/** Bytes pre-authorised for the Creative Center lists: overall + every industry, per period. */
+export function listBytesEstimate(periods: number): number {
+  return periods * (CC_INDUSTRIES.length + 1) * CC_LIST_BYTES_ESTIMATE;
+}
+
+async function fetchListOnce(deps: TrendsDeps, period: number, industryId: string | null): Promise<any[]> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await deps.fetchHashtagList(period, industryId);
+    } catch (err) {
+      lastError = err;
+      if (errorCode(err) === 'budget') break;
+    }
+  }
+  throw lastError;
+}
+
 export async function runTrends(payload: TrendsPayload, deps: TrendsDeps): Promise<TrendsOutcome> {
-  // Both ceilings are checked before the first byte of network use: a breach
+  // The ceiling is checked before the first byte of network use: a breach
   // costs nothing and the Worker serves its fallback.
   try {
-    await deps.assertBudget(payload.sampleTags * TRENDS_SAMPLE_BYTES_PER_TAG);
+    await deps.assertBudget(listBytesEstimate(payload.periods.length) + payload.sampleTags * TRENDS_SAMPLE_BYTES_PER_TAG);
   } catch (err) {
     return { status: 'failed', code: errorCode(err) };
   }
 
-  let hashtags: TrendHashtag[] | null = null;
-  let lastError: unknown = null;
-  for (let attempt = 1; attempt <= 2 && !hashtags; attempt++) {
-    try {
-      const run = await deps.runActor(creativeCenterInput(payload.periods));
-      await deps.recordApifySpend(run.costCents, payload.requestId).catch((e: Error) => {
-        console.warn(`[tools-trends] failed to record apify spend for ${payload.requestId}: ${e.message}`);
-      });
-      const mapped = mapCreativeCenterItems(run.items, payload.periods);
-      if (!mapped.length) throw new ApifyRunError('actor returned no hashtags', 0);
-      hashtags = mapped;
-    } catch (err) {
-      lastError = err;
-      if (err instanceof ApifyRunError && err.costCents > 0) {
-        await deps.recordApifySpend(err.costCents, payload.requestId).catch(() => undefined);
+  // The overall list per period is the product: if one is unreadable the run
+  // fails and the Worker keeps serving the previous snapshot. An industry list
+  // that fails after its retry is skipped (that niche just has fewer tags).
+  const results: ListResult[] = [];
+  for (const period of payload.periods) {
+    const scopes: Array<{ scope: string; id: string | null }> = [
+      { scope: 'overall', id: null },
+      ...CC_INDUSTRIES.map((i) => ({ scope: i.name, id: i.id })),
+    ];
+    for (const { scope, id } of scopes) {
+      try {
+        results.push({ period, scope, items: await fetchListOnce(deps, period, id) });
+      } catch (err) {
+        console.warn(`[tools-trends] list ${scope}/${period}d failed: ${(err as Error).message}`);
+        if (id === null || errorCode(err) === 'budget') {
+          return { status: 'failed', code: errorCode(err) === 'budget' ? 'budget' : 'source' };
+        }
       }
-      console.warn(`[tools-trends] actor attempt ${attempt} failed: ${(err as Error).message}`);
     }
   }
-  if (!hashtags) return { status: 'failed', code: errorCode(lastError) === 'budget' ? 'budget' : 'actor' };
+  const hashtags = mapHashtagLists(results, payload.periods);
+  if (!hashtags.length) return { status: 'failed', code: 'source' };
 
   const samplePosts: SamplePost[] = [];
   const tags = pickSampleTags(hashtags, payload.periods[0]!, payload.sampleTags);
