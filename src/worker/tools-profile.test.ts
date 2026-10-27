@@ -92,10 +92,21 @@ describe('shapeProfile', () => {
   });
 
   test('missing follower count leaves the follower rate null', () => {
-    const r = shapeProfile({ followers: null }, 'creator', [post(0)], NOW);
+    const r = shapeProfile({ followers: null }, 'creator', [post(0), post(1), post(2)], NOW);
     expect(r.erByFollowers).toBeNull();
     expect(r.following).toBeNull();
     expect(r.erByViews).toBe(11.5);
+  });
+
+  test('posts without engagement counts never produce a 0% rate', () => {
+    const views = { stats: { playCount: 1000, diggCount: 0, commentCount: 0, shareCount: 0 } };
+    const r = shapeProfile(id, 'creator', [post(0), post(1), post(2, views), post(3, views)], NOW);
+    expect(r.statsSampled).toBe(2);
+    expect(r.erByFollowers).toBeNull();
+    const none = shapeProfile(id, 'creator', [post(0, views), post(1, views)], NOW);
+    expect(none.statsSampled).toBe(0);
+    expect(none.erByViews).toBeNull();
+    expect(none.avgViews).toBe(1000);
   });
 });
 
@@ -125,5 +136,39 @@ describe('runProfile', () => {
 
   test('an account with no readable posts is not_found', async () => {
     expect(await runProfile('creator', deps({ fetchPosts: async () => [] }))).toEqual({ status: 'failed', code: 'not_found' });
+  });
+
+  test('embed first: counts and posts come from one read, the profile page is never opened', async () => {
+    let resolved = false;
+    const out = await runProfile('creator', deps({
+      resolveCreator: async () => { resolved = true; return null; },
+      fetchEmbed: async () => ({ identity: { followers: 9_000, following: 5, totalLikes: null }, items: [post(0), post(1)] }),
+    }));
+    expect(resolved).toBe(false);
+    expect(out.status).toBe('done');
+    if (out.status === 'done') expect(out.result.followers).toBe(9_000);
+  });
+
+  test('an empty embed falls back to the profile path', async () => {
+    const out = await runProfile('creator', deps({ fetchEmbed: async () => null }));
+    expect(out.status).toBe('done');
+    if (out.status === 'done') expect(out.result.followers).toBe(50_000);
+  });
+
+  test('hydrate fills engagement, and a failing hydrate keeps the views-only result', async () => {
+    const bare = Array.from({ length: 5 }, (_, i) => post(i, { stats: { playCount: 1000, diggCount: 0, commentCount: 0, shareCount: 0 } }));
+    const base = { fetchEmbed: async () => ({ identity: { followers: 10_000, following: null, totalLikes: null }, items: bare }) };
+    const filled = await runProfile('creator', deps({
+      ...base,
+      hydrate: async (items) => items.map((it) => ({ ...it, stats: { ...it.stats, diggCount: 100, commentCount: 10, shareCount: 5 } })),
+    }));
+    if (filled.status !== 'done') throw new Error('expected done');
+    expect(filled.result.statsSampled).toBe(5);
+    expect(filled.result.erByFollowers).toBe(1.15);
+    const failed = await runProfile('creator', deps({ ...base, hydrate: async () => { throw new Error('429'); } }));
+    if (failed.status !== 'done') throw new Error('expected done');
+    expect(failed.result.statsSampled).toBe(0);
+    expect(failed.result.erByFollowers).toBeNull();
+    expect(failed.result.erByViews).toBeNull();
   });
 });

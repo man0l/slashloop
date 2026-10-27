@@ -15,7 +15,7 @@ import { canonicalString, hmacSign, SLQ_HEADERS } from '../queue/auth.js';
 import { extractRehydrationJson, type CreatorIdentity, type TikTokHttp } from '../lib/scrapers/tiktok-web.js';
 import { isWafChallenge } from '../lib/scrapers/waf.js';
 import type { MediaJobRow } from '../lib/jobs.js';
-import { runProfile } from './tools-profile.js';
+import { PROFILE_HYDRATE_PAGES, runProfile } from './tools-profile.js';
 import { parseTrendsPayload, runTrends, type TrendsDeps } from './tools-trends.js';
 import { defaultVideoDeps, parseVideoPayload, runVideoLookup, type VideoDeps, type VideoOutcome } from './tools-video.js';
 
@@ -162,6 +162,10 @@ export interface ProfileLiteDeps {
   assertBudget(estimatedBytes: number): Promise<void>;
   resolveCreator(handle: string): Promise<CreatorIdentity | null>;
   fetchPosts(identity: CreatorIdentity, limit: number): Promise<any[]>;
+  /** Full profile only: one embed read (counts + playlist posts), tried before the profile page. */
+  fetchEmbed?(handle: string, limit: number): Promise<{ identity: Pick<CreatorIdentity, 'followers' | 'following' | 'totalLikes'>; items: any[] } | null>;
+  /** Full profile only: fills likes, comments, shares and sound the embed rows lack. */
+  hydrate?(items: any[]): Promise<any[]>;
   probe(): ProfileProbe | null;
   now(): Date;
 }
@@ -504,9 +508,11 @@ export async function defaultToolsJobDeps(): Promise<ToolsJobDeps> {
           return web.withTikTokHttp(probingHttp(await http(), onProfile), () => web.resolveCreator(h));
         },
         fetchPosts: async (identity, limit) => {
-          const { items } = await web.withTikTokHttp(await http(), () => web.fetchCreatorPostsWithEmbedFallback(identity, { limit }));
+          const { items } = await web.withTikTokHttp(await http(), () => web.fetchCreatorPosts(identity, { limit }));
           return items;
         },
+        fetchEmbed: async (h, limit) => web.withTikTokHttp(await http(), () => web.fetchEmbedCreator(h, { limit })),
+        hydrate: async (items) => web.withTikTokHttp(await http(), () => web.hydrateItemStats(items, PROFILE_HYDRATE_PAGES)),
         now: () => new Date(),
       };
     },
