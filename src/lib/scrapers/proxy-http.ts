@@ -174,6 +174,7 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 async function openRequest(url: string, opts: ProxyFetchOptions): Promise<{
   res: Response;
   controller: AbortController;
+  clearTimer: () => void;
 }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -204,11 +205,13 @@ async function openRequest(url: string, opts: ProxyFetchOptions): Promise<{
     }
   }
 
+  const clearTimer = () => clearTimeout(timeout);
   try {
     const res = await fetch(url, init as RequestInit);
-    return { res, controller };
-  } finally {
-    clearTimeout(timeout);
+    return { res, controller, clearTimer };
+  } catch (err) {
+    clearTimer();
+    throw err;
   }
 }
 
@@ -222,8 +225,16 @@ function billedBytes(res: Response, decodedBytes: number, truncated: boolean): n
 
 export async function proxyFetch(url: string, opts: ProxyFetchOptions = {}): Promise<ProxyFetchResult> {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
-  const { res, controller } = await openRequest(url, opts);
-  const { text, decodedBytes, truncated } = await readCapped(res, maxBytes, opts.stopWhen, controller);
+  const { res, controller, clearTimer } = await openRequest(url, opts);
+  // The timer stays armed through the body read: a stalled stream after the
+  // headers would otherwise hang the caller until the whole job times out.
+  let read: Awaited<ReturnType<typeof readCapped>>;
+  try {
+    read = await readCapped(res, maxBytes, opts.stopWhen, controller);
+  } finally {
+    clearTimer();
+  }
+  const { text, decodedBytes, truncated } = read;
   const bytes = billedBytes(res, decodedBytes, truncated);
   meterBytes(bytes);
   return { status: res.status, ok: res.ok, text, bytes, truncated, headers: res.headers };
@@ -247,7 +258,8 @@ export async function proxyFetchBuffer(
   opts: ProxyFetchOptions = {},
 ): Promise<ProxyFetchBufferResult> {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
-  const { res, controller } = await openRequest(url, { ...opts, compress: opts.compress ?? false });
+  const { res, controller, clearTimer } = await openRequest(url, { ...opts, compress: opts.compress ?? false });
+  clearTimer();
   const { buffer, decodedBytes, truncated } = await readCappedBytes(res, maxBytes, controller);
   const bytes = billedBytes(res, decodedBytes, truncated);
   meterBytes(bytes);

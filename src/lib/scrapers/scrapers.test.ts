@@ -731,6 +731,21 @@ describe('proxyFetch caps', () => {
     expect(result.text.length).toBeLessThanOrEqual(100);
     expect(result.bytes).toBeGreaterThan(0);
   });
+
+  test('timeoutMs also covers a body that stalls after the headers', async () => {
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener('abort', () => controller.error(new Error('aborted')));
+        },
+      });
+      return new Response(body, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const started = Date.now();
+    await expect(proxyFetch('https://ads.tiktok.com/x', { timeoutMs: 80, direct: true })).rejects.toThrow(/abort/i);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
 });
 
 describe('proxy budget (vendor + internal rail)', () => {
