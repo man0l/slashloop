@@ -14,6 +14,8 @@ export type VideoErrorCode = 'budget' | 'not_found' | 'blocked' | 'slideshow' | 
 export const VIDEO_ESTIMATE_BYTES = 8 * 1024 * 1024;
 export const MAX_AUDIO_SECONDS = 10 * 60;
 export const HOOK_INPUT_WORDS = 1_500;
+// The text model reasons inside this budget; 600 truncated the JSON (finish_reason=length) on a live 35 s clip.
+export const HOOK_MAX_TOKENS = 2_000;
 export const MAX_CAPTION_CHARS = 500;
 export const WHISPER_MODEL = '@cf/openai/whisper-large-v3-turbo';
 
@@ -326,7 +328,7 @@ export function defaultVideoDeps(workspaceId: string, env: NodeJS.ProcessEnv = p
     },
     hook: async (text, caption) => {
       const { callModelText, modelJson } = await import('../lib/llm.js');
-      return modelJson(await callModelText(HOOK_SYSTEM, hookUserMessage(text, caption), undefined, { maxTokens: 600, temperature: 0.3 }));
+      return modelJson(await callModelText(HOOK_SYSTEM, hookUserMessage(text, caption), undefined, { maxTokens: HOOK_MAX_TOKENS, temperature: 0.3 }));
     },
     log: (line) => console.log(`[tools] tools-video ${line}`),
   };
