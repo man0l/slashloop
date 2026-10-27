@@ -160,7 +160,8 @@ exports.Prisma.WorkspaceMemberScalarFieldEnum = {
   workspaceId: 'workspaceId',
   email: 'email',
   invitedBy: 'invitedBy',
-  createdAt: 'createdAt'
+  createdAt: 'createdAt',
+  acceptedAt: 'acceptedAt'
 };
 
 exports.Prisma.CreditLedgerScalarFieldEnum = {

@@ -61,6 +61,15 @@ export async function listWorkspacesForUser(
       : [];
     if (own.length === 0 && shared.length === 0) return [];
 
+    // Membership has no accept step; loading the switcher while a row matches
+    // this email is the first proof the invitee signed in (team.ts header).
+    if (email && shared.length > 0) {
+      await db.workspaceMember.updateMany({
+        where: { email: email.toLowerCase(), acceptedAt: null },
+        data: { acceptedAt: new Date() },
+      });
+    }
+
     const accountPlan = own[0]?.planKey ?? 'free';
     // Shared rows report the plan of the account that owns them — one query
     // per distinct owner set, not per workspace.

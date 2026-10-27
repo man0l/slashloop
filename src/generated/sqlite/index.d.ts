@@ -6253,6 +6253,7 @@ export namespace Prisma {
     email: string | null
     invitedBy: string | null
     createdAt: Date | null
+    acceptedAt: Date | null
   }
 
   export type WorkspaceMemberMaxAggregateOutputType = {
@@ -6261,6 +6262,7 @@ export namespace Prisma {
     email: string | null
     invitedBy: string | null
     createdAt: Date | null
+    acceptedAt: Date | null
   }
 
   export type WorkspaceMemberCountAggregateOutputType = {
@@ -6269,6 +6271,7 @@ export namespace Prisma {
     email: number
     invitedBy: number
     createdAt: number
+    acceptedAt: number
     _all: number
   }
 
@@ -6279,6 +6282,7 @@ export namespace Prisma {
     email?: true
     invitedBy?: true
     createdAt?: true
+    acceptedAt?: true
   }
 
   export type WorkspaceMemberMaxAggregateInputType = {
@@ -6287,6 +6291,7 @@ export namespace Prisma {
     email?: true
     invitedBy?: true
     createdAt?: true
+    acceptedAt?: true
   }
 
   export type WorkspaceMemberCountAggregateInputType = {
@@ -6295,6 +6300,7 @@ export namespace Prisma {
     email?: true
     invitedBy?: true
     createdAt?: true
+    acceptedAt?: true
     _all?: true
   }
 
@@ -6376,6 +6382,7 @@ export namespace Prisma {
     email: string
     invitedBy: string
     createdAt: Date
+    acceptedAt: Date | null
     _count: WorkspaceMemberCountAggregateOutputType | null
     _min: WorkspaceMemberMinAggregateOutputType | null
     _max: WorkspaceMemberMaxAggregateOutputType | null
@@ -6401,6 +6408,7 @@ export namespace Prisma {
     email?: boolean
     invitedBy?: boolean
     createdAt?: boolean
+    acceptedAt?: boolean
     workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
   }, ExtArgs["result"]["workspaceMember"]>
 
@@ -6410,6 +6418,7 @@ export namespace Prisma {
     email?: boolean
     invitedBy?: boolean
     createdAt?: boolean
+    acceptedAt?: boolean
     workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
   }, ExtArgs["result"]["workspaceMember"]>
 
@@ -6419,6 +6428,7 @@ export namespace Prisma {
     email?: boolean
     invitedBy?: boolean
     createdAt?: boolean
+    acceptedAt?: boolean
     workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
   }, ExtArgs["result"]["workspaceMember"]>
 
@@ -6428,9 +6438,10 @@ export namespace Prisma {
     email?: boolean
     invitedBy?: boolean
     createdAt?: boolean
+    acceptedAt?: boolean
   }
 
-  export type WorkspaceMemberOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "email" | "invitedBy" | "createdAt", ExtArgs["result"]["workspaceMember"]>
+  export type WorkspaceMemberOmit<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetOmit<"id" | "workspaceId" | "email" | "invitedBy" | "createdAt" | "acceptedAt", ExtArgs["result"]["workspaceMember"]>
   export type WorkspaceMemberInclude<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
     workspace?: boolean | WorkspaceDefaultArgs<ExtArgs>
   }
@@ -6458,6 +6469,11 @@ export namespace Prisma {
        */
       invitedBy: string
       createdAt: Date
+      /**
+       * First time the invitee loaded their workspace list (listWorkspacesForUser).
+       * NULL = invited, not yet seen.
+       */
+      acceptedAt: Date | null
     }, ExtArgs["result"]["workspaceMember"]>
     composites: {}
   }
@@ -6887,6 +6903,7 @@ export namespace Prisma {
     readonly email: FieldRef<"WorkspaceMember", 'String'>
     readonly invitedBy: FieldRef<"WorkspaceMember", 'String'>
     readonly createdAt: FieldRef<"WorkspaceMember", 'DateTime'>
+    readonly acceptedAt: FieldRef<"WorkspaceMember", 'DateTime'>
   }
     
 
@@ -34603,7 +34620,8 @@ export namespace Prisma {
     workspaceId: 'workspaceId',
     email: 'email',
     invitedBy: 'invitedBy',
-    createdAt: 'createdAt'
+    createdAt: 'createdAt',
+    acceptedAt: 'acceptedAt'
   };
 
   export type WorkspaceMemberScalarFieldEnum = (typeof WorkspaceMemberScalarFieldEnum)[keyof typeof WorkspaceMemberScalarFieldEnum]
@@ -35276,6 +35294,7 @@ export namespace Prisma {
     email?: StringFilter<"WorkspaceMember"> | string
     invitedBy?: StringFilter<"WorkspaceMember"> | string
     createdAt?: DateTimeFilter<"WorkspaceMember"> | Date | string
+    acceptedAt?: DateTimeNullableFilter<"WorkspaceMember"> | Date | string | null
     workspace?: XOR<WorkspaceScalarRelationFilter, WorkspaceWhereInput>
   }
 
@@ -35285,6 +35304,7 @@ export namespace Prisma {
     email?: SortOrder
     invitedBy?: SortOrder
     createdAt?: SortOrder
+    acceptedAt?: SortOrderInput | SortOrder
     workspace?: WorkspaceOrderByWithRelationInput
   }
 
@@ -35298,6 +35318,7 @@ export namespace Prisma {
     email?: StringFilter<"WorkspaceMember"> | string
     invitedBy?: StringFilter<"WorkspaceMember"> | string
     createdAt?: DateTimeFilter<"WorkspaceMember"> | Date | string
+    acceptedAt?: DateTimeNullableFilter<"WorkspaceMember"> | Date | string | null
     workspace?: XOR<WorkspaceScalarRelationFilter, WorkspaceWhereInput>
   }, "id" | "workspaceId_email">
 
@@ -35307,6 +35328,7 @@ export namespace Prisma {
     email?: SortOrder
     invitedBy?: SortOrder
     createdAt?: SortOrder
+    acceptedAt?: SortOrderInput | SortOrder
     _count?: WorkspaceMemberCountOrderByAggregateInput
     _max?: WorkspaceMemberMaxOrderByAggregateInput
     _min?: WorkspaceMemberMinOrderByAggregateInput
@@ -35321,6 +35343,7 @@ export namespace Prisma {
     email?: StringWithAggregatesFilter<"WorkspaceMember"> | string
     invitedBy?: StringWithAggregatesFilter<"WorkspaceMember"> | string
     createdAt?: DateTimeWithAggregatesFilter<"WorkspaceMember"> | Date | string
+    acceptedAt?: DateTimeNullableWithAggregatesFilter<"WorkspaceMember"> | Date | string | null
   }
 
   export type CreditLedgerWhereInput = {
@@ -37497,6 +37520,7 @@ export namespace Prisma {
     email: string
     invitedBy: string
     createdAt?: Date | string
+    acceptedAt?: Date | string | null
     workspace: WorkspaceCreateNestedOneWithoutMembersInput
   }
 
@@ -37506,6 +37530,7 @@ export namespace Prisma {
     email: string
     invitedBy: string
     createdAt?: Date | string
+    acceptedAt?: Date | string | null
   }
 
   export type WorkspaceMemberUpdateInput = {
@@ -37513,6 +37538,7 @@ export namespace Prisma {
     email?: StringFieldUpdateOperationsInput | string
     invitedBy?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    acceptedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     workspace?: WorkspaceUpdateOneRequiredWithoutMembersNestedInput
   }
 
@@ -37522,6 +37548,7 @@ export namespace Prisma {
     email?: StringFieldUpdateOperationsInput | string
     invitedBy?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    acceptedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   }
 
   export type WorkspaceMemberCreateManyInput = {
@@ -37530,6 +37557,7 @@ export namespace Prisma {
     email: string
     invitedBy: string
     createdAt?: Date | string
+    acceptedAt?: Date | string | null
   }
 
   export type WorkspaceMemberUpdateManyMutationInput = {
@@ -37537,6 +37565,7 @@ export namespace Prisma {
     email?: StringFieldUpdateOperationsInput | string
     invitedBy?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    acceptedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   }
 
   export type WorkspaceMemberUncheckedUpdateManyInput = {
@@ -37545,6 +37574,7 @@ export namespace Prisma {
     email?: StringFieldUpdateOperationsInput | string
     invitedBy?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    acceptedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   }
 
   export type CreditLedgerCreateInput = {
@@ -40003,6 +40033,7 @@ export namespace Prisma {
     email?: SortOrder
     invitedBy?: SortOrder
     createdAt?: SortOrder
+    acceptedAt?: SortOrder
   }
 
   export type WorkspaceMemberMaxOrderByAggregateInput = {
@@ -40011,6 +40042,7 @@ export namespace Prisma {
     email?: SortOrder
     invitedBy?: SortOrder
     createdAt?: SortOrder
+    acceptedAt?: SortOrder
   }
 
   export type WorkspaceMemberMinOrderByAggregateInput = {
@@ -40019,6 +40051,7 @@ export namespace Prisma {
     email?: SortOrder
     invitedBy?: SortOrder
     createdAt?: SortOrder
+    acceptedAt?: SortOrder
   }
 
   export type CreditLedgerWorkspaceIdRefIdCompoundUniqueInput = {
@@ -42911,6 +42944,7 @@ export namespace Prisma {
     email: string
     invitedBy: string
     createdAt?: Date | string
+    acceptedAt?: Date | string | null
   }
 
   export type WorkspaceMemberUncheckedCreateWithoutWorkspaceInput = {
@@ -42918,6 +42952,7 @@ export namespace Prisma {
     email: string
     invitedBy: string
     createdAt?: Date | string
+    acceptedAt?: Date | string | null
   }
 
   export type WorkspaceMemberCreateOrConnectWithoutWorkspaceInput = {
@@ -43176,6 +43211,7 @@ export namespace Prisma {
     email?: StringFilter<"WorkspaceMember"> | string
     invitedBy?: StringFilter<"WorkspaceMember"> | string
     createdAt?: DateTimeFilter<"WorkspaceMember"> | Date | string
+    acceptedAt?: DateTimeNullableFilter<"WorkspaceMember"> | Date | string | null
   }
 
   export type WorkspaceCreateWithoutMembersInput = {
@@ -46842,6 +46878,7 @@ export namespace Prisma {
     email: string
     invitedBy: string
     createdAt?: Date | string
+    acceptedAt?: Date | string | null
   }
 
   export type SourceUpdateWithoutWorkspaceInput = {
@@ -47101,6 +47138,7 @@ export namespace Prisma {
     email?: StringFieldUpdateOperationsInput | string
     invitedBy?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    acceptedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   }
 
   export type WorkspaceMemberUncheckedUpdateWithoutWorkspaceInput = {
@@ -47108,6 +47146,7 @@ export namespace Prisma {
     email?: StringFieldUpdateOperationsInput | string
     invitedBy?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    acceptedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   }
 
   export type WorkspaceMemberUncheckedUpdateManyWithoutWorkspaceInput = {
@@ -47115,6 +47154,7 @@ export namespace Prisma {
     email?: StringFieldUpdateOperationsInput | string
     invitedBy?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    acceptedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   }
 
   export type VideoCreateManySourceInput = {

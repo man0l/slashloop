@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test';
 // 1.4 started pairing the two files in the same test worker.
 import * as realCache from './cache.js';
 
-type MemberRow = { id: string; workspaceId: string; email: string; invitedBy: string; createdAt: Date };
+type MemberRow = { id: string; workspaceId: string; email: string; invitedBy: string; createdAt: Date; acceptedAt?: Date | null };
 
 let members: MemberRow[] = [];
 let sentEmails: Array<{ to: string; subject: string; text?: string; html?: string }> = [];
@@ -21,7 +21,16 @@ let ownedWorkspaces: Array<{ id: string; name: string }> = [
 mock.module('../db.js', () => ({
   db: {
     workspace: {
-      findMany: async () => ownedWorkspaces,
+      // listWorkspacesForUser asks for the shared set with a members filter;
+      // everything else wants the caller's owned workspaces.
+      findMany: async ({ where }: { where?: { members?: { some: { email: string } } } } = {}) =>
+        where?.members
+          ? ownedWorkspaces.filter((w) =>
+              members.some((m) => m.workspaceId === w.id && m.email === where.members!.some.email),
+            )
+          : String((where as { ownerId?: string } | undefined)?.ownerId).startsWith('user-mate')
+            ? []
+            : ownedWorkspaces,
     },
     workspaceMember: {
       count: async ({ where }: { where: { workspaceId: string } }) =>
@@ -39,6 +48,11 @@ mock.module('../db.js', () => ({
         const before = members.length;
         members = members.filter((m) => !(m.workspaceId === where.workspaceId && m.email === where.email));
         return { count: before - members.length };
+      },
+      updateMany: async ({ where, data }: { where: { email: string; acceptedAt: null }; data: { acceptedAt: Date } }) => {
+        const hit = members.filter((m) => m.email === where.email && !m.acceptedAt);
+        for (const m of hit) m.acceptedAt = data.acceptedAt;
+        return { count: hit.length };
       },
       findMany: async ({ where }: { where?: { workspaceId?: string } } = {}) =>
         where?.workspaceId ? members.filter((m) => m.workspaceId === where.workspaceId) : members,
@@ -60,6 +74,7 @@ mock.module('./cache.js', () => ({
   invalidateWorkspaceList: () => {},
 }));
 
+const { listWorkspacesForUser } = await import('./workspaces.js');
 const { inviteMember, inviteMemberToAllWorkspaces, listTeamRoster, removeMember, removeMemberFromAllWorkspaces, listMembers, MAX_MEMBERS_PER_WORKSPACE, TeamError } = await import('./team.js');
 
 // TeamError.code, not .message — toThrow() matches message text.
@@ -221,5 +236,25 @@ describe('inviteMemberToAllWorkspaces', () => {
       await errorCode(inviteMemberToAllWorkspaces({ ownerId: 'user-1', ownerEmail: undefined, rawEmail: 'a@b.co', invitedBy: 'user-1' })),
     ).toBe('no_workspaces');
     expect(members).toHaveLength(0);
+  });
+});
+
+describe('acceptedAt', () => {
+  test('a fresh invite is pending, and the roster exposes acceptedAt', async () => {
+    const m = await inviteMember(workspace, undefined, 'new@x.co', 'user-1', { sendEmail: false });
+    expect(m.acceptedAt).toBeNull();
+    const [row] = await listMembers('ws-1');
+    expect(row.acceptedAt ?? null).toBeNull();
+  });
+
+  test('loading the switcher as the invitee stamps acceptedAt; the owner loading it does not', async () => {
+    await inviteMember(workspace, undefined, 'mate@x.co', 'user-1', { sendEmail: false });
+    await listWorkspacesForUser('user-owner-1', 'owner@acme.io');
+    expect((await listMembers('ws-1'))[0].acceptedAt ?? null).toBeNull();
+
+    const list = await listWorkspacesForUser('user-mate-1', 'Mate@X.co');
+    expect(list.map((w) => w.role)).toEqual(['member']);
+    const stamped = (await listMembers('ws-1'))[0].acceptedAt;
+    expect(stamped).toBeInstanceOf(Date);
   });
 });

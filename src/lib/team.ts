@@ -30,7 +30,7 @@ export class TeamError extends Error {
   }
 }
 
-export type WorkspaceMemberView = Pick<WorkspaceMember, 'id' | 'email' | 'createdAt'>;
+export type WorkspaceMemberView = Pick<WorkspaceMember, 'id' | 'email' | 'createdAt' | 'acceptedAt'>;
 
 export type MailStatus = { sent: boolean; reason?: string };
 
@@ -58,7 +58,7 @@ export async function listMembers(workspaceId: string): Promise<WorkspaceMemberV
   const members = await db.workspaceMember.findMany({
     where: { workspaceId },
     orderBy: { createdAt: 'asc' },
-    select: { id: true, email: true, createdAt: true },
+    select: { id: true, email: true, createdAt: true, acceptedAt: true },
   });
   return members.map((m) => ({ ...m, createdAt: m.createdAt }));
 }
@@ -122,7 +122,7 @@ export async function inviteMember(
     });
   }
 
-  return { id: member.id, email: member.email, createdAt: member.createdAt, mail };
+  return { id: member.id, email: member.email, createdAt: member.createdAt, acceptedAt: member.acceptedAt ?? null, mail };
 }
 
 /** Remove a teammate. Owner-only at the route layer. */
