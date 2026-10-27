@@ -125,23 +125,38 @@ export interface TimedD1Options {
   timeoutMs?: number;
 }
 
+const SNIPPET_MAX_CHARS = 500;
+
 function snippet(query: string): string {
   const oneLine = query.replace(/\s+/g, ' ').trim();
-  return oneLine.length > 220 ? `${oneLine.slice(0, 220)}…` : oneLine;
+  return oneLine.length > SNIPPET_MAX_CHARS ? `${oneLine.slice(0, SNIPPET_MAX_CHARS)}…` : oneLine;
+}
+
+/** First stack frame outside this wrapper (by file, or by name once bundled), so a timeout names the path that stalled. */
+export function callerHint(stack: string | undefined): string {
+  const frame = (stack ?? '')
+    .split('\n')
+    .slice(1)
+    .map((l) => l.trim())
+    .find((l) => l.startsWith('at ') && !/serialize-d1\.(ts|js)|^at (guard|counted)\b|^at (Object\.)?(first|run|all|raw)\b/.test(l));
+  return frame ? frame.slice(3, 200) : 'unknown';
 }
 
 export function timedD1(d1: D1Database, opts: TimedD1Options = {}): D1Database {
   const timeoutMs = opts.timeoutMs ?? D1_CALL_TIMEOUT_MS;
 
-  const guard = <T,>(kind: string, query: string, promise: Promise<T>): Promise<T> =>
-    withTimeout(promise, timeoutMs, `D1 ${kind} timed out after ${timeoutMs}ms: ${snippet(query)}`).catch(
+  const guard = <T,>(kind: string, query: string, promise: Promise<T>): Promise<T> => {
+    // Captured at call time: after the await the async stack no longer names the caller.
+    const stack = new Error().stack;
+    return withTimeout(promise, timeoutMs, `D1 ${kind} timed out after ${timeoutMs}ms: ${snippet(query)}`).catch(
       (err: unknown) => {
         if (err instanceof Error && err.message.startsWith('D1 ') && err.message.includes('timed out')) {
-          console.error(`[d1-timeout] ${kind} stuck: ${snippet(query)}`);
+          console.error(`[d1-timeout] ${kind} stuck: ${snippet(query)} | caller: ${callerHint(stack)}`);
         }
         throw err;
       },
     );
+  };
 
   const counted = <T,>(count: number, execute: () => T): T => {
     countD1Queries(count);

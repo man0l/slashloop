@@ -362,6 +362,25 @@ describe('tiktok-web helpers', () => {
     }
   });
 
+  test('early Impit retries log at info; only the last retry warns', async () => {
+    const warns: string[] = [];
+    const infos: string[] = [];
+    const [ow, oi] = [console.warn, console.info];
+    console.warn = (...a: unknown[]) => { warns.push(a.join(' ')); };
+    console.info = (...a: unknown[]) => { infos.push(a.join(' ')); };
+    try {
+      const eofClient = { fetch: async () => { throw new Error('peer closed connection without sending TLS close_notify'); } };
+      await expect(fetchThrough(eofClient, 'https://www.tiktok.com/x', {}, async () => {})).rejects.toThrow('close_notify');
+    } finally {
+      console.warn = ow;
+      console.info = oi;
+    }
+    expect(infos).toHaveLength(IMPIT_FETCH_RETRIES - 1);
+    expect(infos[0]).toContain(`retry 1/${IMPIT_FETCH_RETRIES}`);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain(`retry ${IMPIT_FETCH_RETRIES}/${IMPIT_FETCH_RETRIES}`);
+  });
+
   test('job-level abort cancels an in-flight fetch and stops the retry loop (SLA-947)', async () => {
     let calls = 0;
     let sawSignal: AbortSignal | undefined;
