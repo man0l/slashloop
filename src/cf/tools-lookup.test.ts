@@ -189,8 +189,31 @@ describe('POST /api/tools/lookup', () => {
   });
 
   test('wrong kind -> 400', async () => {
-    const res = await handleLookupPost(post({ ...goodBody(), kind: 'profile' }), makeEnv() as never, deps([]));
-    expect(res.status).toBe(400);
+    for (const kind of ['video', 'constructor', '__proto__', 42]) {
+      const res = await handleLookupPost(post({ ...goodBody(), kind }), makeEnv() as never, deps([]));
+      expect(res.status).toBe(400);
+    }
+  });
+
+  test('profile kind queues tools-profile with its own cache, row kind and daily counters', async () => {
+    const env = makeEnv();
+    await env.OAUTH_KV.put('tools:cache:profile-lite:mrbeast', JSON.stringify({ handle: 'mrbeast', followers: 5 }));
+    const published: PublishBody[] = [];
+    const res = await handleLookupPost(post({ ...goodBody(), kind: 'profile' }), env as never, deps(published));
+    expect(await res.json()).toEqual({ status: 'queued', id: 'id1' });
+    expect(published[0].kind).toBe('tools-profile');
+    expect(published[0].dedupeKey).toBe('tools-profile:mrbeast:20261026');
+    expect(env.DB_SHARD0.rows[0]).toMatchObject({ kind: 'profile', subject: 'mrbeast' });
+    const keys = [...env.OAUTH_KV.store.keys()];
+    expect(keys).toContain('tools:rl:handle:profile:mrbeast:20261026');
+    expect(keys.some((k) => k.startsWith('tools:rl:day:profile:'))).toBe(true);
+  });
+
+  test('a cached profile result is served for kind profile only', async () => {
+    const env = makeEnv();
+    await env.OAUTH_KV.put('tools:cache:profile:mrbeast', JSON.stringify({ handle: 'mrbeast', followers: 50000 }));
+    const res = await handleLookupPost(post({ kind: 'profile', handle: 'mrbeast' }), env as never, deps([]));
+    expect(await res.json()).toEqual({ status: 'done', result: { handle: 'mrbeast', followers: 50000 }, cached: true });
   });
 
   test('missing or failed Turnstile -> 400, nothing queued', async () => {
@@ -379,6 +402,68 @@ describe('POST /api/tools/internal/result', () => {
     expect(JSON.parse(env.OAUTH_KV.store.get('tools:cache:profile-lite:mrbeast')!)).toEqual({ handle: 'mrbeast', followers: 9 });
     const poll = await handleLookupGet(new Request(`${BASE}/api/tools/lookup/req1`), 'req1', env as never);
     expect(await poll.json()).toEqual({ status: 'done', result: { handle: 'mrbeast', followers: 9 } });
+  });
+
+  describe('profile kind', () => {
+    const profileRow = (env: ReturnType<typeof makeEnv>) =>
+      env.DB_SHARD0.rows.push({
+        id: 'req1', kind: 'profile', subject: 'mrbeast', status: 'queued', result_json: null, error_code: null,
+        created_at: NOW.toISOString(),
+      });
+    const pushes: Array<{ url: string; headers: Headers; body: string }> = [];
+    const pushFetch = (status: number) =>
+      (async (url: string, init: RequestInit) => {
+        pushes.push({ url, headers: new Headers(init.headers), body: new TextDecoder().decode(init.body as Uint8Array) });
+        return new Response(null, { status });
+      }) as unknown as typeof fetch;
+
+    test('done pushes the signed result to the site first, then caches under the profile key', async () => {
+      pushes.length = 0;
+      const env = makeEnv();
+      profileRow(env);
+      const raw = new TextEncoder().encode(JSON.stringify({ requestId: 'req1', status: 'done', result: { handle: 'x', followers: 20000 } }));
+      const sig = await producerSignature(SECRET, 'POST', RESULT_PATH, String(Math.floor(NOW.getTime() / 1000)), 'nonce-0001', raw);
+      const res = await handleResultCallback(
+        new Request(`${BASE}${RESULT_PATH}`, {
+          method: 'POST',
+          headers: { 'x-slq-timestamp': String(Math.floor(NOW.getTime() / 1000)), 'x-slq-nonce': 'nonce-0001', 'x-slq-signature': sig },
+          body: raw,
+        }),
+        env as never,
+        { now: () => NOW, fetchImpl: pushFetch(204) },
+      );
+      expect(res.status).toBe(204);
+      expect(pushes).toHaveLength(1);
+      expect(pushes[0].url).toBe('https://slashloop.dev/tools/api/internal/creator');
+      expect(JSON.parse(pushes[0].body)).toEqual({ handle: 'mrbeast', result: { handle: 'mrbeast', followers: 20000 } });
+      const expected = await producerSignature(
+        SECRET, 'POST', '/tools/api/internal/creator', pushes[0].headers.get('x-slq-timestamp')!, pushes[0].headers.get('x-slq-nonce')!,
+        new TextEncoder().encode(pushes[0].body),
+      );
+      expect(pushes[0].headers.get('x-slq-signature')).toBe(expected);
+      expect(env.DB_SHARD0.rows[0].status).toBe('done');
+      expect(env.OAUTH_KV.store.has('tools:cache:profile:mrbeast')).toBe(true);
+      expect(env.OAUTH_KV.store.has('tools:cache:profile-lite:mrbeast')).toBe(false);
+    });
+
+    test('a failed site push answers 502 and leaves the row queued so the VPS retries', async () => {
+      pushes.length = 0;
+      const env = makeEnv();
+      profileRow(env);
+      globalThis.fetch = (async () => new Response(null, { status: 500 })) as unknown as typeof fetch;
+      const res = await signedCallback(env, { requestId: 'req1', status: 'done', result: { followers: 20000 } }, { nonce: 'nonce-push-1' });
+      expect(res.status).toBe(502);
+      expect(env.DB_SHARD0.rows[0].status).toBe('queued');
+      expect(env.OAUTH_KV.store.has('tools:cache:profile:mrbeast')).toBe(false);
+    });
+
+    test('profile-lite results are never pushed to the site', async () => {
+      pushes.length = 0;
+      const env = makeEnv();
+      queuedRow(env);
+      expect((await signedCallback(env, { requestId: 'req1', status: 'done', result: { followers: 1 } })).status).toBe(204);
+      expect(pushes).toHaveLength(0);
+    });
   });
 
   test('a redelivery after the row settled is acknowledged without changing it', async () => {
