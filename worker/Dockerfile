@@ -25,7 +25,8 @@ FROM oven/bun:1.2-slim
 WORKDIR /app
 
 # Prisma's query engine needs OpenSSL at runtime; the slim image doesn't ship it.
-RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+# ffmpeg/ffprobe: tools-video shrinks the MP4 to 16 kHz mono audio before Whisper (src/worker/tools-video.ts).
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates ffmpeg && rm -rf /var/lib/apt/lists/*
 
 # Install deps first for layer caching (bun.lock drives the install).
 COPY package.json bun.lock ./

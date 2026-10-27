@@ -417,7 +417,7 @@ export const proxyAdapter: ScraperAdapter = {
       try {
         video = await resolvePlayableVideo(opts.videoUrl, itemId, http);
       } catch (err) {
-        if (err instanceof SlideshowPostError && err.images.length > 0) {
+        if (err instanceof SlideshowPostError && err.images.length > 0 && !opts.skipSlideshow) {
           const slideReferer = handle
             ? `https://www.tiktok.com/@${handle}/photo/${itemId}`
             : watchUrl;
