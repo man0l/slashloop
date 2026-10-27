@@ -4,6 +4,8 @@ import { producerSignature, type PublishBody } from '../queue/producer.js';
 import {
   DAILY_HANDLE_LIMIT,
   DAILY_IP_LIMIT,
+  DAILY_VIDEO_IP_LIMIT,
+  DAILY_VIDEO_LIMIT,
   RESULT_PATH,
   handleLookupGet,
   handleLookupPost,
@@ -425,5 +427,167 @@ describe('GET /api/tools/lookup/<id>', () => {
     expect(await ok.json()).toEqual({ status: 'queued', id: 'req1' });
     expect((await handleLookupGet(new Request(`${BASE}/api/tools/lookup/zzz`), 'zzz', env as never)).status).toBe(404);
     expect((await handleLookupGet(new Request(`${BASE}/api/tools/lookup/a%20b`), 'a b', env as never)).status).toBe(404);
+  });
+});
+
+describe('transcript kind (SLA-1057)', () => {
+  const VID = '7234567890123456789';
+  const CANON = `https://www.tiktok.com/@some.user/video/${VID}`;
+  const OEMBED = { title: 'hook line #fyp', author_name: 'Some User', thumbnail_url: 'https://p16.tiktokcdn.com/t.jpg' };
+
+  interface Net { calls: string[]; oembedStatus: number; headLocation: string | null; headStatus: number }
+  function net(over: Partial<Net> = {}): { n: Net; fetchImpl: typeof fetch } {
+    const n: Net = { calls: [], oembedStatus: 200, headLocation: `${CANON}?_r=1`, headStatus: 301, ...over };
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      n.calls.push(`${init?.method ?? 'GET'} ${url}`);
+      if (url.includes('turnstile')) return new Response(JSON.stringify({ success: turnstileOk }), { status: 200 });
+      if (url.includes('/oembed')) return new Response(JSON.stringify(OEMBED), { status: n.oembedStatus });
+      if (init?.method === 'HEAD') {
+        return new Response(null, { status: n.headStatus, headers: n.headLocation ? { location: n.headLocation } : {} });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+    return { n, fetchImpl };
+  }
+  const vbody = (url: string) => ({ kind: 'transcript', url, turnstileToken: 'tok' });
+
+  test('canonical video URL queues tools-video with the dedupe key, payload and preview', async () => {
+    const env = makeEnv();
+    const published: PublishBody[] = [];
+    const { fetchImpl } = net();
+    const res = await handleLookupPost(post(vbody(`https://www.tiktok.com/@Some.User/video/${VID}?lang=en`)), env as never, deps(published, { fetchImpl }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-robots-tag')).toBe('noindex');
+    expect(await res.json()).toEqual({
+      status: 'queued', id: 'id1',
+      preview: { title: 'hook line #fyp', author: 'Some User', thumbnailUrl: 'https://p16.tiktokcdn.com/t.jpg' },
+    });
+    expect(published[0].kind).toBe('tools-video');
+    expect(published[0].dedupeKey).toBe(`tools-video:${VID}`);
+    expect(published[0].payload).toEqual({
+      videoUrl: `https://www.tiktok.com/@Some.User/video/${VID}`, videoId: VID, caption: 'hook line #fyp',
+      requestId: 'id1', callbackUrl: `${BASE}/api/tools/internal/result`,
+    });
+    expect(env.DB_SHARD0.rows[0]).toMatchObject({ kind: 'transcript', subject: VID });
+  });
+
+  test('vm.tiktok.com and tiktok.com/t/ links resolve via HEAD with manual redirects', async () => {
+    for (const link of ['https://vm.tiktok.com/ZMabc123/', 'vm.tiktok.com/ZMabc123', 'https://www.tiktok.com/t/ZTabc123/']) {
+      const env = makeEnv();
+      const published: PublishBody[] = [];
+      const { n, fetchImpl } = net({ headLocation: `${CANON}?_r=1&u_code=x` });
+      const res = await handleLookupPost(post(vbody(link)), env as never, deps(published, { fetchImpl }));
+      expect(res.status).toBe(200);
+      expect(n.calls.some((c) => c.startsWith('HEAD '))).toBe(true);
+      expect((published[0].payload as { videoId: string }).videoId).toBe(VID);
+    }
+  });
+
+  test('a short link that does not land on a video, or leaves tiktok.com, -> 400', async () => {
+    for (const headLocation of ['https://evil.example/x', 'https://www.tiktok.com/@some.user', null]) {
+      const published: PublishBody[] = [];
+      const { fetchImpl } = net({ headLocation });
+      const res = await handleLookupPost(post(vbody('https://vm.tiktok.com/ZMabc123/')), makeEnv() as never, deps(published, { fetchImpl }));
+      expect(res.status).toBe(400);
+      expect(published).toHaveLength(0);
+    }
+  });
+
+  test('non-TikTok and malformed URLs -> 400 before any fetch or job', async () => {
+    for (const bad of ['https://example.com/@a/video/7234567890123456789', 'https://tiktok.com.evil.test/@a/video/7234567890123456789', 'javascript:alert(1)', 'https://www.tiktok.com/@some.user', 'https://user:pw@www.tiktok.com/@a/video/7234567890123456789', '', 42]) {
+      const env = makeEnv();
+      const published: PublishBody[] = [];
+      const { n, fetchImpl } = net();
+      const res = await handleLookupPost(post(vbody(bad as never)), env as never, deps(published, { fetchImpl }));
+      expect(res.status).toBe(400);
+      expect(n.calls).toHaveLength(0);
+      expect(published).toHaveLength(0);
+      expect(env.DB_SHARD0.rows).toHaveLength(0);
+    }
+  });
+
+  test('photo links answer with the slideshow message without queueing', async () => {
+    const published: PublishBody[] = [];
+    const { fetchImpl } = net();
+    const res = await handleLookupPost(post(vbody(`https://www.tiktok.com/@a.b/photo/${VID}`)), makeEnv() as never, deps(published, { fetchImpl }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'slideshow', error: expect.stringMatching(/photo slideshow/) });
+    expect(published).toHaveLength(0);
+  });
+
+  test('oEmbed 404 -> video not found or private, no job; oEmbed outage still queues without a preview', async () => {
+    const published: PublishBody[] = [];
+    const gone = net({ oembedStatus: 404 });
+    const res = await handleLookupPost(post(vbody(CANON)), makeEnv() as never, deps(published, { fetchImpl: gone.fetchImpl }));
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toMatch(/not found or private/i);
+    expect(published).toHaveLength(0);
+
+    const down = net({ oembedStatus: 503 });
+    const ok = await handleLookupPost(post(vbody(CANON)), makeEnv() as never, deps(published, { fetchImpl: down.fetchImpl }));
+    expect(await ok.json()).toEqual({ status: 'queued', id: 'id1' });
+    expect((published[0].payload as { caption: string }).caption).toBe('');
+  });
+
+  test('cache hit on transcript:<videoId> skips Turnstile, limits and queue, and still returns a fresh preview', async () => {
+    const env = makeEnv({ LOOKUP_RL: { limit: async () => { throw new Error('limiter must not run'); } } });
+    await env.OAUTH_KV.put(`tools:cache:transcript:${VID}`, JSON.stringify({ videoId: VID, text: 'hi' }));
+    const published: PublishBody[] = [];
+    const { n, fetchImpl } = net();
+    const res = await handleLookupPost(post({ kind: 'transcript', url: CANON }), env as never, deps(published, { fetchImpl }));
+    expect(await res.json()).toMatchObject({ status: 'done', cached: true, result: { videoId: VID, text: 'hi' }, preview: { title: 'hook line #fyp' } });
+    expect(n.calls.some((c) => c.includes('turnstile'))).toBe(false);
+    expect(published).toHaveLength(0);
+  });
+
+  test('refresh never bypasses the transcript cache', async () => {
+    const env = makeEnv();
+    const old = { videoId: VID, text: 'hi', takenAt: new Date(NOW.getTime() - 40 * 24 * 3600_000).toISOString() };
+    await env.OAUTH_KV.put(`tools:cache:transcript:${VID}`, JSON.stringify(old));
+    const published: PublishBody[] = [];
+    const res = await handleLookupPost(post({ ...vbody(CANON), refresh: true }), env as never, deps(published, { fetchImpl: net().fetchImpl }));
+    expect(((await res.json()) as { cached: boolean }).cached).toBe(true);
+    expect(published).toHaveLength(0);
+  });
+
+  test('3 per video per day and 10 per IP per day for this kind -> 429', async () => {
+    const day = '20261026';
+    const env = makeEnv();
+    const published: PublishBody[] = [];
+    await env.OAUTH_KV.put(`tools:rl:video:${VID}:${day}`, String(DAILY_VIDEO_LIMIT));
+    const perVideo = await handleLookupPost(post(vbody(CANON)), env as never, deps(published, { fetchImpl: net().fetchImpl }));
+    expect(perVideo.status).toBe(429);
+    expect(DAILY_VIDEO_LIMIT).toBe(3);
+
+    const env2 = makeEnv();
+    const d = deps(published, { fetchImpl: net().fetchImpl });
+    expect((await handleLookupPost(post(vbody(CANON)), env2 as never, d)).status).toBe(200);
+    const ipKey = [...env2.OAUTH_KV.store.keys()].find((k) => k.startsWith('tools:rl:day:video:'))!;
+    expect(DAILY_VIDEO_IP_LIMIT).toBe(10);
+    env2.OAUTH_KV.store.set(ipKey, String(DAILY_VIDEO_IP_LIMIT));
+    const other = `https://www.tiktok.com/@some.user/video/7234567890123456790`;
+    expect((await handleLookupPost(post(vbody(other)), env2 as never, d)).status).toBe(429);
+    // Profile lookups keep their own IP counter.
+    expect((await handleLookupPost(post(goodBody('other1')), env2 as never, d)).status).toBe(200);
+  });
+
+  test('callback: done sets videoId, caches 30 days under transcript:<id>; slideshow/too_long/not_found map to messages', async () => {
+    const env = makeEnv();
+    env.DB_SHARD0.rows.push({ id: 'req1', kind: 'transcript', subject: VID, status: 'queued', result_json: null, error_code: null, created_at: NOW.toISOString() });
+    const res = await signedCallback(env, { requestId: 'req1', status: 'done', result: { videoId: 'other', text: 'hello', segments: [] } });
+    expect(res.status).toBe(204);
+    expect(JSON.parse(env.OAUTH_KV.store.get(`tools:cache:transcript:${VID}`)!)).toEqual({ videoId: VID, text: 'hello', segments: [] });
+    expect(env.OAUTH_KV.store.has('tools:cache:profile-lite:' + VID)).toBe(false);
+
+    const cases: Array<[string, RegExp]> = [['slideshow', /photo slideshow/], ['too_long', /too long/], ['not_found', /^Video not found or private/]];
+    for (const [code, message] of cases) {
+      const e = makeEnv();
+      e.DB_SHARD0.rows.push({ id: 'req1', kind: 'transcript', subject: VID, status: 'queued', result_json: null, error_code: null, created_at: NOW.toISOString() });
+      await signedCallback(e, { requestId: 'req1', status: 'failed', code });
+      const poll = await handleLookupGet(new Request(`${BASE}/api/tools/lookup/req1`), 'req1', e as never);
+      expect(poll.headers.get('x-robots-tag')).toBe('noindex');
+      expect(await poll.json()).toMatchObject({ status: 'failed', code, message: expect.stringMatching(message) });
+    }
   });
 });
