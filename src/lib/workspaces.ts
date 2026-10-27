@@ -189,3 +189,46 @@ export async function renameWorkspaceForUser(
   invalidateWorkspaceList(userId);
   return updated;
 }
+
+// --- Public gallery link (SLA-1093) ----------------------------------------
+// An owner-minted, revocable bearer token that grants anonymous read-only
+// access to ONE workspace's outlier gallery (/s/<token> on the site, served by
+// api/gallery.ts `publicToken`). Nothing else keys off it.
+
+const PUBLIC_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
+
+function mintPublicToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Turn sharing on for a workspace the user OWNS (members can't). Idempotent:
+ *  an already-shared workspace keeps its existing token. Null = not the owner. */
+export async function enablePublicLink(userId: string, workspaceId: string): Promise<string | null> {
+  const owned = await db.workspace.findFirst({ where: { id: workspaceId, ownerId: userId } });
+  if (!owned) return null;
+  if (owned.publicToken) return owned.publicToken;
+  const token = mintPublicToken();
+  await db.workspace.update({ where: { id: owned.id }, data: { publicToken: token } });
+  invalidateWorkspaceList(userId);
+  return token;
+}
+
+/** Turn sharing off (the old URL stops resolving). False = not the owner. */
+export async function disablePublicLink(userId: string, workspaceId: string): Promise<boolean> {
+  const owned = await db.workspace.findFirst({ where: { id: workspaceId, ownerId: userId } });
+  if (!owned) return false;
+  if (owned.publicToken) {
+    await db.workspace.update({ where: { id: owned.id }, data: { publicToken: null } });
+    invalidateWorkspaceList(userId);
+  }
+  return true;
+}
+
+/** Resolve a public token to its workspace. Malformed tokens never hit the DB. */
+export async function findWorkspaceByPublicToken(token: string | null | undefined): Promise<Workspace | null> {
+  if (!token || !PUBLIC_TOKEN_RE.test(token)) return null;
+  return db.workspace.findFirst({ where: { publicToken: token } });
+}

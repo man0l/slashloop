@@ -38,6 +38,8 @@ model Workspace {
   failureCountsJson    String   @default("{}")
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+  /// Read-only public gallery link (SLA-1093): 32 random bytes base64url. NULL = not shared.
+  publicToken          String?  @unique
 
   // --- billing ---
   /// free | creator | pro. Server-controlled — never set this from a
