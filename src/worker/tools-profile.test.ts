@@ -134,8 +134,18 @@ describe('runProfile', () => {
     expect(scraped).toBe(false);
   });
 
-  test('an account with no readable posts is not_found', async () => {
-    expect(await runProfile('creator', deps({ fetchPosts: async () => [] }))).toEqual({ status: 'failed', code: 'not_found' });
+  test('a resolved account whose post read comes back empty is blocked (transient), not not_found', async () => {
+    expect(await runProfile('creator', deps({ fetchPosts: async () => [] }))).toEqual({ status: 'failed', code: 'blocked' });
+    expect(await runProfile('creator', deps({ fetchEmbed: async () => null, fetchPosts: async () => [] }))).toEqual({ status: 'failed', code: 'blocked' });
+  });
+
+  test('an unresolvable account with a clean miss stays not_found', async () => {
+    const out = await runProfile('creator', deps({
+      fetchEmbed: async () => null,
+      resolveCreator: async () => null,
+      probe: () => ({ status: 404, text: '' }),
+    }));
+    expect(out).toEqual({ status: 'failed', code: 'not_found' });
   });
 
   test('embed first: counts and posts come from one read, the profile page is never opened', async () => {

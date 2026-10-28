@@ -245,18 +245,20 @@ export async function runProfile(handle: string, deps: ProfileLiteDeps): Promise
       await deps.pause(EMBED_RETRY_BASE_MS + Math.floor(Math.random() * EMBED_RETRY_JITTER_MS));
       embed = await deps.fetchEmbed(handle, PROFILE_POST_LIMIT);
     }
-    // A throttled embed says nothing about the account, so an empty fallback must not read as "no such account".
-    const embedThrottled = embed?.throttled === true;
+    // A throttled embed says nothing about the account, and a resolved creator proves it exists:
+    // an empty post read in either case is a transient read failure, never "no such account".
+    let accountExists = embed?.throttled === true;
     if (embed && !embed.throttled && embed.items.length) {
       identity = embed.identity;
       items = embed.items;
     } else {
       const resolved = await deps.resolveCreator(handle);
       if (!resolved) return { status: 'failed', code: classifyProfileMiss(deps.probe()) };
+      accountExists = true;
       identity = resolved;
       items = await deps.fetchPosts(resolved, PROFILE_POST_LIMIT);
     }
-    if (items.length === 0) return { status: 'failed', code: embedThrottled ? 'blocked' : 'not_found' };
+    if (items.length === 0) return { status: 'failed', code: accountExists ? 'blocked' : 'not_found' };
     if (deps.hydrate) items = await deps.hydrate(items).catch(() => items);
     return { status: 'done', result: shapeProfile(identity, handle, items, deps.now()) };
   } catch (err) {
