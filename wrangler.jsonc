@@ -27,6 +27,10 @@
     { "binding": "R2_THUMBS", "bucket_name": "slashloop-thumbs" },
     { "binding": "R2_MEDIA", "bucket_name": "slashloop-media" }
   ],
+  // Same-zone fetch() from this Worker (mcp.slashloop.dev) goes to the origin and skips the
+  // slashloop.dev/* zone routes, so pushToSite (src/cf/tools-lookup.ts) reaches the site Worker
+  // through this binding instead.
+  "services": [{ "binding": "SITE", "service": "slashloop-site" }],
   "kv_namespaces": [
     {
       "binding": "SHARD_DIRECTORY",

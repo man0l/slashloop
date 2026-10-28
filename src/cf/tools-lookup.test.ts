@@ -446,6 +446,33 @@ describe('POST /api/tools/internal/result', () => {
       expect(env.OAUTH_KV.store.has('tools:cache:profile-lite:mrbeast')).toBe(false);
     });
 
+    test('pushes through the SITE service binding when bound, never the global fetch (same-zone fetch skips zone routes)', async () => {
+      const bound: string[] = [];
+      const SITE = { fetch: (async (url: string) => (bound.push(url), new Response(null, { status: 204 }))) as unknown as typeof fetch };
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = (async () => { throw new Error('global fetch must not be used'); }) as unknown as typeof fetch;
+      try {
+        const env = makeEnv({ SITE });
+        profileRow(env);
+        const raw = new TextEncoder().encode(JSON.stringify({ requestId: 'req1', status: 'done', result: { handle: 'x', followers: 20000 } }));
+        const sig = await producerSignature(SECRET, 'POST', RESULT_PATH, String(Math.floor(NOW.getTime() / 1000)), 'nonce-0002', raw);
+        const res = await handleResultCallback(
+          new Request(`${BASE}${RESULT_PATH}`, {
+            method: 'POST',
+            headers: { 'x-slq-timestamp': String(Math.floor(NOW.getTime() / 1000)), 'x-slq-nonce': 'nonce-0002', 'x-slq-signature': sig },
+            body: raw,
+          }),
+          env as never,
+          { now: () => NOW },
+        );
+        expect(res.status).toBe(204);
+        expect(bound).toEqual(['https://slashloop.dev/tools/api/internal/creator']);
+        expect(env.DB_SHARD0.rows[0].status).toBe('done');
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+    });
+
     test('a failed site push answers 502 and leaves the row queued so the VPS retries', async () => {
       pushes.length = 0;
       const env = makeEnv();

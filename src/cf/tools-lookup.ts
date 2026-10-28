@@ -92,6 +92,8 @@ export interface ToolsLookupEnv {
   TOOLS_WORKSPACE_ID?: string;
   /** Where creator results are pushed (the slashloop-site Worker). */
   TOOLS_SITE_URL?: string;
+  /** Service binding to the slashloop-site Worker; a same-zone fetch() skips zone routes, so the push goes through this when bound. */
+  SITE?: { fetch: typeof fetch };
   /** Board mailbox for removal-request notices (src/cf/tools-creators.ts); same ALERT_EMAIL the scrape alerts use. */
   ALERT_EMAIL?: string;
   PUBLIC_URL?: string;
@@ -438,7 +440,8 @@ export async function pushToSite(
   const ts = String(Math.floor((deps.now ?? (() => new Date()))().getTime() / 1000));
   const nonce = crypto.randomUUID().replace(/-/g, '');
   try {
-    const res = await (deps.fetchImpl ?? fetch)(`${base}${path}`, {
+    const send = deps.fetchImpl ?? (env.SITE ? env.SITE.fetch.bind(env.SITE) : fetch);
+    const res = await send(`${base}${path}`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
