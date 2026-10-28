@@ -15,7 +15,7 @@ import { meterBytes } from './bandwidth.js';
 import { proxyConfig } from './proxy-http.js';
 import { signTikTokUrl } from './sign.js';
 import { isWafChallenge, solveWafCookies, type WafCookie } from './waf.js';
-import type { TikTokHttp, TikTokHttpBufferResult, TikTokHttpResult } from './tiktok-web.js';
+import { pageBlobComplete, type TikTokHttp, type TikTokHttpBufferResult, type TikTokHttpResult } from './tiktok-web.js';
 
 const CHROME_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -154,8 +154,49 @@ export function resetImpersonatedClient(): void {
   sharedSession = null;
 }
 
+/**
+ * Read the body, stopping (and cancelling the stream) as soon as `stopWhen`
+ * holds. Without it `res.text()` drains the whole page — a TikTok video page
+ * is 150-300KB of which the rehydration blob is the only part we parse.
+ * Returns the decoded bytes actually pulled, which is what gets metered.
+ */
+export async function readBody(
+  res: Response,
+  stopWhen?: (text: string) => boolean,
+): Promise<{ raw: string; bytes: number; stopped: boolean }> {
+  const body = res.body as ReadableStream<Uint8Array> | null;
+  if (!stopWhen || !body || typeof body.getReader !== 'function') {
+    const raw = await res.text();
+    return { raw, bytes: raw.length, stopped: false };
+  }
+  const reader = body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let raw = '';
+  let bytes = 0;
+  let stopped = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      bytes += value.byteLength;
+      raw += decoder.decode(value, { stream: true });
+      if (stopWhen(raw)) { stopped = true; break; }
+    }
+    raw += decoder.decode();
+  } finally {
+    if (stopped) { try { await reader.cancel(); } catch { /* already gone */ } }
+  }
+  return { raw, bytes, stopped };
+}
+
 function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
-  async function once(url: string, headers: Record<string, string> | undefined, maxBytes: number): Promise<TikTokHttpResult> {
+  async function once(
+    url: string,
+    headers: Record<string, string> | undefined,
+    maxBytes: number,
+    stopWhen?: (text: string) => boolean,
+  ): Promise<TikTokHttpResult> {
     const hdrs: Record<string, string> = {
       'User-Agent': CHROME_UA,
       'Accept-Language': 'en-US,en;q=0.9',
@@ -167,15 +208,20 @@ function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
     const signed = signTikTokUrl(url, hdrs['User-Agent'] ?? CHROME_UA);
     const res = await fetchThrough(client, signed, hdrs);
     jar.absorb(res.headers);
-    const raw = await res.text();
-    meterBytes(raw.length);
-    const json = res.ok ? jsonFromBody(raw) : null;
+    const { raw, bytes } = await readBody(res, res.ok ? stopWhen : undefined);
+    meterBytes(bytes);
+    const json = res.ok && !stopWhen ? jsonFromBody(raw) : null;
     const text = raw.length > maxBytes ? raw.slice(0, maxBytes) : raw;
-    return { json, status: res.status, ok: res.ok, text, bytes: raw.length };
+    return { json, status: res.status, ok: res.ok, text, bytes };
   }
 
-  async function withWaf(url: string, headers: Record<string, string> | undefined, maxBytes: number): Promise<TikTokHttpResult> {
-    const first = await once(url, headers, maxBytes);
+  async function withWaf(
+    url: string,
+    headers: Record<string, string> | undefined,
+    maxBytes: number,
+    stopWhen?: (text: string) => boolean,
+  ): Promise<TikTokHttpResult> {
+    const first = await once(url, headers, maxBytes, stopWhen);
     if (!first.text || !isWafChallenge(first.text)) return first;
     const cookies = solveWafCookies(first.text);
     if (!cookies.length) {
@@ -184,7 +230,7 @@ function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
     }
     jar.apply(cookies);
     console.log(`[proxy:impit] solved WAF (${cookies.map(c => c.name).join(',')}), retrying`);
-    return once(url, headers, maxBytes);
+    return once(url, headers, maxBytes, stopWhen);
   }
 
   async function getBuffer(
@@ -216,7 +262,7 @@ function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
       return withWaf(url, { Accept: 'application/json, text/plain, */*', ...(headers ?? {}) }, JSON_TEXT_CAP);
     },
     async getText(url, headers) {
-      const r = await withWaf(url, { Accept: 'text/html,application/xhtml+xml', ...(headers ?? {}) }, HTML_MAX);
+      const r = await withWaf(url, { Accept: 'text/html,application/xhtml+xml', ...(headers ?? {}) }, HTML_MAX, pageBlobComplete);
       return { ...r, json: null };
     },
     async getBuffer(url, headers, maxBytes) {

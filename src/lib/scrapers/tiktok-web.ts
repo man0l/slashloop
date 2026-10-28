@@ -462,7 +462,7 @@ export function extractFrontityJson(html: string): any | null {
 }
 
 /** True once enough of the page has arrived to hold a complete blob. */
-function pageBlobComplete(text: string): boolean {
+export function pageBlobComplete(text: string): boolean {
   if (text.includes(FRONTITY_MARKER)) return extractFrontityJson(text) !== null;
   if (text.includes(REHYDRATION_MARKER)) return extractRehydrationJson(text) !== null;
   return false;
