@@ -936,8 +936,30 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
     const out = await withTikTokHttp(http, () => fetchEmbedCreator('jawhacks', { limit: 30 }));
     expect(urls).toHaveLength(1);
     expect(urls[0]).toContain('/embed/@jawhacks');
-    expect(out!.items.map((i) => i.id).sort()).toEqual(['7178571592316783915', '7178571592316783916']);
-    expect(out!.identity).toEqual({ followers: 54_321, following: 12, totalLikes: null });
+    if (!out || out.throttled) throw new Error('expected an embed read');
+    expect(out.items.map((i) => i.id).sort()).toEqual(['7178571592316783915', '7178571592316783916']);
+    expect(out.identity).toEqual({ followers: 54_321, following: 12, totalLikes: null });
+  });
+
+  test('fetchEmbedCreator tells a soft-blocked embed from a miss', async () => {
+    clearLookupCaches();
+    const { withTikTokHttp } = await import('./tiktok-web.js');
+    const read = (status: number, text: string) => {
+      const http: TikTokHttp = {
+        async getJson() { return { json: null, status: 200, ok: true, text: '', bytes: 0 }; },
+        async getText() { return { json: null, status, ok: status >= 200 && status < 300, text, bytes: text.length }; },
+      };
+      return withTikTokHttp(http, () => fetchEmbedCreator('someone', { limit: 30 }));
+    };
+    const blob = (list: unknown[]) => `<script id="__FRONTITY_CONNECT_STATE__">${JSON.stringify({
+      source: { data: { '/embed/@someone': { userInfo: { followerCount: 5 }, videoList: list } } },
+    })}</script>`;
+    expect(await read(200, '{"code":0,"x":1}')).toEqual({ throttled: true });
+    expect(await read(200, '')).toEqual({ throttled: true });
+    expect(await read(429, 'slow down')).toEqual({ throttled: true });
+    expect(await read(503, 'x')).toEqual({ throttled: true });
+    expect(await read(404, 'not found')).toBeNull();
+    expect(await read(200, blob([]))).toBeNull();
   });
 
   test('prefers the embed playlist when Frontity videoList is present', async () => {

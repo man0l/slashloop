@@ -884,20 +884,34 @@ export async function fetchCreatorPosts(
  * `heartCount` is a 32-bit field that wraps negative on big accounts, so it is
  * dropped unless it is a plausible non-negative count.
  */
+export type EmbedCreatorRead =
+  | { throttled?: false; identity: Pick<CreatorIdentity, 'followers' | 'following' | 'totalLikes'>; items: any[] }
+  /** TikTok did not serve the embed page (soft block): says nothing about whether the account exists. */
+  | { throttled: true };
+
+/**
+ * `null` means the embed answered and has no posts to show (404, or a real
+ * page whose playlist is empty). A throttled read is reported separately: the
+ * soft block is an HTTP 200 with a ~19 byte body, indistinguishable from a
+ * miss unless the Frontity state is missing from it.
+ */
 export async function fetchEmbedCreator(
   handle: string,
   req: PageRequest,
-): Promise<{ identity: Pick<CreatorIdentity, 'followers' | 'following' | 'totalLikes'>; items: any[] } | null> {
+): Promise<EmbedCreatorRead | null> {
   const getter = currentHttp.getText ?? unsignedHttp.getText;
   const res = await getter!(embedPageUrl('creator', handle), {
     Accept: 'text/html,application/xhtml+xml',
     Referer: `${WEB_BASE}/`,
   });
-  if (!res.ok || !res.text) return null;
+  if (res.status === 404) return null;
+  if (!res.ok || !res.text) return { throttled: true };
+  const data = extractFrontityJson(res.text);
+  if (!data) return { throttled: true };
   const items = itemsFromFrontity(res.text);
   if (!items.length) return null;
   items.sort((a, b) => Number(b.createTime ?? 0) - Number(a.createTime ?? 0));
-  const info = embedUserInfo(extractFrontityJson(res.text));
+  const info = embedUserInfo(data);
   const heart = statOrNull(info?.heartCount);
   return {
     identity: {

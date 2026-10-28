@@ -304,6 +304,46 @@ describe('processToolsJob', () => {
     expect(r.ok).toBe(false);
   });
 
+  describe('transient seed/refresh failures', () => {
+    const throttled = { resolveCreator: async () => null };
+    const seen = { status: 429, text: '' };
+    const run = (reason: string, attempts: number, kind = 'tools-profile') => {
+      const h = harness(throttled, {}, seen);
+      return processToolsJob({ ...job({ reason }, kind), attempts }, h.deps).then((r) => ({ r, h }));
+    };
+
+    test('a throttled seed with attempts left is requeued with no callback and no completion', async () => {
+      const { r, h } = await run('seed', 1);
+      expect(r.ok).toBe(false);
+      expect(h.posted).toEqual([]);
+      expect(h.completed).toEqual([]);
+      expect(h.failed).toEqual([['job-12345678', false]]);
+      expect(h.recorded).toHaveLength(1);
+    });
+
+    test('the last attempt reports the failure and completes as before', async () => {
+      const { r, h } = await run('refresh', 3);
+      expect(r.ok).toBe(false);
+      expect(h.posted).toEqual([{ requestId: 'req-1', status: 'failed', code: 'blocked' }]);
+      expect(h.completed).toHaveLength(1);
+      expect(h.failed).toEqual([]);
+    });
+
+    test('a visitor lookup is still answered immediately', async () => {
+      const { h } = await run('lookup', 1);
+      expect(h.posted).toEqual([{ requestId: 'req-1', status: 'failed', code: 'blocked' }]);
+      expect(h.failed).toEqual([]);
+    });
+
+    test('a definitive not_found is never retried', async () => {
+      const h = harness({ resolveCreator: async () => null }, {}, { status: 404, text: '' });
+      const r = await processToolsJob({ ...job({ reason: 'seed' }, 'tools-profile'), attempts: 1 }, h.deps);
+      expect(r.ok).toBe(true);
+      expect(h.posted).toEqual([{ requestId: 'req-1', status: 'failed', code: 'not_found' }]);
+      expect(h.failed).toEqual([]);
+    });
+  });
+
   test('invalid handle in the payload never reaches the scraper', async () => {
     let scraped = false;
     const h = harness({ assertBudget: async () => { scraped = true; } });
