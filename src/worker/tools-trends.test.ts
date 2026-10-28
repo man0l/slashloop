@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
 mock.module('../db.js', () => ({
   db: {},
@@ -18,7 +18,7 @@ import {
   mapHashtagLists,
   type ListResult,
 } from '../lib/creative-center.js';
-import { processToolsJob, type ToolsJobDeps } from './tools-jobs.js';
+import { processToolsJob, resetPendingDeliveries, type ToolsJobDeps } from './tools-jobs.js';
 import {
   mapSampleItem,
   listBytesEstimate,
@@ -298,6 +298,7 @@ describe('runTrends', () => {
 });
 
 describe('processToolsJob: tools-trends', () => {
+  beforeEach(() => resetPendingDeliveries());
   const WS = 'ws-tools';
   const SECRET = 'shh';
   const job = (over: Record<string, unknown> = {}, workspaceId = WS) => ({
@@ -384,5 +385,36 @@ describe('processToolsJob: tools-trends', () => {
     expect(d.log).toEqual([]);
     expect(h.posted).toEqual([]);
     expect(h.failed.every(([, terminal]) => terminal)).toBe(true);
+  });
+
+  test('a callback 502 then success reads the source once: the requeued attempt only redelivers', async () => {
+    const d = trendsDeps();
+    const h = harness(d);
+    let status = 502;
+    const post = h.deps.callback.fetch;
+    h.deps.callback.fetch = async (u, init) => (status === 204 ? post(u, init) : { status });
+
+    const first = await processToolsJob(job(), h.deps);
+    expect(first.ok).toBe(false);
+    expect(h.failed).toEqual([['job-trends-1', false]]);
+    const lists = d.log.filter((l) => l.startsWith('list:')).length;
+    expect(lists).toBeGreaterThan(0);
+
+    status = 204;
+    const second = await processToolsJob(job(), h.deps);
+    expect(second.ok).toBe(true);
+    expect(d.log.filter((l) => l.startsWith('list:'))).toHaveLength(lists);
+    expect(h.recorded).toHaveLength(1);
+    expect(h.posted).toHaveLength(1);
+    expect(h.posted[0]!.body.status).toBe('done');
+    expect(h.completed).toEqual(['job-trends-1']);
+  });
+
+  test('a 4xx from the receiver fails the trends job terminally', async () => {
+    const h = harness(trendsDeps());
+    h.deps.callback.fetch = async () => ({ status: 400 });
+    const r = await processToolsJob(job(), h.deps);
+    expect(r.ok).toBe(false);
+    expect(h.failed).toEqual([['job-trends-1', true]]);
   });
 });

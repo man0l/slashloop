@@ -257,6 +257,14 @@ export interface CallbackDeps {
 export const CALLBACK_ATTEMPTS = 3;
 const CALLBACK_TIMEOUT_MS = 10_000;
 
+/** Carries whether another delivery attempt can plausibly succeed (5xx/408/429/network) or the receiver refused for good (other 4xx). */
+export class CallbackDeliveryError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
+    super(message);
+    this.name = 'CallbackDeliveryError';
+  }
+}
+
 /** POST the signed body; 5xx/network errors retry with a fresh nonce, other 4xx are final. */
 export async function postToolsCallback(
   callbackUrl: string,
@@ -266,6 +274,7 @@ export async function postToolsCallback(
 ): Promise<void> {
   const raw = JSON.stringify(body);
   let last = 'no attempt';
+  let retryable = true;
   for (let attempt = 1; attempt <= CALLBACK_ATTEMPTS; attempt++) {
     const headers = signedCallbackHeaders(secret, callbackUrl, raw, String(deps.nowSeconds()), deps.nonce());
     try {
@@ -277,13 +286,76 @@ export async function postToolsCallback(
       });
       if (res.status >= 200 && res.status < 300) return;
       last = `callback answered ${res.status}`;
-      if (res.status < 500 && res.status !== 408 && res.status !== 429) break;
+      if (res.status < 500 && res.status !== 408 && res.status !== 429) {
+        retryable = false;
+        break;
+      }
     } catch (err) {
       last = `callback failed: ${(err as Error).message}`;
     }
     if (attempt < CALLBACK_ATTEMPTS) await deps.sleep(attempt * 1_000);
   }
-  throw new Error(last);
+  throw new CallbackDeliveryError(last, retryable);
+}
+
+// --- delivery without re-scraping -----------------------------------------------
+
+/** Everything needed to finish a job once its callback lands, captured before delivery is attempted. */
+interface PreparedDelivery {
+  body: unknown;
+  log: string;
+  completePayload: string;
+  result: ToolsJobResult;
+}
+
+/**
+ * A scrape that succeeded but could not be delivered. Requeueing the job would otherwise re-run the
+ * scrape through the metered proxy, so the finished result waits here (per worker process) and the
+ * retry goes straight to the callback. A different worker, or a restart, falls back to a re-scrape.
+ */
+const PENDING_TTL_MS = 30 * 60_000;
+const PENDING_MAX = 200;
+const pendingDeliveries = new Map<string, { prepared: PreparedDelivery; expires: number }>();
+
+export function resetPendingDeliveries(): void {
+  pendingDeliveries.clear();
+}
+
+function stashDelivery(jobId: string, prepared: PreparedDelivery): void {
+  const now = Date.now();
+  for (const [id, entry] of pendingDeliveries) if (entry.expires <= now) pendingDeliveries.delete(id);
+  while (pendingDeliveries.size >= PENDING_MAX) pendingDeliveries.delete(pendingDeliveries.keys().next().value as string);
+  pendingDeliveries.set(jobId, { prepared, expires: now + PENDING_TTL_MS });
+}
+
+function takeDelivery(jobId: string): PreparedDelivery | null {
+  const entry = pendingDeliveries.get(jobId);
+  if (!entry) return null;
+  pendingDeliveries.delete(jobId);
+  return entry.expires > Date.now() ? entry.prepared : null;
+}
+
+/** Post the callback, then settle the job. A retryable failure keeps the result for the requeued attempt; a 4xx fails terminally. */
+async function deliver(
+  job: { id: string; kind?: string },
+  prepared: PreparedDelivery,
+  callbackUrl: string,
+  secret: string,
+  deps: ToolsJobDeps,
+): Promise<ToolsJobResult> {
+  try {
+    await postToolsCallback(callbackUrl, secret, prepared.body, deps.callback);
+  } catch (err) {
+    const message = (err as Error).message;
+    const retryable = !(err instanceof CallbackDeliveryError) || err.retryable;
+    console.warn(`[tools] ${job.kind ?? 'tools'} job ${job.id.slice(0, 8)} callback undelivered (${retryable ? 'will retry callback only' : 'terminal'}): ${message}`);
+    if (retryable) stashDelivery(job.id, prepared);
+    await deps.failJob(job.id, message, retryable ? undefined : { terminal: true });
+    return { ok: false, error: message };
+  }
+  console.log(prepared.log);
+  await deps.completeJob(job.id, prepared.completePayload);
+  return prepared.result;
 }
 
 // --- job dispatch -------------------------------------------------------------
@@ -368,6 +440,12 @@ export async function processToolsJob(
   // other workspace would spend (or dodge) someone else's budget.
   if (job.workspaceId !== toolsWorkspace) return terminal('tools job is not in the tools workspace');
 
+  const pending = takeDelivery(job.id);
+  if (pending) {
+    console.log(`[tools] ${job.kind} job ${job.id.slice(0, 8)} retrying callback only (scrape result kept, attempt=${job.attempts ?? '?'})`);
+    return deliver(job, pending, callbackUrl, secret, deps);
+  }
+
   if (job.kind === 'tools-trends') return processTrendsJob(job, requestId, callbackUrl, secret, deps);
 
   const started = Date.now();
@@ -426,23 +504,17 @@ export async function processToolsJob(
     outcome.status === 'done'
       ? { requestId, status: 'done', result: outcome.result }
       : { requestId, status: 'failed', code: outcome.code };
-  try {
-    await postToolsCallback(callbackUrl, secret, body, deps.callback);
-  } catch (err) {
-    const message = (err as Error).message;
-    console.warn(`[tools] ${job.kind} job ${job.id.slice(0, 8)} callback undelivered: ${message}`);
-    await deps.failJob(job.id, message);
-    return { ok: false, error: message };
-  }
-
-  console.log(
-    `[tools] ${job.kind} job ${job.id.slice(0, 8)} ${subject} -> `
-    + `${outcome.status === 'done' ? 'done' : `failed:${outcome.code}`} `
-    + `${payload.reason === 'refresh' ? 'reason=refresh ' : ''}duration=${Date.now() - started}ms`,
-  );
-  await deps.completeJob(job.id, JSON.stringify(outcome.status === 'done' ? { status: 'done', ...doneNote } : outcome));
-  if (isHealthyOutcome(outcome)) return { ok: true };
-  return { ok: false, error: `lookup failed: ${outcome.status === 'failed' ? outcome.code : 'unknown'}` };
+  return deliver(job, {
+    body,
+    log:
+      `[tools] ${job.kind} job ${job.id.slice(0, 8)} ${subject} -> `
+      + `${outcome.status === 'done' ? 'done' : `failed:${outcome.code}`} `
+      + `${payload.reason === 'refresh' ? 'reason=refresh ' : ''}duration=${Date.now() - started}ms`,
+    completePayload: JSON.stringify(outcome.status === 'done' ? { status: 'done', ...doneNote } : outcome),
+    result: isHealthyOutcome(outcome)
+      ? { ok: true }
+      : { ok: false, error: `lookup failed: ${outcome.status === 'failed' ? outcome.code : 'unknown'}` },
+  }, callbackUrl, secret, deps);
 }
 
 async function processTrendsJob(
@@ -478,30 +550,20 @@ async function processTrendsJob(
     outcome.status === 'done'
       ? { requestId, status: 'done', ...outcome.body }
       : { requestId, status: 'failed', code: outcome.code };
-  try {
-    await postToolsCallback(callbackUrl, secret, body, deps.callback);
-  } catch (err) {
-    const message = (err as Error).message;
-    console.warn(`[tools] tools-trends job ${job.id.slice(0, 8)} callback undelivered: ${message}`);
-    await deps.failJob(job.id, message);
-    return { ok: false, error: message };
-  }
-
-  console.log(
-    `[tools] tools-trends job ${job.id.slice(0, 8)} -> `
-    + `${outcome.status === 'done' ? `done tags=${outcome.body.hashtags.length} sampledTags=${outcome.sampledTags} posts=${outcome.body.samplePosts.length}` : `failed:${outcome.code}`} `
-    + `bytes=${bytes} duration=${Date.now() - started}ms`,
-  );
-  await deps.completeJob(
-    job.id,
-    JSON.stringify(outcome.status === 'done'
+  return deliver({ id: job.id, kind: 'tools-trends' }, {
+    body,
+    log:
+      `[tools] tools-trends job ${job.id.slice(0, 8)} -> `
+      + `${outcome.status === 'done' ? `done tags=${outcome.body.hashtags.length} sampledTags=${outcome.sampledTags} posts=${outcome.body.samplePosts.length}` : `failed:${outcome.code}`} `
+      + `bytes=${bytes} duration=${Date.now() - started}ms`,
+    completePayload: JSON.stringify(outcome.status === 'done'
       ? { status: 'done', hashtags: outcome.body.hashtags.length, samplePosts: outcome.body.samplePosts.length }
       : outcome),
-  );
-  // A budget stop is policy working, not a broken kind; a source failure should trip the breaker.
-  return outcome.status === 'done' || outcome.code === 'budget'
-    ? { ok: true }
-    : { ok: false, error: `trends failed: ${outcome.code}` };
+    // A budget stop is policy working, not a broken kind; a source failure should trip the breaker.
+    result: outcome.status === 'done' || outcome.code === 'budget'
+      ? { ok: true }
+      : { ok: false, error: `trends failed: ${outcome.code}` },
+  }, callbackUrl, secret, deps);
 }
 
 /** Production wiring: real scraper, ledger, queue lifecycle and fetch. */
