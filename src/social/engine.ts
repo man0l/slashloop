@@ -430,7 +430,7 @@ export async function socialRefreshScan(
 ): Promise<RefreshReport> {
   const now = options.nowSeconds ?? Math.floor(Date.now() / 1000);
   const registry = createRegistry(cfg);
-  const due = await store.integrationsDueForRefresh(options.limit ?? 25);
+  const due = await store.integrationsDueForRefresh(options.limit ?? 25, now);
 
   const report: RefreshReport = { scanned: due.length, refreshed: 0, failed: 0 };
   for (const integration of due) {
