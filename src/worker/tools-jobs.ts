@@ -12,7 +12,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { canonicalString, hmacSign, SLQ_HEADERS } from '../queue/auth.js';
-import { extractRehydrationJson, type CreatorIdentity, type TikTokHttp } from '../lib/scrapers/tiktok-web.js';
+import { extractRehydrationJson, type CreatorIdentity, type EmbedCreatorRead, type TikTokHttp } from '../lib/scrapers/tiktok-web.js';
 import { isWafChallenge } from '../lib/scrapers/waf.js';
 import type { MediaJobRow } from '../lib/jobs.js';
 import { PROFILE_HYDRATE_PAGES, runProfile } from './tools-profile.js';
@@ -163,7 +163,9 @@ export interface ProfileLiteDeps {
   resolveCreator(handle: string): Promise<CreatorIdentity | null>;
   fetchPosts(identity: CreatorIdentity, limit: number): Promise<any[]>;
   /** Full profile only: one embed read (counts + playlist posts), tried before the profile page. */
-  fetchEmbed?(handle: string, limit: number): Promise<{ identity: Pick<CreatorIdentity, 'followers' | 'following' | 'totalLikes'>; items: any[] } | null>;
+  fetchEmbed?(handle: string, limit: number): Promise<EmbedCreatorRead | null>;
+  /** Full profile only: jittered wait before re-reading a throttled embed page. */
+  pause?(ms: number): Promise<void>;
   /** Full profile only: fills likes, comments, shares and sound the embed rows lack. */
   hydrate?(items: any[]): Promise<any[]>;
   probe(): ProfileProbe | null;
@@ -331,8 +333,16 @@ function isHealthyOutcome(o: ToolsOutcome | VideoOutcome): boolean {
   return o.status === 'done' || ['not_found', 'budget', 'slideshow', 'too_long'].includes(o.code);
 }
 
+/** Mirrors MAX_ATTEMPTS in lib/jobs.ts (a value import would pull the DB client into this module). */
+const QUEUE_MAX_ATTEMPTS = 3;
+
+/** Throttled or network-failed reads: says nothing about the account, so worth another try with queue backoff. */
+function isTransientOutcome(o: ToolsOutcome | VideoOutcome): boolean {
+  return o.status === 'failed' && (o.code === 'blocked' || o.code === 'error');
+}
+
 export async function processToolsJob(
-  job: Pick<MediaJobRow, 'id' | 'kind' | 'workspaceId' | 'payloadJson'>,
+  job: Pick<MediaJobRow, 'id' | 'kind' | 'workspaceId' | 'payloadJson'> & { attempts?: number },
   deps: ToolsJobDeps,
 ): Promise<ToolsJobResult> {
   const terminal = async (message: string): Promise<ToolsJobResult> => {
@@ -396,6 +406,20 @@ export async function processToolsJob(
         console.warn(`[tools] failed to record ${bytes}B for ${requestId}: ${err.message}`);
       });
     }
+  }
+
+  // A seed/refresh has no visitor waiting, and the callback settles the lookup row for good, so a
+  // transient failure stays unreported (requeued with backoff) until the last attempt.
+  if (
+    job.kind === 'tools-profile'
+    && (payload.reason === 'seed' || payload.reason === 'refresh')
+    && isTransientOutcome(outcome)
+    && (job.attempts ?? QUEUE_MAX_ATTEMPTS) < QUEUE_MAX_ATTEMPTS
+  ) {
+    const code = outcome.status === 'failed' ? outcome.code : 'unknown';
+    console.log(`[tools] ${job.kind} job ${job.id.slice(0, 8)} ${subject} -> retry:${code} attempt=${job.attempts} duration=${Date.now() - started}ms`);
+    await deps.failJob(job.id, `lookup throttled: ${code}`);
+    return { ok: false, error: `lookup throttled: ${code}` };
   }
 
   const body =
@@ -513,6 +537,7 @@ export async function defaultToolsJobDeps(): Promise<ToolsJobDeps> {
         },
         fetchEmbed: async (h, limit) => web.withTikTokHttp(await http(), () => web.fetchEmbedCreator(h, { limit })),
         hydrate: async (items) => web.withTikTokHttp(await http(), () => web.hydrateItemStats(items, PROFILE_HYDRATE_PAGES)),
+        pause: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         now: () => new Date(),
       };
     },

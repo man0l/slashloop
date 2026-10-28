@@ -19,6 +19,9 @@ export const PROFILE_ESTIMATE_BYTES = 4 * 1024 * 1024;
 export const PROFILE_POST_LIMIT = 30;
 /** Video pages read to fill likes/comments/shares/sound on embed rows (~85KB each on the wire). */
 export const PROFILE_HYDRATE_PAGES = 10;
+/** Wait before the one in-job re-read of a throttled embed page: base plus up to the jitter. */
+const EMBED_RETRY_BASE_MS = 1500;
+const EMBED_RETRY_JITTER_MS = 2500;
 /** Posts with known engagement needed before an engagement rate is shown. */
 export const MIN_ENGAGEMENT_POSTS = 3;
 export const OUTLIER_MULTIPLE = 3;
@@ -237,8 +240,14 @@ export async function runProfile(handle: string, deps: ProfileLiteDeps): Promise
     let identity: Pick<CreatorIdentity, 'followers' | 'following' | 'totalLikes'> | null = null;
     let items: any[] = [];
     // Embed first: one ~40KB read for counts + posts, no profile page needed.
-    const embed = deps.fetchEmbed ? await deps.fetchEmbed(handle, PROFILE_POST_LIMIT) : null;
-    if (embed?.items.length) {
+    let embed = deps.fetchEmbed ? await deps.fetchEmbed(handle, PROFILE_POST_LIMIT) : null;
+    if (embed?.throttled && deps.pause && deps.fetchEmbed) {
+      await deps.pause(EMBED_RETRY_BASE_MS + Math.floor(Math.random() * EMBED_RETRY_JITTER_MS));
+      embed = await deps.fetchEmbed(handle, PROFILE_POST_LIMIT);
+    }
+    // A throttled embed says nothing about the account, so an empty fallback must not read as "no such account".
+    const embedThrottled = embed?.throttled === true;
+    if (embed && !embed.throttled && embed.items.length) {
       identity = embed.identity;
       items = embed.items;
     } else {
@@ -247,7 +256,7 @@ export async function runProfile(handle: string, deps: ProfileLiteDeps): Promise
       identity = resolved;
       items = await deps.fetchPosts(resolved, PROFILE_POST_LIMIT);
     }
-    if (items.length === 0) return { status: 'failed', code: 'not_found' };
+    if (items.length === 0) return { status: 'failed', code: embedThrottled ? 'blocked' : 'not_found' };
     if (deps.hydrate) items = await deps.hydrate(items).catch(() => items);
     return { status: 'done', result: shapeProfile(identity, handle, items, deps.now()) };
   } catch (err) {

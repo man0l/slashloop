@@ -155,6 +155,50 @@ describe('runProfile', () => {
     if (out.status === 'done') expect(out.result.followers).toBe(50_000);
   });
 
+  test('a throttled embed that stays empty is blocked, not not_found', async () => {
+    const out = await runProfile('creator', deps({
+      fetchEmbed: async () => ({ throttled: true }),
+      fetchPosts: async () => [],
+    }));
+    expect(out).toEqual({ status: 'failed', code: 'blocked' });
+  });
+
+  test('a throttled embed is re-read once after a jittered pause and then used', async () => {
+    const reads: string[] = [];
+    const pauses: number[] = [];
+    let resolved = false;
+    const out = await runProfile('creator', deps({
+      resolveCreator: async () => { resolved = true; return null; },
+      fetchEmbed: async () => {
+        reads.push('embed');
+        return reads.length === 1
+          ? { throttled: true }
+          : { identity: { followers: 9_000, following: 5, totalLikes: null }, items: [post(0), post(1)] };
+      },
+      pause: async (ms) => { pauses.push(ms); },
+    }));
+    expect(reads).toHaveLength(2);
+    expect(pauses).toHaveLength(1);
+    expect(pauses[0]).toBeGreaterThanOrEqual(1500);
+    expect(pauses[0]).toBeLessThan(4000);
+    expect(resolved).toBe(false);
+    expect(out.status).toBe('done');
+  });
+
+  test('a throttled embed with a readable profile page still completes through the fallback', async () => {
+    const out = await runProfile('creator', deps({ fetchEmbed: async () => ({ throttled: true }) }));
+    expect(out.status).toBe('done');
+  });
+
+  test('a definitive profile 404 stays not_found even when the embed was throttled', async () => {
+    const out = await runProfile('creator', deps({
+      fetchEmbed: async () => ({ throttled: true }),
+      resolveCreator: async () => null,
+      probe: () => ({ status: 404, text: '' }),
+    }));
+    expect(out).toEqual({ status: 'failed', code: 'not_found' });
+  });
+
   test('hydrate fills engagement, and a failing hydrate keeps the views-only result', async () => {
     const bare = Array.from({ length: 5 }, (_, i) => post(i, { stats: { playCount: 1000, diggCount: 0, commentCount: 0, shareCount: 0 } }));
     const base = { fetchEmbed: async () => ({ identity: { followers: 10_000, following: null, totalLikes: null }, items: bare }) };
