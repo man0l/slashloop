@@ -3,6 +3,7 @@
 
 import { BadBodyError } from './errors.js';
 import { InstagramProvider } from './providers/instagram.js';
+import { PinterestProvider } from './providers/pinterest.js';
 import { ThreadsProvider } from './providers/threads.js';
 import { TikTokProvider } from './providers/tiktok.js';
 import { YouTubeProvider } from './providers/youtube.js';
@@ -19,6 +20,7 @@ export function createRegistry(cfg: SocialConfig): Map<ProviderId, SocialProvide
   register(new YouTubeProvider());
   register(new InstagramProvider());
   register(new ThreadsProvider());
+  register(new PinterestProvider());
 
   return registry;
 }

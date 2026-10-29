@@ -15,7 +15,7 @@
 //                    bytes, publish IG containers, set thumbnails) — guarded
 //                    so a retry can never duplicate a post.
 
-export type ProviderId = 'tiktok' | 'youtube' | 'instagram' | 'threads';
+export type ProviderId = 'tiktok' | 'youtube' | 'instagram' | 'threads' | 'pinterest';
 
 export interface MediaContent {
   type: 'image' | 'video';
@@ -46,6 +46,14 @@ export type PendingCheck =
   | { status: 'pending'; pendingData: PendingData }
   | { status: 'ready'; pendingData: PendingData }
   | { status: 'completed'; postId: string; releaseUrl: string };
+
+/** A per-post destination inside a connected account (a Pinterest board).
+ *  Providers that need one implement listDestinations and require the chosen
+ *  id in post.settings. */
+export interface Destination {
+  id: string;
+  name: string;
+}
 
 export interface AuthTokenDetails {
   accessToken: string;
@@ -78,6 +86,9 @@ export interface SocialProvider {
   generateAuthUrl(cfg: SocialConfig, redirectUri: string, state: string): Promise<string>;
   authenticate(cfg: SocialConfig, code: string, redirectUri: string, verifier?: string): Promise<AuthTokenDetails>;
   refreshToken(cfg: SocialConfig, refreshToken: string): Promise<AuthTokenDetails>;
+  /** Destinations the composer must choose from before scheduling (Pinterest
+   *  boards). Absent = the account itself is the only destination. */
+  listDestinations?(cfg: SocialConfig, token: string, integration: { internalId: string; profile: string }): Promise<Destination[]>;
   /** Returns true or a human-readable reason the post is invalid for this platform. */
   checkValidity(post: PostDetails): string | true;
   postPending(ctx: ProviderPostContext): Promise<PostResponse>;
@@ -90,6 +101,7 @@ export interface SocialConfig {
   youtube?: { clientId: string; clientSecret: string };
   instagram?: { clientId: string; clientSecret: string; graphVersion?: string };
   threads?: { clientId: string; clientSecret: string };
+  pinterest?: { clientId: string; clientSecret: string };
   /** Cloudflare Stream credentials for the metadata scrub (video re-encode).
    *  Absent = video scrubbing fails fast with a setup message. */
   scrub?: { accountId: string; token: string };
