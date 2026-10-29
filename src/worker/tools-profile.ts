@@ -253,7 +253,14 @@ export async function runProfile(handle: string, deps: ProfileLiteDeps): Promise
       items = embed.items;
     } else {
       const resolved = await deps.resolveCreator(handle);
-      if (!resolved) return { status: 'failed', code: classifyProfileMiss(deps.probe()) };
+      if (!resolved) {
+        const probe = deps.probe();
+        const code = classifyProfileMiss(probe);
+        // TikTok serves the soft user-detail (no secUid) to throttled clients too, so only a real 404
+        // is definitive while the embed read was throttled.
+        const softMiss = code === 'not_found' && probe?.status !== 404;
+        return { status: 'failed', code: softMiss && embed?.throttled ? 'blocked' : code };
+      }
       accountExists = true;
       identity = resolved;
       items = await deps.fetchPosts(resolved, PROFILE_POST_LIMIT);

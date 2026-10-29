@@ -209,6 +209,24 @@ describe('runProfile', () => {
     expect(out).toEqual({ status: 'failed', code: 'not_found' });
   });
 
+  test('a throttled embed plus a soft user-detail without secUid is blocked, not not_found', async () => {
+    const soft = `<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">${JSON.stringify({
+      __DEFAULT_SCOPE__: { 'webapp.user-detail': { statusCode: 10221 } },
+    })}</script>`;
+    const out = await runProfile('creator', deps({
+      fetchEmbed: async () => ({ throttled: true }),
+      resolveCreator: async () => null,
+      probe: () => ({ status: 200, text: soft }),
+    }));
+    expect(out).toEqual({ status: 'failed', code: 'blocked' });
+    const unthrottled = await runProfile('creator', deps({
+      fetchEmbed: async () => null,
+      resolveCreator: async () => null,
+      probe: () => ({ status: 200, text: soft }),
+    }));
+    expect(unthrottled).toEqual({ status: 'failed', code: 'not_found' });
+  });
+
   test('hydrate fills engagement, and a failing hydrate keeps the views-only result', async () => {
     const bare = Array.from({ length: 5 }, (_, i) => post(i, { stats: { playCount: 1000, diggCount: 0, commentCount: 0, shareCount: 0 } }));
     const base = { fetchEmbed: async () => ({ identity: { followers: 10_000, following: null, totalLikes: null }, items: bare }) };
