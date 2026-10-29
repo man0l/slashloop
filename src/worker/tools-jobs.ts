@@ -15,6 +15,7 @@ import { canonicalString, hmacSign, SLQ_HEADERS } from '../queue/auth.js';
 import { extractRehydrationJson, type CreatorIdentity, type EmbedCreatorRead, type TikTokHttp } from '../lib/scrapers/tiktok-web.js';
 import { isWafChallenge } from '../lib/scrapers/waf.js';
 import type { MediaJobRow } from '../lib/jobs.js';
+import { uploadCovers, type CoverTarget } from './tools-covers.js';
 import { MIN_ENGAGEMENT_POSTS, PROFILE_HYDRATE_PAGES, runProfile } from './tools-profile.js';
 import { parseTrendsPayload, runTrends, type TrendsDeps } from './tools-trends.js';
 import { defaultVideoDeps, parseVideoPayload, runVideoLookup, type VideoDeps, type VideoOutcome } from './tools-video.js';
@@ -170,6 +171,8 @@ export interface ProfileLiteDeps {
   oembedStatus?(handle: string): Promise<number>;
   /** Full profile only: fills likes, comments, shares and sound the embed rows lack. */
   hydrate?(items: any[]): Promise<any[]>;
+  /** Full profile only: re-hosts outlier covers on the site; returns the stored ids. Never throws the job. */
+  uploadCovers?(handle: string, targets: CoverTarget[]): Promise<string[]>;
   probe(): ProfileProbe | null;
   now(): Date;
 }
@@ -216,6 +219,9 @@ export function probingHttp(inner: TikTokHttp, onProfile: (p: ProfileProbe) => v
 }
 
 // --- callback -----------------------------------------------------------------
+
+/** Where outlier covers are pushed (SLA-1146); override with TOOLS_SITE_URL. */
+const DEFAULT_SITE_URL = 'https://slashloop.dev';
 
 export function callbackHostAllowed(rawUrl: string, env: NodeJS.ProcessEnv = process.env): boolean {
   let u: URL;
@@ -384,6 +390,8 @@ export interface ToolsJobDeps {
   buildVideo(workspaceId: string): VideoDeps;
   recordBytes(workspaceId: string, bytes: number, refId: string): Promise<void>;
   callback: CallbackDeps;
+  /** Direct (off-proxy) fetch for outlier covers and their push to the site; unset disables covers. */
+  coverFetch?: typeof fetch;
   completeJob(id: string, payloadJson: string): Promise<void>;
   failJob(id: string, message: string, opts?: { terminal?: boolean }): Promise<unknown>;
 }
@@ -476,7 +484,17 @@ export async function processToolsJob(
       const full = job.kind === 'tools-profile';
       const lookup = deps.buildLookup(job.workspaceId, (p) => { probe = p; }, { fresh: full });
       const run: (h: string, d: ProfileLiteDeps) => Promise<ToolsOutcome> = full ? runProfile : runProfileLite;
-      const measured = await deps.measure(() => run(handle, { ...lookup, probe: () => probe }));
+      const coverFetch = full ? deps.coverFetch : undefined;
+      const uploadCoversFor = coverFetch
+        ? (h: string, targets: CoverTarget[]) => uploadCovers(h, targets, {
+            fetch: coverFetch,
+            siteUrl: (deps.env.TOOLS_SITE_URL ?? '').trim() || DEFAULT_SITE_URL,
+            secret,
+            nowSeconds: deps.callback.nowSeconds,
+            nonce: deps.callback.nonce,
+          })
+        : undefined;
+      const measured = await deps.measure(() => run(handle, { ...lookup, probe: () => probe, uploadCovers: uploadCoversFor }));
       outcome = measured.value;
       bytes = measured.bytes;
     }
@@ -635,6 +653,7 @@ export async function defaultToolsJobDeps(): Promise<ToolsJobDeps> {
     recordBytes: async (workspaceId, bytes, refId) => {
       await bandwidth.recordTrafficBytes(workspaceId, bytes, refId);
     },
+    coverFetch: (input, init) => fetch(input, init),
     callback: {
       fetch: (url, init) => fetch(url, init),
       nowSeconds: () => Math.floor(Date.now() / 1000),

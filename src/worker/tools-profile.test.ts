@@ -227,6 +227,27 @@ describe('runProfile', () => {
     expect(unthrottled).toEqual({ status: 'failed', code: 'not_found' });
   });
 
+  test('re-hosts outlier covers through uploadCovers and lists the stored ids', async () => {
+    const items = Array.from({ length: 30 }, (_, i) => post(i, i === 3 ? { stats: { playCount: 90_000, diggCount: 100, commentCount: 10, shareCount: 5 } } : {}));
+    const seen: Array<{ handle: string; ids: string[] }> = [];
+    const out = await runProfile('creator', deps({
+      fetchPosts: async () => items,
+      uploadCovers: async (handle, targets) => { seen.push({ handle, ids: targets.map((t) => t.id) }); return targets.map((t) => t.id); },
+    }));
+    expect(out.status).toBe('done');
+    if (out.status !== 'done') return;
+    expect(out.result.outliers.map((o) => o.id)).toEqual([post(3).id]);
+    expect(seen).toEqual([{ handle: 'creator', ids: [post(3).id] }]);
+    expect(out.result.covers).toEqual([post(3).id]);
+  });
+
+  test('a failing cover upload never fails the profile', async () => {
+    const items = Array.from({ length: 30 }, (_, i) => post(i, i === 3 ? { stats: { playCount: 90_000, diggCount: 1, commentCount: 1, shareCount: 1 } } : {}));
+    const out = await runProfile('creator', deps({ fetchPosts: async () => items, uploadCovers: async () => { throw new Error('boom'); } }));
+    expect(out.status).toBe('done');
+    if (out.status === 'done') expect(out.result.covers).toEqual([]);
+  });
+
   describe('oEmbed tiebreaker behind a throttled embed', () => {
     const soft = `<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">${JSON.stringify({
       __DEFAULT_SCOPE__: { 'webapp.user-detail': { statusCode: 10221 } },
