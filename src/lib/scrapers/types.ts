@@ -84,6 +84,8 @@ export interface DownloadResult {
   actorRunId: string | null;
   provider?: string;
   bytesUsed?: number;
+  /** Cover image URL from the same watch-page read (a signed, short-lived CDN URL); null when the page had none. */
+  coverUrl?: string | null;
   /** Photo-carousel bytes, downloaded via the same Impit session. */
   slideshow?: DownloadedSlide[];
 }
