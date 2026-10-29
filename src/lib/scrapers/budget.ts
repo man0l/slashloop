@@ -30,6 +30,21 @@ export function remainingBudgetBytes(
   return vendorLeft == null ? internalLeft : Math.min(internalLeft, vendorLeft);
 }
 
+const REFUSAL_LOG_INTERVAL_MS = 60_000;
+const lastRefusalLog = new Map<string, number>();
+
+/** A refusal is the cap doing its job, not an error: warn, and at most once a minute per workspace. */
+export function logBudgetRefusal(workspaceId: string, line: () => string, now = Date.now()): void {
+  const last = lastRefusalLog.get(workspaceId);
+  if (last !== undefined && now - last < REFUSAL_LOG_INTERVAL_MS) return;
+  lastRefusalLog.set(workspaceId, now);
+  console.warn(line());
+}
+
+export function resetBudgetRefusalLog(): void {
+  lastRefusalLog.clear();
+}
+
 export async function assertProxyBudget(workspaceId: string, estimatedBytes: number): Promise<void> {
   const capBytes = workspaceCapBytes(workspaceId);
   const usedBytes = await monthlyProxyBytes(workspaceId);
@@ -37,10 +52,9 @@ export async function assertProxyBudget(workspaceId: string, estimatedBytes: num
   if (dailyCap != null) {
     const usedToday = await dailyProxyBytes(workspaceId);
     if (wouldExceedCap(usedToday, dailyCap, estimatedBytes)) {
-      console.error(
+      logBudgetRefusal(workspaceId, () =>
         `[proxy:budget] workspace ${workspaceId} refusing ~${fmtBytes(estimatedBytes)} `
-        + `(daily ${fmtBytes(usedToday)}/${fmtBytes(dailyCap)})`,
-      );
+        + `(daily ${fmtBytes(usedToday)}/${fmtBytes(dailyCap)})`);
       throw new TrafficCapExceededError(usedToday, dailyCap, estimatedBytes);
     }
   }
@@ -53,11 +67,10 @@ export async function assertProxyBudget(workspaceId: string, estimatedBytes: num
 
   const left = remainingBudgetBytes(usedBytes, capBytes, vendor);
   if (wouldExceedCap(0, left, estimatedBytes)) {
-    console.error(
+    logBudgetRefusal(workspaceId, () =>
       `[proxy:budget] workspace ${workspaceId} refusing ~${fmtBytes(estimatedBytes)} `
       + `(internal ${fmtBytes(usedBytes)}/${fmtBytes(capBytes)}`
-      + `${vendor ? `, vendor ${vendor.usedGb ?? '?'} / ${vendor.totalGb}GB` : ''})`,
-    );
+      + `${vendor ? `, vendor ${vendor.usedGb ?? '?'} / ${vendor.totalGb}GB` : ''})`);
     throw new TrafficCapExceededError(usedBytes, usedBytes + left, estimatedBytes);
   }
 }

@@ -4,8 +4,9 @@
 // for D1 contention — this handler must never repeat that: no sweeps, no
 // queue wakes, just the bounded state machine).
 //
-// The token-refresh scan rides inside every tick: when nothing is due it is
-// ONE indexed LIMIT-5 query returning zero rows, so running it per tick is
+// The token-refresh scan rides inside every tick: per-provider refresh leads
+// (see REFRESH_LEAD_SECONDS) keep it to ONE LIMIT-5 query that returns zero
+// rows between real refreshes, so running it per tick is
 // cheaper than a separate daily cron. ?refresh=1 raises the scan limit for
 // a manual full pass.
 
@@ -36,9 +37,17 @@ async function runTick(request: Request): Promise<Response> {
     Number.isFinite(limit) && limit > 0 ? { batchLimit: Math.min(limit, 25) } : {},
   );
 
-  // Bounded token refresh — see header comment.
-  const refresh = await socialRefreshScan(socialConfigFromEnv(), { limit: url.searchParams.get('refresh') === '1' ? 25 : 5 });
-  if (refresh.scanned > 0) console.log(`[social] refresh: ${JSON.stringify(refresh)}`);
+  // Bounded token refresh. Isolated so a D1 timeout in the scan cannot 500
+  // the tick after publishing already ran.
+  let refresh: { scanned: number; refreshed: number; failed: number; error?: string };
+  try {
+    refresh = await socialRefreshScan(socialConfigFromEnv(), { limit: url.searchParams.get('refresh') === '1' ? 25 : 5 });
+    if (refresh.scanned > 0) console.log(`[social] refresh: ${JSON.stringify(refresh)}`);
+  } catch (err) {
+    const message = (err as Error).message || 'refresh scan failed';
+    console.error(`[social] refresh scan failed: ${message}`);
+    refresh = { scanned: 0, refreshed: 0, failed: 0, error: message };
+  }
 
   console.log(`[social] tick: ${JSON.stringify(report)}`);
   return json(200, { ...report, refresh }, request);

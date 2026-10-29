@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
 mock.module('../db.js', () => ({
   db: {},
@@ -14,6 +14,7 @@ import {
   classifyProfileMiss,
   classifyToolsError,
   postToolsCallback,
+  resetPendingDeliveries,
   PROFILE_LITE_ESTIMATE_BYTES,
   processToolsJob,
   runProfileLite,
@@ -218,6 +219,7 @@ describe('callback', () => {
 });
 
 describe('processToolsJob', () => {
+  beforeEach(() => resetPendingDeliveries());
   const WS = 'ws-tools';
   const env = { TOOLS_WORKSPACE_ID: WS, TOOLS_CALLBACK_SECRET: 'shh' };
   const job = (over: Record<string, unknown> = {}, kind = 'tools-profile-lite', workspaceId = WS) => ({
@@ -398,5 +400,52 @@ describe('processToolsJob', () => {
     expect(r.ok).toBe(false);
     expect(h.completed).toEqual([]);
     expect(h.failed).toEqual([['job-12345678', false]]);
+  });
+
+  test('a callback 502 then success scrapes once: the requeued attempt only redelivers', async () => {
+    let scrapes = 0;
+    const h = harness({ resolveCreator: async (handle) => { scrapes++; return lookupDeps().resolveCreator(handle); } });
+    let status = 502;
+    h.deps.callback.fetch = async (_u, init) => {
+      if (status === 204) h.posted.push(JSON.parse(init.body));
+      return { status };
+    };
+
+    const first = await processToolsJob(job(), h.deps);
+    expect(first.ok).toBe(false);
+    expect(scrapes).toBe(1);
+    expect(h.failed).toEqual([['job-12345678', false]]);
+    expect(h.completed).toEqual([]);
+
+    status = 204;
+    const second = await processToolsJob(job(), h.deps);
+    expect(second.ok).toBe(true);
+    expect(scrapes).toBe(1);
+    expect(h.recorded).toHaveLength(1);
+    expect(h.posted).toHaveLength(1);
+    expect((h.posted[0] as any).status).toBe('done');
+    expect(h.completed).toEqual(['job-12345678']);
+  });
+
+  test('redelivery that fails again keeps the result for the next attempt', async () => {
+    let scrapes = 0;
+    const h = harness({ resolveCreator: async (handle) => { scrapes++; return lookupDeps().resolveCreator(handle); } });
+    h.deps.callback.fetch = async () => ({ status: 502 });
+    await processToolsJob(job(), h.deps);
+    await processToolsJob(job(), h.deps);
+    await processToolsJob(job(), h.deps);
+    expect(scrapes).toBe(1);
+    expect(h.failed).toHaveLength(3);
+  });
+
+  test('a 4xx from the receiver fails the job terminally and is not redelivered', async () => {
+    let scrapes = 0;
+    const h = harness({ resolveCreator: async (handle) => { scrapes++; return lookupDeps().resolveCreator(handle); } });
+    h.deps.callback.fetch = async () => ({ status: 401 });
+    const r = await processToolsJob(job(), h.deps);
+    expect(r.ok).toBe(false);
+    expect(h.failed).toEqual([['job-12345678', true]]);
+    await processToolsJob(job(), h.deps);
+    expect(scrapes).toBe(2);
   });
 });

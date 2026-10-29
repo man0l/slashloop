@@ -138,17 +138,32 @@ export async function deleteIntegration(id: string, ownerId: string): Promise<vo
   ]);
 }
 
-/** Token refresh scan: due within 2 days (or already expired), still healthy,
- *  and actually refreshable. Bounded — the daily cron runs it, not a sweep. */
-export async function integrationsDueForRefresh(limit = 25): Promise<SocialIntegrationRow[]> {
-  const dueBefore = nowSeconds() + 2 * 24 * 3600;
+/** How long before expiry the scan refreshes a token. Short-lived tokens
+ *  (YouTube 1h, TikTok 24h) get a short lead so they are not re-refreshed on
+ *  every cron tick; long-lived ones (Instagram/Threads ~60d) keep 2 days.
+ *  The publish path independently refreshes anything within 10 minutes. */
+export const REFRESH_LEAD_SECONDS: Record<string, number> = { youtube: 15 * 60, tiktok: 60 * 60 };
+export const DEFAULT_REFRESH_LEAD_SECONDS = 2 * 24 * 3600;
+
+export function refreshLeadSeconds(provider: string): number {
+  return REFRESH_LEAD_SECONDS[provider] ?? DEFAULT_REFRESH_LEAD_SECONDS;
+}
+
+/** Token refresh scan: inside the provider's refresh lead (or already
+ *  expired), still healthy, and actually refreshable. Bounded — runs on the
+ *  cron tick, not a sweep. */
+export async function integrationsDueForRefresh(limit = 25, now = nowSeconds()): Promise<SocialIntegrationRow[]> {
+  const shortLived = Object.keys(REFRESH_LEAD_SECONDS);
+  const cases = shortLived.map((_, i) => `WHEN ?${i + 3} THEN ?${i + 3 + shortLived.length}`).join(' ');
   return rows<SocialIntegrationRow>(
     await rawBatch([
       {
         sql: `SELECT * FROM social_integrations
-              WHERE refresh_needed = 0 AND disabled = 0 AND refresh_token IS NOT NULL AND token_expires_at IS NOT NULL AND token_expires_at < ?1
+              WHERE refresh_needed = 0 AND disabled = 0 AND refresh_token IS NOT NULL AND token_expires_at IS NOT NULL
+                AND token_expires_at < ?1 + ${DEFAULT_REFRESH_LEAD_SECONDS}
+                AND token_expires_at < ?1 + CASE provider ${cases} ELSE ${DEFAULT_REFRESH_LEAD_SECONDS} END
               LIMIT ?2`,
-        params: [dueBefore, limit],
+        params: [now, limit, ...shortLived, ...shortLived.map(refreshLeadSeconds)],
       },
     ]),
   );
