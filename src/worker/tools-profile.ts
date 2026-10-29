@@ -2,11 +2,12 @@
 // `tools-profile` — the full profile analysis behind slashloop.dev/tools creator
 // pages (SLA-1058). Same lookup plumbing and callback as `tools-profile-lite`
 // (tools-jobs.ts); this file only owns the shaping of 30 posts into the numbers
-// the page shows. The result never carries a TikTok CDN URL: ids and text only,
-// thumbnails come from oEmbed on the site.
+// the page shows. The result never carries a TikTok CDN URL: ids and text only.
+// Outlier covers are re-hosted on the site (tools-covers.ts) and listed by id in `covers`.
 // ---------------------------------------------------------------------------
 
 import { webItemToApifyShape, type CreatorIdentity } from '../lib/scrapers/tiktok-web.js';
+import { coverTargets } from './tools-covers.js';
 import {
   classifyProfileMiss,
   classifyToolsError,
@@ -74,6 +75,8 @@ export interface ProfileResult {
   topSounds: Array<{ title: string; count: number }>;
   /** Newest first, up to PROFILE_POST_LIMIT. */
   posts: ProfilePost[];
+  /** Outlier ids whose cover the site stored (SLA-1146); [] when none were pushed. */
+  covers: string[];
   takenAt: string;
 }
 
@@ -230,6 +233,7 @@ export function shapeProfile(identity: Pick<CreatorIdentity, 'followers' | 'foll
     topHashtags: rankCounts(tags, 5).map(([tag, c]) => ({ tag, count: c })),
     topSounds: rankCounts(sounds, 3).map(([title, c]) => ({ title, count: c })),
     posts,
+    covers: [],
     takenAt: now.toISOString(),
   };
 }
@@ -286,7 +290,12 @@ export async function runProfile(handle: string, deps: ProfileLiteDeps): Promise
     }
     if (items.length === 0) return { status: 'failed', code: accountExists ? 'blocked' : 'not_found' };
     if (deps.hydrate) items = await deps.hydrate(items).catch(() => items);
-    return { status: 'done', result: shapeProfile(identity, handle, items, deps.now()) };
+    const result = shapeProfile(identity, handle, items, deps.now());
+    if (deps.uploadCovers) {
+      const targets = coverTargets(items, result.outliers.map((o) => o.id));
+      result.covers = await deps.uploadCovers(handle, targets).catch(() => []);
+    }
+    return { status: 'done', result };
   } catch (err) {
     return { status: 'failed', code: classifyToolsError(err) };
   }
