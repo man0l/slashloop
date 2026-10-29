@@ -17,12 +17,15 @@ import {
   type ListResult,
   type TrendHashtag,
 } from '../lib/creative-center.js';
+import { coverUrlOf, type AuthoredCoverTarget } from './tools-covers.js';
 import type { ToolsErrorCode } from './tools-jobs.js';
 
 /** ~980 KB per /tag page (30 posts) measured live on the VPS 2026-10-27; budgeted at 1 MB x 20 tags. */
 export const TRENDS_SAMPLE_BYTES_PER_TAG = 1024 * 1024;
 export const TRENDS_SAMPLE_POSTS_PER_TAG = 30;
 export const TRENDS_MAX_SAMPLE_TAGS = 20;
+/** Example posts kept per sampled tag (SLA-1149); a niche page shows up to 6 of them, a tag row 3. */
+export const TRENDS_EXAMPLES_PER_TAG = 3;
 const MAX_CONSECUTIVE_SAMPLE_FAILURES = 3;
 const DESC_MAX_CHARS = 300;
 
@@ -82,7 +85,7 @@ function str(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim() : null;
 }
 
-/** Raw /tag item -> the ten fields we keep. Anything else (covers, URLs, stats beyond plays) is dropped. */
+/** Raw /tag item -> the ten fields we keep. Anything else (URLs, stats beyond plays) is dropped; example covers are picked up separately. */
 export function mapSampleItem(item: any, tag: string): SamplePost | null {
   const id = item?.id != null ? String(item.id) : '';
   if (!id) return null;
@@ -113,6 +116,8 @@ export interface TrendsDeps {
   fetchHashtagList(period: number, industryId: string | null): Promise<any[]>;
   resolveChallengeId(tag: string): Promise<string | null>;
   fetchTagPosts(tag: string, challengeId: string, limit: number): Promise<any[]>;
+  /** Direct (off-proxy) cover download plus signed push to the site; returns the stored ids. Unset = no covers. */
+  uploadCovers?(targets: AuthoredCoverTarget[]): Promise<string[]>;
   now(): Date;
 }
 
@@ -124,6 +129,10 @@ export type TrendsOutcome =
         country: 'US';
         hashtags: TrendHashtag[];
         samplePosts: SamplePost[];
+        /** Top sampled post ids per tag by views, deduped (SLA-1149). */
+        exampleIds: string[];
+        /** The subset of exampleIds whose cover the site stored. */
+        covers: string[];
       };
       sampledTags: number;
     }
@@ -135,6 +144,24 @@ function errorCode(err: unknown): ToolsErrorCode {
   if (e?.name === 'CreativeCenterError') return 'source';
   if (/\b(429|403)\b|waf|captcha|challenge|rate.?limit|blocked/i.test(String(e?.message ?? err ?? ''))) return 'blocked';
   return 'error';
+}
+
+export interface ExamplePick {
+  post: SamplePost;
+  coverUrl: string | null;
+}
+
+/** Top posts by views for one tag. Needs an author and a post time, which the site requires of a sample row. */
+export function pickExamples(items: any[], tag: string, n = TRENDS_EXAMPLES_PER_TAG): ExamplePick[] {
+  const picks: ExamplePick[] = [];
+  for (const item of items) {
+    const post = mapSampleItem(item, tag);
+    if (!post || !post.author || post.createTime === null || post.playCount <= 0) continue;
+    picks.push({ post, coverUrl: coverUrlOf(item) });
+  }
+  return picks
+    .sort((a, b) => b.post.playCount - a.post.playCount || a.post.id.localeCompare(b.post.id))
+    .slice(0, n);
 }
 
 /** Top tags by their position in the merged first-period list, distinct. */
@@ -202,6 +229,7 @@ export async function runTrends(payload: TrendsPayload, deps: TrendsDeps): Promi
   if (!hashtags.length) return { status: 'failed', code: 'source' };
 
   const samplePosts: SamplePost[] = [];
+  const examples = new Map<string, ExamplePick>();
   const tags = pickSampleTags(hashtags, payload.periods[0]!, payload.sampleTags);
   let sampledTags = 0;
   let consecutiveFailures = 0;
@@ -214,6 +242,7 @@ export async function runTrends(payload: TrendsPayload, deps: TrendsDeps): Promi
       const posts = items.map((i) => mapSampleItem(i, tag)).filter((p): p is SamplePost => p !== null);
       if (posts.length) {
         samplePosts.push(...posts);
+        for (const pick of pickExamples(items, tag)) if (!examples.has(pick.post.id)) examples.set(pick.post.id, pick);
         sampledTags++;
         consecutiveFailures = 0;
       } else {
@@ -227,11 +256,26 @@ export async function runTrends(payload: TrendsPayload, deps: TrendsDeps): Promi
     }
   }
 
+  // Covers are best effort and never fail the run: an example without a stored cover renders a placeholder.
+  const exampleIds = [...examples.keys()];
+  let covers: string[] = [];
+  if (deps.uploadCovers && examples.size) {
+    const targets: AuthoredCoverTarget[] = [...examples.values()].flatMap((e) =>
+      e.coverUrl ? [{ id: e.post.id, url: e.coverUrl, author: e.post.author as string }] : [],
+    );
+    try {
+      const stored = new Set(await deps.uploadCovers(targets));
+      covers = exampleIds.filter((id) => stored.has(id));
+    } catch (err) {
+      console.warn(`[tools-trends] cover upload failed: ${(err as Error).message}`);
+    }
+  }
+
   // The ranking is the product; a thin or empty sample ships as-is and the
   // Worker's page copy states the sample size it actually got.
   return {
     status: 'done',
     sampledTags,
-    body: { takenAt: deps.now().toISOString(), country: 'US', hashtags, samplePosts },
+    body: { takenAt: deps.now().toISOString(), country: 'US', hashtags, samplePosts, exampleIds, covers },
   };
 }

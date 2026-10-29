@@ -24,8 +24,10 @@ import {
   listBytesEstimate,
   TRENDS_SAMPLE_BYTES_PER_TAG,
   parseTrendsPayload,
+  pickExamples,
   pickSampleTags,
   runTrends,
+  TRENDS_EXAMPLES_PER_TAG,
   type TrendsDeps,
 } from './tools-trends.js';
 
@@ -358,6 +360,32 @@ describe('processToolsJob: tools-trends', () => {
     expect(verified.ok).toBe(true);
   });
 
+  test('with coverFetch wired, pushes example covers to the site and ships the ids in the snapshot', async () => {
+    const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
+    const pushes: Array<{ url: string; body: any }> = [];
+    const d = trendsDeps({
+      fetchTagPosts: async (t) => [{
+        id: `${t}-1`, createTime: 1_761_000_000, author: { uniqueId: 'creator.one' }, stats: { playCount: 9 },
+        video: { duration: 9, cover: `https://p16.tiktokcdn.com/${t}.jpeg` },
+      }],
+    });
+    const h = harness(d);
+    h.deps.coverFetch = (async (input: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        pushes.push({ url: input, body });
+        return new Response(JSON.stringify({ stored: body.covers.map((c: { id: string }) => c.id) }));
+      }
+      return new Response(JPEG, { headers: { 'content-type': 'image/jpeg' } });
+    }) as unknown as typeof fetch;
+    expect((await processToolsJob(job(), h.deps)).ok).toBe(true);
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]!.url).toBe('https://slashloop.dev/tools/api/internal/covers');
+    expect(pushes[0]!.body.covers.map((c: { handle: string }) => c.handle)).toEqual(['creator.one', 'creator.one', 'creator.one', 'creator.one']);
+    expect(h.posted[0]!.body.exampleIds).toEqual(['fyp-1', 'skincare-1', 'chaos-1', 'glow-1']);
+    expect(h.posted[0]!.body.covers).toEqual(['fyp-1', 'skincare-1', 'chaos-1', 'glow-1']);
+  });
+
   test('budget refusal posts failed/budget and still completes the job', async () => {
     const err = new Error('cap');
     err.name = 'SpendCapExceededError';
@@ -416,5 +444,50 @@ describe('processToolsJob: tools-trends', () => {
     const r = await processToolsJob(job(), h.deps);
     expect(r.ok).toBe(false);
     expect(h.failed).toEqual([['job-trends-1', true]]);
+  });
+});
+
+describe('example posts per tag (SLA-1149)', () => {
+  const payload = { requestId: 'req-1', callbackUrl: CALLBACK, country: 'US' as const, periods: [7], sampleTags: 2 };
+  const post = (id: string, plays: number, over: Record<string, unknown> = {}) => ({
+    id, createTime: 1_761_000_000, author: { uniqueId: `u${id}` }, stats: { playCount: plays },
+    music: { id: 'm', title: 's', authorName: 'a' }, video: { duration: 9, cover: `https://p16.tiktokcdn.com/${id}.jpeg` }, ...over,
+  });
+
+  test('keeps the top posts by views, skipping rows the site would reject', () => {
+    const items = [post('1', 10), post('2', 500), post('3', 90), post('4', 700), post('5', 0), post('6', 800, { author: {} }), post('7', 40, { createTime: 0 })];
+    const picks = pickExamples(items, 'fyp');
+    expect(picks.map((p) => p.post.id)).toEqual(['4', '2', '3']);
+    expect(picks).toHaveLength(TRENDS_EXAMPLES_PER_TAG);
+    expect(picks[0]!.coverUrl).toBe('https://p16.tiktokcdn.com/4.jpeg');
+    expect(pickExamples([post('9', 5, { video: { cover: 'https://evil.example/c.jpg' } })], 'fyp')[0]!.coverUrl).toBeNull();
+  });
+
+  test('uploads covers for the deduped examples and reports the stored ids', async () => {
+    const uploaded: Array<{ id: string; url: string; author: string }[]> = [];
+    const d = trendsDeps({
+      fetchTagPosts: async (t) => (t === 'fyp'
+        ? [post('1', 100), post('2', 300), post('3', 200), post('4', 50)]
+        : [post('2', 300), post('5', 250)]),
+      uploadCovers: async (targets) => { uploaded.push(targets); return targets.filter((x) => x.id !== '3').map((x) => x.id); },
+    });
+    const o = await runTrends(payload, d);
+    expect(o.status).toBe('done');
+    if (o.status !== 'done') return;
+    expect(o.body.exampleIds).toEqual(['2', '3', '1', '5']);
+    expect(o.body.covers).toEqual(['2', '1', '5']);
+    expect(uploaded).toHaveLength(1);
+    expect(uploaded[0]!.map((t) => t.id)).toEqual(['2', '3', '1', '5']);
+    expect(uploaded[0]![0]).toEqual({ id: '2', url: 'https://p16.tiktokcdn.com/2.jpeg', author: 'u2' });
+  });
+
+  test('a throwing or absent uploader never fails the run', async () => {
+    const posts = async () => [post('1', 100)];
+    const throwing = await runTrends(payload, trendsDeps({ fetchTagPosts: posts, uploadCovers: async () => { throw new Error('site down'); } }));
+    const absent = await runTrends(payload, trendsDeps({ fetchTagPosts: posts }));
+    for (const o of [throwing, absent]) {
+      expect(o.status).toBe('done');
+      if (o.status === 'done') expect(o.body).toMatchObject({ exampleIds: ['1'], covers: [] });
+    }
   });
 });

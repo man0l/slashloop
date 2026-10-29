@@ -9,7 +9,7 @@ mock.module('../db.js', () => ({
 }));
 
 import { canonicalString, hmacSign } from '../queue/auth.js';
-import { coverTargets, coverUrlOf, MAX_COVER_BYTES, uploadCovers, type CoverDeps } from './tools-covers.js';
+import { coverTargets, coverUrlOf, MAX_COVER_BYTES, uploadCovers, uploadTrendCovers, type CoverDeps } from './tools-covers.js';
 
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
 const item = (id: string, cover: unknown) => ({ id, video: { cover } });
@@ -90,6 +90,47 @@ describe('uploadCovers', () => {
     const { d, pushes } = deps({ secret: '' });
     expect(await uploadCovers('creator', [{ id: '1', url: 'https://p16.tiktokcdn.com/1.jpeg' }], d)).toEqual([]);
     expect(await uploadCovers('creator', [], deps().d)).toEqual([]);
+    expect(pushes).toHaveLength(0);
+  });
+});
+
+describe('uploadTrendCovers', () => {
+  function setup(failBatch?: number) {
+    const pushes: Array<{ body: any }> = [];
+    const d: CoverDeps = {
+      fetch: (async (_u: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          const body = JSON.parse(String(init.body));
+          pushes.push({ body });
+          if (failBatch === pushes.length) return new Response('x', { status: 500 });
+          return new Response(JSON.stringify({ stored: body.covers.map((c: { id: string }) => c.id) }), { status: 200 });
+        }
+        return new Response(JPEG, { headers: { 'content-type': 'image/jpeg' } });
+      }) as unknown as typeof fetch,
+      siteUrl: 'https://slashloop.dev', secret: 'cb-secret', nowSeconds: () => 1000, nonce: () => 'nonce-abcdefgh',
+    };
+    return { d, pushes };
+  }
+  const targets = (n: number) => Array.from({ length: n }, (_, i) => ({ id: String(100 + i), url: `https://p16.tiktokcdn.com/${i}.jpeg`, author: `a${i}` }));
+
+  test('sends each cover with its own author, no top-level handle, in batches of 6', async () => {
+    const { d, pushes } = setup();
+    const stored = await uploadTrendCovers(targets(8), d);
+    expect(stored).toHaveLength(8);
+    expect(pushes.map((p) => p.body.covers.length)).toEqual([6, 2]);
+    expect(pushes[0]!.body.handle).toBeUndefined();
+    expect(pushes[0]!.body.covers[0]).toMatchObject({ id: '100', handle: 'a0', contentType: 'image/jpeg' });
+  });
+
+  test('a failed batch only loses itself', async () => {
+    const { d } = setup(1);
+    expect(await uploadTrendCovers(targets(8), d)).toEqual(['106', '107']);
+  });
+
+  test('does nothing without a secret or targets', async () => {
+    const { d, pushes } = setup();
+    expect(await uploadTrendCovers([], d)).toEqual([]);
+    expect(await uploadTrendCovers(targets(2), { ...d, secret: '' })).toEqual([]);
     expect(pushes).toHaveLength(0);
   });
 });
