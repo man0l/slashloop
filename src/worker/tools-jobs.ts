@@ -15,7 +15,7 @@ import { canonicalString, hmacSign, SLQ_HEADERS } from '../queue/auth.js';
 import { extractRehydrationJson, type CreatorIdentity, type EmbedCreatorRead, type TikTokHttp } from '../lib/scrapers/tiktok-web.js';
 import { isWafChallenge } from '../lib/scrapers/waf.js';
 import type { MediaJobRow } from '../lib/jobs.js';
-import { PROFILE_HYDRATE_PAGES, runProfile } from './tools-profile.js';
+import { MIN_ENGAGEMENT_POSTS, PROFILE_HYDRATE_PAGES, runProfile } from './tools-profile.js';
 import { parseTrendsPayload, runTrends, type TrendsDeps } from './tools-trends.js';
 import { defaultVideoDeps, parseVideoPayload, runVideoLookup, type VideoDeps, type VideoOutcome } from './tools-video.js';
 
@@ -598,7 +598,7 @@ export async function defaultToolsJobDeps(): Promise<ToolsJobDeps> {
           return items;
         },
         fetchEmbed: async (h, limit) => web.withTikTokHttp(await http(), () => web.fetchEmbedCreator(h, { limit })),
-        hydrate: async (items) => web.withTikTokHttp(await http(), () => web.hydrateItemStats(items, PROFILE_HYDRATE_PAGES)),
+        hydrate: async (items) => web.withTikTokHttp(await http(), () => web.hydrateItemStats(items, PROFILE_HYDRATE_PAGES, MIN_ENGAGEMENT_POSTS)),
         pause: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         now: () => new Date(),
       };

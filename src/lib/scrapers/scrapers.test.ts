@@ -35,6 +35,7 @@ import {
   embedPageUrl,
   fetchEmbedCreator,
   estimateScrapeBytes,
+  hydrateItemStats,
   extractCollectionId,
   extractFrontityJson,
   extractRehydrationJson,
@@ -960,6 +961,33 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
     expect(await read(503, 'x')).toEqual({ throttled: true });
     expect(await read(404, 'not found')).toBeNull();
     expect(await read(200, blob([]))).toBeNull();
+  });
+
+  test('hydrateItemStats stops once enough pages filled stats, failed reads still count toward maxPages', async () => {
+    const { withTikTokHttp } = await import('./tiktok-web.js');
+    const page = (id: string) => `<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">${JSON.stringify({
+      __DEFAULT_SCOPE__: { 'webapp.video-detail': { itemInfo: { itemStruct: { id, stats: { diggCount: 7, commentCount: 2 } } } } },
+    })}</script>`;
+    const items = ['1000001', '1000002', '1000003', '1000004', '1000005', '1000006'].map((id) => ({ id, author: { uniqueId: 'someone' }, stats: { playCount: 10 } }));
+    const run = async (fail: Set<string>, maxPages: number, enough?: number) => {
+      const urls: string[] = [];
+      const http: TikTokHttp = {
+        async getJson() { return { json: null, status: 200, ok: true, text: '', bytes: 0 }; },
+        async getText(url) {
+          urls.push(url);
+          const id = url.split('/').pop()!;
+          return fail.has(id)
+            ? { json: null, status: 429, ok: false, text: '', bytes: 0 }
+            : { json: null, status: 200, ok: true, text: page(id), bytes: 1 };
+        },
+      };
+      const out = await withTikTokHttp(http, () => hydrateItemStats(items, maxPages, enough));
+      return { reads: urls.length, filled: out.filter((i: any) => i.stats.diggCount === 7).length };
+    };
+    expect(await run(new Set(), 5, 3)).toEqual({ reads: 3, filled: 3 });
+    expect(await run(new Set(['1000002']), 5, 3)).toEqual({ reads: 4, filled: 3 });
+    expect(await run(new Set(['1000001', '1000002', '1000003']), 5, 3)).toEqual({ reads: 5, filled: 2 });
+    expect(await run(new Set(), 4)).toEqual({ reads: 4, filled: 4 });
   });
 
   test('prefers the embed playlist when Frontity videoList is present', async () => {
