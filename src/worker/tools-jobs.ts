@@ -166,6 +166,8 @@ export interface ProfileLiteDeps {
   fetchEmbed?(handle: string, limit: number): Promise<EmbedCreatorRead | null>;
   /** Full profile only: jittered wait before re-reading a throttled embed page. */
   pause?(ms: number): Promise<void>;
+  /** Full profile only: HTTP status of the public oEmbed lookup for the handle; 0 when it could not be read. */
+  oembedStatus?(handle: string): Promise<number>;
   /** Full profile only: fills likes, comments, shares and sound the embed rows lack. */
   hydrate?(items: any[]): Promise<any[]>;
   probe(): ProfileProbe | null;
@@ -600,6 +602,18 @@ export async function defaultToolsJobDeps(): Promise<ToolsJobDeps> {
         fetchEmbed: async (h, limit) => web.withTikTokHttp(await http(), () => web.fetchEmbedCreator(h, { limit })),
         hydrate: async (items) => web.withTikTokHttp(await http(), () => web.hydrateItemStats(items, PROFILE_HYDRATE_PAGES, MIN_ENGAGEMENT_POSTS)),
         pause: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        oembedStatus: async (h) => {
+          try {
+            const profileUrl = `https://www.tiktok.com/@${encodeURIComponent(h)}`;
+            const res = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(profileUrl)}`, {
+              signal: AbortSignal.timeout(5_000),
+              headers: { accept: 'application/json' },
+            });
+            return res.status;
+          } catch {
+            return 0;
+          }
+        },
         now: () => new Date(),
       };
     },

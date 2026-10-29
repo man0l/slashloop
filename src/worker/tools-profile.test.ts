@@ -227,6 +227,73 @@ describe('runProfile', () => {
     expect(unthrottled).toEqual({ status: 'failed', code: 'not_found' });
   });
 
+  describe('oEmbed tiebreaker behind a throttled embed', () => {
+    const soft = `<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">${JSON.stringify({
+      __DEFAULT_SCOPE__: { 'webapp.user-detail': { statusCode: 10221 } },
+    })}</script>`;
+    const throttled = (over: Partial<ProfileLiteDeps> = {}) => deps({
+      fetchEmbed: async () => ({ throttled: true }),
+      resolveCreator: async () => null,
+      probe: () => ({ status: 200, text: soft }),
+      ...over,
+    });
+    const asked = () => {
+      const calls: string[] = [];
+      return { calls, oembedStatus: async (h: string) => { calls.push(h); return 400; } };
+    };
+
+    test('oEmbed 400 settles not_found on the first attempt', async () => {
+      const o = asked();
+      expect(await runProfile('creator', throttled(o))).toEqual({ status: 'failed', code: 'not_found' });
+      expect(o.calls).toEqual(['creator']);
+    });
+
+    test('oEmbed 200 keeps a live or private account blocked (xefewsloveaffair shape)', async () => {
+      const out = await runProfile('xefewsloveaffair', throttled({ oembedStatus: async () => 200 }));
+      expect(out).toEqual({ status: 'failed', code: 'blocked' });
+    });
+
+    test('an ambiguous oEmbed answer never settles not_found', async () => {
+      for (const status of [500, 503, 429, 403, 404, 0]) {
+        expect(await runProfile('creator', throttled({ oembedStatus: async () => status }))).toEqual({ status: 'failed', code: 'blocked' });
+      }
+      const network = await runProfile('creator', throttled({ oembedStatus: async () => { throw new Error('ECONNRESET'); } }));
+      expect(network).toEqual({ status: 'failed', code: 'blocked' });
+    });
+
+    test('a throttled embed with a hard profile block (429) is also tiebroken', async () => {
+      const o = asked();
+      const out = await runProfile('creator', throttled({ ...o, probe: () => ({ status: 429, text: '' }) }));
+      expect(out).toEqual({ status: 'failed', code: 'not_found' });
+    });
+
+    test('the unthrottled path makes no oEmbed call', async () => {
+      const o = asked();
+      const out = await runProfile('creator', deps({
+        ...o,
+        fetchEmbed: async () => null,
+        resolveCreator: async () => null,
+        probe: () => ({ status: 429, text: '' }),
+      }));
+      expect(out).toEqual({ status: 'failed', code: 'blocked' });
+      expect(o.calls).toEqual([]);
+    });
+
+    test('a real 404 stays not_found with no oEmbed call', async () => {
+      const o = asked();
+      const out = await runProfile('creator', throttled({ ...o, probe: () => ({ status: 404, text: '' }) }));
+      expect(out).toEqual({ status: 'failed', code: 'not_found' });
+      expect(o.calls).toEqual([]);
+    });
+
+    test('a resolved account with an empty post read stays blocked without asking oEmbed', async () => {
+      const o = asked();
+      const out = await runProfile('creator', deps({ ...o, fetchEmbed: async () => ({ throttled: true }), fetchPosts: async () => [] }));
+      expect(out).toEqual({ status: 'failed', code: 'blocked' });
+      expect(o.calls).toEqual([]);
+    });
+  });
+
   test('hydrate fills engagement, and a failing hydrate keeps the views-only result', async () => {
     const bare = Array.from({ length: 5 }, (_, i) => post(i, { stats: { playCount: 1000, diggCount: 0, commentCount: 0, shareCount: 0 } }));
     const base = { fetchEmbed: async () => ({ identity: { followers: 10_000, following: null, totalLikes: null }, items: bare }) };
