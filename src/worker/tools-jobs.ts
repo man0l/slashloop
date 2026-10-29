@@ -391,7 +391,7 @@ export interface ToolsJobDeps {
   recordBytes(workspaceId: string, bytes: number, refId: string): Promise<void>;
   callback: CallbackDeps;
   /** Direct (off-proxy) fetch for outlier covers and their push to the site; unset disables covers. */
-  coverFetch?: typeof fetch;
+  coverFetch?: (input: string, init?: RequestInit) => Promise<Response>;
   completeJob(id: string, payloadJson: string): Promise<void>;
   failJob(id: string, message: string, opts?: { terminal?: boolean }): Promise<unknown>;
 }
