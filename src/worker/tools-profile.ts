@@ -234,6 +234,19 @@ export function shapeProfile(identity: Pick<CreatorIdentity, 'followers' | 'foll
   };
 }
 
+/**
+ * A throttled embed hides whether the account exists. oEmbed 400 is definitive for a gone account
+ * and costs no proxy bytes; any other answer (200, 5xx, 429, network) keeps the job retryable.
+ */
+async function oembedTiebreak(handle: string, deps: ProfileLiteDeps): Promise<ToolsErrorCode> {
+  if (!deps.oembedStatus) return 'blocked';
+  try {
+    return (await deps.oembedStatus(handle)) === 400 ? 'not_found' : 'blocked';
+  } catch {
+    return 'blocked';
+  }
+}
+
 export async function runProfile(handle: string, deps: ProfileLiteDeps): Promise<ProfileOutcome> {
   try {
     await deps.assertBudget(PROFILE_ESTIMATE_BYTES);
@@ -263,7 +276,9 @@ export async function runProfile(handle: string, deps: ProfileLiteDeps): Promise
         // TikTok serves the soft user-detail (no secUid) to throttled clients too, so only a real 404
         // is definitive while the embed read was throttled.
         const softMiss = code === 'not_found' && probe?.status !== 404;
-        return { status: 'failed', code: softMiss && embed?.throttled ? 'blocked' : code };
+        const settled = softMiss && embed?.throttled ? 'blocked' : code;
+        if (settled === 'blocked' && embed?.throttled) return { status: 'failed', code: await oembedTiebreak(handle, deps) };
+        return { status: 'failed', code: settled };
       }
       accountExists = true;
       identity = resolved;
