@@ -21,7 +21,7 @@ import { db } from '../../db.js';
 export const PROXY_PROVIDER = 'proxy';
 
 export const BYTES_PER_GB = 1024 * 1024 * 1024;
-const DEFAULT_CAP_GB = 1;
+const DEFAULT_CAP_GB = 0.25;
 const DEFAULT_COST_CENTS_PER_GB = 300; // $3/GB — typical rotating-residential rate
 
 export class TrafficCapExceededError extends Error {
@@ -53,15 +53,17 @@ function envNumber(name: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-/** Monthly traffic ceiling in bytes. PROXY_TRAFFIC_CAP_GB, default 1GB. */
+/** Monthly traffic ceiling in bytes. PROXY_TRAFFIC_CAP_GB, default 0.25GB. */
 export function trafficCapBytes(): number {
   return Math.round(envNumber('PROXY_TRAFFIC_CAP_GB', DEFAULT_CAP_GB) * BYTES_PER_GB);
 }
 
 /**
  * The public-tools workspace (slashloop.dev/tools lookups) is capped on its
- * own: TOOLS_PROXY_CAP_GB per month (default 10) and TOOLS_PROXY_DAILY_CAP_MB
- * per UTC day (default 400). Every other workspace keeps PROXY_TRAFFIC_CAP_GB
+ * own: TOOLS_PROXY_CAP_GB per month (default 2.5) and TOOLS_PROXY_DAILY_CAP_MB
+ * per UTC day (default 100). Both are in WIRE bytes (see wireBytes in
+ * impersonate-http.ts): the pre-SLA-1147 defaults were 10 GB / 400 MB of decoded
+ * bytes, 4x the wire figure, so the capacity is unchanged. Every other workspace keeps PROXY_TRAFFIC_CAP_GB
  * and has no daily guard. Unset TOOLS_WORKSPACE_ID = no tools workspace.
  */
 export function toolsWorkspaceId(): string | null {
@@ -72,7 +74,7 @@ export function toolsWorkspaceId(): string | null {
 /** Monthly ceiling for ONE workspace (tools override, else the global rail). */
 export function workspaceCapBytes(workspaceId: string): number {
   if (workspaceId === toolsWorkspaceId()) {
-    return Math.round(envNumber('TOOLS_PROXY_CAP_GB', 10) * BYTES_PER_GB);
+    return Math.round(envNumber('TOOLS_PROXY_CAP_GB', 2.5) * BYTES_PER_GB);
   }
   return trafficCapBytes();
 }
@@ -80,7 +82,7 @@ export function workspaceCapBytes(workspaceId: string): number {
 /** Per-UTC-day ceiling, or null when the workspace has no daily guard. */
 export function workspaceDailyCapBytes(workspaceId: string): number | null {
   if (workspaceId !== toolsWorkspaceId()) return null;
-  return Math.round(envNumber('TOOLS_PROXY_DAILY_CAP_MB', 400) * 1024 * 1024);
+  return Math.round(envNumber('TOOLS_PROXY_DAILY_CAP_MB', 100) * 1024 * 1024);
 }
 
 /** Modelled cost of N bytes, in cents (>=1 whenever any bytes moved). */

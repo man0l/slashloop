@@ -10,6 +10,8 @@
 // the native binary.
 // ---------------------------------------------------------------------------
 
+import { gzipSync } from 'node:zlib';
+
 import { currentJobSignal, jobBudgetRemainingMs } from '../job-abort.js';
 import { meterBytes } from './bandwidth.js';
 import { proxyConfig } from './proxy-http.js';
@@ -27,6 +29,28 @@ const HTML_MAX = 512 * 1024;
  *  so hashtag refreshes fell back to the evergreen embed playlist and the
  *  3-month recency filter then saved zero videos. */
 const JSON_TEXT_CAP = 512 * 1024;
+
+/** Per-request headers + TLS handshake share of the proxy bill, which body bytes do not cover. */
+export const REQUEST_OVERHEAD_BYTES = 3 * 1024;
+
+/**
+ * Bytes the proxy bills for one response. Proxy-Cheap meters the compressed
+ * wire, but Impit hands back the decoded body, so `decoded.length` overstates
+ * by 4-7x on TikTok HTML. Compressed + content-length: that header is the
+ * exact wire size. Compressed + chunked (video pages): gzip the decoded body,
+ * which lands within ~4% of the wire. Uncompressed: decoded is the wire.
+ */
+export function wireBytes(headers: Headers, decoded: string | Uint8Array, decodedBytes: number): number {
+  const encoding = (headers.get('content-encoding') ?? '').trim().toLowerCase();
+  let body = decodedBytes;
+  if (encoding && encoding !== 'identity') {
+    const declared = Number(headers.get('content-length'));
+    body = Number.isFinite(declared) && declared > 0
+      ? declared
+      : gzipSync(typeof decoded === 'string' ? Buffer.from(decoded) : decoded).length;
+  }
+  return body + REQUEST_OVERHEAD_BYTES;
+}
 
 class CookieJar {
   private readonly map = new Map<string, string>();
@@ -209,7 +233,7 @@ function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
     const res = await fetchThrough(client, signed, hdrs);
     jar.absorb(res.headers);
     const { raw, bytes } = await readBody(res, res.ok ? stopWhen : undefined);
-    meterBytes(bytes);
+    meterBytes(wireBytes(res.headers, raw, bytes));
     const json = res.ok && !stopWhen ? jsonFromBody(raw) : null;
     const text = raw.length > maxBytes ? raw.slice(0, maxBytes) : raw;
     return { json, status: res.status, ok: res.ok, text, bytes };
@@ -253,7 +277,7 @@ function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
     const raw = Buffer.from(await res.arrayBuffer());
     const truncated = raw.length > maxBytes;
     const buffer = truncated ? raw.subarray(0, maxBytes) : raw;
-    meterBytes(buffer.length);
+    meterBytes(wireBytes(res.headers, buffer, buffer.length));
     return { status: res.status, ok: res.ok, buffer, bytes: buffer.length };
   }
 

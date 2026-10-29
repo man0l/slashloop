@@ -54,6 +54,7 @@ import { claimPgJobs, connectPgQueue } from './pg-runtime.js';
 import { processClaimedJob } from './process-job.js';
 import { rescoreStaleTooFresh } from '../scoring.js';
 import { withMeterScope } from '../lib/scrapers/bandwidth.js';
+import { logProxyReconcile } from '../lib/scrapers/reconcile.js';
 import { withJobBudget, repeatedTimeoutIsTerminal } from '../lib/job-abort.js';
 import { refundCredits } from '../lib/credits.js';
 import { initLogShipping } from './ship-logs.js';
@@ -364,6 +365,7 @@ while (!shuttingDown) {
     // sweep must not abort the iteration (claiming continues below).
     if (doesMaintenance && Date.now() - lastReclaimAt >= RECLAIM_INTERVAL_MS) {
       lastReclaimAt = Date.now();
+      await logProxyReconcile();
       const sweepSnap = snapshotD1Usage();
       // Phase 4: once every kind is on PG, the D1 reclaim/abandoned scans
       // match nothing (they select queueOwner='d1' only) but still hit D1

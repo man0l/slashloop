@@ -21,8 +21,8 @@ import { defaultVideoDeps, parseVideoPayload, runVideoLookup, type VideoDeps, ty
 
 export type ToolsErrorCode = 'budget' | 'not_found' | 'blocked' | 'source' | 'slideshow' | 'too_long' | 'error';
 
-/** Pre-authorised bytes for one profile-lite lookup (measured ~1.3 MB). */
-export const PROFILE_LITE_ESTIMATE_BYTES = 1.5 * 1024 * 1024;
+/** Pre-authorised bytes for one profile-lite lookup (wire bytes, ~0.3 MB measured). */
+export const PROFILE_LITE_ESTIMATE_BYTES = 0.4 * 1024 * 1024;
 export const PROFILE_LITE_POST_LIMIT = 12;
 
 const HANDLE_RE = /^[a-z0-9._]{2,24}$/;

@@ -247,7 +247,7 @@ from a browser.
 | `SUPABASE_ANON_KEY` | yes (remote) | Supabase publishable key |
 | `GEMINI_API_KEY` | **yes** | Powers gemini-native (primary) + gemini-text (fallback) analysis, hook variations, briefs |
 | `SCRAPER_PROXY_URL` | for live TikTok | Residential proxy for list scrapes + single-video download |
-| `PROXY_TRAFFIC_CAP_GB` | optional | Monthly proxy traffic cap in gigabytes |
+| `PROXY_TRAFFIC_CAP_GB` | optional | Monthly proxy traffic cap in gigabytes of wire bytes, i.e. compressed + headers (default 0.25) |
 | `PUBLIC_URL` | yes (prod) | Public origin Claude reaches |
 | `SITE_URL` | yes (billing) | Origin of slashloop-site — Checkout/Portal redirects + CORS |
 | `STRIPE_MODE` | no (default `live`) | `live` or `test` — which key set the app uses |

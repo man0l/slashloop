@@ -14,8 +14,8 @@ import {
   type ToolsErrorCode,
 } from './tools-jobs.js';
 
-/** Pre-authorised bytes for one full profile lookup (embed ~0.3 MB + up to PROFILE_HYDRATE_PAGES x ~0.4 MB). */
-export const PROFILE_ESTIMATE_BYTES = 2.5 * 1024 * 1024;
+/** Pre-authorised bytes for one full profile lookup (wire bytes: embed ~41 KB + up to PROFILE_HYDRATE_PAGES x ~87 KB + request overhead). */
+export const PROFILE_ESTIMATE_BYTES = 0.6 * 1024 * 1024;
 export const PROFILE_POST_LIMIT = 30;
 /**
  * Video pages read to fill likes/comments/shares/sound on embed rows (~400KB metered, ~85KB on the
