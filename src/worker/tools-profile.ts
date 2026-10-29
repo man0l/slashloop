@@ -14,11 +14,15 @@ import {
   type ToolsErrorCode,
 } from './tools-jobs.js';
 
-/** Pre-authorised bytes for one full profile lookup (measured ~3.5 MB with recent posts). */
-export const PROFILE_ESTIMATE_BYTES = 4 * 1024 * 1024;
+/** Pre-authorised bytes for one full profile lookup (embed ~0.3 MB + up to PROFILE_HYDRATE_PAGES x ~0.4 MB). */
+export const PROFILE_ESTIMATE_BYTES = 2.5 * 1024 * 1024;
 export const PROFILE_POST_LIMIT = 30;
-/** Video pages read to fill likes/comments/shares/sound on embed rows (~85KB each on the wire). */
-export const PROFILE_HYDRATE_PAGES = 10;
+/**
+ * Video pages read to fill likes/comments/shares/sound on embed rows (~400KB metered, ~85KB on the
+ * wire). They were ~93% of a profile's bytes at 10 pages (SLA-1140): stop at MIN_ENGAGEMENT_POSTS
+ * filled, with two spare reads for a throttled page.
+ */
+export const PROFILE_HYDRATE_PAGES = 5;
 /** Wait before the one in-job re-read of a throttled embed page: base plus up to the jitter. */
 const EMBED_RETRY_BASE_MS = 1500;
 const EMBED_RETRY_JITTER_MS = 2500;

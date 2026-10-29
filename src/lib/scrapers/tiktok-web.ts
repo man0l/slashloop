@@ -946,15 +946,19 @@ function statsMissing(item: any): boolean {
 
 /**
  * Embed playlist rows have views but not likes. Video pages carry the full
- * itemStruct when TLS impersonation is on. Capped — each page is ~150-300KB.
+ * itemStruct when TLS impersonation is on. Capped — each page is ~400KB
+ * decoded (~85KB on the wire), with the stats at the very end of the blob,
+ * so the only saving is reading fewer pages. `enough` stops once that many
+ * pages have filled stats; maxPages still bounds the reads, failures included.
  */
-export async function hydrateItemStats(items: any[], maxPages = 8): Promise<any[]> {
+export async function hydrateItemStats(items: any[], maxPages = 8, enough = Infinity): Promise<any[]> {
   const getter = currentHttp.getText;
   if (!getter || maxPages <= 0) return items;
   let used = 0;
+  let filled = 0;
   const out = items.map(it => ({ ...it }));
   for (const item of out) {
-    if (used >= maxPages) break;
+    if (used >= maxPages || filled >= enough) break;
     if (!statsMissing(item)) continue;
     const handle = item?.author?.uniqueId ?? item?.authorUniqueId;
     const id = item?.id != null ? String(item.id) : '';
@@ -968,7 +972,10 @@ export async function hydrateItemStats(items: any[], maxPages = 8): Promise<any[
     const data = extractRehydrationJson(res.text);
     const struct = data?.__DEFAULT_SCOPE__?.['webapp.video-detail']?.itemInfo?.itemStruct;
     if (!struct || typeof struct !== 'object') continue;
-    if (struct.stats) item.stats = { ...item.stats, ...struct.stats };
+    if (struct.stats) {
+      item.stats = { ...item.stats, ...struct.stats };
+      filled++;
+    }
     if (struct.authorStats) item.authorStats = { ...item.authorStats, ...struct.authorStats };
     if (struct.desc && !item.desc) item.desc = struct.desc;
     if (struct.createTime && !item.createTime) item.createTime = struct.createTime;
