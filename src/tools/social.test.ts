@@ -20,6 +20,7 @@ const IMG = { type: 'image', url: 'https://cdn.example.com/a.jpg' };
 
 let db: Database;
 let teams: Record<string, string[]>;
+let managed: Record<string, string[]>;
 let me: { userId: string; email: string | null } | null;
 
 function deps(over: Partial<SocialToolDeps> = {}): SocialToolDeps {
@@ -27,6 +28,7 @@ function deps(over: Partial<SocialToolDeps> = {}): SocialToolDeps {
     ...defaultSocialDeps,
     caller: () => me,
     resolveOwners: async (userId) => teams[userId] ?? [userId],
+    managedOwners: async (userId) => managed[userId] ?? [],
     now: () => NOW_MS,
     connectUrl: () => 'https://site.test/calendar',
     uploadFromUrl: async () => ({ url: 'https://media.test/social/x.jpg', type: 'image', key: 'social/x.jpg', sizeBytes: 12 }),
@@ -63,9 +65,12 @@ async function createDraft(owner = 'alice', integrationIds = ['tt-a']) {
 
 beforeEach(() => {
   db = new Database(':memory:');
-  db.exec(readFileSync(new URL('../../prisma/d1-migrations/0005_social_scheduler.sql', import.meta.url), 'utf8'));
+  for (const f of ['0005_social_scheduler.sql', '0025_social_lanes.sql']) {
+    db.exec(readFileSync(new URL(`../../prisma/d1-migrations/${f}`, import.meta.url), 'utf8'));
+  }
   setActiveClient({} as never, async (statements) => statements.map((st) => db.query(st.sql).all(...((st.params ?? []) as never[])) as unknown[]));
   teams = {};
+  managed = {};
   me = { userId: 'alice', email: null };
   addIntegration('tt-a', 'alice', 'tiktok');
   addIntegration('ig-a', 'alice', 'instagram');
@@ -74,14 +79,14 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 describe('registration', () => {
-  test('all six tools are listed', async () => {
+  test('all nine tools are listed', async () => {
     const server = new McpServer({ name: 't', version: '0' });
     registerSocialTools(server, deps());
     const [a, b] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'c', version: '0' });
     await Promise.all([server.connect(a), client.connect(b)]);
     const names = (await client.listTools()).tools.map((t) => t.name);
-    for (const n of ['list_social_accounts', 'upload_social_media', 'create_social_post', 'list_social_posts', 'reschedule_social_post', 'delete_social_post']) {
+    for (const n of ['list_social_accounts', 'upload_social_media', 'create_social_post', 'list_social_posts', 'reschedule_social_post', 'delete_social_post', 'tag_social_account', 'set_rotation', 'plan_rotation']) {
       expect(names).toContain(n);
     }
     const create = (await client.listTools()).tools.find((t) => t.name === 'create_social_post')!;
@@ -328,5 +333,144 @@ describe('upload_social_media', () => {
     });
     expect(isError).toBe(true);
     expect(body).toMatchObject({ error: 'unsupported_type', type: 'image/gif' });
+  });
+});
+
+describe('lanes: tag_social_account + list_social_accounts', () => {
+  test('list exposes tags / lane / primary (untagged → [] / null / false)', async () => {
+    await call('tag_social_account', { integrationId: 'tt-a', tags: ['lane:jenny', 'primary'] });
+    await call('tag_social_account', { integrationId: 'ig-a', tags: ['lane:jenny'] });
+    addIntegration('th-a', 'alice', 'threads');
+    const { body } = await call('list_social_accounts');
+    const byId = Object.fromEntries(body.accounts.map((a: { id: string }) => [a.id, a]));
+    expect(byId['tt-a']).toMatchObject({ tags: ['lane:jenny', 'primary'], lane: 'jenny', primary: true });
+    expect(byId['ig-a']).toMatchObject({ tags: ['lane:jenny'], lane: 'jenny', primary: false });
+    expect(byId['th-a']).toMatchObject({ tags: [], lane: null, primary: false });
+  });
+
+  test('replaces the tag list and [] clears it', async () => {
+    await call('tag_social_account', { integrationId: 'tt-a', tags: ['lane:a'] });
+    await call('tag_social_account', { integrationId: 'tt-a', tags: ['lane:b'] });
+    expect((db.query('SELECT tags FROM social_integrations WHERE id = ?').get('tt-a') as { tags: string }).tags).toBe('["lane:b"]');
+    const { body } = await call('tag_social_account', { integrationId: 'tt-a', tags: [] });
+    expect(body).toMatchObject({ tags: [], lane: null, primary: false });
+    expect((db.query('SELECT tags FROM social_integrations WHERE id = ?').get('tt-a') as { tags: string | null }).tags).toBeNull();
+  });
+
+  test('vocabulary: unknown tag, two lanes, bare primary', async () => {
+    for (const [tags, error] of [[['funny'], 'invalid_tag'], [['lane:a', 'lane:b'], 'invalid_tag'], [['primary'], 'primary_needs_lane']] as const) {
+      const { isError, body } = await call('tag_social_account', { integrationId: 'tt-a', tags: [...tags] });
+      expect(isError).toBe(true);
+      expect(body.error).toBe(error);
+    }
+  });
+
+  test('one primary per lane across visible accounts', async () => {
+    await call('tag_social_account', { integrationId: 'tt-a', tags: ['lane:jenny', 'primary'] });
+    const clash = await call('tag_social_account', { integrationId: 'ig-a', tags: ['lane:jenny', 'primary'] });
+    expect(clash.isError).toBe(true);
+    expect(clash.body).toMatchObject({ error: 'lane_has_primary', primaryIntegrationId: 'tt-a' });
+    const other = await call('tag_social_account', { integrationId: 'ig-a', tags: ['lane:alice', 'primary'] });
+    expect(other.isError).toBe(false);
+    const again = await call('tag_social_account', { integrationId: 'tt-a', tags: ['lane:jenny', 'primary'] });
+    expect(again.isError).toBe(false);
+  });
+
+  test('a teammate who only shares in cannot tag; the workspace owner can', async () => {
+    teams.alice = ['alice', 'bob'];
+    const refused = await call('tag_social_account', { integrationId: 'tt-b', tags: ['lane:x'] });
+    expect(refused.isError).toBe(true);
+    expect(refused.body.error).toBe('not_owner');
+    expect((db.query('SELECT tags FROM social_integrations WHERE id = ?').get('tt-b') as { tags: string | null }).tags).toBeNull();
+
+    managed.alice = ['bob'];
+    const ok = await call('tag_social_account', { integrationId: 'tt-b', tags: ['lane:x'] });
+    expect(ok.isError).toBe(false);
+    expect(ok.body.lane).toBe('x');
+  });
+
+  test('an account the caller cannot see is not_found, not a tag', async () => {
+    const { isError, body } = await call('tag_social_account', { integrationId: 'tt-b', tags: ['lane:x'] });
+    expect(isError).toBe(true);
+    expect(body.error).toBe('not_found');
+  });
+});
+
+describe('rotations: set_rotation + plan_rotation', () => {
+  const ROT = { name: 'maxxing', lanes: ['jenny', 'alice', 'spoon'], anchorMonday: '2026-11-02' };
+
+  async function tagPersonas() {
+    for (const l of ['jenny', 'alice', 'spoon']) {
+      addIntegration(`${l}-ig`, 'alice', 'instagram');
+      addIntegration(`${l}-yt`, 'alice', 'youtube');
+      await call('tag_social_account', { integrationId: `${l}-ig`, tags: [`lane:${l}`, 'primary'] });
+      await call('tag_social_account', { integrationId: `${l}-yt`, tags: [`lane:${l}`] });
+    }
+  }
+
+  test('set_rotation upserts by (owner, name) and validates', async () => {
+    await tagPersonas();
+    const first = await call('set_rotation', ROT);
+    expect(first.body).toMatchObject({ created: true, warnings: [], rotation: { ...ROT, periodDays: 7, timezone: 'America/New_York' } });
+    const second = await call('set_rotation', { ...ROT, lanes: ['spoon', 'jenny'] });
+    expect(second.body.created).toBe(false);
+    expect((db.query('SELECT COUNT(*) AS n FROM social_rotations').get() as { n: number }).n).toBe(1);
+
+    for (const [over, error] of [
+      [{ anchorMonday: '2026-11-03' }, 'anchor_not_monday'],
+      [{ anchorMonday: '2026-02-30' }, 'invalid_anchor'],
+      [{ lanes: [] }, 'invalid_lanes'],
+      [{ lanes: ['a', 'A'] }, 'invalid_lanes'],
+      [{ timezone: 'Mars/Base' }, 'invalid_timezone'],
+    ] as const) {
+      const r = await call('set_rotation', { ...ROT, ...over });
+      expect(r.isError).toBe(true);
+      expect(r.body.error).toBe(error);
+    }
+  });
+
+  test('set_rotation warns (does not fail) about lanes nobody is tagged into', async () => {
+    await tagPersonas();
+    const { isError, body } = await call('set_rotation', { ...ROT, lanes: ['jenny', 'ghost'] });
+    expect(isError).toBe(false);
+    expect(body.warnings).toHaveLength(1);
+    expect(body.warnings[0]).toContain('ghost');
+  });
+
+  test('plan_rotation returns the week pattern, writes nothing, and keeps untagged accounts out', async () => {
+    await tagPersonas();
+    await call('set_rotation', ROT);
+    const postsBefore = (db.query('SELECT COUNT(*) AS n FROM social_posts').get() as { n: number }).n;
+    const { isError, body } = await call('plan_rotation', { rotation: 'maxxing', from: '2026-11-02', days: 8, slots: ['09:00', '13:00', '19:00'] });
+    expect(isError).toBe(false);
+    expect(body.problems).toEqual([]);
+    expect(body.rotation).toMatchObject({ name: 'maxxing', lanes: ['jenny', 'alice', 'spoon'] });
+    expect(body.rows).toHaveLength(8 * 3 * 2);
+    expect(body.rows.slice(0, 2)).toEqual([
+      { date: '2026-11-02', week: 0, video: 1, lane: 'jenny', integrationId: 'jenny-ig', provider: 'instagram', handle: 'jenny-ig_handle', role: 'primary', publishAt: '2026-11-02T14:00:00.000Z' },
+      { date: '2026-11-02', week: 0, video: 1, lane: 'jenny', integrationId: 'jenny-yt', provider: 'youtube', handle: 'jenny-yt_handle', role: 'repost', publishAt: '2026-11-02T14:00:00.000Z' },
+    ]);
+    const nov9v2 = body.rows.find((r: { date: string; video: number; role: string }) => r.date === '2026-11-09' && r.video === 2 && r.role === 'primary');
+    expect(nov9v2).toMatchObject({ lane: 'jenny', week: 1, publishAt: '2026-11-09T18:00:00.000Z' });
+    expect(body.rows.some((r: { integrationId: string }) => ['tt-a', 'ig-a'].includes(r.integrationId))).toBe(false);
+    expect((db.query('SELECT COUNT(*) AS n FROM social_posts').get() as { n: number }).n).toBe(postsBefore);
+  });
+
+  test('plan_rotation moves a video off an unhealthy primary and says so', async () => {
+    await tagPersonas();
+    await call('set_rotation', ROT);
+    db.run("UPDATE social_integrations SET refresh_needed = 1 WHERE id = 'alice-ig'");
+    const { body } = await call('plan_rotation', { rotation: 'maxxing', from: '2026-11-02', days: 1, slots: ['09:00', '13:00', '19:00'] });
+    expect(body.problems).toContain('lane alice: primary unhealthy on 2026-11-02, video 2 moved to spoon');
+    expect(body.rows.filter((r: { lane: string; integrationId: string }) => r.lane === 'spoon' && r.integrationId === 'spoon-ig')).toHaveLength(2);
+  });
+
+  test('plan_rotation errors: unknown rotation, bad date, bad slot', async () => {
+    const missing = await call('plan_rotation', { rotation: 'nope', from: '2026-11-02', days: 1, slots: ['09:00'] });
+    expect(missing.body.error).toBe('rotation_not_found');
+    await tagPersonas();
+    await call('set_rotation', ROT);
+    expect((await call('plan_rotation', { rotation: 'maxxing', from: '11/02/2026', days: 1, slots: ['09:00'] })).body.error).toBe('invalid_date');
+    expect((await call('plan_rotation', { rotation: 'maxxing', from: '2026-11-02', days: 1, slots: ['9am'] })).body.error).toBe('invalid_slots');
   });
 });
