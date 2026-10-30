@@ -7,25 +7,11 @@
 // for byte uploads. Public-unlisted is the same trust model as every other
 // object under /thumbs.
 //
-// Limits: images 20MB, videos 95MB (Workers request-body cap on the Free
-// plan is 100MB — keep headroom for the multipart wrapper).
+// Type/size limits and the write live in src/social/media-upload.ts.
 
 import { verifySupabaseJwt } from '../remote/auth.js';
 import { corsHeaders, corsPreflight } from '../src/lib/cors.js';
-import { publicUrl, putObject, thumbBucket } from '../src/lib/storage.js';
-
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
-const MAX_VIDEO_BYTES = 95 * 1024 * 1024;
-
-const IMAGE_TYPES: Record<string, string> = {
-  'image/jpeg': '.jpg',
-  'image/png': '.png',
-  'image/webp': '.webp',
-};
-const VIDEO_TYPES: Record<string, string> = {
-  'video/mp4': '.mp4',
-  'video/quicktime': '.mov',
-};
+import { UploadError, storeSocialMedia } from '../src/social/media-upload.js';
 
 function json(status: number, body: unknown, request: Request): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
@@ -60,25 +46,13 @@ export async function POST(request: Request): Promise<Response> {
   const file = form.get('file') as File | null;
   if (!(file instanceof File)) return json(400, { error: 'missing_file' }, request);
 
-  const contentType = file.type || '';
-  const ext = IMAGE_TYPES[contentType] ?? VIDEO_TYPES[contentType];
-  if (!ext) return json(415, { error: 'unsupported_type', type: contentType }, request);
-  const isVideo = ext === '.mp4' || ext === '.mov';
-  const maxBytes = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
-  if (file.size <= 0 || file.size > maxBytes) {
-    return json(413, { error: 'too_large', maxBytes, sizeBytes: file.size }, request);
-  }
-
-  const key = `social/${Date.now()}-${crypto.randomUUID().slice(0, 8)}${ext}`;
-  const body = new Uint8Array(await file.arrayBuffer());
-
   try {
-    await putObject({ bucket: thumbBucket(), path: key, body, contentType });
+    const stored = await storeSocialMedia(new Uint8Array(await file.arrayBuffer()), file.type || '');
+    return json(201, stored, request);
   } catch (err) {
-    console.error(`[social/upload] putObject failed: ${(err as Error).message}`);
+    if (!(err instanceof UploadError)) throw err;
+    if (err.code === 'unsupported_type') return json(415, { error: err.code, ...err.detail }, request);
+    if (err.code === 'too_large') return json(413, { error: err.code, ...err.detail }, request);
     return json(500, { error: 'storage_failed' }, request);
   }
-
-  const url = publicUrl(thumbBucket(), key);
-  return json(201, { url, type: isVideo ? 'video' : 'image', key, sizeBytes: body.byteLength }, request);
 }
