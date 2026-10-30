@@ -4,7 +4,7 @@
 // undici dispatcher (Workers fetch needs no SSRF guard for outbound calls to
 // public platform APIs) and minus Temporal heartbeat plumbing.
 
-import { BadBodyError, classifyHttpError, RefreshTokenError, ReconnectError } from './errors.js';
+import { BadBodyError, classifyHttpError, RefreshTokenError, ReconnectError, TransientProviderError } from './errors.js';
 
 const MAX_RETRIES = 3;
 const RETRY_BACKOFF_MS = 5_000;
@@ -63,7 +63,7 @@ export async function providerFetch(url: string, options: ProviderFetchOptions =
         await sleep(RETRY_BACKOFF_MS);
         continue;
       }
-      throw new BadBodyError(`Network error talking to the platform: ${(err as Error).message}`);
+      throw new TransientProviderError(`Network error talking to the platform: ${(err as Error).message}`);
     }
     clearTimeout(timer);
 
@@ -76,6 +76,9 @@ export async function providerFetch(url: string, options: ProviderFetchOptions =
     if (kind === 'retry' && attempt < MAX_RETRIES) {
       await sleep(RETRY_BACKOFF_MS);
       continue;
+    }
+    if (kind === 'retry') {
+      throw new TransientProviderError(extractMessage(lastBody) || `Platform temporarily unavailable (${lastStatus})`, `HTTP ${lastStatus} ${lastBody.slice(0, 500)}`);
     }
     if (kind === 'refresh-token') throw new RefreshTokenError();
     if (kind === 'reconnect') throw new ReconnectError(extractMessage(lastBody) || 'Please reconnect this account');

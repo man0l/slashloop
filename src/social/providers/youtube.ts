@@ -10,7 +10,7 @@
 // video. Access tokens last ~1h, so the engine refreshes before posting
 // when token_expires_at is near.
 
-import { BadBodyError } from '../errors.js';
+import { BadBodyError, isTransientError } from '../errors.js';
 import { fetchMediaRange, fetchMediaSize, providerFetch } from '../fetch.js';
 import type { AuthTokenDetails, PendingCheck, PostDetails, PostResponse, ProviderId, ProviderPostContext, SocialConfig, SocialProvider } from '../types.js';
 
@@ -85,7 +85,10 @@ export class YouTubeProvider implements SocialProvider {
       classify: this.classify,
     })
       .then((r) => r.json() as Promise<Record<string, any>>)
-      .catch(() => ({} as Record<string, any>));
+      .catch((err) => {
+        if (isTransientError(err)) throw err;
+        return {} as Record<string, any>;
+      });
 
     const item = channel?.items?.[0];
     const snippet = item?.snippet ?? {};

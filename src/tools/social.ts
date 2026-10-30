@@ -26,6 +26,7 @@ import {
   type CreatePostResult,
 } from '../social/posting.js';
 import { UploadError, storeSocialMediaFromUrl, type StoredMedia } from '../social/media-upload.js';
+import { siteAwareFetch } from '../lib/site-fetch.js';
 import type { SocialIntegrationRow } from '../social/types.js';
 
 export interface SocialToolDeps {
@@ -55,7 +56,7 @@ export const defaultSocialDeps: SocialToolDeps = {
   reschedule: rescheduleVisible,
   schedule: scheduleVisible,
   deleteGroup: deleteVisible,
-  uploadFromUrl: (url) => storeSocialMediaFromUrl(url),
+  uploadFromUrl: (url) => storeSocialMediaFromUrl(url, siteAwareFetch),
   now: () => Date.now(),
   connectUrl: () => `${canonicalSiteUrl()}/calendar`,
 };

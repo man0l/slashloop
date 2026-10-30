@@ -31,6 +31,40 @@ export class BadBodyError extends Error {
 }
 
 /**
+ * A failure that says nothing about the account's credentials: network error,
+ * timeout, platform 429/5xx after retries, or the Worker's own subrequest cap.
+ * Extends BadBodyError so provider code that already tolerates BadBodyError
+ * keeps working; the engine checks it first and retries instead of failing the
+ * post or flagging the account.
+ */
+export class TransientProviderError extends BadBodyError {
+  constructor(message: string, detail?: string) {
+    super(message, detail);
+    this.name = 'TransientProviderError';
+  }
+}
+
+const TRANSIENT_MESSAGE = /too many subrequests|subrequest|network (connection|error)|fetch failed|timed? ?out|timeout|temporarily unavailable|ECONNRESET|ETIMEDOUT/i;
+
+/** True when an error carries no information about token validity. Guards
+ *  against provider code that rewraps an unknown failure as a token error. */
+export function isTransientError(err: unknown): boolean {
+  if (err instanceof TransientProviderError) return true;
+  return err instanceof Error && TRANSIENT_MESSAGE.test(err.message);
+}
+
+/** True only for a definite credential failure (401/invalid_grant, revoked). */
+export function isAuthFailure(err: unknown): boolean {
+  return (err instanceof RefreshTokenError || err instanceof ReconnectError) && !isTransientError(err);
+}
+
+/** Cloudflare's per-invocation fetch cap: every later fetch in this
+ *  invocation fails too, so batch loops should stop and resume next tick. */
+export function isSubrequestLimit(err: unknown): boolean {
+  return err instanceof Error && /too many subrequests/i.test(err.message);
+}
+
+/**
  * Why an OAuth connect failed, as a fixed code the OAuth callback can put in
  * the redirect URL (never raw platform text — the site maps each code to its
  * own copy). Undefined = no specific reason; the site shows its generic error.
