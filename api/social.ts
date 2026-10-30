@@ -14,7 +14,7 @@ import { verifySupabaseJwt } from '../remote/auth.js';
 import { corsHeaders, corsPreflight } from '../src/lib/cors.js';
 import { signOAuthState, socialStore, getProvider, visibleOwnerIds, createRegistry, type SocialConfig, type ProviderId } from '../src/social/index.js';
 
-const PROVIDERS: ProviderId[] = ['tiktok', 'youtube', 'instagram', 'threads'];
+const PROVIDERS: ProviderId[] = ['tiktok', 'youtube', 'instagram', 'threads', 'pinterest'];
 
 export function socialConfigFromEnv(): SocialConfig {
   return {
@@ -39,6 +39,9 @@ export function socialConfigFromEnv(): SocialConfig {
       : undefined,
     threads: process.env.SOCIAL_THREADS_CLIENT_ID
       ? { clientId: process.env.SOCIAL_THREADS_CLIENT_ID, clientSecret: process.env.SOCIAL_THREADS_CLIENT_SECRET ?? '' }
+      : undefined,
+    pinterest: process.env.SOCIAL_PINTEREST_CLIENT_ID
+      ? { clientId: process.env.SOCIAL_PINTEREST_CLIENT_ID, clientSecret: process.env.SOCIAL_PINTEREST_CLIENT_SECRET ?? '' }
       : undefined,
   };
 }
@@ -73,6 +76,12 @@ export async function GET(request: Request): Promise<Response> {
   const claims = await authenticate(request);
   if (!claims) return json(401, { error: 'invalid_token' }, request);
 
+  // ?destinations=<integrationId> — per-post destinations inside a connected
+  // account (Pinterest boards) for the composer's picker. Visible to anyone
+  // who can see the integration (same team-share rule as the list below).
+  const destinationsFor = new URL(request.url).searchParams.get('destinations');
+  if (destinationsFor) return listDestinations(request, claims, destinationsFor);
+
   // Team-shared visibility: connected accounts of teammates (both
   // directions across workspace shares) appear alongside the caller's own.
   // Rows stay owned by their connector — only the connector disconnects.
@@ -86,8 +95,49 @@ export async function GET(request: Request): Promise<Response> {
   // Which platforms have developer-app credentials on this deployment —
   // the site hides connect buttons for the rest instead of erroring on click.
   const cfg = socialConfigFromEnv();
-  const configured = [cfg.tiktok && 'tiktok', cfg.youtube && 'youtube', cfg.instagram && 'instagram', cfg.threads && 'threads'].filter(Boolean);
+  const configured = [cfg.tiktok && 'tiktok', cfg.youtube && 'youtube', cfg.instagram && 'instagram', cfg.threads && 'threads', cfg.pinterest && 'pinterest'].filter(Boolean);
   return json(200, { integrations: integrations.map(sanitizeIntegration), configured }, request);
+}
+
+async function listDestinations(request: Request, claims: { sub: string; email?: string }, integrationId: string): Promise<Response> {
+  const integration = await socialStore.getIntegration(integrationId);
+  if (!integration) return json(404, { error: 'not_found' }, request);
+  const owners = await visibleOwnerIds(claims.sub, claims.email);
+  if (!owners.includes(integration.owner_id)) return json(404, { error: 'not_found' }, request);
+
+  const cfg = socialConfigFromEnv();
+  const registry = createRegistry(cfg);
+  let provider;
+  try {
+    provider = getProvider(registry, integration.provider);
+  } catch {
+    return json(400, { error: 'provider_not_configured' }, request);
+  }
+  if (!provider.listDestinations) return json(200, { destinations: [] }, request);
+
+  // Same freshen-if-expiring rule as the publishing engine (10-minute margin).
+  let token = integration.token;
+  const now = Math.floor(Date.now() / 1000);
+  if (integration.token_expires_at !== null && integration.token_expires_at <= now + 600 && integration.refresh_token) {
+    try {
+      const refreshed = await provider.refreshToken(cfg, integration.refresh_token);
+      token = refreshed.accessToken;
+      await socialStore.updateIntegrationTokens(integration.id, token, refreshed.refreshToken, now + (refreshed.expiresIn ?? 0));
+    } catch {
+      return json(409, { error: 'reconnect_required' }, request);
+    }
+  }
+
+  try {
+    const destinations = await provider.listDestinations(cfg, token, {
+      internalId: integration.internal_id,
+      profile: integration.profile ?? '',
+    });
+    return json(200, { destinations }, request);
+  } catch (err) {
+    console.error(`[social] ${integration.provider} destinations failed: ${(err as Error).message}`);
+    return json(502, { error: 'destinations_unavailable', message: (err as Error).message }, request);
+  }
 }
 
 export async function POST(request: Request): Promise<Response> {

@@ -10,7 +10,7 @@
 import { socialConfigFromEnv, stateSecret, workerOrigin } from './social.js';
 import { connectFailureReason, createRegistry, getProvider, socialStore, verifyOAuthState, type ProviderId } from '../src/social/index.js';
 
-const PROVIDERS: ProviderId[] = ['tiktok', 'youtube', 'instagram', 'threads'];
+const PROVIDERS: ProviderId[] = ['tiktok', 'youtube', 'instagram', 'threads', 'pinterest'];
 
 function siteOrigin(): string {
   return (process.env.SOCIAL_SITE_URL ?? 'https://slashloop.dev').replace(/\/$/, '');
