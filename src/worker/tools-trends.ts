@@ -24,6 +24,17 @@ export const TRENDS_SAMPLE_BYTES_PER_TAG = 1024 * 1024;
 export const TRENDS_SAMPLE_POSTS_PER_TAG = 30;
 export const TRENDS_MAX_SAMPLE_TAGS = 20;
 const MAX_CONSECUTIVE_SAMPLE_FAILURES = 3;
+const MAX_CONSECUTIVE_LIST_FAILURES = 3;
+/**
+ * Run-level deadlines, measured from the start of runTrends, under the 300s
+ * job timeout (jobTimeoutMs('tools-trends')). No list attempt starts after
+ * the list deadline; one in flight can still take LIST_TIMEOUT_MS (30s). No
+ * tag sample starts after the sample deadline. A degraded Creative Center
+ * then ends the run as failed:source instead of a job-level timeout that the
+ * queue re-runs (SLA-1162).
+ */
+export const TRENDS_LIST_DEADLINE_MS = 150_000;
+export const TRENDS_SAMPLE_DEADLINE_MS = 210_000;
 const DESC_MAX_CHARS = 300;
 
 export interface TrendsPayload {
@@ -156,9 +167,19 @@ export function listBytesEstimate(periods: number): number {
   return periods * (CC_INDUSTRIES.length + 1) * CC_LIST_BYTES_ESTIMATE;
 }
 
-async function fetchListOnce(deps: TrendsDeps, period: number, industryId: string | null): Promise<any[]> {
+class ListDeadlineError extends Error {
+  override name = 'ListDeadlineError';
+}
+
+async function fetchListOnce(
+  deps: TrendsDeps,
+  period: number,
+  industryId: string | null,
+  deadline: number,
+): Promise<any[]> {
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
+    if (deps.now().getTime() >= deadline) throw lastError ?? new ListDeadlineError('list deadline passed');
     try {
       return await deps.fetchHashtagList(period, industryId);
     } catch (err) {
@@ -170,6 +191,9 @@ async function fetchListOnce(deps: TrendsDeps, period: number, industryId: strin
 }
 
 export async function runTrends(payload: TrendsPayload, deps: TrendsDeps): Promise<TrendsOutcome> {
+  const started = deps.now().getTime();
+  const listDeadline = started + TRENDS_LIST_DEADLINE_MS;
+  const sampleDeadline = started + TRENDS_SAMPLE_DEADLINE_MS;
   // The ceiling is checked before the first byte of network use: a breach
   // costs nothing and the Worker serves its fallback.
   try {
@@ -180,19 +204,28 @@ export async function runTrends(payload: TrendsPayload, deps: TrendsDeps): Promi
 
   // The overall list per period is the product: if one is unreadable the run
   // fails and the Worker keeps serving the previous snapshot. An industry list
-  // that fails after its retry is skipped (that niche just has fewer tags).
+  // that fails after its retry is skipped (that niche just has fewer tags),
+  // but several in a row or a passed list deadline mean the source is
+  // degraded: fail rather than ship a thin ranking over a good snapshot.
   const results: ListResult[] = [];
+  let consecutiveListFailures = 0;
   for (const period of payload.periods) {
     const scopes: Array<{ scope: string; id: string | null }> = [
       { scope: 'overall', id: null },
       ...CC_INDUSTRIES.map((i) => ({ scope: i.name, id: i.id })),
     ];
     for (const { scope, id } of scopes) {
+      if (deps.now().getTime() >= listDeadline) {
+        console.warn(`[tools-trends] list deadline ${TRENDS_LIST_DEADLINE_MS}ms passed before ${scope}/${period}d`);
+        return { status: 'failed', code: 'source' };
+      }
       try {
-        results.push({ period, scope, items: await fetchListOnce(deps, period, id) });
+        results.push({ period, scope, items: await fetchListOnce(deps, period, id, listDeadline) });
+        consecutiveListFailures = 0;
       } catch (err) {
+        consecutiveListFailures++;
         console.warn(`[tools-trends] list ${scope}/${period}d failed: ${(err as Error).message}`);
-        if (id === null || errorCode(err) === 'budget') {
+        if (id === null || errorCode(err) === 'budget' || consecutiveListFailures >= MAX_CONSECUTIVE_LIST_FAILURES) {
           return { status: 'failed', code: errorCode(err) === 'budget' ? 'budget' : 'source' };
         }
       }
@@ -207,6 +240,10 @@ export async function runTrends(payload: TrendsPayload, deps: TrendsDeps): Promi
   let consecutiveFailures = 0;
   for (const tag of tags) {
     if (consecutiveFailures >= MAX_CONSECUTIVE_SAMPLE_FAILURES) break;
+    if (deps.now().getTime() >= sampleDeadline) {
+      console.warn(`[tools-trends] sample deadline ${TRENDS_SAMPLE_DEADLINE_MS}ms passed; shipping ${sampledTags} sampled tags`);
+      break;
+    }
     try {
       const challengeId = await deps.resolveChallengeId(tag);
       if (!challengeId) throw new Error(`no challenge id for #${tag}`);
