@@ -12,7 +12,8 @@
 
 import { verifySupabaseJwt } from '../remote/auth.js';
 import { corsHeaders, corsPreflight } from '../src/lib/cors.js';
-import { BadBodyError, createRegistry, getProvider, socialStore, visibleOwnerIds, type MediaContent, type ProviderId, type SocialPostRow } from '../src/social/index.js';
+import { socialStore, visibleOwnerIds, type MediaContent } from '../src/social/index.js';
+import { applyToOwners, createPost, deleteVisible, listCalendar, type CreatePostInput } from '../src/social/posting.js';
 
 function json(status: number, body: unknown, request: Request): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
@@ -45,170 +46,29 @@ export async function GET(request: Request): Promise<Response> {
     return json(400, { error: 'invalid_range' }, request);
   }
 
-  const rows: SocialPostRow[] = (
-    await Promise.all((await visibleOwnerIds(claims.sub, claims.email)).map((ownerId) => socialStore.listPostsInRange(ownerId, from, to)))
-  ).flat();
-  const drafts: SocialPostRow[] = (
-    await Promise.all((await visibleOwnerIds(claims.sub, claims.email)).map((ownerId) => socialStore.listDrafts(ownerId)))
-  ).flat();
-  return json(200, { groups: groupRows(rows), drafts: groupRows(drafts) }, request);
-}
-
-export interface CalendarGroup {
-  groupId: string;
-  publishDate: number;
-  content: string;
-  media: MediaContent[];
-  /** Aggregate state for chip coloring: any PROCESSING wins, then ERROR,
-   *  then queued-until, then fully PUBLISHED; DRAFT groups report 'draft'. */
-  state: 'queued' | 'processing' | 'published' | 'error' | 'draft' | 'scrubbing';
-  posts: Array<{
-    id: string;
-    provider: ProviderId;
-    state: string;
-    releaseUrl: string | null;
-    error: string | null;
-    needsReconnect?: boolean;
-  }>;
-}
-
-function groupRows(rows: SocialPostRow[]): CalendarGroup[] {
-  const byGroup = new Map<string, CalendarGroup>();
-  for (const row of rows) {
-    const groupId = row.group_id;
-    let group = byGroup.get(groupId);
-    if (!group) {
-      group = {
-        groupId,
-        publishDate: row.publish_date,
-        content: row.content ?? '',
-        media: safeMedia(row.media),
-        state: 'queued',
-        posts: [],
-      };
-      byGroup.set(groupId, group);
-    }
-    group.posts.push({
-      id: row.id,
-      provider: row.provider as ProviderId,
-      state: row.state,
-      releaseUrl: row.release_url ?? null,
-      error: row.error ?? null,
-    });
-  }
-
-  for (const group of byGroup.values()) {
-    if (group.posts.every((p) => p.state === 'DRAFT')) group.state = 'draft';
-    else if (group.posts.every((p) => p.state === 'SCRUB')) group.state = 'scrubbing';
-    else if (group.posts.some((p) => p.state === 'PROCESSING')) group.state = 'processing';
-    else if (group.posts.some((p) => p.state === 'ERROR')) group.state = 'error';
-    else if (group.posts.every((p) => p.state === 'PUBLISHED')) group.state = 'published';
-  }
-  return [...byGroup.values()];
-}
-
-function safeMedia(raw: unknown): MediaContent[] {
-  try {
-    const parsed = typeof raw === 'string' ? (JSON.parse(raw) as MediaContent[]) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  const owners = await visibleOwnerIds(claims.sub, claims.email);
+  return json(200, await listCalendar(owners, from, to), request);
 }
 
 // ── create ──────────────────────────────────────────────────────────────────
-
-interface CreateBody {
-  integrationIds?: string[];
-  content?: string;
-  media?: Array<{ type?: string; url?: string; alt?: string; thumbnail?: string }>;
-  /** Epoch seconds. Optional when draft: true (undated drafts carry 0). */
-  publishDate?: number;
-  /** Save as a draft instead of scheduling. */
-  draft?: boolean;
-  /** Re-capture every media item (fresh bytes, no source fingerprint):
-   *  images re-encoded now-ish by the engine, videos through Stream. */
-  stripMetadata?: boolean;
-  settings?: Record<string, Record<string, unknown>>;
-}
 
 export async function POST(request: Request): Promise<Response> {
   const claims = await authenticate(request);
   if (!claims) return json(401, { error: 'invalid_token' }, request);
 
-  let body: CreateBody;
+  let body: CreatePostInput;
   try {
-    body = (await request.json()) as CreateBody;
+    body = (await request.json()) as CreatePostInput;
   } catch {
     return json(400, { error: 'invalid_json' }, request);
   }
 
-  const integrationIds = (body.integrationIds ?? []).filter((id) => typeof id === 'string' && id);
-  if (!integrationIds.length) return json(400, { error: 'no_integrations' }, request);
-  if (typeof body.content !== 'string' || !body.content.trim()) return json(400, { error: 'missing_content' }, request);
-  const asDraft = Boolean(body.draft);
-  const publishDate = asDraft && !Number.isFinite(Number(body.publishDate)) ? 0 : Math.floor(Number(body.publishDate));
-  if (!Number.isFinite(publishDate)) return json(400, { error: 'invalid_publish_date' }, request);
-
-  const stripMetadata = Boolean(body.stripMetadata);
-  const media: MediaContent[] = [];
-  for (const item of body.media ?? []) {
-    if (!item?.url || typeof item.url !== 'string') continue;
-    if (!/^https?:\/\//i.test(item.url)) return json(400, { error: 'media_urls_must_be_absolute' }, request);
-    media.push({
-      type: item.type === 'video' ? 'video' : 'image',
-      url: item.url,
-      ...(item.alt ? { alt: item.alt } : {}),
-      ...(item.thumbnail ? { thumbnail: item.thumbnail } : {}),
-      // Recreated decks are already fresh — a scrub mark would waste a pass.
-      ...(stripMetadata ? { scrub: true } : {}),
-    });
+  const result = await createPost(claims.sub, () => visibleOwnerIds(claims.sub, claims.email), body);
+  if (!result.ok) {
+    return json(result.status, result.skipped ? { error: result.error, skipped: result.skipped } : { error: result.error }, request);
   }
-
-  const owners = await visibleOwnerIds(claims.sub, claims.email);
-  const seen = new Set<string>();
-  const integrations = (
-    await Promise.all(owners.map((ownerId) => socialStore.listIntegrations(ownerId)))
-  )
-    .flat()
-    .filter((row) => (seen.has(row.id) ? false : (seen.add(row.id), true)));
-  const selected = integrations.filter((i) => integrationIds.includes(i.id));
-  if (!selected.length) return json(400, { error: 'no_valid_integrations' }, request);
-
-  // Per-provider validation. Invalid platforms are SKIPPED with their reason
-  // (the gallery pushes one deck to many platforms and TikTok's 35-photo
-  // rules differ from Instagram's 10) — the post still schedules for the
-  // platforms that accept it. 422 only when nothing is schedulable.
-  const registry = createRegistry({});
-  const settingsByIntegration = body.settings ?? {};
-  const valid: typeof selected = [];
-  const skipped: Array<{ provider: string; message: string }> = [];
-  for (const integration of selected) {
-    const settings = settingsByIntegration[integration.id] ?? {};
-    const validity = getProvider(registry, integration.provider).checkValidity({ message: body.content, settings, media });
-    if (validity === true) valid.push(integration);
-    else skipped.push({ provider: integration.provider, message: validity });
-  }
-  if (!valid.length) {
-    return json(422, { error: 'invalid_for_provider', skipped }, request);
-  }
-
-  const groupId = crypto.randomUUID();
-  await socialStore.createPostGroup(
-    valid.map((integration) => ({
-      id: crypto.randomUUID(),
-      groupId,
-      ownerId: claims.sub,
-      integration,
-      publishDate,
-      content: body.content!.trim(),
-      settings: settingsByIntegration[integration.id] ?? {},
-      media,
-      state: asDraft ? ('DRAFT' as const) : media.some((m) => m.scrub) ? ('SCRUB' as const) : ('QUEUE' as const),
-    })),
-  );
-
-  return json(201, { groupId, posts: valid.length, publishDate, draft: asDraft, skipped }, request);
+  const { ok: _ok, ...payload } = result;
+  return json(201, payload, request);
 }
 
 // ── reschedule / delete ─────────────────────────────────────────────────────
@@ -244,19 +104,8 @@ export async function PATCH(request: Request): Promise<Response> {
   // Group mutations span every visible owner: group ids are UUIDs so at most
   // one owner matches; counts sum, and any PROCESSING hit wins as a 409.
   const owners = await visibleOwnerIds(claims.sub, claims.email);
-  async function applyToVisible<K extends string>(
-    key: K,
-    fn: (ownerId: string) => Promise<{ processing: number } & Record<K, number>>,
-  ): Promise<{ processing: number; count: number }> {
-    let processing = 0;
-    let count = 0;
-    for (const ownerId of owners) {
-      const next = await fn(ownerId);
-      processing += next.processing;
-      count += next[key] ?? 0;
-    }
-    return { processing, count };
-  }
+  const applyToVisible = <K extends string>(key: K, fn: (ownerId: string) => Promise<{ processing: number } & Record<K, number>>) =>
+    applyToOwners(owners, key, fn);
 
   // Caption + media update (drafts/queued only — the guard rejects PROCESSING).
   const hasContent = typeof body.content === 'string';
@@ -302,13 +151,7 @@ export async function DELETE(request: Request): Promise<Response> {
   if (!id) return json(400, { error: 'missing_id' }, request);
 
   const owners = await visibleOwnerIds(claims.sub, claims.email);
-  let processing = 0;
-  let deleted = 0;
-  for (const ownerId of owners) {
-    const result = await socialStore.deleteGroup(ownerId, id);
-    processing += result.processing;
-    deleted += result.deleted;
-  }
+  const { deleted, processing } = await deleteVisible(owners, id);
   if (processing > 0) {
     return json(409, { error: 'processing', message: 'A post in this group is publishing right now and cannot be removed.', deleted }, request);
   }
