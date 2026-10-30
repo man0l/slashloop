@@ -24,6 +24,7 @@ import {
   WORKER_EXCLUDED,
   WORKER_NAME,
   countedVarNames,
+  legacyPriceNamesToPrune,
   readWorkerSettings,
 } from './worker-secrets.mjs';
 
@@ -35,7 +36,13 @@ export function pruneTargets(liveNames, excluded = WORKER_EXCLUDED) {
 
 async function main() {
   const dryRun = process.argv.includes('--dry-run');
-  const targets = pruneTargets(countedVarNames(await readWorkerSettings()));
+  const liveNames = countedVarNames(await readWorkerSettings());
+  // --legacy-stripe-prices runs AFTER wrangler deploy: the previous build reads
+  // the eight per-name price vars, so they go only once the build that reads
+  // STRIPE_PRICES is live, and only the ones this run folded into it.
+  const targets = process.argv.includes('--legacy-stripe-prices')
+    ? legacyPriceNamesToPrune({ liveNames, env: process.env })
+    : pruneTargets(liveNames);
 
   if (targets.length === 0) {
     console.log('no excluded Worker vars bound; nothing to prune');

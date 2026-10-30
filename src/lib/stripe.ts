@@ -37,13 +37,32 @@ export function stripeWebhookSecret(): string | undefined {
 }
 
 /**
- * Resolve a price env var for the active mode.
+ * Price ids arrive as one JSON var, STRIPE_PRICES, keyed by the legacy env
+ * names ({"STRIPE_PRICE_PRO_MONTH":"price_..."}): the Worker's Free plan caps
+ * secret+text vars at 64 and eight separate price vars were eating the room.
+ * The legacy per-name vars remain a fallback until they are pruned.
+ */
+function bundledPrices(): Record<string, unknown> {
+  const raw = env('STRIPE_PRICES');
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Resolve a price id for the active mode.
  * Live:  STRIPE_PRICE_*
  * Test:  STRIPE_TEST_PRICE_*
  */
 function priceEnv(suffix: string): string | undefined {
-  const prefix = stripeMode() === 'test' ? 'STRIPE_TEST_PRICE_' : 'STRIPE_PRICE_';
-  return env(`${prefix}${suffix}`);
+  const name = `${stripeMode() === 'test' ? 'STRIPE_TEST_PRICE_' : 'STRIPE_PRICE_'}${suffix}`;
+  const bundled = bundledPrices()[name];
+  if (typeof bundled === 'string' && bundled.trim()) return bundled.trim();
+  return env(name);
 }
 
 let cachedStripe: Stripe | null = null;

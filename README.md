@@ -253,7 +253,7 @@ from a browser.
 | `STRIPE_MODE` | no (default `live`) | `live` or `test` — which key set the app uses |
 | `STRIPE_SECRET_KEY` / `STRIPE_TEST_SECRET_KEY` | yes (billing) | Live / test Stripe API keys |
 | `STRIPE_WEBHOOK_SECRET` / `STRIPE_TEST_WEBHOOK_SECRET` | yes (billing) | Live / test signing secrets for `/api/stripe/webhook` |
-| `STRIPE_PRICE_*` / `STRIPE_TEST_PRICE_*` | yes (billing) | Live / test Price ids (`CREATOR_MONTH`, `CREATOR_YEAR`, `PRO_MONTH`, `PRO_YEAR`, `PACK`) |
+| `STRIPE_PRICE_*` / `STRIPE_TEST_PRICE_*` | yes (billing) | Live / test Price ids (`CREATOR_MONTH`, `CREATOR_YEAR`, `PRO_MONTH`, `PRO_YEAR`, `PACK`). On the Cloudflare Worker they arrive as one `STRIPE_PRICES` JSON binding (keyed by these names, built by `sync-worker-secrets.mjs`); the per-name vars remain a fallback |
 | `SUPABASE_SECRET_KEY` | optional | Enables media storage. Unset = the whole media path no-ops |
 | `STORAGE_THUMB_BUCKET` / `STORAGE_MEDIA_BUCKET` | optional | Bucket names (default `thumbs` public, `media` private) |
 | `THUMB_RETENTION_DAYS_DEFAULT` / `MEDIA_RETENTION_DAYS_DEFAULT` | optional | Seeds new workspaces only (default 3). Retention itself is a per-workspace setting |
