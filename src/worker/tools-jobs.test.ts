@@ -354,7 +354,7 @@ describe('processToolsJob', () => {
     expect(h.posted).toEqual([{ requestId: 'req-1', status: 'failed', code: 'not_found' }]);
   });
 
-  test('tools-profile runs the full analysis: 30-post sample, 2.5 MB budget, fresh identity', async () => {
+  test('tools-profile runs the full analysis: 30-post sample, 0.6 MB budget, fresh identity', async () => {
     const budgets: number[] = [];
     let limit = 0;
     let fresh: boolean | undefined;
@@ -366,7 +366,7 @@ describe('processToolsJob', () => {
     h.deps.buildLookup = (w, onProfile, opts) => { fresh = opts?.fresh; return build(w, onProfile, opts); };
     const r = await processToolsJob(job({ reason: 'refresh' }, 'tools-profile'), h.deps);
     expect(r.ok).toBe(true);
-    expect(budgets).toEqual([2.5 * 1024 * 1024]);
+    expect(budgets).toEqual([0.6 * 1024 * 1024]);
     expect(limit).toBe(30);
     expect(fresh).toBe(true);
     const body = h.posted[0] as any;

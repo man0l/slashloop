@@ -22,8 +22,8 @@ import { defaultVideoDeps, parseVideoPayload, runVideoLookup, type VideoDeps, ty
 
 export type ToolsErrorCode = 'budget' | 'not_found' | 'blocked' | 'source' | 'slideshow' | 'too_long' | 'error';
 
-/** Pre-authorised bytes for one profile-lite lookup (measured ~1.3 MB). */
-export const PROFILE_LITE_ESTIMATE_BYTES = 1.5 * 1024 * 1024;
+/** Pre-authorised bytes for one profile-lite lookup (wire bytes, ~0.3 MB measured). */
+export const PROFILE_LITE_ESTIMATE_BYTES = 0.4 * 1024 * 1024;
 export const PROFILE_LITE_POST_LIMIT = 12;
 
 const HANDLE_RE = /^[a-z0-9._]{2,24}$/;
@@ -391,7 +391,7 @@ export interface ToolsJobDeps {
   recordBytes(workspaceId: string, bytes: number, refId: string): Promise<void>;
   callback: CallbackDeps;
   /** Direct (off-proxy) fetch for outlier covers and their push to the site; unset disables covers. */
-  coverFetch?: typeof fetch;
+  coverFetch?: (input: string, init?: RequestInit) => Promise<Response>;
   completeJob(id: string, payloadJson: string): Promise<void>;
   failJob(id: string, message: string, opts?: { terminal?: boolean }): Promise<unknown>;
 }

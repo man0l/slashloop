@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Combined proxy budget: workspace UsageLog AND the Proxy-Cheap plan.
 //
-// Internal PROXY_TRAFFIC_CAP_GB is a safety rail (default 1GB). The vendor
+// Internal PROXY_TRAFFIC_CAP_GB is a safety rail (default 0.25GB of wire bytes). The vendor
 // GET /proxies bandwidth.{total,used} is what we actually pay for. The
 // remaining allowance is the tighter of the two. When the vendor reports
 // used=null we cannot see billed GB yet, so only the internal rail applies.

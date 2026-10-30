@@ -275,9 +275,10 @@ export async function getPost(id: string): Promise<SocialPostRow | undefined> {
   return rows<SocialPostRow>(await rawBatch([{ sql: 'SELECT * FROM social_posts WHERE id = ?1', params: [id] }]))[0];
 }
 
-/** Reschedule a whole group. PROCESSING rows are rejected (409 upstream):
- *  they are mid-upload and moving them would desync the engine. DRAFT groups
- *  reschedule too (they keep their DRAFT state until explicitly scheduled).
+/** Reschedule a whole group. A group with any PROCESSING row is left entirely
+ *  untouched (409 upstream): that row is mid-upload and moving it would desync
+ *  the engine, and a partial move would hand the retry a half-moved group.
+ *  DRAFT groups reschedule too (they keep their DRAFT state until explicitly scheduled).
  *  The change count comes from SELECT changes() — rawBatch's executor drops
  *  D1's meta. */
 export async function rescheduleGroup(ownerId: string, groupId: string, publishDate: number): Promise<{ rescheduled: number; processing: number }> {
@@ -288,7 +289,8 @@ export async function rescheduleGroup(ownerId: string, groupId: string, publishD
     },
     {
       sql: `UPDATE social_posts SET publish_date = ?3, updated_at = ?4
-            WHERE group_id = ?1 AND owner_id = ?2 AND state IN ('QUEUE', 'ERROR', 'DRAFT')`,
+            WHERE group_id = ?1 AND owner_id = ?2 AND state IN ('QUEUE', 'ERROR', 'DRAFT')
+              AND NOT EXISTS (SELECT 1 FROM social_posts p WHERE p.group_id = ?1 AND p.owner_id = ?2 AND p.state = 'PROCESSING')`,
       params: [groupId, ownerId, publishDate, nowSeconds()],
     },
     { sql: 'SELECT changes() AS n', params: [] },
@@ -338,14 +340,16 @@ export async function scheduleGroup(ownerId: string, groupId: string, publishDat
           {
             sql: `UPDATE social_posts
                   SET media = (SELECT json_group_array(json_set(j.value, '$.scrub', json('true'))) FROM json_each(media) j)
-                  WHERE group_id = ?1 AND owner_id = ?2 AND state = 'DRAFT'`,
+                  WHERE group_id = ?1 AND owner_id = ?2 AND state = 'DRAFT'
+                    AND NOT EXISTS (SELECT 1 FROM social_posts p WHERE p.group_id = ?1 AND p.owner_id = ?2 AND p.state = 'PROCESSING')`,
             params: [groupId, ownerId],
           },
         ]
       : []),
     {
       sql: `UPDATE social_posts SET state = ?4, publish_date = ?3, updated_at = ?5
-            WHERE group_id = ?1 AND owner_id = ?2 AND state = 'DRAFT'`,
+            WHERE group_id = ?1 AND owner_id = ?2 AND state = 'DRAFT'
+              AND NOT EXISTS (SELECT 1 FROM social_posts p WHERE p.group_id = ?1 AND p.owner_id = ?2 AND p.state = 'PROCESSING')`,
       params: [groupId, ownerId, publishDate, targetState, nowSeconds()],
     },
     { sql: 'SELECT changes() AS n', params: [] },

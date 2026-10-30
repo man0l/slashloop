@@ -28,6 +28,8 @@ import {
   pickSampleTags,
   runTrends,
   TRENDS_EXAMPLES_PER_TAG,
+  TRENDS_LIST_DEADLINE_MS,
+  TRENDS_SAMPLE_DEADLINE_MS,
   type TrendsDeps,
 } from './tools-trends.js';
 
@@ -296,6 +298,83 @@ describe('runTrends', () => {
     expect(o.body.hashtags).toHaveLength(8);
     expect(o.body.samplePosts).toEqual([]);
     expect(resolves).toBe(3);
+  });
+
+  // SLA-1162: a degraded Creative Center (30s aborts, 503s) used to run 44
+  // lists x 2 attempts past the 300s job timeout, which the queue then re-ran.
+  describe('run deadline (fake clock)', () => {
+    const JOB_TIMEOUT_MS = 300_000;
+    const LIST_TIMEOUT_MS = 30_000;
+    function clocked(over: (clock: { t: number }) => Partial<TrendsDeps>) {
+      const clock = { t: NOW.getTime() };
+      const d = trendsDeps({ now: () => new Date(clock.t), ...over(clock) });
+      return { d, elapsed: () => clock.t - NOW.getTime() };
+    }
+    const aborted = () => {
+      const e = new Error('The operation was aborted.');
+      e.name = 'AbortError';
+      return e;
+    };
+
+    test('every list hangs to its timeout: fails source well inside the job timeout', async () => {
+      let calls = 0;
+      const { d, elapsed } = clocked((clock) => ({
+        fetchHashtagList: async () => { calls++; clock.t += LIST_TIMEOUT_MS; throw aborted(); },
+      }));
+      expect(await runTrends(payload, d)).toEqual({ status: 'failed', code: 'source' });
+      expect(calls).toBe(2);
+      expect(elapsed()).toBeLessThan(JOB_TIMEOUT_MS);
+      expect(d.log.some((l) => l.startsWith('resolve:'))).toBe(false);
+    });
+
+    test('three industry lists in a row fail: stops with source instead of walking all 44', async () => {
+      const base = trendsDeps();
+      let industryCalls = 0;
+      const { d, elapsed } = clocked((clock) => ({
+        fetchHashtagList: async (p, i) => {
+          if (i === null) return base.fetchHashtagList(p, i);
+          industryCalls++;
+          clock.t += 1_000;
+          throw new CreativeCenterError('creative center http 503');
+        },
+      }));
+      expect(await runTrends(payload, d)).toEqual({ status: 'failed', code: 'source' });
+      expect(industryCalls).toBe(3 * 2);
+      expect(elapsed()).toBeLessThan(JOB_TIMEOUT_MS);
+    });
+
+    test('slow but alternating lists hit the list deadline and fail before the job timeout', async () => {
+      const base = trendsDeps();
+      let n = 0;
+      const { d, elapsed } = clocked((clock) => ({
+        fetchHashtagList: async (p, i) => {
+          clock.t += LIST_TIMEOUT_MS;
+          if (i !== null && n++ % 2 === 0) throw new CreativeCenterError('creative center http 503');
+          return base.fetchHashtagList(p, i);
+        },
+      }));
+      expect(await runTrends(payload, d)).toEqual({ status: 'failed', code: 'source' });
+      expect(elapsed()).toBeGreaterThanOrEqual(TRENDS_LIST_DEADLINE_MS);
+      expect(elapsed()).toBeLessThanOrEqual(TRENDS_LIST_DEADLINE_MS + LIST_TIMEOUT_MS);
+      expect(d.log.some((l) => l.startsWith('resolve:'))).toBe(false);
+    });
+
+    test('slow tag samples stop at the sample deadline and the ranking still ships', async () => {
+      const { d, elapsed } = clocked((clock) => ({
+        fetchHashtagList: async (p, i) => {
+          clock.t += 1_000;
+          return trendsDeps().fetchHashtagList(p, i);
+        },
+        resolveChallengeId: async (t) => { d.log.push(`resolve:${t}`); clock.t += 60_000; return '1'; },
+      }));
+      const o = await runTrends(payload, d);
+      expect(o.status).toBe('done');
+      if (o.status !== 'done') return;
+      expect(o.body.hashtags).toHaveLength(6);
+      expect(o.sampledTags).toBeLessThan(4);
+      expect(elapsed()).toBeLessThanOrEqual(TRENDS_SAMPLE_DEADLINE_MS + 60_000);
+      expect(elapsed()).toBeLessThan(JOB_TIMEOUT_MS);
+    });
   });
 });
 

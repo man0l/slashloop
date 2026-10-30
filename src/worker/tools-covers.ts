@@ -24,7 +24,7 @@ export interface CoverTarget {
 }
 
 export interface CoverDeps {
-  fetch: typeof fetch;
+  fetch: (input: string, init?: RequestInit) => Promise<Response>;
   siteUrl: string;
   secret: string;
   nowSeconds(): number;

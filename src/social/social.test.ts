@@ -10,6 +10,7 @@ import { TikTokProvider } from './providers/tiktok.js';
 import { YouTubeProvider } from './providers/youtube.js';
 import { InstagramProvider } from './providers/instagram.js';
 import { ThreadsProvider } from './providers/threads.js';
+import { PinterestProvider } from './providers/pinterest.js';
 import { mediaWithScrubbedUrl, nextScrubItem } from './scrub.js';
 
 // ── OAuth state (HMAC, stateless) ───────────────────────────────────────────
@@ -224,6 +225,97 @@ describe('threads provider', () => {
     );
     expect(url.startsWith('https://www.threads.com/oauth/authorize?')).toBe(true);
     expect(url).toContain('scope=threads_basic%2Cthreads_content_publish');
+  });
+});
+
+// ── Pinterest ───────────────────────────────────────────────────────────────
+
+describe('pinterest provider', () => {
+  const provider = new PinterestProvider();
+  const photo = { type: 'image' as const, url: 'https://x/pic.jpg' };
+  const video = { type: 'video' as const, url: 'https://x/clip.mp4', thumbnail: 'https://x/cover.jpg' };
+
+  test('checkValidity requires a board, 1 video or 1..5 images, title/description limits', () => {
+    expect(provider.checkValidity({ message: 'hi', settings: {}, media: [photo] })).toMatch(/board/i);
+    expect(provider.checkValidity({ message: 'hi', settings: { boardId: 'b1' }, media: [] })).not.toBe(true);
+    expect(provider.checkValidity({ message: 'hi', settings: { boardId: 'b1' }, media: [photo] })).toBe(true);
+    expect(provider.checkValidity({ message: 'hi', settings: { boardId: 'b1' }, media: Array(5).fill(photo) })).toBe(true);
+    expect(provider.checkValidity({ message: 'hi', settings: { boardId: 'b1' }, media: Array(6).fill(photo) })).not.toBe(true);
+    expect(provider.checkValidity({ message: 'hi', settings: { boardId: 'b1' }, media: [video] })).toBe(true);
+    expect(provider.checkValidity({ message: 'hi', settings: { boardId: 'b1' }, media: [video, photo] })).not.toBe(true);
+    expect(provider.checkValidity({ message: 'hi', settings: { boardId: 'b1', title: 'x'.repeat(101) }, media: [photo] })).toMatch(/title/i);
+    expect(provider.checkValidity({ message: 'x'.repeat(801), settings: { boardId: 'b1' }, media: [photo] })).toMatch(/description/i);
+    expect(provider.checkValidity({ message: 'hi', settings: { boardId: 'b1', link: 'not a url' }, media: [photo] })).toMatch(/link/i);
+    expect(provider.checkValidity({ message: 'hi', settings: { boardId: 'b1', link: 'https://slashloop.dev' }, media: [photo] })).toBe(true);
+  });
+
+  test('classify maps Pinterest v5 error codes and statuses', () => {
+    expect(provider.classify('{"code":2,"message":"Authentication failed."}', 401)).toBe('refresh-token');
+    expect(provider.classify('{"code":3,"message":"Authorization failed."}', 403)).toBe('reconnect');
+    expect(provider.classify('{"code":29,"message":"Too many requests"}', 429)).toBe('retry');
+    expect(provider.classify('{"code":1,"message":"Invalid parameter"}', 400)).toBe('bad-body');
+    expect(provider.classify('{}', 500)).toBe('retry');
+  });
+
+  test('generateAuthUrl points at pinterest.com/oauth with the write scopes', async () => {
+    const url = await provider.generateAuthUrl(
+      { pinterest: { clientId: '1631671', clientSecret: 'CS' } },
+      'https://mcp.slashloop.dev/api/social/callback/pinterest',
+      'ST',
+    );
+    expect(url.startsWith('https://www.pinterest.com/oauth/?')).toBe(true);
+    expect(url).toContain('client_id=1631671');
+    expect(url).toContain('scope=boards%3Aread%2Cpins%3Aread%2Cpins%3Awrite%2Cuser_accounts%3Aread');
+    expect(url).toContain('response_type=code');
+    expect(url).toContain('state=ST');
+  });
+
+  test('generateAuthUrl fails loudly when the Pinterest app is not configured', async () => {
+    await expect(provider.generateAuthUrl({}, 'https://x/cb', 'ST')).rejects.toThrow(/not configured/);
+  });
+
+  test('image pins are created in postPending and report ready immediately', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ id: '987' }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      const ctx = {
+        token: 'tok',
+        post: { id: 'p1', message: 'desc', settings: { boardId: 'b1', title: 'T', link: 'https://slashloop.dev' }, media: [photo] },
+        integration: { internalId: 'u1', profile: 'manol' },
+      };
+      const pending = await provider.postPending(ctx);
+      expect(pending.pendingData.pinId).toBe('987');
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe('https://api.pinterest.com/v5/pins');
+      const body = JSON.parse(String(calls[0].init?.body));
+      expect(body.board_id).toBe('b1');
+      expect(body.title).toBe('T');
+      expect(body.link).toBe('https://slashloop.dev');
+      expect(body.media_source).toEqual({ source_type: 'image_url', url: photo.url });
+      expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer tok');
+
+      const status = await provider.checkPostStatus({ ...ctx, pendingData: pending.pendingData });
+      expect(status.status).toBe('ready');
+      const done = await provider.finalizePost({ ...ctx, pendingData: pending.pendingData });
+      expect(done).toEqual({ status: 'completed', postId: '987', releaseUrl: 'https://www.pinterest.com/pin/987/' });
+      expect(calls).toHaveLength(1); // finalize never re-creates an existing pin
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test('video pins without a cover image are rejected before any upload', async () => {
+    await expect(
+      provider.postPending({
+        token: 'tok',
+        post: { id: 'p1', message: 'desc', settings: { boardId: 'b1' }, media: [{ type: 'video', url: 'https://x/clip.mp4' }] },
+        integration: { internalId: 'u1', profile: 'manol' },
+      }),
+    ).rejects.toThrow(/cover image/i);
   });
 });
 

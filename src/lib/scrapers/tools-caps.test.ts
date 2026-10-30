@@ -11,12 +11,12 @@ afterEach(() => {
 });
 
 describe('tools workspace proxy caps', () => {
-  test('defaults: 10 GB/month and 400 MB/day for the tools workspace only', () => {
+  test('defaults: 2.5 GB/month and 100 MB/day (wire bytes, 1/4 of the old decoded caps) for the tools workspace only', () => {
     process.env.TOOLS_WORKSPACE_ID = 'ws-tools';
     delete process.env.TOOLS_PROXY_CAP_GB;
     delete process.env.TOOLS_PROXY_DAILY_CAP_MB;
-    expect(workspaceCapBytes('ws-tools')).toBe(10 * 1024 ** 3);
-    expect(workspaceDailyCapBytes('ws-tools')).toBe(400 * 1024 * 1024);
+    expect(workspaceCapBytes('ws-tools')).toBe(2.5 * 1024 ** 3);
+    expect(workspaceDailyCapBytes('ws-tools')).toBe(100 * 1024 * 1024);
     expect(workspaceCapBytes('other')).toBe(trafficCapBytes());
     expect(workspaceDailyCapBytes('other')).toBeNull();
   });

@@ -6,6 +6,8 @@
 import { describe, expect, test, mock, beforeEach } from 'bun:test';
 import { z } from 'zod/v4';
 
+const SOCIAL_TOOL_NAMES = ['list_social_accounts', 'upload_social_media', 'create_social_post', 'list_social_posts', 'reschedule_social_post', 'delete_social_post'];
+
 const PRIMARY = { id: 'ws-primary', name: 'My workspace' };
 const SECOND = { id: 'ws-second', name: 'faceless maxxing' };
 const SHARED = { id: 'ws-shared', name: 'Shared' };
@@ -97,9 +99,11 @@ describe('registered tools accept workspaceId', () => {
     const names = Object.keys(tools);
     expect(names.length).toBeGreaterThan(40);
 
+    // Social scheduler data is keyed by account (owner), not workspace.
+    const accountScoped = new Set(['list_workspaces', 'whoami', ...SOCIAL_TOOL_NAMES]);
     const missing: string[] = [];
     for (const [name, tool] of Object.entries(tools)) {
-      if (name === 'list_workspaces' || name === 'whoami') continue;
+      if (accountScoped.has(name)) continue;
       const shape = (tool.inputSchema as z.ZodObject<{ workspaceId?: z.ZodTypeAny }>)
         ?.shape?.workspaceId;
       const isOptionalString =
