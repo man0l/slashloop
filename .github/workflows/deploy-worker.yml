@@ -163,12 +163,13 @@ jobs:
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           STRIPE_SECRET_API_KEY: ${{ secrets.STRIPE_SECRET_API_KEY }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+          STRIPE_TEST_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
+          # Folded into the single STRIPE_PRICES binding by sync-worker-secrets.mjs.
           STRIPE_PRICE_CREATOR_MONTH: ${{ vars.STRIPE_PRICE_CREATOR_MONTH }}
           STRIPE_PRICE_CREATOR_YEAR: ${{ vars.STRIPE_PRICE_CREATOR_YEAR }}
           STRIPE_PRICE_PRO_MONTH: ${{ vars.STRIPE_PRICE_PRO_MONTH }}
           STRIPE_PRICE_PRO_YEAR: ${{ vars.STRIPE_PRICE_PRO_YEAR }}
-          STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
-          STRIPE_TEST_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
           STRIPE_TEST_PRICE_CREATOR_MONTH: ${{ vars.STRIPE_TEST_PRICE_CREATOR_MONTH }}
           STRIPE_TEST_PRICE_CREATOR_YEAR: ${{ vars.STRIPE_TEST_PRICE_CREATOR_YEAR }}
           STRIPE_TEST_PRICE_PRO_MONTH: ${{ vars.STRIPE_TEST_PRICE_PRO_MONTH }}
@@ -282,6 +283,26 @@ jobs:
           # Unauthenticated MCP must 401, never 500
           test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/mcp")" = "401"
           echo "smoke: ok"
+
+      # Frees the eight per-name price slots the sync step just folded into
+      # STRIPE_PRICES. Deliberately AFTER deploy + smoke: until the new build
+      # is live, the old build reads exactly these names. Only names whose
+      # GitHub variable is set (so their id is in STRIPE_PRICES) are deleted.
+      - name: Prune folded Stripe price secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STRIPE_PRICE_CREATOR_MONTH: ${{ vars.STRIPE_PRICE_CREATOR_MONTH }}
+          STRIPE_PRICE_CREATOR_YEAR: ${{ vars.STRIPE_PRICE_CREATOR_YEAR }}
+          STRIPE_PRICE_PRO_MONTH: ${{ vars.STRIPE_PRICE_PRO_MONTH }}
+          STRIPE_PRICE_PRO_YEAR: ${{ vars.STRIPE_PRICE_PRO_YEAR }}
+          STRIPE_TEST_PRICE_CREATOR_MONTH: ${{ vars.STRIPE_TEST_PRICE_CREATOR_MONTH }}
+          STRIPE_TEST_PRICE_CREATOR_YEAR: ${{ vars.STRIPE_TEST_PRICE_CREATOR_YEAR }}
+          STRIPE_TEST_PRICE_PRO_MONTH: ${{ vars.STRIPE_TEST_PRICE_PRO_MONTH }}
+          STRIPE_TEST_PRICE_PRO_YEAR: ${{ vars.STRIPE_TEST_PRICE_PRO_YEAR }}
+        run: |
+          set -o pipefail
+          bun scripts/prune-worker-secrets.mjs --legacy-stripe-prices 2>&1 | tee -a "$WORKFLOW_LOG"
 
       # Runs even when an earlier step fails — errors/warnings are most
       # valuable exactly then. Never fails the build (the script exits 0).

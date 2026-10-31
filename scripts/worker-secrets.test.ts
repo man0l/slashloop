@@ -4,9 +4,13 @@ import { pruneTargets } from './prune-worker-secrets.mjs';
 import {
   FREE_VAR_CAP,
   MANIFEST,
+  STRIPE_PRICES_BINDING,
+  STRIPE_PRICE_VARS,
   WORKER_EXCLUDED,
+  buildStripePrices,
   countedVarNames,
   isPlaceholder,
+  legacyPriceNamesToPrune,
   projectCountedVarNames,
   pushedWorkerNames,
   readWorkerSettings,
@@ -87,17 +91,18 @@ describe('MANIFEST / WORKER_EXCLUDED', () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
-  test('wrangler.jsonc vars parse out of jsonc and include the read-budget knob', () => {
+  test('wrangler.jsonc vars parse out of jsonc and stay minimal (each costs a slot)', () => {
     expect(wranglerVarNames().sort()).toEqual([
       'CLOUDFLARE_ACCOUNT_ID',
-      'D1_DAILY_READ_LIMIT',
       'DB_DIALECT',
     ]);
   });
 });
 
 describe('buildPayload', () => {
-  const everyManifestVarSet = () => Object.fromEntries(Object.keys(MANIFEST).map((name) => [name, 'v']));
+  const everyManifestVarSet = () => Object.fromEntries(
+    [...Object.keys(MANIFEST), ...STRIPE_PRICE_VARS].map((name) => [name, 'v']),
+  );
 
   test('drops the excluded names even when GitHub has a value for each', () => {
     const { payload } = buildPayload(everyManifestVarSet());
@@ -112,7 +117,8 @@ describe('buildPayload', () => {
     expect(payload).toEqual({ STRIPE_SECRET_KEY: 'sk_live_x' });
     expect(skipped).toContain('CRON_SECRET');
     // Everything the env does not set is skipped, not pushed with an empty value.
-    expect(skipped).toHaveLength(Object.keys(MANIFEST).length - 1);
+    // +1: STRIPE_PRICES is derived, so it is reported as skipped too.
+    expect(skipped).toHaveLength(Object.keys(MANIFEST).length - 1 + 1);
   });
 
   test('skips unset, blank and placeholder values', () => {
@@ -220,5 +226,49 @@ describe('readWorkerSettings', () => {
     const fetchImpl = async () => ({ ok: false, status: 403, statusText: 'Forbidden', json: async () => ({}) });
     await expect(readWorkerSettings({ accountId: 'acct', token: 'tok', fetchImpl: fetchImpl as never }))
       .rejects.toThrow(/403/);
+  });
+});
+
+describe('STRIPE_PRICES consolidation', () => {
+  const allPrices = () => Object.fromEntries(STRIPE_PRICE_VARS.map((name) => [name, `price_${name}`]));
+
+  test('the eight per-name vars are no longer pushed individually', () => {
+    expect(STRIPE_PRICE_VARS).toHaveLength(8);
+    const pushed = pushedWorkerNames();
+    for (const name of STRIPE_PRICE_VARS) expect(pushed).not.toContain(name);
+    expect(pushed).toContain(STRIPE_PRICES_BINDING);
+  });
+
+  test('buildPayload folds set price vars into one JSON binding keyed by legacy name', () => {
+    const { payload } = buildPayload(allPrices());
+    expect(Object.keys(payload)).toEqual([STRIPE_PRICES_BINDING]);
+    expect(JSON.parse(payload.STRIPE_PRICES)).toEqual(allPrices());
+  });
+
+  test('leaves STRIPE_PRICES alone when no price var is set, and drops placeholders', () => {
+    expect(buildPayload({}).payload).not.toHaveProperty(STRIPE_PRICES_BINDING);
+    expect(buildStripePrices({ STRIPE_PRICE_PRO_MONTH: 'changeme', STRIPE_PRICE_PRO_YEAR: '  ' })).toBeNull();
+    expect(buildStripePrices({ STRIPE_PRICE_PRO_MONTH: ' price_a ' })).toEqual({ STRIPE_PRICE_PRO_MONTH: 'price_a' });
+  });
+
+  test('the legacy names are pruned only once STRIPE_PRICES is bound and only if folded', () => {
+    const live = [...STRIPE_PRICE_VARS, 'CRON_SECRET'];
+    // New binding not live yet: delete nothing.
+    expect(legacyPriceNamesToPrune({ liveNames: live, env: allPrices() })).toEqual([]);
+    // Live and every id folded: all eight go, nothing else.
+    expect(legacyPriceNamesToPrune({ liveNames: [...live, STRIPE_PRICES_BINDING], env: allPrices() }))
+      .toEqual([...STRIPE_PRICE_VARS].sort());
+    // Test-mode ids unknown to GitHub keep their Worker secret (stripe.ts falls back to it).
+    const liveOnly = Object.fromEntries(STRIPE_PRICE_VARS.filter((n) => !n.includes('TEST')).map((n) => [n, 'p']));
+    expect(legacyPriceNamesToPrune({ liveNames: [...live, STRIPE_PRICES_BINDING], env: liveOnly }))
+      .toEqual(STRIPE_PRICE_VARS.filter((n) => !n.includes('TEST')).sort());
+  });
+
+  test('the live inventory fits the 64 cap after the first deploy and has 8 free after the prune', () => {
+    const live = LIVE_WORKER_VARS_2026_10_01.filter((n) => !WORKER_EXCLUDED.has(n) && n !== 'SOCIAL_SITE_URL')
+      .concat('CLOUDFLARE_STREAM_TOKEN', 'GALLERY_LINK_SECRET');
+    const afterDeploy = projectCountedVarNames({ liveNames: [...new Set(live)], addedNames: [STRIPE_PRICES_BINDING] });
+    const afterPrune = afterDeploy.filter((n) => !STRIPE_PRICE_VARS.includes(n));
+    expect(afterDeploy.length - afterPrune.length).toBe(8);
   });
 });
