@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import { webItemToApifyShape, type CreatorIdentity } from '../lib/scrapers/tiktok-web.js';
-import { coverTargets } from './tools-covers.js';
+import { coverTargets, coverUrlOf } from './tools-covers.js';
 import {
   classifyProfileMiss,
   classifyToolsError,
@@ -293,6 +293,10 @@ export async function runProfile(handle: string, deps: ProfileLiteDeps): Promise
     const result = shapeProfile(identity, handle, items, deps.now());
     if (deps.uploadCovers) {
       const targets = coverTargets(items, result.outliers.map((o) => o.id));
+      if (!targets.length) {
+        const withCover = items.filter((it) => coverUrlOf(it) !== null).length;
+        console.log(`[tools] covers for @${handle}: targets=0 outliers=${result.outliers.length} posts=${items.length} withCoverUrl=${withCover}`);
+      }
       result.covers = await deps.uploadCovers(handle, targets).catch(() => []);
     }
     return { status: 'done', result };
