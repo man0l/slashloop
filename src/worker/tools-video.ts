@@ -45,6 +45,10 @@ export interface VideoResult {
   text: string;
   segments: TranscriptSegment[];
   hook: HookResult | null;
+  /** Lowercased author handle from the watch URL, for the "Watch on TikTok" link. */
+  handle: string;
+  /** The site stored this video's cover at /tools/media/cover/<videoId> (SLA-1148); false shows a placeholder. */
+  hasCover: boolean;
   bytes: number;
   takenAt: string;
 }
@@ -69,6 +73,11 @@ export function parseVideoPayload(p: { videoUrl?: unknown; videoId?: unknown; ca
   if (!m || m[2] !== videoId) return null;
   const caption = typeof p.caption === 'string' ? p.caption.trim().slice(0, MAX_CAPTION_CHARS) : '';
   return { videoUrl, videoId, caption };
+}
+
+/** Lowercased author handle of a payload that already passed parseVideoPayload. */
+export function handleOfVideoUrl(videoUrl: string): string {
+  return (WATCH_URL_RE.exec(videoUrl)?.[1] ?? '').toLowerCase();
 }
 
 // --- error mapping ----------------------------------------------------------
@@ -193,7 +202,9 @@ export interface VideoDeps {
   now(): Date;
   assertBudget(estimatedBytes: number): Promise<void>;
   /** Writes the MP4 to outputPath. `slideshow` is set when the post was photos (no MP4 written). */
-  download(opts: { videoUrl: string; outputPath: string }): Promise<{ bytes: number; slideshow: boolean }>;
+  download(opts: { videoUrl: string; outputPath: string }): Promise<{ bytes: number; slideshow: boolean; coverUrl?: string | null }>;
+  /** Re-hosts the cover on the site; true when it was stored. Unset disables covers. Never throws the job. */
+  uploadCover?(payload: VideoPayload, coverUrl: string): Promise<boolean>;
   /** 16 kHz mono MP3 path, or null when ffmpeg is not installed. Rejects when ffmpeg fails. */
   extractAudio(inputPath: string, outputPath: string): Promise<string | null>;
   /** Seconds of media in the file, or null when ffprobe is unavailable. */
@@ -224,6 +235,7 @@ export async function runVideoLookup(payload: VideoPayload, deps: VideoDeps): Pr
     const dl = await deps.download({ videoUrl: payload.videoUrl, outputPath: mp4 });
     bytes = dl.bytes;
     if (dl.slideshow) return { status: 'failed', code: 'slideshow' };
+    const coverUrl = dl.coverUrl ?? null;
 
     const duration = await deps.probeDuration(mp4);
     if (duration !== null && duration > MAX_AUDIO_SECONDS) return { status: 'failed', code: 'too_long' };
@@ -243,6 +255,8 @@ export async function runVideoLookup(payload: VideoPayload, deps: VideoDeps): Pr
         deps.log(`hook step failed: ${(err as Error).message}`);
       }
     }
+    // Only a transcript worth showing earns a cover push; the cover is a nicety, so a failure costs nothing else.
+    const hasCover = coverUrl && deps.uploadCover ? await deps.uploadCover(payload, coverUrl).catch(() => false) : false;
     return {
       status: 'done',
       result: {
@@ -252,6 +266,8 @@ export async function runVideoLookup(payload: VideoPayload, deps: VideoDeps): Pr
         text: whisper.text,
         segments: whisper.segments,
         hook,
+        handle: handleOfVideoUrl(payload.videoUrl),
+        hasCover,
         bytes,
         takenAt: deps.now().toISOString(),
       },
@@ -302,7 +318,7 @@ export function defaultVideoDeps(workspaceId: string, env: NodeJS.ProcessEnv = p
       ]);
       try {
         const r = await downloadVideo({ workspaceId, videoUrl, outputPath, skipSlideshow: true });
-        return { bytes: r.bytesUsed ?? r.sizeBytes, slideshow: false };
+        return { bytes: r.bytesUsed ?? r.sizeBytes, slideshow: false, coverUrl: r.coverUrl ?? null };
       } catch (err) {
         if (err instanceof SlideshowPostError) return { bytes: 0, slideshow: true };
         throw err;

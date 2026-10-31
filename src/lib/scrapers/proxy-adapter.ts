@@ -463,6 +463,7 @@ export const proxyAdapter: ScraperAdapter = {
         actorRunId: null,
         provider: PROXY_PROVIDER_NAME,
         bytesUsed: bytes,
+        coverUrl: [video?.cover, video?.originCover].find((u): u is string => typeof u === 'string' && u !== '') ?? null,
       };
     });
   },

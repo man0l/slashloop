@@ -194,6 +194,8 @@ describe('runVideoLookup', () => {
     if (out.status !== 'done') throw new Error('unreachable');
     expect(out.result).toMatchObject({
       videoId: PAYLOAD.videoId,
+      handle: 'some.creator',
+      hasCover: false,
       durationSec: 31.5,
       language: 'en',
       bytes: 4_200_000,
@@ -204,6 +206,47 @@ describe('runVideoLookup', () => {
     expect(h.logs[0]).toContain('bytes=4200000');
     expect(h.logs[0]).toContain('whisperSec=31.5');
     expect(h.logs[0]).toContain('tmpLeft=[]');
+  });
+
+  test('pushes the cover after the transcript and reports hasCover; no uploader means hasCover false', async () => {
+    const pushed: string[] = [];
+    const h = videoHarness({
+      download: async () => ({ bytes: 1, slideshow: false, coverUrl: 'https://p16.tiktokcdn.com/c.jpg' }),
+      uploadCover: async (p, url) => { h.calls.push('cover'); pushed.push(`${p.videoId} ${url}`); return true; },
+    });
+    const out = await runVideoLookup(PAYLOAD, h.deps);
+    expect(out.status === 'done' && out.result.hasCover).toBe(true);
+    expect(pushed).toEqual([`${PAYLOAD.videoId} https://p16.tiktokcdn.com/c.jpg`]);
+    expect(h.calls.indexOf('cover')).toBeGreaterThan(h.calls.indexOf('whisper'));
+
+    const plain = await runVideoLookup(PAYLOAD, videoHarness({ download: async () => ({ bytes: 1, slideshow: false, coverUrl: 'https://p16.tiktokcdn.com/c.jpg' }) }).deps);
+    expect(plain.status === 'done' && plain.result.hasCover).toBe(false);
+  });
+
+  test('a page without a cover skips the push; a failing push never fails the transcript', async () => {
+    let pushes = 0;
+    const noCover = videoHarness({ uploadCover: async () => { pushes++; return true; } });
+    const a = await runVideoLookup(PAYLOAD, noCover.deps);
+    expect(pushes).toBe(0);
+    expect(a.status === 'done' && a.result.hasCover).toBe(false);
+
+    const broken = videoHarness({
+      download: async () => ({ bytes: 1, slideshow: false, coverUrl: 'https://p16.tiktokcdn.com/c.jpg' }),
+      uploadCover: async () => { throw new Error('site down'); },
+    });
+    const b = await runVideoLookup(PAYLOAD, broken.deps);
+    expect(b.status === 'done' && b.result.hasCover).toBe(false);
+  });
+
+  test('a failed lookup pushes no cover', async () => {
+    let pushes = 0;
+    const h = videoHarness({
+      download: async () => ({ bytes: 1, slideshow: false, coverUrl: 'https://p16.tiktokcdn.com/c.jpg' }),
+      probeDuration: async () => MAX_AUDIO_SECONDS + 1,
+      uploadCover: async () => { pushes++; return true; },
+    });
+    expect(await runVideoLookup(PAYLOAD, h.deps)).toEqual({ status: 'failed', code: 'too_long' });
+    expect(pushes).toBe(0);
   });
 
   test('without ffmpeg the MP4 itself goes to Whisper', async () => {
@@ -297,7 +340,7 @@ describe('processToolsJob tools-video', () => {
     }),
   });
 
-  function harness(video: VideoDeps) {
+  function harness(video: VideoDeps, coverFetch?: typeof fetch) {
     const posted: any[] = [];
     const completed: string[] = [];
     const recorded: unknown[] = [];
@@ -305,6 +348,7 @@ describe('processToolsJob tools-video', () => {
       env: { TOOLS_WORKSPACE_ID: WS, TOOLS_CALLBACK_SECRET: 'shh' } as NodeJS.ProcessEnv,
       now: () => NOW,
       measure: async (fn) => ({ value: await fn(), bytes: 1 }),
+      coverFetch,
       buildLookup: () => { throw new Error('video job never builds the profile lookup'); },
       buildVideo: () => video,
       recordBytes: async (...a) => { recorded.push(a); },
@@ -327,6 +371,62 @@ describe('processToolsJob tools-video', () => {
     expect(h.posted[0]).toMatchObject({ requestId: 'req-1', status: 'done', result: { videoId: PAYLOAD.videoId, language: 'en', bytes: 4_200_000 } });
     expect(h.recorded).toEqual([]);
     expect(h.completed).toEqual(['job-12345678']);
+  });
+
+  describe('cover', () => {
+    const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
+    const withCover = (coverUrl: string) => videoHarness({ download: async () => ({ bytes: 1, slideshow: false, coverUrl }) }).deps;
+
+    function fakeFetch() {
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      const impl = (async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        if (url.startsWith('https://slashloop.dev/')) {
+          const stored = (JSON.parse(String(init?.body)).covers as Array<{ id: string }>).map((c) => c.id);
+          return new Response(JSON.stringify({ stored }), { status: 200 });
+        }
+        return new Response(JPEG, { status: 200, headers: { 'content-type': 'image/jpeg' } });
+      }) as unknown as typeof fetch;
+      return { impl, calls };
+    }
+
+    test('downloads the cover from the CDN, pushes it signed under the author handle and flags hasCover', async () => {
+      const f = fakeFetch();
+      const h = harness(withCover('https://p16-sign.tiktokcdn.com/cover.jpeg?x=1'), f.impl);
+      await processToolsJob(job(), h.deps);
+      expect(f.calls[0]!.url).toBe('https://p16-sign.tiktokcdn.com/cover.jpeg?x=1');
+      const push = f.calls[1]!;
+      expect(push.url).toBe('https://slashloop.dev/tools/api/internal/covers');
+      expect(JSON.parse(String(push.init?.body))).toEqual({
+        handle: 'some.creator',
+        covers: [{ id: PAYLOAD.videoId, contentType: 'image/jpeg', data: JPEG.toString('base64') }],
+      });
+      expect(Object.keys(push.init?.headers as Record<string, string>).some((k) => k.toLowerCase().includes('signature'))).toBe(true);
+      expect(h.posted[0].result.hasCover).toBe(true);
+    });
+
+    test('a cover URL outside TikTok image CDNs is never fetched', async () => {
+      const f = fakeFetch();
+      const h = harness(withCover('https://evil.example/cover.jpg'), f.impl);
+      await processToolsJob(job(), h.deps);
+      expect(f.calls).toEqual([]);
+      expect(h.posted[0]).toMatchObject({ status: 'done', result: { hasCover: false } });
+    });
+
+    test('no direct fetch configured: transcript is delivered without a cover', async () => {
+      const h = harness(withCover('https://p16.tiktokcdn.com/c.jpg'));
+      await processToolsJob(job(), h.deps);
+      expect(h.posted[0]).toMatchObject({ status: 'done', result: { hasCover: false } });
+    });
+
+    test('a rejected push still delivers the transcript', async () => {
+      const impl = (async (url: string) =>
+        url.startsWith('https://slashloop.dev/') ? new Response('no', { status: 502 }) : new Response(JPEG, { headers: { 'content-type': 'image/jpeg' } })) as unknown as typeof fetch;
+      const h = harness(withCover('https://p16.tiktokcdn.com/c.jpg'), impl);
+      const r = await processToolsJob(job(), h.deps);
+      expect(r.ok).toBe(true);
+      expect(h.posted[0]).toMatchObject({ status: 'done', result: { hasCover: false } });
+    });
   });
 
   test('slideshow is reported as failed/slideshow and does not trip the breaker', async () => {

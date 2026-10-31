@@ -15,10 +15,10 @@ import { canonicalString, hmacSign, SLQ_HEADERS } from '../queue/auth.js';
 import { extractRehydrationJson, type CreatorIdentity, type EmbedCreatorRead, type TikTokHttp } from '../lib/scrapers/tiktok-web.js';
 import { isWafChallenge } from '../lib/scrapers/waf.js';
 import type { MediaJobRow } from '../lib/jobs.js';
-import { uploadCovers, uploadTrendCovers, type AuthoredCoverTarget, type CoverTarget } from './tools-covers.js';
+import { coverUrlOf, uploadCovers, uploadTrendCovers, type AuthoredCoverTarget, type CoverTarget } from './tools-covers.js';
 import { MIN_ENGAGEMENT_POSTS, PROFILE_HYDRATE_PAGES, runProfile } from './tools-profile.js';
 import { parseTrendsPayload, runTrends, type TrendsDeps } from './tools-trends.js';
-import { defaultVideoDeps, parseVideoPayload, runVideoLookup, type VideoDeps, type VideoOutcome } from './tools-video.js';
+import { defaultVideoDeps, handleOfVideoUrl, parseVideoPayload, runVideoLookup, type VideoDeps, type VideoOutcome } from './tools-video.js';
 
 export type ToolsErrorCode = 'budget' | 'not_found' | 'blocked' | 'source' | 'slideshow' | 'too_long' | 'error';
 
@@ -470,7 +470,26 @@ export async function processToolsJob(
       outcome = { status: 'failed', code: 'not_found' };
     } else {
       // downloadVideo meters and records its own proxy bytes against the workspace; recording again would double-bill.
-      outcome = await runVideoLookup(video, deps.buildVideo(job.workspaceId));
+      const coverFetch = deps.coverFetch;
+      const videoDeps = deps.buildVideo(job.workspaceId);
+      // The site's cover store is keyed by post id; the handle only has to name a non-removed creator.
+      const handle = handleOfVideoUrl(video.videoUrl);
+      if (coverFetch && HANDLE_RE.test(handle)) {
+        videoDeps.uploadCover = async (p, coverUrl) => {
+          // Same TikTok-CDN allow-list as the profile covers: the URL came from a scraped page.
+          const safe = coverUrlOf({ video: { cover: coverUrl } });
+          if (!safe) return false;
+          const stored = await uploadCovers(handle, [{ id: p.videoId, url: safe }], {
+            fetch: coverFetch,
+            siteUrl: (deps.env.TOOLS_SITE_URL ?? '').trim() || DEFAULT_SITE_URL,
+            secret,
+            nowSeconds: deps.callback.nowSeconds,
+            nonce: deps.callback.nonce,
+          });
+          return stored.includes(p.videoId);
+        };
+      }
+      outcome = await runVideoLookup(video, videoDeps);
       if (outcome.status === 'done') doneNote = { durationSec: outcome.result.durationSec, bytes: outcome.result.bytes };
     }
   } else {
