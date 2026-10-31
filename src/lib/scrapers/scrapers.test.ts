@@ -990,6 +990,21 @@ describe('runTikTokProxyScrape (shipped creator path)', () => {
     expect(await run(new Set(), 4)).toEqual({ reads: 4, filled: 4 });
   });
 
+  test('hydrateItemStats keeps the embed cover when the video page ships an empty one', async () => {
+    const { withTikTokHttp } = await import('./tiktok-web.js');
+    const struct = { stats: { diggCount: 7 }, video: { duration: 9, cover: '', originCover: 'https://p16.tiktokcdn.com/o.jpeg' } };
+    const html = `<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">${JSON.stringify({
+      __DEFAULT_SCOPE__: { 'webapp.video-detail': { itemInfo: { itemStruct: struct } } },
+    })}</script>`;
+    const http: TikTokHttp = {
+      async getJson() { return { json: null, status: 200, ok: true, text: '', bytes: 0 }; },
+      async getText() { return { json: null, status: 200, ok: true, text: html, bytes: 1 }; },
+    };
+    const items = [{ id: '1000001', author: { uniqueId: 'someone' }, stats: { playCount: 10 }, video: { cover: 'https://p16.tiktokcdn.com/c.jpeg' } }];
+    const [out] = await withTikTokHttp(http, () => hydrateItemStats(items, 2));
+    expect(out.video).toMatchObject({ duration: 9, cover: 'https://p16.tiktokcdn.com/c.jpeg', originCover: 'https://p16.tiktokcdn.com/o.jpeg' });
+  });
+
   test('prefers the embed playlist when Frontity videoList is present', async () => {
     clearLookupCaches();
     const payload = {

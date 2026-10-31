@@ -979,7 +979,11 @@ export async function hydrateItemStats(items: any[], maxPages = 8, enough = Infi
     if (struct.authorStats) item.authorStats = { ...item.authorStats, ...struct.authorStats };
     if (struct.desc && !item.desc) item.desc = struct.desc;
     if (struct.createTime && !item.createTime) item.createTime = struct.createTime;
-    if (struct.video) item.video = { ...item.video, ...struct.video };
+    if (struct.video) {
+      const kept = { cover: item.video?.cover, originCover: item.video?.originCover };
+      item.video = { ...item.video, ...struct.video };
+      for (const k of ['cover', 'originCover'] as const) if (!item.video[k] && kept[k]) item.video[k] = kept[k];
+    }
     if (struct.music && !item.music) item.music = struct.music;
     if (Array.isArray(struct.textExtra) && !item.textExtra) item.textExtra = struct.textExtra;
   }

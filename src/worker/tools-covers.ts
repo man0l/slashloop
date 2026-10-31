@@ -58,21 +58,31 @@ export function coverTargets(items: any[], outlierIds: readonly string[]): Cover
     .flatMap((id) => (byId.has(id) ? [{ id, url: byId.get(id) as string }] : []));
 }
 
-async function download(target: CoverTarget, deps: CoverDeps): Promise<{ id: string; contentType: string; data: string } | null> {
+type Downloaded = { id: string; contentType: string; data: string };
+type DownloadResult = { ok: true; cover: Downloaded } | { ok: false; id: string; reason: string };
+
+const reject = (id: string, reason: string): DownloadResult => ({ ok: false, id, reason });
+
+/** Short, URL-free reason strings so a log line never carries a signed URL. */
+async function download(target: CoverTarget, deps: CoverDeps): Promise<DownloadResult> {
   try {
     const res = await deps.fetch(target.url, { signal: AbortSignal.timeout(COVER_TIMEOUT_MS), redirect: 'error' });
-    if (!res.ok) return null;
+    if (!res.ok) return reject(target.id, `http_${res.status}`);
     const contentType = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
-    if (!CONTENT_TYPES.has(contentType)) return null;
+    if (!CONTENT_TYPES.has(contentType)) return reject(target.id, `type_${contentType.replace(/[^a-z0-9/+.-]/g, '') || 'none'}`);
     const declared = Number(res.headers.get('content-length') ?? 0);
-    if (declared > MAX_COVER_BYTES) return null;
+    if (declared > MAX_COVER_BYTES) return reject(target.id, 'too_large');
     const bytes = Buffer.from(await res.arrayBuffer());
-    if (bytes.length === 0 || bytes.length > MAX_COVER_BYTES) return null;
-    return { id: target.id, contentType, data: bytes.toString('base64') };
-  } catch {
-    return null;
+    if (bytes.length === 0) return reject(target.id, 'empty');
+    if (bytes.length > MAX_COVER_BYTES) return reject(target.id, 'too_large');
+    return { ok: true, cover: { id: target.id, contentType, data: bytes.toString('base64') } };
+  } catch (err) {
+    return reject(target.id, `error_${(err as Error).name || 'unknown'}`);
   }
 }
+
+const rejections = (results: DownloadResult[]): string =>
+  results.flatMap((r) => (r.ok ? [] : [`${r.id}:${r.reason}`])).join(',');
 
 async function push(handle: string | null, covers: object[], deps: CoverDeps, label: string): Promise<string[]> {
   const url = `${deps.siteUrl.replace(/\/+$/, '')}${SITE_COVERS_PATH}`;
@@ -85,21 +95,32 @@ async function push(handle: string | null, covers: object[], deps: CoverDeps, la
       signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
     });
     if (!res.ok) {
-      console.warn(`[tools] cover push for ${label} -> ${res.status}`);
+      console.warn(`[tools] cover push for ${label} -> ${res.status} sent=${covers.length}`);
       return [];
     }
     const stored = ((await res.json()) as { stored?: unknown }).stored;
-    return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string') : [];
+    const ids = Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string') : [];
+    const line = `[tools] cover push for ${label} -> ${res.status} sent=${covers.length} stored=${ids.length}`;
+    if (ids.length === 0) console.warn(`${line} stored_${Array.isArray(stored) ? 'empty' : 'missing'}`);
+    else console.log(line);
+    return ids;
   } catch (err) {
-    console.warn(`[tools] cover push for ${label} failed: ${(err as Error).message}`);
+    console.warn(`[tools] cover push for ${label} failed: ${(err as Error).message} sent=${covers.length}`);
     return [];
   }
 }
 
 /** Downloads and pushes the covers; returns the ids the site stored ([] on any failure). */
 export async function uploadCovers(handle: string, targets: readonly CoverTarget[], deps: CoverDeps): Promise<string[]> {
-  if (!targets.length || !deps.secret) return [];
-  const covers = (await Promise.all(targets.slice(0, MAX_COVERS).map((t) => download(t, deps)))).filter((c) => c !== null);
+  if (!deps.secret) {
+    console.warn(`[tools] covers for @${handle} skipped: no callback secret`);
+    return [];
+  }
+  if (!targets.length) return [];
+  const results = await Promise.all(targets.slice(0, MAX_COVERS).map((t) => download(t, deps)));
+  const covers = results.flatMap((r) => (r.ok ? [r.cover] : []));
+  const failed = rejections(results);
+  console.log(`[tools] covers for @${handle}: targets=${results.length} downloaded=${covers.length}${failed ? ` rejected=${failed}` : ''}`);
   if (!covers.length) return [];
   return push(handle, covers, deps, `@${handle}`);
 }
@@ -114,12 +135,18 @@ export interface AuthoredCoverTarget extends CoverTarget {
  * MAX_COVERS (the site's per-request cap). Returns every id the site stored; a failed batch only loses itself.
  */
 export async function uploadTrendCovers(targets: readonly AuthoredCoverTarget[], deps: CoverDeps): Promise<string[]> {
-  if (!targets.length || !deps.secret) return [];
+  if (!deps.secret) {
+    if (targets.length) console.warn('[tools] trend covers skipped: no callback secret');
+    return [];
+  }
+  if (!targets.length) return [];
   const stored: string[] = [];
   for (let i = 0; i < targets.length; i += MAX_COVERS) {
     const batch = targets.slice(i, i + MAX_COVERS);
-    const downloaded = await Promise.all(batch.map((t) => download(t, deps)));
-    const covers = downloaded.flatMap((c, j) => (c ? [{ ...c, handle: batch[j]!.author }] : []));
+    const results = await Promise.all(batch.map((t) => download(t, deps)));
+    const covers = results.flatMap((r, j) => (r.ok ? [{ ...r.cover, handle: batch[j]!.author }] : []));
+    const failed = rejections(results);
+    console.log(`[tools] trend covers: targets=${results.length} downloaded=${covers.length}${failed ? ` rejected=${failed}` : ''}`);
     if (covers.length) stored.push(...(await push(null, covers, deps, 'trends')));
   }
   return stored;

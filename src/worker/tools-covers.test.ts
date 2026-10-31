@@ -94,6 +94,70 @@ describe('uploadCovers', () => {
   });
 });
 
+describe('uploadCovers diagnostics', () => {
+  function capture() {
+    const lines: string[] = [];
+    const log = console.log, warn = console.warn;
+    console.log = (...a: unknown[]) => { lines.push(a.join(' ')); };
+    console.warn = (...a: unknown[]) => { lines.push(a.join(' ')); };
+    return { lines, restore: () => { console.log = log; console.warn = warn; } };
+  }
+  const base = { siteUrl: 'https://slashloop.dev', secret: 'cb-secret', nowSeconds: () => 1000, nonce: () => 'nonce-abcdefgh' };
+  const SIGNED = 'https://p16.tiktokcdn.com/ok.jpeg?x-signature=SECRETSIG';
+
+  test('logs per-post rejection reasons and the push result, never URLs or signatures', async () => {
+    const cap = capture();
+    try {
+      const d: CoverDeps = {
+        ...base,
+        fetch: (async (input: string, init?: RequestInit) => {
+          if (init?.method === 'POST') return new Response(JSON.stringify({ stored: ['1'] }), { status: 200 });
+          if (input.includes('ok.jpeg')) return new Response(JPEG, { headers: { 'content-type': 'image/jpeg' } });
+          if (input.includes('heic')) return new Response('x', { headers: { 'content-type': 'image/heic' } });
+          return new Response('', { status: 403 });
+        }) as unknown as typeof fetch,
+      };
+      await uploadCovers('creator', [
+        { id: '1', url: SIGNED },
+        { id: '2', url: 'https://p16.tiktokcdn.com/a.heic?sig=SECRETSIG' },
+        { id: '3', url: 'https://p16.tiktokcdn.com/b.jpeg?sig=SECRETSIG' },
+      ], d);
+      const out = cap.lines.join('\n');
+      expect(out).toContain('covers for @creator: targets=3 downloaded=1 rejected=2:type_image/heic,3:http_403');
+      expect(out).toContain('cover push for @creator -> 200 sent=1 stored=1');
+      expect(out).not.toContain('SECRETSIG');
+      expect(out).not.toContain('tiktokcdn');
+    } finally { cap.restore(); }
+  });
+
+  test('flags a successful push that stores nothing, and a push failure status', async () => {
+    const cap = capture();
+    try {
+      const mk = (res: () => Response): CoverDeps => ({
+        ...base,
+        fetch: (async (_u: string, init?: RequestInit) => (init?.method === 'POST' ? res() : new Response(JPEG, { headers: { 'content-type': 'image/jpeg' } }))) as unknown as typeof fetch,
+      });
+      const t = [{ id: '1', url: SIGNED }];
+      expect(await uploadCovers('c', t, mk(() => new Response('{}', { status: 200 })))).toEqual([]);
+      expect(await uploadCovers('c', t, mk(() => new Response('{"stored":[]}', { status: 200 })))).toEqual([]);
+      expect(await uploadCovers('c', t, mk(() => new Response('no', { status: 401 })))).toEqual([]);
+      const out = cap.lines.join('\n');
+      expect(out).toContain('stored=0 stored_missing');
+      expect(out).toContain('stored=0 stored_empty');
+      expect(out).toContain('cover push for @c -> 401 sent=1');
+    } finally { cap.restore(); }
+  });
+
+  test('says so when the callback secret is missing', async () => {
+    const cap = capture();
+    try {
+      const d: CoverDeps = { ...base, secret: '', fetch: (async () => new Response('')) as unknown as typeof fetch };
+      await uploadCovers('c', [{ id: '1', url: SIGNED }], d);
+      expect(cap.lines.join('\n')).toContain('covers for @c skipped: no callback secret');
+    } finally { cap.restore(); }
+  });
+});
+
 describe('uploadTrendCovers', () => {
   function setup(failBatch?: number) {
     const pushes: Array<{ body: any }> = [];
