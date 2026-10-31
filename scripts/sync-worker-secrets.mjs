@@ -23,7 +23,14 @@ import { writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { MANIFEST, WORKER_EXCLUDED, WORKER_NAME, isPlaceholder } from './worker-secrets.mjs';
+import {
+  MANIFEST,
+  STRIPE_PRICES_BINDING,
+  WORKER_EXCLUDED,
+  WORKER_NAME,
+  buildStripePrices,
+  isPlaceholder,
+} from './worker-secrets.mjs';
 
 /**
  * Build the `wrangler secret bulk` payload from the environment: every
@@ -42,6 +49,9 @@ export function buildPayload(env = process.env) {
     }
     payload[workerName] = value;
   }
+  const prices = buildStripePrices(env);
+  if (prices) payload[STRIPE_PRICES_BINDING] = JSON.stringify(prices);
+  else skipped.push(STRIPE_PRICES_BINDING);
   return { payload, skipped };
 }
 

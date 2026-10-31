@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------
 // MCP Tools: social post scheduler — list_social_accounts, upload_social_media,
 // create_social_post, list_social_posts, reschedule_social_post,
-// delete_social_post.
+// delete_social_post, plus the lane/rotation planner: tag_social_account,
+// set_rotation, plan_rotation.
 //
 // The same scheduler the web calendar drives (src/social/*), called in-process:
 // the store is keyed by owner id, resolved from the MCP session's JWT sub, and
@@ -13,7 +14,23 @@ import { z } from 'zod/v4';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { currentUserEmail, currentUserId } from '../context.js';
 import { canonicalSiteUrl } from '../lib/cors.js';
-import { visibleOwnerIds } from '../social/visibility.js';
+import { managedOwnerIds, visibleOwnerIds } from '../social/visibility.js';
+import * as socialStore from '../social/store.js';
+import {
+  MAX_PLAN_DAYS,
+  MAX_SLOTS,
+  isValidDate,
+  isValidSlot,
+  isValidTimezone,
+  laneAndPrimary,
+  normalizeLaneName,
+  parseStoredTags,
+  planRotation,
+  validateTags,
+  weekdayOf,
+  type RotationAccount,
+  type RotationConfig,
+} from '../social/rotation.js';
 import {
   createPost,
   deleteVisible,
@@ -27,7 +44,7 @@ import {
 } from '../social/posting.js';
 import { UploadError, storeSocialMediaFromUrl, type StoredMedia } from '../social/media-upload.js';
 import { siteAwareFetch } from '../lib/site-fetch.js';
-import type { SocialIntegrationRow } from '../social/types.js';
+import type { SocialIntegrationRow, SocialRotationRow } from '../social/types.js';
 
 export interface SocialToolDeps {
   /** The authenticated caller, or null on local stdio (no tenant → refused). */
@@ -39,6 +56,11 @@ export interface SocialToolDeps {
   reschedule: typeof rescheduleVisible;
   schedule: typeof scheduleVisible;
   deleteGroup: typeof deleteVisible;
+  /** Owner ids whose accounts the caller may tag: themselves + teammates of workspaces they own. */
+  managedOwners: (userId: string) => Promise<string[]>;
+  setTags: typeof socialStore.setIntegrationTags;
+  getRotation: typeof socialStore.getRotation;
+  upsertRotation: typeof socialStore.upsertRotation;
   uploadFromUrl: (url: string) => Promise<StoredMedia>;
   now: () => number;
   connectUrl: () => string;
@@ -56,6 +78,10 @@ export const defaultSocialDeps: SocialToolDeps = {
   reschedule: rescheduleVisible,
   schedule: scheduleVisible,
   deleteGroup: deleteVisible,
+  managedOwners: managedOwnerIds,
+  setTags: socialStore.setIntegrationTags,
+  getRotation: socialStore.getRotation,
+  upsertRotation: socialStore.upsertRotation,
   uploadFromUrl: (url) => storeSocialMediaFromUrl(url, siteAwareFetch),
   now: () => Date.now(),
   connectUrl: () => `${canonicalSiteUrl()}/calendar`,
@@ -107,6 +133,8 @@ function presentGroup(group: CalendarGroup) {
 }
 
 function presentAccount(row: SocialIntegrationRow) {
+  const tags = parseStoredTags(row.tags);
+  const { lane, primary } = laneAndPrimary(tags);
   return {
     id: row.id,
     provider: row.provider,
@@ -116,7 +144,24 @@ function presentAccount(row: SocialIntegrationRow) {
     needsReconnect: Boolean(row.refresh_needed),
     disabled: Boolean(row.disabled),
     error: row.error,
+    tags,
+    lane,
+    primary,
   };
+}
+
+function presentRotation(row: SocialRotationRow): RotationConfig {
+  return {
+    name: row.name,
+    lanes: JSON.parse(row.lanes) as string[],
+    anchorMonday: row.anchor_monday,
+    periodDays: row.period_days,
+    timezone: row.timezone,
+  };
+}
+
+function handleOf(row: SocialIntegrationRow): string {
+  return row.profile || row.name || row.internal_id;
 }
 
 const PROCESSING_MESSAGE = 'A post in this group is publishing right now — try again in a moment.';
@@ -141,6 +186,7 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
     'List the connected social accounts (TikTok, YouTube, Instagram, Threads, Pinterest) that posts can be scheduled to. '
       + 'Returns each account id (use as integrationIds in create_social_post), provider, handle and status: active, reconnect_needed '
       + '(token expired — the user must reconnect in the web app) or disabled. Tokens are never returned. '
+      + 'Each account also carries `tags`, `lane` and `primary` (see tag_social_account). '
       + 'Includes teammates\' accounts shared through a workspace. Connecting accounts happens in the web app (OAuth); '
       + 'when none are connected the response carries the connect URL. Free; no credits charged.',
     {},
@@ -161,6 +207,134 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
         usable,
         ...(usable < accounts.length ? { message: 'Some accounts need attention (reconnect_needed / disabled) and cannot be targeted until fixed in the web app.', connectUrl: d.connectUrl() } : {}),
       });
+    }),
+  );
+
+  // ---- tag_social_account ----
+  server.tool(
+    'tag_social_account',
+    'Replace the tags on a connected social account. Vocabulary: `lane:<name>` (at most one per account; every account in a lane posts the same video at the same minute) '
+      + 'and `primary` (the lane\'s lead account, at most one per lane; it decides whether the lane is healthy and requires a lane tag). Pass [] to clear. '
+      + 'Only the user who connected the account, or the owner of a workspace it is shared through, may tag it (else `not_owner`). '
+      + 'Errors: invalid_tag, primary_needs_lane, lane_has_primary, not_found, not_owner. Free.',
+    {
+      integrationId: z.string().min(1).describe('Account id from list_social_accounts.'),
+      tags: z.array(z.string()).max(4).describe('Full replacement tag list, e.g. ["lane:jenny","primary"].'),
+    },
+    { readOnlyHint: false },
+    ({ integrationId, tags }) => withCaller(async ({ userId, email }) => {
+      const owners = await d.resolveOwners(userId, email);
+      const visible = await d.listIntegrations(owners, false);
+      const row = visible.find((r) => r.id === integrationId);
+      if (!row) return text({ error: 'not_found', message: 'No visible account has that id. Call list_social_accounts.', integrationId }, true);
+      if (row.owner_id !== userId && !(await d.managedOwners(userId)).includes(row.owner_id)) {
+        return text({ error: 'not_owner', message: 'Only the user who connected this account, or the owner of a workspace it is shared through, can tag it.', integrationId }, true);
+      }
+      const parsed = validateTags(tags);
+      if (!parsed.ok) return text({ error: parsed.error, message: parsed.message }, true);
+      if (parsed.primary) {
+        const clash = visible.find((r) => r.id !== row.id && laneAndPrimary(parseStoredTags(r.tags)).primary && laneAndPrimary(parseStoredTags(r.tags)).lane === parsed.lane);
+        if (clash) {
+          return text({ error: 'lane_has_primary', message: `Lane "${parsed.lane}" already has a primary (${handleOf(clash)}, ${clash.id}); clear its primary tag first.`, lane: parsed.lane, primaryIntegrationId: clash.id }, true);
+        }
+      }
+      await d.setTags(row.id, parsed.tags);
+      return text({ integrationId: row.id, provider: row.provider, handle: handleOf(row), tags: parsed.tags, lane: parsed.lane, primary: parsed.primary });
+    }),
+  );
+
+  // ---- set_rotation ----
+  server.tool(
+    'set_rotation',
+    'Create or update (by name) a weekly lane rotation: the ordered lane list, an anchor Monday and the timezone slots are read in. '
+      + 'Week 0 starts on `anchorMonday` (YYYY-MM-DD, must be a Monday); video v of a day goes to lanes[(v-1-week) mod lanes.length], so every week is a permutation and each lane takes a different video slot each week. '
+      + 'Lane names are the `lane:<name>` tags from tag_social_account. A lane no account is tagged with is accepted but reported in `warnings`. '
+      + 'Errors: invalid_name, invalid_lanes, invalid_anchor, anchor_not_monday, invalid_timezone, invalid_period. Free.',
+    {
+      name: z.string().min(1).max(64).describe('Rotation name, unique per user.'),
+      lanes: z.array(z.string()).describe('Ordered lane names, e.g. ["jenny","alice","spoon"].'),
+      anchorMonday: z.string().describe('YYYY-MM-DD of the Monday that starts week 0, in `timezone`.'),
+      periodDays: z.number().int().min(1).max(366).optional().describe('Days per rotation step. Default 7.'),
+      timezone: z.string().optional().describe('IANA zone the anchor and slot times are read in. Default America/New_York.'),
+    },
+    { readOnlyHint: false },
+    ({ name, lanes, anchorMonday, periodDays, timezone }) => withCaller(async ({ userId, email }) => {
+      const cleanName = name.trim();
+      if (!cleanName) return text({ error: 'invalid_name', message: 'name must not be blank.' }, true);
+      const tz = timezone ?? 'America/New_York';
+      if (!isValidTimezone(tz)) return text({ error: 'invalid_timezone', message: `"${tz}" is not an IANA timezone (e.g. America/New_York).` }, true);
+      const normalized: string[] = [];
+      for (const lane of lanes) {
+        const n = normalizeLaneName(lane);
+        if (!n) return text({ error: 'invalid_lanes', message: `"${lane}" is not a valid lane name (lowercase letters, digits, "-" or "_").` }, true);
+        if (normalized.includes(n)) return text({ error: 'invalid_lanes', message: `Lane "${n}" is listed twice; each lane appears once so every week is a permutation.` }, true);
+        normalized.push(n);
+      }
+      if (!normalized.length) return text({ error: 'invalid_lanes', message: 'lanes must list at least one lane.' }, true);
+      if (!isValidDate(anchorMonday)) return text({ error: 'invalid_anchor', message: 'anchorMonday must be a real calendar date, YYYY-MM-DD.' }, true);
+      if (weekdayOf(anchorMonday) !== 1) {
+        const day = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][weekdayOf(anchorMonday)];
+        return text({ error: 'anchor_not_monday', message: `${anchorMonday} is a ${day} in ${tz}; anchorMonday must be a Monday.` }, true);
+      }
+
+      const owners = await d.resolveOwners(userId, email);
+      const accounts = await d.listIntegrations(owners, false);
+      const warnings: string[] = [];
+      for (const lane of normalized) {
+        const members = accounts.filter((a) => laneAndPrimary(parseStoredTags(a.tags)).lane === lane);
+        if (!members.length) warnings.push(`lane "${lane}" has no tagged account; its videos will move to the next lane (tag_social_account).`);
+        else if (!members.some((a) => laneAndPrimary(parseStoredTags(a.tags)).primary)) warnings.push(`lane "${lane}" has no primary account; its videos will move to the next lane.`);
+      }
+
+      const config = { ownerId: userId, name: cleanName, lanes: normalized, anchorMonday, periodDays: periodDays ?? 7, timezone: tz };
+      const created = await d.upsertRotation(config);
+      return text({
+        created,
+        rotation: { name: cleanName, lanes: normalized, anchorMonday, periodDays: config.periodDays, timezone: tz },
+        warnings,
+      });
+    }),
+  );
+
+  // ---- plan_rotation ----
+  server.tool(
+    'plan_rotation',
+    'Read-only: lay out which account posts which video for `days` days from `from` under a saved rotation (set_rotation). Creates nothing. '
+      + '`slots` is the ordered local HH:MM post times in the rotation\'s timezone; slots.length = videos per day and slot i is video i+1. '
+      + 'Each row is one account for one video: every account in the lane shares the identical publishAt (primary first). If a lane\'s primary is reconnect_needed/disabled (or the lane has none), '
+      + 'that video moves to the next lane with a healthy primary; every move and every skipped account is listed in `problems`. '
+      + 'Call this before scheduling a week, then create_social_post({ integrationIds: [row.integrationId], publishAt: row.publishAt, … }) per row after the user confirms. '
+      + 'Errors: rotation_not_found, invalid_date, invalid_slots, invalid_days. Free.',
+    {
+      rotation: z.string().min(1).describe('Rotation name from set_rotation.'),
+      from: z.string().describe('First local date, YYYY-MM-DD in the rotation timezone.'),
+      days: z.number().int().min(1).max(MAX_PLAN_DAYS),
+      slots: z.array(z.string()).min(1).max(MAX_SLOTS).describe('Local HH:MM times, e.g. ["09:00","13:00","19:00"].'),
+    },
+    { readOnlyHint: true },
+    ({ rotation, from, days, slots }) => withCaller(async ({ userId, email }) => {
+      if (!isValidDate(from)) return text({ error: 'invalid_date', message: 'from must be a real calendar date, YYYY-MM-DD.' }, true);
+      const badSlot = slots.find((s) => !isValidSlot(s));
+      if (badSlot !== undefined) return text({ error: 'invalid_slots', message: `"${badSlot}" is not HH:MM (24h, e.g. 09:00).` }, true);
+
+      const owners = [userId, ...(await d.resolveOwners(userId, email)).filter((o) => o !== userId)];
+      let saved: SocialRotationRow | undefined;
+      for (const owner of owners) {
+        saved = await d.getRotation(owner, rotation.trim());
+        if (saved) break;
+      }
+      if (!saved) return text({ error: 'rotation_not_found', message: `No rotation named "${rotation}". Create it with set_rotation.` }, true);
+
+      const accounts: RotationAccount[] = (await d.listIntegrations(owners, false)).map((row) => ({
+        integrationId: row.id,
+        provider: row.provider,
+        internalId: row.internal_id,
+        handle: handleOf(row),
+        tags: parseStoredTags(row.tags),
+        refreshNeeded: Boolean(row.refresh_needed),
+        disabled: Boolean(row.disabled),
+      }));
+      return text(planRotation(presentRotation(saved), accounts, { from, days, slots }));
     }),
   );
 

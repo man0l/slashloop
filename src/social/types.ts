@@ -123,6 +123,21 @@ export interface SocialIntegrationRow {
   refresh_needed: number;
   disabled: number;
   error: string | null;
+  /** JSON string[] (lane:<name>, primary); NULL = no tags. */
+  tags?: string | null;
+}
+
+export interface SocialRotationRow {
+  id: string;
+  owner_id: string;
+  name: string;
+  /** JSON string[], ordered. */
+  lanes: string;
+  anchor_monday: string;
+  period_days: number;
+  timezone: string;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface SocialPostRow {

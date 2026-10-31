@@ -55,19 +55,11 @@ export const MANIFEST = {
   // under their Worker names once real values exist in GitHub.
   STRIPE_SECRET_API_KEY: 'STRIPE_SECRET_KEY',
   STRIPE_WEBHOOK_SECRET: 'STRIPE_WEBHOOK_SECRET',
-  // Only the four fixed subscription Prices are read, and only through the
-  // computed name in src/lib/stripe.ts priceEnv()/priceIdFor(). Credit packs
-  // are not here: api/billing.ts builds inline price_data for them.
-  STRIPE_PRICE_CREATOR_MONTH: 'STRIPE_PRICE_CREATOR_MONTH',
-  STRIPE_PRICE_CREATOR_YEAR: 'STRIPE_PRICE_CREATOR_YEAR',
-  STRIPE_PRICE_PRO_MONTH: 'STRIPE_PRICE_PRO_MONTH',
-  STRIPE_PRICE_PRO_YEAR: 'STRIPE_PRICE_PRO_YEAR',
+  // Subscription Price ids are not listed here: buildStripePrices() folds the
+  // eight STRIPE_{,TEST_}PRICE_* GitHub variables into one STRIPE_PRICES JSON
+  // binding (see STRIPE_PRICE_VARS below).
   STRIPE_TEST_SECRET_KEY: 'STRIPE_TEST_SECRET_KEY',
   STRIPE_TEST_WEBHOOK_SECRET: 'STRIPE_TEST_WEBHOOK_SECRET',
-  STRIPE_TEST_PRICE_CREATOR_MONTH: 'STRIPE_TEST_PRICE_CREATOR_MONTH',
-  STRIPE_TEST_PRICE_CREATOR_YEAR: 'STRIPE_TEST_PRICE_CREATOR_YEAR',
-  STRIPE_TEST_PRICE_PRO_MONTH: 'STRIPE_TEST_PRICE_PRO_MONTH',
-  STRIPE_TEST_PRICE_PRO_YEAR: 'STRIPE_TEST_PRICE_PRO_YEAR',
   // Runtime billing switch (live|test) — set as a GitHub VARIABLE. Unset
   // leaves whatever the Worker currently has.
   STRIPE_MODE: 'STRIPE_MODE',
@@ -92,6 +84,53 @@ export const MANIFEST = {
   QUEUE_API_KEY_ID: 'QUEUE_API_KEY_ID',
   QUEUE_API_KEY_SECRET: 'QUEUE_API_KEY_SECRET',
 };
+
+/**
+ * The four fixed subscription Prices per Stripe mode. Only these are read, and
+ * only through priceEnv()/priceIdFor() in src/lib/stripe.ts. Credit packs are
+ * not here: api/billing.ts builds inline price_data for them.
+ */
+export const STRIPE_PRICE_VARS = [
+  'STRIPE_PRICE_CREATOR_MONTH',
+  'STRIPE_PRICE_CREATOR_YEAR',
+  'STRIPE_PRICE_PRO_MONTH',
+  'STRIPE_PRICE_PRO_YEAR',
+  'STRIPE_TEST_PRICE_CREATOR_MONTH',
+  'STRIPE_TEST_PRICE_CREATOR_YEAR',
+  'STRIPE_TEST_PRICE_PRO_MONTH',
+  'STRIPE_TEST_PRICE_PRO_YEAR',
+];
+
+/** The one Worker binding that replaces STRIPE_PRICE_VARS. */
+export const STRIPE_PRICES_BINDING = 'STRIPE_PRICES';
+
+/**
+ * STRIPE_PRICES JSON built from the GitHub variables that are set (non-blank,
+ * not placeholders), keyed by the legacy names so stripe.ts needs no mapping.
+ * Returns null when none are set, so the Worker's current value is left alone.
+ */
+export function buildStripePrices(env = process.env) {
+  const prices = {};
+  for (const name of STRIPE_PRICE_VARS) {
+    const value = env[name]?.trim();
+    if (value && !isPlaceholder(value)) prices[name] = value;
+  }
+  return Object.keys(prices).length > 0 ? prices : null;
+}
+
+/**
+ * Legacy price names that can be deleted from the Worker without losing a
+ * value: only those whose id this run folded into STRIPE_PRICES, and only once
+ * that binding is live. A name GitHub does not know keeps its Worker secret
+ * (stripe.ts still falls back to it). Run AFTER wrangler deploy: until the new
+ * code is live, the old code reads exactly these names.
+ */
+export function legacyPriceNamesToPrune({ liveNames = [], env = process.env } = {}) {
+  const bound = new Set(liveNames);
+  if (!bound.has(STRIPE_PRICES_BINDING)) return [];
+  const folded = buildStripePrices(env) ?? {};
+  return STRIPE_PRICE_VARS.filter((name) => name in folded && bound.has(name)).sort();
+}
 
 /**
  * Names that must never be pushed to the Worker, and are pruned from it if
@@ -128,7 +167,7 @@ export const WORKER_EXCLUDED = new Set([
 
 /** Worker env names the manifest would push, minus the excluded ones. */
 export function pushedWorkerNames() {
-  return [...new Set(Object.values(MANIFEST))].filter((name) => !WORKER_EXCLUDED.has(name));
+  return [...new Set([...Object.values(MANIFEST), STRIPE_PRICES_BINDING])].filter((name) => !WORKER_EXCLUDED.has(name));
 }
 
 /** `vars` block of wrangler.jsonc — each key is a plain_text binding (counted). */

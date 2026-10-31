@@ -5,7 +5,7 @@
 // an ORM. Every statement goes through rawBatch() — atomic per call.
 
 import { rawBatch, type RawStatement } from '../store.js';
-import type { ProviderId, SocialIntegrationRow, SocialPostRow } from './types.js';
+import type { ProviderId, SocialIntegrationRow, SocialPostRow, SocialRotationRow } from './types.js';
 
 function rows<T>(result: unknown[][]): T[] {
   return (result[0] ?? []) as T[];
@@ -129,6 +129,51 @@ export async function setIntegrationDisabled(id: string, disabled: boolean): Pro
       params: [id, disabled ? 1 : 0, nowSeconds()],
     },
   ]);
+}
+
+/** Replace an account's tags (empty = NULL). Ownership is checked by the caller. */
+export async function setIntegrationTags(id: string, tags: string[]): Promise<void> {
+  await rawBatch([
+    {
+      sql: 'UPDATE social_integrations SET tags = ?2, updated_at = ?3 WHERE id = ?1',
+      params: [id, tags.length ? JSON.stringify(tags) : null, nowSeconds()],
+    },
+  ]);
+}
+
+// ── rotations ───────────────────────────────────────────────────────────────
+
+export async function getRotation(ownerId: string, name: string): Promise<SocialRotationRow | undefined> {
+  return rows<SocialRotationRow>(
+    await rawBatch([{ sql: 'SELECT * FROM social_rotations WHERE owner_id = ?1 AND name = ?2', params: [ownerId, name] }]),
+  )[0];
+}
+
+/** Upsert keyed on (owner, name); returns true when the row was newly created. */
+export async function upsertRotation(input: {
+  ownerId: string;
+  name: string;
+  lanes: string[];
+  anchorMonday: string;
+  periodDays: number;
+  timezone: string;
+}): Promise<boolean> {
+  const existed = Boolean(await getRotation(input.ownerId, input.name));
+  const now = nowSeconds();
+  await rawBatch([
+    {
+      sql: `INSERT INTO social_rotations (id, owner_id, name, lanes, anchor_monday, period_days, timezone, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+            ON CONFLICT (owner_id, name) DO UPDATE SET
+              lanes = excluded.lanes,
+              anchor_monday = excluded.anchor_monday,
+              period_days = excluded.period_days,
+              timezone = excluded.timezone,
+              updated_at = excluded.updated_at`,
+      params: [crypto.randomUUID(), input.ownerId, input.name, JSON.stringify(input.lanes), input.anchorMonday, input.periodDays, input.timezone, now],
+    },
+  ]);
+  return !existed;
 }
 
 export async function deleteIntegration(id: string, ownerId: string): Promise<void> {
