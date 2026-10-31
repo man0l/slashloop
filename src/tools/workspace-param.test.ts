@@ -6,7 +6,7 @@
 import { describe, expect, test, mock, beforeEach } from 'bun:test';
 import { z } from 'zod/v4';
 
-const SOCIAL_TOOL_NAMES = ['list_social_accounts', 'upload_social_media', 'create_social_post', 'list_social_posts', 'reschedule_social_post', 'delete_social_post'];
+const SOCIAL_TOOL_NAMES = ['list_social_accounts', 'upload_social_media', 'create_social_post', 'list_social_posts', 'reschedule_social_post', 'delete_social_post', 'tag_social_account', 'set_rotation', 'plan_rotation'];
 
 const PRIMARY = { id: 'ws-primary', name: 'My workspace' };
 const SECOND = { id: 'ws-second', name: 'faceless maxxing' };

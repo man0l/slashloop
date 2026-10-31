@@ -61,3 +61,20 @@ export async function visibleOwnerIds(userId: string, email: string | null | und
 
   return [...ids];
 }
+
+/**
+ * Owner ids whose connected accounts the caller manages: the teammates (member
+ * emails resolved to subs via the User mirror) of workspaces the caller owns.
+ * Unlike visibleOwnerIds this excludes the owners of workspaces merely shared
+ * WITH the caller — a member can see the owner's accounts but not manage them.
+ */
+export async function managedOwnerIds(userId: string): Promise<string[]> {
+  const members = await db.workspaceMember.findMany({
+    where: { workspace: { ownerId: userId } },
+    select: { email: true },
+  });
+  const emails = [...new Set(members.map((m) => m.email))];
+  if (!emails.length) return [];
+  const users = await db.user.findMany({ where: { email: { in: emails } }, select: { id: true } });
+  return users.map((u) => u.id);
+}
