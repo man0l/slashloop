@@ -4,9 +4,13 @@
 // — the engine leaves the post in PROCESSING and resumes on a later tick.
 
 export class RefreshTokenError extends Error {
-  constructor(message = 'Access token expired or invalid') {
+  // Raw platform status + body (truncated), for server logs only.
+  detail?: string;
+
+  constructor(message = 'Access token expired or invalid', detail?: string) {
     super(message);
     this.name = 'RefreshTokenError';
+    this.detail = detail;
   }
 }
 

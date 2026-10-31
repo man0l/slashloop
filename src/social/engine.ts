@@ -335,6 +335,17 @@ async function handleProviderError(
         ctx.limits.now + (refreshed.expiresIn ?? 0),
       );
       // Token replaced — the next tick retries the step with the new token.
+      // Count the round trip: a platform that keeps answering 401 to a fresh
+      // token would otherwise loop here forever with the post stuck in
+      // PROCESSING and no error shown.
+      console.warn(`[social] ${ctx.provider.identifier} post ${ctx.post.id} unauthorized, token refreshed (attempt ${ctx.post.attempts + 1}): ${(err as RefreshTokenError).detail ?? err.message}`);
+      if (ctx.post.attempts + 1 > ctx.limits.maxAttempts) {
+        const message = `${ctx.provider.name} kept rejecting the request as unauthorized even with a freshly refreshed token. Reconnect the account or check the app's API access level, then post again.`;
+        await store.markError(ctx.post.id, message);
+        return { kind: 'errored', error: message };
+      }
+      if (ctx.pendingData) await store.savePendingData(ctx.post.id, ctx.pendingData, ctx.post.attempts + 1);
+      else await store.saveAttempts(ctx.post.id, ctx.post.attempts + 1);
       return { kind: 'deferred' };
     }
     if (isAuthFailure(refreshError)) {
@@ -354,6 +365,7 @@ async function handleProviderError(
   }
 
   if (err instanceof BadBodyError && !isTransientError(err)) {
+    console.warn(`[social] ${ctx.provider.identifier} post ${ctx.post.id} rejected: ${err.detail ?? err.message}`);
     await store.markError(ctx.post.id, err.message);
     return { kind: 'errored', error: err.message };
   }
