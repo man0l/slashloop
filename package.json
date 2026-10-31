@@ -1,6 +1,6 @@
 {
   "name": "slashloop-mcp",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Viral short-form video research MCP server — remote HTTP (Vercel + Supabase OAuth).",
   "license": "MIT",
   "private": true,
