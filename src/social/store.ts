@@ -458,6 +458,10 @@ export async function savePendingData(id: string, pendingData: unknown, attempts
   ]);
 }
 
+export async function saveAttempts(id: string, attempts: number): Promise<void> {
+  await rawBatch([{ sql: 'UPDATE social_posts SET attempts = ?2, updated_at = ?3 WHERE id = ?1', params: [id, attempts, nowSeconds()] }]);
+}
+
 export async function markPublished(id: string, postId: string, releaseUrl: string): Promise<void> {
   await rawBatch([
     {
