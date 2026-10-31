@@ -15,7 +15,7 @@ import { canonicalString, hmacSign, SLQ_HEADERS } from '../queue/auth.js';
 import { extractRehydrationJson, type CreatorIdentity, type EmbedCreatorRead, type TikTokHttp } from '../lib/scrapers/tiktok-web.js';
 import { isWafChallenge } from '../lib/scrapers/waf.js';
 import type { MediaJobRow } from '../lib/jobs.js';
-import { uploadCovers, type CoverTarget } from './tools-covers.js';
+import { uploadCovers, uploadTrendCovers, type AuthoredCoverTarget, type CoverTarget } from './tools-covers.js';
 import { MIN_ENGAGEMENT_POSTS, PROFILE_HYDRATE_PAGES, runProfile } from './tools-profile.js';
 import { parseTrendsPayload, runTrends, type TrendsDeps } from './tools-trends.js';
 import { defaultVideoDeps, parseVideoPayload, runVideoLookup, type VideoDeps, type VideoOutcome } from './tools-video.js';
@@ -556,7 +556,19 @@ async function processTrendsJob(
   }
 
   const started = Date.now();
-  const trends = deps.buildTrends(job.workspaceId);
+  const built = deps.buildTrends(job.workspaceId);
+  const trends = deps.coverFetch
+    ? {
+        ...built,
+        uploadCovers: (targets: AuthoredCoverTarget[]) => uploadTrendCovers(targets, {
+          fetch: deps.coverFetch as typeof fetch,
+          siteUrl: (deps.env.TOOLS_SITE_URL ?? '').trim() || DEFAULT_SITE_URL,
+          secret,
+          nowSeconds: deps.callback.nowSeconds,
+          nonce: deps.callback.nonce,
+        }),
+      }
+    : built;
   const measured = await deps.measure(() => runTrends(parsed, trends));
   const outcome = measured.value;
   const bytes = measured.bytes;
@@ -574,7 +586,7 @@ async function processTrendsJob(
     body,
     log:
       `[tools] tools-trends job ${job.id.slice(0, 8)} -> `
-      + `${outcome.status === 'done' ? `done tags=${outcome.body.hashtags.length} sampledTags=${outcome.sampledTags} posts=${outcome.body.samplePosts.length}` : `failed:${outcome.code}`} `
+      + `${outcome.status === 'done' ? `done tags=${outcome.body.hashtags.length} sampledTags=${outcome.sampledTags} posts=${outcome.body.samplePosts.length} examples=${outcome.body.exampleIds.length} covers=${outcome.body.covers.length}` : `failed:${outcome.code}`} `
       + `bytes=${bytes} duration=${Date.now() - started}ms`,
     completePayload: JSON.stringify(outcome.status === 'done'
       ? { status: 'done', hashtags: outcome.body.hashtags.length, samplePosts: outcome.body.samplePosts.length }

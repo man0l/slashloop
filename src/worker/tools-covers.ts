@@ -74,13 +74,9 @@ async function download(target: CoverTarget, deps: CoverDeps): Promise<{ id: str
   }
 }
 
-/** Downloads and pushes the covers; returns the ids the site stored ([] on any failure). */
-export async function uploadCovers(handle: string, targets: readonly CoverTarget[], deps: CoverDeps): Promise<string[]> {
-  if (!targets.length || !deps.secret) return [];
-  const covers = (await Promise.all(targets.slice(0, MAX_COVERS).map((t) => download(t, deps)))).filter((c) => c !== null);
-  if (!covers.length) return [];
+async function push(handle: string | null, covers: object[], deps: CoverDeps, label: string): Promise<string[]> {
   const url = `${deps.siteUrl.replace(/\/+$/, '')}${SITE_COVERS_PATH}`;
-  const body = JSON.stringify({ handle, covers });
+  const body = JSON.stringify(handle ? { handle, covers } : { covers });
   try {
     const res = await deps.fetch(url, {
       method: 'POST',
@@ -89,13 +85,42 @@ export async function uploadCovers(handle: string, targets: readonly CoverTarget
       signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
     });
     if (!res.ok) {
-      console.warn(`[tools] cover push for @${handle} -> ${res.status}`);
+      console.warn(`[tools] cover push for ${label} -> ${res.status}`);
       return [];
     }
     const stored = ((await res.json()) as { stored?: unknown }).stored;
     return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string') : [];
   } catch (err) {
-    console.warn(`[tools] cover push for @${handle} failed: ${(err as Error).message}`);
+    console.warn(`[tools] cover push for ${label} failed: ${(err as Error).message}`);
     return [];
   }
+}
+
+/** Downloads and pushes the covers; returns the ids the site stored ([] on any failure). */
+export async function uploadCovers(handle: string, targets: readonly CoverTarget[], deps: CoverDeps): Promise<string[]> {
+  if (!targets.length || !deps.secret) return [];
+  const covers = (await Promise.all(targets.slice(0, MAX_COVERS).map((t) => download(t, deps)))).filter((c) => c !== null);
+  if (!covers.length) return [];
+  return push(handle, covers, deps, `@${handle}`);
+}
+
+export interface AuthoredCoverTarget extends CoverTarget {
+  /** The post's author; the site skips covers of removed creators. */
+  author: string;
+}
+
+/**
+ * Trends examples span many authors, so each cover carries its own handle and the push is batched by
+ * MAX_COVERS (the site's per-request cap). Returns every id the site stored; a failed batch only loses itself.
+ */
+export async function uploadTrendCovers(targets: readonly AuthoredCoverTarget[], deps: CoverDeps): Promise<string[]> {
+  if (!targets.length || !deps.secret) return [];
+  const stored: string[] = [];
+  for (let i = 0; i < targets.length; i += MAX_COVERS) {
+    const batch = targets.slice(i, i + MAX_COVERS);
+    const downloaded = await Promise.all(batch.map((t) => download(t, deps)));
+    const covers = downloaded.flatMap((c, j) => (c ? [{ ...c, handle: batch[j]!.author }] : []));
+    if (covers.length) stored.push(...(await push(null, covers, deps, 'trends')));
+  }
+  return stored;
 }
