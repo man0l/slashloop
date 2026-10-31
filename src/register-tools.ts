@@ -19,6 +19,7 @@ import { registerWorkspaceTools } from './tools/workspaces.js';
 import { registerExperimentTools } from './tools/experiments.js';
 import { registerSocialTools } from './tools/social.js';
 import { withCreditUsd } from './lib/credit-usd.js';
+import { applyToolAnnotations } from './tools/annotations.js';
 
 /** Register the full product tool surface, plus the gallery MCP App (§4).
  *  Every credit amount these tools report also carries its dollar value (SLA-842). */
@@ -40,4 +41,5 @@ export function registerAllTools(server: McpServer) {
   registerWorkspaceTools(server);
   registerExperimentTools(server);
   registerSocialTools(server);
+  applyToolAnnotations(server);
 }
