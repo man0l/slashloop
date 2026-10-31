@@ -27,7 +27,7 @@
 // under "API setup with Instagram login" in the Meta app dashboard — NOT the
 // parent Facebook app id/secret. (SOCIAL_META_CLIENT_ID / _SECRET)
 
-import { BadBodyError, RefreshTokenError } from '../errors.js';
+import { BadBodyError, RefreshTokenError, TransientProviderError, isTransientError } from '../errors.js';
 import { assertPublicHttpUrl, providerFetch } from '../fetch.js';
 import type { AuthTokenDetails, PendingCheck, PostDetails, PostResponse, ProviderPostContext, SocialConfig, SocialProvider } from '../types.js';
 
@@ -41,6 +41,7 @@ async function step<T>(label: string, work: Promise<T>): Promise<T> {
   try {
     return await work;
   } catch (err) {
+    if (err instanceof TransientProviderError) throw new TransientProviderError(`${label}: ${err.message}`, err.detail);
     if (err instanceof BadBodyError) throw new BadBodyError(`${label}: ${err.message}`, err.detail);
     throw err;
   }
@@ -142,7 +143,7 @@ export class InstagramProvider implements SocialProvider {
       grant_type: 'ig_refresh_token',
       access_token: userToken,
     }, { versioned: false }).catch((err) => {
-      if (err instanceof RefreshTokenError) throw err;
+      if (err instanceof RefreshTokenError || isTransientError(err)) throw err;
       throw new RefreshTokenError('Instagram token renewal failed — please reconnect this account');
     });
 

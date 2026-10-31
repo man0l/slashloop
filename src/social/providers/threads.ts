@@ -8,7 +8,7 @@
 // source. Short-lived code-exchange tokens (~1h) are immediately swapped for
 // long-lived ones at connect time.
 
-import { BadBodyError, RefreshTokenError } from '../errors.js';
+import { BadBodyError, RefreshTokenError, isTransientError } from '../errors.js';
 import { assertPublicHttpUrl, providerFetch } from '../fetch.js';
 import type { AuthTokenDetails, PendingCheck, PostDetails, PostResponse, ProviderId, ProviderPostContext, SocialConfig, SocialProvider } from '../types.js';
 
@@ -79,7 +79,7 @@ export class ThreadsProvider implements SocialProvider {
     })
       .then((r) => r.json() as Promise<Record<string, any>>)
       .catch((err) => {
-        if (err instanceof RefreshTokenError) throw err;
+        if (err instanceof RefreshTokenError || isTransientError(err)) throw err;
         throw new RefreshTokenError('Threads token renewal failed — please reconnect this account');
       });
     if (!renewed?.access_token) {

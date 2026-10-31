@@ -21,7 +21,7 @@
 // (visible only to their creator). Standard access (video demo of the OAuth
 // flow + a pin creation through the app) makes them public.
 
-import { BadBodyError, RefreshTokenError } from '../errors.js';
+import { BadBodyError, RefreshTokenError, isTransientError } from '../errors.js';
 import { assertPublicHttpUrl, providerFetch } from '../fetch.js';
 import type {
   AuthTokenDetails,
@@ -120,7 +120,7 @@ export class PinterestProvider implements SocialProvider {
       refresh_token: refreshToken,
       scope: this.scopes.join(','),
     }).catch((err) => {
-      if (err instanceof RefreshTokenError) throw err;
+      if (err instanceof RefreshTokenError || isTransientError(err)) throw err;
       throw new RefreshTokenError('Pinterest token renewal failed — please reconnect this account');
     });
     if (!renewed?.access_token) {

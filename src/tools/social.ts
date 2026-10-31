@@ -43,6 +43,7 @@ import {
   type CreatePostResult,
 } from '../social/posting.js';
 import { UploadError, storeSocialMediaFromUrl, type StoredMedia } from '../social/media-upload.js';
+import { siteAwareFetch } from '../lib/site-fetch.js';
 import type { SocialIntegrationRow, SocialRotationRow } from '../social/types.js';
 
 export interface SocialToolDeps {
@@ -81,7 +82,7 @@ export const defaultSocialDeps: SocialToolDeps = {
   setTags: socialStore.setIntegrationTags,
   getRotation: socialStore.getRotation,
   upsertRotation: socialStore.upsertRotation,
-  uploadFromUrl: (url) => storeSocialMediaFromUrl(url),
+  uploadFromUrl: (url) => storeSocialMediaFromUrl(url, siteAwareFetch),
   now: () => Date.now(),
   connectUrl: () => `${canonicalSiteUrl()}/calendar`,
 };

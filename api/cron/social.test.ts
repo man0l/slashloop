@@ -1,4 +1,9 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { afterAll, describe, expect, mock, test } from 'bun:test';
+
+const realSocial = { ...(await import('../../src/social/index.js')) };
+afterAll(() => {
+  mock.module('../../src/social/index.js', () => realSocial);
+});
 
 mock.module('../../src/social/index.js', () => ({
   socialEngineTick: async () => ({ claimed: 1, published: 1 }),

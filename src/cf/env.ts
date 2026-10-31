@@ -17,6 +17,7 @@ import { PrismaD1 } from '@prisma/adapter-d1';
 import { d1BindParam, setActiveClient, type AppPrismaClient, type RawExecutor } from '../store.js';
 import { recordD1Usage, recordBatchUsage } from '../lib/d1-usage.js';
 import { setR2Bindings } from '../lib/storage-bindings.js';
+import { setSiteBinding } from '../lib/site-fetch.js';
 import { timedD1 } from './serialize-d1.js';
 import { setShardDirectory } from './kv.js';
 import { keepAlive } from './wait-until.js';
@@ -132,6 +133,7 @@ async function initStore(env: Env): Promise<void> {
     setActiveClient(client as unknown as AppPrismaClient, d1BindingRawExecutor(timed));
     setR2Bindings({ thumbs: env.R2_THUMBS, media: env.R2_MEDIA });
     setShardDirectory(env.SHARD_DIRECTORY);
+    setSiteBinding(env.SITE as { fetch: typeof fetch } | undefined);
     globalForCfStore.__slashloopCfStoreReady = true;
   } catch (err) {
     initPromise = undefined;

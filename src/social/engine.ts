@@ -16,7 +16,7 @@
 
 import { createRegistry, getProvider } from './registry.js';
 import * as store from './store.js';
-import { BadBodyError, ReconnectError, RefreshTokenError } from './errors.js';
+import { BadBodyError, ReconnectError, RefreshTokenError, isAuthFailure, isSubrequestLimit, isTransientError } from './errors.js';
 import { mediaWithScrubbedUrl, nextScrubItem, scrubImageToR2, streamDelete, streamDownloadToR2, streamDownloadUrl, streamStatus, streamUpload } from './scrub.js';
 import type { ProviderPostContext, SocialConfig, SocialIntegrationRow, SocialPostRow } from './types.js';
 
@@ -47,6 +47,8 @@ export interface RefreshReport {
   scanned: number;
   refreshed: number;
   failed: number;
+  /** Failures that left the account untouched (not a credential problem). */
+  transient?: number;
 }
 
 export async function socialEngineTick(cfg: SocialConfig, options: TickOptions = {}): Promise<TickReport> {
@@ -229,6 +231,9 @@ async function startPost(
   }
 
   const ctx = await contextFor(provider, cfg, post, integration, limits.now);
+  if ('refreshFailure' in ctx) {
+    return await handleProviderError(ctx.refreshFailure, { registry, cfg, post, integration, provider, limits });
+  }
   if ('error' in ctx) {
     await store.markError(post.id, ctx.error);
     return { kind: 'errored', error: ctx.error };
@@ -267,6 +272,9 @@ async function advancePost(
   }
 
   const ctx = await contextFor(provider, cfg, post, integration, limits.now, pendingData);
+  if ('refreshFailure' in ctx) {
+    return await handleProviderError(ctx.refreshFailure, { registry, cfg, post, integration, provider, limits, pendingData });
+  }
   if ('error' in ctx) {
     await store.markError(post.id, ctx.error);
     return { kind: 'errored', error: ctx.error };
@@ -311,9 +319,15 @@ async function handleProviderError(
     pendingData?: Record<string, unknown>;
   },
 ): Promise<Outcome> {
-  if (err instanceof RefreshTokenError && ctx.integration.refresh_token) {
+  if (err instanceof RefreshTokenError && !isTransientError(err) && ctx.integration.refresh_token) {
+    let refreshed: Awaited<ReturnType<typeof ctx.provider.refreshToken>> | undefined;
+    let refreshError: unknown;
     try {
-      const refreshed = await ctx.provider.refreshToken(ctx.cfg, ctx.integration.refresh_token);
+      refreshed = await ctx.provider.refreshToken(ctx.cfg, ctx.integration.refresh_token);
+    } catch (refreshErr) {
+      refreshError = refreshErr;
+    }
+    if (refreshed) {
       await store.updateIntegrationTokens(
         ctx.integration.id,
         refreshed.accessToken,
@@ -322,20 +336,24 @@ async function handleProviderError(
       );
       // Token replaced — the next tick retries the step with the new token.
       return { kind: 'deferred' };
-    } catch {
+    }
+    if (isAuthFailure(refreshError)) {
       await store.markIntegrationRefreshNeeded(ctx.integration.id, 'Token refresh failed — please reconnect this account');
       await store.markError(ctx.post.id, 'The connected account needs to be re-authenticated');
       return { kind: 'errored', error: 'refresh failed' };
     }
+    // The refresh failed for a reason that says nothing about the grant
+    // (network, 5xx, subrequest cap): keep the account usable, retry below.
+    err = refreshError;
   }
 
-  if (err instanceof ReconnectError) {
+  if (err instanceof ReconnectError && !isTransientError(err)) {
     await store.markIntegrationRefreshNeeded(ctx.integration.id, err.message);
     await store.markError(ctx.post.id, err.message);
     return { kind: 'errored', error: err.message };
   }
 
-  if (err instanceof BadBodyError) {
+  if (err instanceof BadBodyError && !isTransientError(err)) {
     await store.markError(ctx.post.id, err.message);
     return { kind: 'errored', error: err.message };
   }
@@ -366,7 +384,7 @@ async function contextFor(
   integration: SocialIntegrationRow,
   now: number,
   pendingData?: Record<string, unknown>,
-): Promise<ProviderPostContext | { error: string }> {
+): Promise<ProviderPostContext | { error: string } | { refreshFailure: unknown }> {
   let token = integration.token;
 
   const expiresSoon = integration.token_expires_at !== null && integration.token_expires_at <= now + 600;
@@ -375,8 +393,11 @@ async function contextFor(
       const refreshed = await provider.refreshToken(cfg, integration.refresh_token);
       token = refreshed.accessToken;
       await store.updateIntegrationTokens(integration.id, token, refreshed.refreshToken, now + (refreshed.expiresIn ?? 0));
-    } catch {
-      return { error: 'The connected account needs to be re-authenticated' };
+    } catch (err) {
+      // Only a definite credential failure fails the post as "re-authenticate";
+      // anything else (network, 5xx, subrequest cap) is retried on a later tick.
+      if (isAuthFailure(err)) return { error: 'The connected account needs to be re-authenticated' };
+      return { refreshFailure: err };
     }
   }
 
@@ -440,8 +461,18 @@ export async function socialRefreshScan(
       await store.updateIntegrationTokens(integration.id, refreshed.accessToken, refreshed.refreshToken, now + (refreshed.expiresIn ?? 0));
       report.refreshed++;
     } catch (err) {
-      await store.markIntegrationRefreshNeeded(integration.id, (err as Error).message || 'Token refresh failed — please reconnect');
       report.failed++;
+      if (isAuthFailure(err)) {
+        await store.markIntegrationRefreshNeeded(integration.id, (err as Error).message || 'Token refresh failed — please reconnect');
+        continue;
+      }
+      // Network / 5xx / subrequest cap / bad app config: the grant may be
+      // fine, so leave the account usable — it is still due on the next tick.
+      report.transient = (report.transient ?? 0) + 1;
+      console.warn(`[social] refresh deferred for ${integration.provider}: ${(err as Error).message}`);
+      // Past the invocation's fetch cap every further call fails the same
+      // way; stop and let the next tick (a fresh invocation) continue.
+      if (isSubrequestLimit(err)) break;
     }
   }
   return report;
