@@ -37,7 +37,9 @@ interface Container {
 export class ThreadsProvider implements SocialProvider {
   identifier: ProviderId = 'threads';
   name = 'Threads';
-  scopes = ['threads_basic', 'threads_content_publish'];
+  // manage_insights is what fetchMetrics needs; without it every Threads
+  // counter is refused. Pre-existing connections must reconnect to grant it.
+  scopes = ['threads_basic', 'threads_content_publish', 'threads_manage_insights'];
 
   classify = (body: string, status: number): 'refresh-token' | 'reconnect' | 'bad-body' | 'retry' | undefined => {
     if (status === 401) return 'refresh-token';
