@@ -125,6 +125,7 @@ function presentGroup(group: CalendarGroup) {
     posts: group.posts.map((p) => ({
       id: p.id,
       provider: p.provider,
+      account: p.account,
       state: p.state,
       releaseUrl: p.releaseUrl,
       error: p.error,

@@ -191,4 +191,8 @@ export interface SocialPostRow {
   metrics_synced_at?: number | null;
   metrics_next_at?: number | null;
   metrics_error?: string | null;
+  /** Joined from social_integrations on calendar reads (store.listPostsInRange/listDrafts). */
+  account_name?: string | null;
+  account_profile?: string | null;
+  account_picture?: string | null;
 }
