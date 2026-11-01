@@ -156,7 +156,7 @@ describe('instagram provider', () => {
     expect(url.startsWith('https://www.instagram.com/oauth/authorize?')).toBe(true);
     expect(url).not.toContain('facebook.com');
     expect(url).toContain('client_id=IG_APP_ID');
-    expect(url).toContain('scope=instagram_business_basic%2Cinstagram_business_content_publish');
+    expect(url).toContain('scope=instagram_business_basic%2Cinstagram_business_content_publish%2Cinstagram_business_manage_insights');
     expect(url).toContain('response_type=code');
     expect(url).toContain('state=ST');
   });
@@ -224,7 +224,7 @@ describe('threads provider', () => {
       'ST',
     );
     expect(url.startsWith('https://www.threads.com/oauth/authorize?')).toBe(true);
-    expect(url).toContain('scope=threads_basic%2Cthreads_content_publish');
+    expect(url).toContain('scope=threads_basic%2Cthreads_content_publish%2Cthreads_manage_insights');
   });
 });
 

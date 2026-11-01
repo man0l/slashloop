@@ -67,7 +67,10 @@ interface Container {
 export class InstagramProvider implements SocialProvider {
   identifier = 'instagram' as const;
   name = 'Instagram';
-  scopes = ['instagram_business_basic', 'instagram_business_content_publish'];
+  // manage_insights unlocks views/reach/saves/shares in fetchMetrics. Accounts
+  // connected before it was requested keep working for publishing; they get
+  // the basic counters only until the user reconnects.
+  scopes = ['instagram_business_basic', 'instagram_business_content_publish', 'instagram_business_manage_insights'];
 
   private graphVersion = 'v21.0';
   private clientId = '';
