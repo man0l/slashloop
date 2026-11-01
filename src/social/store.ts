@@ -465,11 +465,61 @@ export async function saveAttempts(id: string, attempts: number): Promise<void> 
 export async function markPublished(id: string, postId: string, releaseUrl: string): Promise<void> {
   await rawBatch([
     {
-      sql: `UPDATE social_posts SET state = 'PUBLISHED', release_id = ?2, release_url = ?3, pending_data = NULL, error = NULL, updated_at = ?4
+      sql: `UPDATE social_posts SET state = 'PUBLISHED', release_id = ?2, release_url = ?3, pending_data = NULL, error = NULL, updated_at = ?4,
+              published_at = ?4, metrics_next_at = ?5
             WHERE id = ?1`,
-      params: [id, postId, releaseUrl, nowSeconds()],
+      // First metrics sync one cadence step after publishing — the platform
+      // has nothing to count at second zero.
+      params: [id, postId, releaseUrl, nowSeconds(), nowSeconds() + 600],
     },
   ]);
+}
+
+// ── metrics ─────────────────────────────────────────────────────────────────
+
+/** Published posts whose metrics sync is due, most overdue first. Bounded:
+ *  rides the cron tick (partial index social_posts_metrics_due_idx). */
+export async function postsDueForMetrics(providers: string[], limit: number, now = nowSeconds()): Promise<SocialPostRow[]> {
+  if (!providers.length) return [];
+  const list = providers.map((_, i) => `?${i + 3}`).join(', ');
+  return rows<SocialPostRow>(
+    await rawBatch([
+      {
+        sql: `SELECT * FROM social_posts
+              WHERE state = 'PUBLISHED' AND metrics_next_at IS NOT NULL AND metrics_next_at <= ?1
+                AND release_id IS NOT NULL AND provider IN (${list})
+              ORDER BY metrics_next_at ASC LIMIT ?2`,
+        params: [now, limit, ...providers],
+      },
+    ]),
+  );
+}
+
+export interface MetricsUpdate {
+  id: string;
+  /** Present = a successful sync (NULL counters = not reported). */
+  metrics?: { views: number | null; likes: number | null; comments: number | null; shares: number | null };
+  error?: string | null;
+  nextAt: number | null;
+}
+
+/** One batch for the whole tick. A failed sync keeps the last counters. */
+export async function saveMetrics(updates: MetricsUpdate[], now = nowSeconds()): Promise<void> {
+  if (!updates.length) return;
+  await rawBatch(
+    updates.map((u) =>
+      u.metrics
+        ? {
+            sql: `UPDATE social_posts SET views = ?2, likes = ?3, comments = ?4, shares = ?5, metrics_synced_at = ?6,
+                    metrics_next_at = ?7, metrics_error = NULL WHERE id = ?1`,
+            params: [u.id, u.metrics.views, u.metrics.likes, u.metrics.comments, u.metrics.shares, now, u.nextAt],
+          }
+        : {
+            sql: 'UPDATE social_posts SET metrics_next_at = ?2, metrics_error = ?3 WHERE id = ?1',
+            params: [u.id, u.nextAt, (u.error ?? '').slice(0, 300) || null],
+          },
+    ),
+  );
 }
 
 export async function markError(id: string, error: string): Promise<void> {

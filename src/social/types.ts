@@ -94,6 +94,25 @@ export interface SocialProvider {
   postPending(ctx: ProviderPostContext): Promise<PostResponse>;
   checkPostStatus(ctx: ProviderPostContext): Promise<PendingCheck>;
   finalizePost?(ctx: ProviderPostContext): Promise<PendingCheck>;
+  /** Lifetime counters for a published post. Absent = the platform exposes
+   *  none to our scopes; the metrics tick never selects the provider. */
+  fetchMetrics?(ctx: MetricsContext): Promise<PostMetrics>;
+}
+
+/** Counters a platform reported; omitted = not available for this post. */
+export interface PostMetrics {
+  views?: number;
+  likes?: number;
+  comments?: number;
+  shares?: number;
+}
+
+export interface MetricsContext {
+  token: string;
+  /** social_posts.release_id — the platform's post/media/video id. */
+  releaseId: string;
+  releaseUrl: string | null;
+  integration: { internalId: string; profile: string };
 }
 
 export interface SocialConfig {
@@ -158,4 +177,13 @@ export interface SocialPostRow {
   attempts: number;
   created_at: number;
   updated_at: number;
+  /** Metrics columns (0026_social_post_metrics.sql); NULL until synced. */
+  published_at?: number | null;
+  views?: number | null;
+  likes?: number | null;
+  comments?: number | null;
+  shares?: number | null;
+  metrics_synced_at?: number | null;
+  metrics_next_at?: number | null;
+  metrics_error?: string | null;
 }

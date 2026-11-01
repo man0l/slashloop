@@ -23,11 +23,14 @@
 
 import { BadBodyError, RefreshTokenError, isTransientError } from '../errors.js';
 import { assertPublicHttpUrl, providerFetch } from '../fetch.js';
+import { num } from '../metrics-util.js';
 import type {
   AuthTokenDetails,
   Destination,
+  MetricsContext,
   PendingCheck,
   PostDetails,
+  PostMetrics,
   PostResponse,
   ProviderPostContext,
   SocialConfig,
@@ -69,6 +72,14 @@ export class PinterestProvider implements SocialProvider {
   configure(cfg: SocialConfig): void {
     this.clientId = cfg.pinterest?.clientId ?? '';
     this.clientSecret = cfg.pinterest?.clientSecret ?? '';
+  }
+
+  /** Lifetime pin metrics (pins:read): impressions stand in for views,
+   *  saves for shares. */
+  async fetchMetrics(ctx: MetricsContext): Promise<PostMetrics> {
+    const pin = await this.api('GET', `/pins/${encodeURIComponent(ctx.releaseId)}?pin_metrics=true`, ctx.token);
+    const lifetime = (pin?.pin_metrics as Record<string, any> | undefined)?.lifetime_metrics ?? {};
+    return { views: num(lifetime.impression), likes: num(lifetime.reaction), comments: num(lifetime.comment), shares: num(lifetime.save) };
   }
 
   classify = (body: string, status: number): 'refresh-token' | 'reconnect' | 'bad-body' | 'retry' | undefined => {

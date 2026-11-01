@@ -12,7 +12,19 @@
 
 import { BadBodyError, isTransientError } from '../errors.js';
 import { fetchMediaRange, fetchMediaSize, providerFetch } from '../fetch.js';
-import type { AuthTokenDetails, PendingCheck, PostDetails, PostResponse, ProviderId, ProviderPostContext, SocialConfig, SocialProvider } from '../types.js';
+import { num as count } from '../metrics-util.js';
+import type {
+  AuthTokenDetails,
+  MetricsContext,
+  PendingCheck,
+  PostDetails,
+  PostMetrics,
+  PostResponse,
+  ProviderId,
+  ProviderPostContext,
+  SocialConfig,
+  SocialProvider,
+} from '../types.js';
 
 const OAUTH = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN = 'https://oauth2.googleapis.com/token';
@@ -146,6 +158,17 @@ export class YouTubeProvider implements SocialProvider {
     if (!uploadUri) throw new BadBodyError('Could not start the YouTube upload session');
 
     return { pendingData: { uploadUri, videoSize, uploadedBytes: 0, thumbnail: media.thumbnail ?? '', videoId: null } };
+  }
+
+  /** videos.list statistics — covered by the youtube.readonly scope. */
+  async fetchMetrics(ctx: MetricsContext): Promise<PostMetrics> {
+    const res = (await providerFetch(`${API}/videos?part=statistics&id=${encodeURIComponent(ctx.releaseId)}`, {
+      headers: { Authorization: `Bearer ${ctx.token}` },
+      classify: this.classify,
+    }).then((r) => r.json())) as Record<string, any>;
+    const stats = res?.items?.[0]?.statistics;
+    if (!stats) throw new BadBodyError('YouTube returned no statistics for this video (deleted or private?)');
+    return { views: count(stats.viewCount), likes: count(stats.likeCount), comments: count(stats.commentCount) };
   }
 
   async checkPostStatus(ctx: ProviderPostContext): Promise<PendingCheck> {

@@ -10,7 +10,19 @@
 
 import { BadBodyError, RefreshTokenError, isTransientError } from '../errors.js';
 import { assertPublicHttpUrl, providerFetch } from '../fetch.js';
-import type { AuthTokenDetails, PendingCheck, PostDetails, PostResponse, ProviderId, ProviderPostContext, SocialConfig, SocialProvider } from '../types.js';
+import { num } from '../metrics-util.js';
+import type {
+  AuthTokenDetails,
+  MetricsContext,
+  PendingCheck,
+  PostDetails,
+  PostMetrics,
+  PostResponse,
+  ProviderId,
+  ProviderPostContext,
+  SocialConfig,
+  SocialProvider,
+} from '../types.js';
 
 const AUTH = 'https://www.threads.com/oauth/authorize';
 const TOKEN = 'https://graph.threads.net/oauth/access_token';
@@ -40,6 +52,25 @@ export class ThreadsProvider implements SocialProvider {
     }
     return status >= 500 ? 'retry' : status >= 400 ? 'bad-body' : undefined;
   };
+
+  /** Media insights (views, likes, replies, reposts). Needs the
+   *  threads_manage_insights permission; without it the sync records the
+   *  platform's refusal on the post and retries on the normal cadence. */
+  async fetchMetrics(ctx: MetricsContext): Promise<PostMetrics> {
+    const query = new URLSearchParams({ metric: 'views,likes,replies,reposts', access_token: ctx.token });
+    const res = (await providerFetch(`${API}/${ctx.releaseId}/insights?${query}`, { classify: this.classify }).then((r) => r.json())) as {
+      data?: Array<{ name: string; values?: Array<{ value: unknown }>; total_value?: { value: unknown } }>;
+    };
+    const metrics: PostMetrics = {};
+    for (const row of res.data ?? []) {
+      const value = num(row.total_value?.value ?? row.values?.[0]?.value);
+      if (row.name === 'views') metrics.views = value;
+      if (row.name === 'likes') metrics.likes = value;
+      if (row.name === 'replies') metrics.comments = value;
+      if (row.name === 'reposts') metrics.shares = value;
+    }
+    return metrics;
+  }
 
   async generateAuthUrl(cfg: SocialConfig, redirectUri: string, state: string): Promise<string> {
     if (!cfg.threads?.clientId) throw new BadBodyError('Threads app is not configured');

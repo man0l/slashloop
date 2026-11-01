@@ -128,6 +128,7 @@ function presentGroup(group: CalendarGroup) {
       state: p.state,
       releaseUrl: p.releaseUrl,
       error: p.error,
+      ...(p.metrics ? { metrics: { ...p.metrics, syncedAt: iso(p.metrics.syncedAt) } } : {}),
     })),
   };
 }
