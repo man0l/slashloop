@@ -256,14 +256,20 @@ export async function createPostGroup(inputs: CreatePostInput[]): Promise<void> 
   await rawBatch(statements);
 }
 
+// Calendar reads carry the account each row publishes to, so the drawer can
+// say which profile a post went out on (LEFT JOIN: a disconnected account
+// deletes its posts, but a race must not drop the row).
+const WITH_ACCOUNT = `SELECT p.*, i.name AS account_name, i.profile AS account_profile, i.picture AS account_picture
+              FROM social_posts p LEFT JOIN social_integrations i ON i.id = p.integration_id`;
+
 /** One user submission's rows (all platforms), newest first. */
 export async function listPostsInRange(ownerId: string, from: number, to: number): Promise<SocialPostRow[]> {
   return rows<SocialPostRow>(
     await rawBatch([
       {
-        sql: `SELECT * FROM social_posts
-              WHERE owner_id = ?1 AND publish_date >= ?2 AND publish_date <= ?3
-              ORDER BY publish_date ASC, group_id ASC`,
+        sql: `${WITH_ACCOUNT}
+              WHERE p.owner_id = ?1 AND p.publish_date >= ?2 AND p.publish_date <= ?3
+              ORDER BY p.publish_date ASC, p.group_id ASC`,
         params: [ownerId, from, to],
       },
     ]),
@@ -276,8 +282,8 @@ export async function listDrafts(ownerId: string, limit = 50): Promise<SocialPos
   return rows<SocialPostRow>(
     await rawBatch([
       {
-        sql: `SELECT * FROM social_posts WHERE owner_id = ?1 AND state = 'DRAFT'
-              ORDER BY updated_at DESC LIMIT ?2`,
+        sql: `${WITH_ACCOUNT} WHERE p.owner_id = ?1 AND p.state = 'DRAFT'
+              ORDER BY p.updated_at DESC LIMIT ?2`,
         params: [ownerId, limit],
       },
     ]),

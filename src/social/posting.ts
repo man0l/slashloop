@@ -22,6 +22,8 @@ export interface CalendarGroup {
   posts: Array<{
     id: string;
     provider: ProviderId;
+    /** The connected account this row publishes to. */
+    account: { id: string; name: string | null; profile: string | null; picture: string | null };
     state: string;
     releaseUrl: string | null;
     error: string | null;
@@ -50,6 +52,12 @@ export function groupRows(rows: SocialPostRow[]): CalendarGroup[] {
     group.posts.push({
       id: row.id,
       provider: row.provider as ProviderId,
+      account: {
+        id: row.integration_id,
+        name: row.account_name ?? null,
+        profile: row.account_profile ?? null,
+        picture: row.account_picture ?? null,
+      },
       state: row.state,
       releaseUrl: row.release_url ?? null,
       error: row.error ?? null,
