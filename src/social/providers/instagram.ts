@@ -88,11 +88,13 @@ export class InstagramProvider implements SocialProvider {
     try {
       const insights = await this.graph<{ data?: Array<{ name: string; values?: Array<{ value: unknown }>; total_value?: { value: unknown } }> }>(
         `/${ctx.releaseId}/insights`,
-        { metric: 'views,shares', access_token: ctx.token },
+        { metric: 'views,reach,saved,shares', access_token: ctx.token },
       );
       for (const row of insights.data ?? []) {
         const value = num(row.total_value?.value ?? row.values?.[0]?.value);
         if (row.name === 'views') metrics.views = value;
+        if (row.name === 'reach') metrics.reach = value;
+        if (row.name === 'saved') metrics.saves = value;
         if (row.name === 'shares') metrics.shares = value;
       }
     } catch (err) {

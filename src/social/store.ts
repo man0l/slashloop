@@ -5,7 +5,8 @@
 // an ORM. Every statement goes through rawBatch() — atomic per call.
 
 import { rawBatch, type RawStatement } from '../store.js';
-import type { ProviderId, SocialIntegrationRow, SocialPostRow, SocialRotationRow } from './types.js';
+import { METRIC_KEYS } from './types.js';
+import type { MetricKey, ProviderId, SocialIntegrationRow, SocialPostRow, SocialRotationRow } from './types.js';
 
 function rows<T>(result: unknown[][]): T[] {
   return (result[0] ?? []) as T[];
@@ -498,7 +499,7 @@ export async function postsDueForMetrics(providers: string[], limit: number, now
 export interface MetricsUpdate {
   id: string;
   /** Present = a successful sync (NULL counters = not reported). */
-  metrics?: { views: number | null; likes: number | null; comments: number | null; shares: number | null };
+  metrics?: Record<MetricKey, number | null>;
   error?: string | null;
   nextAt: number | null;
 }
@@ -510,9 +511,9 @@ export async function saveMetrics(updates: MetricsUpdate[], now = nowSeconds()):
     updates.map((u) =>
       u.metrics
         ? {
-            sql: `UPDATE social_posts SET views = ?2, likes = ?3, comments = ?4, shares = ?5, metrics_synced_at = ?6,
-                    metrics_next_at = ?7, metrics_error = NULL WHERE id = ?1`,
-            params: [u.id, u.metrics.views, u.metrics.likes, u.metrics.comments, u.metrics.shares, now, u.nextAt],
+            sql: `UPDATE social_posts SET ${METRIC_KEYS.map((k, i) => `${k} = ?${i + 4}`).join(', ')}, metrics_synced_at = ?2,
+                    metrics_next_at = ?3, metrics_error = NULL WHERE id = ?1`,
+            params: [u.id, now, u.nextAt, ...METRIC_KEYS.map((k) => u.metrics![k])],
           }
         : {
             sql: 'UPDATE social_posts SET metrics_next_at = ?2, metrics_error = ?3 WHERE id = ?1',

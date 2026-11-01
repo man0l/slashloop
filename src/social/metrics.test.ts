@@ -8,6 +8,9 @@ import { RefreshTokenError } from './errors.js';
 import { markPublished } from './store.js';
 import { YouTubeProvider } from './providers/youtube.js';
 import { TikTokProvider } from './providers/tiktok.js';
+import { InstagramProvider } from './providers/instagram.js';
+import { PinterestProvider } from './providers/pinterest.js';
+import { ThreadsProvider } from './providers/threads.js';
 import type { SocialPostRow } from './types.js';
 
 const NOW = 1_800_000_000;
@@ -34,6 +37,7 @@ beforeEach(() => {
     content TEXT, settings TEXT, media TEXT, pending_data TEXT, release_id TEXT, release_url TEXT, error TEXT, attempts INTEGER, created_at INTEGER, updated_at INTEGER)`);
   // The real migration, so the test also proves the SQL applies.
   db.exec(readFileSync(new URL('../../prisma/d1-migrations/0026_social_post_metrics.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../../prisma/d1-migrations/0027_social_post_more_metrics.sql', import.meta.url), 'utf8'));
   db.run(
     `INSERT INTO social_integrations (id, owner_id, provider, internal_id, token, refresh_token, token_expires_at, refresh_needed, disabled, created_at, updated_at)
      VALUES ('yt', 'o', 'youtube', 'c', 'old', 'r', ${NOW + 3600}, 0, 0, 0, 0), ('tt', 'o', 'tiktok', 't', 'x', 'r', ${NOW + 3600}, 0, 0, 0, 0)`,
@@ -75,13 +79,13 @@ describe('socialMetricsTick', () => {
     try {
       const report = await socialMetricsTick({}, { nowSeconds: NOW, limit: 10 });
       expect(report).toEqual({ due: 3, synced: 3, failed: 0 });
-      expect(row('fresh')).toMatchObject({ views: 1234, likes: 56, comments: 7, shares: null, metrics_synced_at: NOW, metrics_next_at: NOW + 600 });
+      expect(row('fresh')).toMatchObject({ views: 1234, likes: 56, comments: 7, shares: null, saves: null, metrics_synced_at: NOW, metrics_next_at: NOW + 600 });
       expect(row('mid').metrics_next_at).toBe(NOW + H);
       expect(row('old').metrics_next_at).toBe(NOW + 24 * H);
       expect(row('later').metrics_synced_at).toBeNull();
 
       const [group] = groupRows([row('fresh')]);
-      expect(group.posts[0].metrics).toEqual({ views: 1234, likes: 56, comments: 7, shares: null, syncedAt: NOW });
+      expect(group.posts[0].metrics).toEqual({ views: 1234, likes: 56, comments: 7, shares: null, saves: null, reposts: null, quotes: null, reach: null, clicks: null, syncedAt: NOW });
     } finally {
       fetchMetrics.mockRestore();
     }
@@ -116,6 +120,58 @@ describe('socialMetricsTick', () => {
       fetchMetrics.mockRestore();
       refresh.mockRestore();
       warn.mockRestore();
+    }
+  });
+});
+
+describe('platform-specific counters', () => {
+  const ctx = { token: 't', releaseId: 'r', releaseUrl: null, integration: { internalId: 'i', profile: '' } };
+  const mockFetch = (route: (url: string) => unknown) =>
+    spyOn(globalThis, 'fetch').mockImplementation((async (input: string | URL | Request) =>
+      Response.json(route(String(input)))) as typeof fetch);
+
+  test('Instagram: likes/comments from the media, views/reach/saves/shares from insights', async () => {
+    const f = mockFetch((url) =>
+      url.includes('/insights')
+        ? { data: [{ name: 'views', values: [{ value: 900 }] }, { name: 'reach', values: [{ value: 700 }] }, { name: 'saved', values: [{ value: 12 }] }, { name: 'shares', values: [{ value: 4 }] }] }
+        : { like_count: 30, comments_count: 5 },
+    );
+    try {
+      expect(await new InstagramProvider().fetchMetrics(ctx)).toEqual({ likes: 30, comments: 5, views: 900, reach: 700, saves: 12, shares: 4 });
+    } finally {
+      f.mockRestore();
+    }
+  });
+
+  test('Pinterest: impressions as views, saves and outbound clicks', async () => {
+    const f = mockFetch(() => ({ pin_metrics: { lifetime_metrics: { impression: 1500, reaction: 8, comment: 2, save: 40, outbound_click: 17 } } }));
+    try {
+      expect(await new PinterestProvider().fetchMetrics(ctx)).toEqual({ views: 1500, likes: 8, comments: 2, saves: 40, clicks: 17 });
+    } finally {
+      f.mockRestore();
+    }
+  });
+
+  test('Threads: replies as comments, reposts, quotes and shares kept apart', async () => {
+    const rows = { views: 300, likes: 20, replies: 6, reposts: 3, quotes: 1, shares: 2 };
+    const f = mockFetch(() => ({ data: Object.entries(rows).map(([name, value]) => ({ name, values: [{ value }] })) }));
+    try {
+      expect(await new ThreadsProvider().fetchMetrics(ctx)).toEqual({ views: 300, likes: 20, comments: 6, reposts: 3, quotes: 1, shares: 2 });
+    } finally {
+      f.mockRestore();
+    }
+  });
+
+  test('every counter round-trips through the store and the calendar payload', async () => {
+    insertPublished('pin', 'youtube', NOW - H, NOW - 1);
+    const all = { views: 1, likes: 2, comments: 3, shares: 4, saves: 5, reposts: 6, quotes: 7, reach: 8, clicks: 9 };
+    const fetchMetrics = spyOn(YouTubeProvider.prototype, 'fetchMetrics').mockResolvedValue(all);
+    try {
+      await socialMetricsTick({}, { nowSeconds: NOW });
+      expect(row('pin')).toMatchObject(all);
+      expect(groupRows([row('pin')])[0].posts[0].metrics).toEqual({ ...all, syncedAt: NOW });
+    } finally {
+      fetchMetrics.mockRestore();
     }
   });
 });
