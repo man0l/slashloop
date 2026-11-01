@@ -6,7 +6,8 @@
 
 import { createRegistry, getProvider } from './registry.js';
 import * as socialStore from './store.js';
-import type { MediaContent, ProviderId, SocialIntegrationRow, SocialPostRow } from './types.js';
+import { METRIC_KEYS } from './types.js';
+import type { MediaContent, MetricKey, ProviderId, SocialIntegrationRow, SocialPostRow } from './types.js';
 
 // ── calendar grouping ───────────────────────────────────────────────────────
 
@@ -26,13 +27,7 @@ export interface CalendarGroup {
     error: string | null;
     needsReconnect?: boolean;
     /** Published posts only, once synced (src/social/metrics.ts). */
-    metrics?: {
-      views: number | null;
-      likes: number | null;
-      comments: number | null;
-      shares: number | null;
-      syncedAt: number;
-    };
+    metrics?: Record<MetricKey, number | null> & { syncedAt: number };
   }>;
 }
 
@@ -61,10 +56,7 @@ export function groupRows(rows: SocialPostRow[]): CalendarGroup[] {
       ...(row.metrics_synced_at
         ? {
             metrics: {
-              views: row.views ?? null,
-              likes: row.likes ?? null,
-              comments: row.comments ?? null,
-              shares: row.shares ?? null,
+              ...(Object.fromEntries(METRIC_KEYS.map((k) => [k, row[k] ?? null])) as Record<MetricKey, number | null>),
               syncedAt: row.metrics_synced_at,
             },
           }

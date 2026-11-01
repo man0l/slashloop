@@ -79,7 +79,14 @@ export class PinterestProvider implements SocialProvider {
   async fetchMetrics(ctx: MetricsContext): Promise<PostMetrics> {
     const pin = await this.api('GET', `/pins/${encodeURIComponent(ctx.releaseId)}?pin_metrics=true`, ctx.token);
     const lifetime = (pin?.pin_metrics as Record<string, any> | undefined)?.lifetime_metrics ?? {};
-    return { views: num(lifetime.impression), likes: num(lifetime.reaction), comments: num(lifetime.comment), shares: num(lifetime.save) };
+    // Pinterest has no view count for pins; impressions stand in for views.
+    return {
+      views: num(lifetime.impression),
+      likes: num(lifetime.reaction),
+      comments: num(lifetime.comment),
+      saves: num(lifetime.save),
+      clicks: num(lifetime.outbound_click),
+    };
   }
 
   classify = (body: string, status: number): 'refresh-token' | 'reconnect' | 'bad-body' | 'retry' | undefined => {

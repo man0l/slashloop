@@ -1,4 +1,5 @@
-// Post metrics sync — views/likes/comments/shares for published posts, shown
+// Post metrics sync — views, likes, comments and the platform-specific
+// counters (METRIC_KEYS: saves, shares, reposts, reach, clicks…) for published posts, shown
 // on the calendar. Rides the social cron tick (api/cron/social.ts, */2) like
 // the token-refresh scan: one indexed LIMIT query that returns zero rows
 // between due syncs, so no extra cron trigger is needed.
@@ -14,7 +15,8 @@
 import { createRegistry, getProvider } from './registry.js';
 import * as store from './store.js';
 import { isAuthFailure, isSubrequestLimit, RefreshTokenError } from './errors.js';
-import type { MetricsContext, PostMetrics, SocialConfig, SocialIntegrationRow, SocialPostRow } from './types.js';
+import { METRIC_KEYS } from './types.js';
+import type { MetricKey, MetricsContext, PostMetrics, SocialConfig, SocialIntegrationRow, SocialPostRow } from './types.js';
 
 const MINUTE = 60;
 const HOUR = 60 * MINUTE;
@@ -124,7 +126,7 @@ async function fetchWithRefresh(
   }
 }
 
-function normalize(m: PostMetrics) {
+function normalize(m: PostMetrics): Record<MetricKey, number | null> {
   const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : null);
-  return { views: n(m.views), likes: n(m.likes), comments: n(m.comments), shares: n(m.shares) };
+  return Object.fromEntries(METRIC_KEYS.map((k) => [k, n(m[k])])) as Record<MetricKey, number | null>;
 }

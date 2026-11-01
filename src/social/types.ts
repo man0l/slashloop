@@ -99,13 +99,13 @@ export interface SocialProvider {
   fetchMetrics?(ctx: MetricsContext): Promise<PostMetrics>;
 }
 
+/** Post counters, one social_posts column each (0026 + 0027 migrations).
+ *  Each platform fills the subset it reports — see the providers' fetchMetrics. */
+export const METRIC_KEYS = ['views', 'likes', 'comments', 'shares', 'saves', 'reposts', 'quotes', 'reach', 'clicks'] as const;
+export type MetricKey = (typeof METRIC_KEYS)[number];
+
 /** Counters a platform reported; omitted = not available for this post. */
-export interface PostMetrics {
-  views?: number;
-  likes?: number;
-  comments?: number;
-  shares?: number;
-}
+export type PostMetrics = Partial<Record<MetricKey, number>>;
 
 export interface MetricsContext {
   token: string;
@@ -177,12 +177,17 @@ export interface SocialPostRow {
   attempts: number;
   created_at: number;
   updated_at: number;
-  /** Metrics columns (0026_social_post_metrics.sql); NULL until synced. */
+  /** Metrics columns (0026/0027 migrations, METRIC_KEYS); NULL until synced. */
   published_at?: number | null;
   views?: number | null;
   likes?: number | null;
   comments?: number | null;
   shares?: number | null;
+  saves?: number | null;
+  reposts?: number | null;
+  quotes?: number | null;
+  reach?: number | null;
+  clicks?: number | null;
   metrics_synced_at?: number | null;
   metrics_next_at?: number | null;
   metrics_error?: string | null;

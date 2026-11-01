@@ -168,6 +168,8 @@ export class YouTubeProvider implements SocialProvider {
     }).then((r) => r.json())) as Record<string, any>;
     const stats = res?.items?.[0]?.statistics;
     if (!stats) throw new BadBodyError('YouTube returned no statistics for this video (deleted or private?)');
+    // Shares/saves exist only in the YouTube Analytics API (yt-analytics.readonly,
+    // not granted); the Data API's favoriteCount is deprecated and always 0.
     return { views: count(stats.viewCount), likes: count(stats.likeCount), comments: count(stats.commentCount) };
   }
 

@@ -57,7 +57,7 @@ export class ThreadsProvider implements SocialProvider {
    *  threads_manage_insights permission; without it the sync records the
    *  platform's refusal on the post and retries on the normal cadence. */
   async fetchMetrics(ctx: MetricsContext): Promise<PostMetrics> {
-    const query = new URLSearchParams({ metric: 'views,likes,replies,reposts', access_token: ctx.token });
+    const query = new URLSearchParams({ metric: 'views,likes,replies,reposts,quotes,shares', access_token: ctx.token });
     const res = (await providerFetch(`${API}/${ctx.releaseId}/insights?${query}`, { classify: this.classify }).then((r) => r.json())) as {
       data?: Array<{ name: string; values?: Array<{ value: unknown }>; total_value?: { value: unknown } }>;
     };
@@ -67,7 +67,9 @@ export class ThreadsProvider implements SocialProvider {
       if (row.name === 'views') metrics.views = value;
       if (row.name === 'likes') metrics.likes = value;
       if (row.name === 'replies') metrics.comments = value;
-      if (row.name === 'reposts') metrics.shares = value;
+      if (row.name === 'reposts') metrics.reposts = value;
+      if (row.name === 'quotes') metrics.quotes = value;
+      if (row.name === 'shares') metrics.shares = value;
     }
     return metrics;
   }
