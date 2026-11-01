@@ -29,7 +29,18 @@
 
 import { BadBodyError, RefreshTokenError, TransientProviderError, isTransientError } from '../errors.js';
 import { assertPublicHttpUrl, providerFetch } from '../fetch.js';
-import type { AuthTokenDetails, PendingCheck, PostDetails, PostResponse, ProviderPostContext, SocialConfig, SocialProvider } from '../types.js';
+import { num } from '../metrics-util.js';
+import type {
+  AuthTokenDetails,
+  MetricsContext,
+  PendingCheck,
+  PostDetails,
+  PostMetrics,
+  PostResponse,
+  ProviderPostContext,
+  SocialConfig,
+  SocialProvider,
+} from '../types.js';
 
 const AUTH = 'https://www.instagram.com/oauth/authorize';
 const TOKEN = 'https://api.instagram.com/oauth/access_token';
@@ -66,6 +77,28 @@ export class InstagramProvider implements SocialProvider {
     this.graphVersion = cfg.instagram?.graphVersion ?? this.graphVersion;
     this.clientId = cfg.instagram?.clientId ?? '';
     this.clientSecret = cfg.instagram?.clientSecret ?? '';
+  }
+
+  /** Likes/comments come with instagram_business_basic; views/shares need the
+   *  insights permission (instagram_business_manage_insights), so a refused
+   *  insights call degrades to the basic counters instead of failing. */
+  async fetchMetrics(ctx: MetricsContext): Promise<PostMetrics> {
+    const media = await this.graph(`/${ctx.releaseId}`, { fields: 'like_count,comments_count', access_token: ctx.token });
+    const metrics: PostMetrics = { likes: num(media.like_count), comments: num(media.comments_count) };
+    try {
+      const insights = await this.graph<{ data?: Array<{ name: string; values?: Array<{ value: unknown }>; total_value?: { value: unknown } }> }>(
+        `/${ctx.releaseId}/insights`,
+        { metric: 'views,shares', access_token: ctx.token },
+      );
+      for (const row of insights.data ?? []) {
+        const value = num(row.total_value?.value ?? row.values?.[0]?.value);
+        if (row.name === 'views') metrics.views = value;
+        if (row.name === 'shares') metrics.shares = value;
+      }
+    } catch (err) {
+      if (err instanceof RefreshTokenError || isTransientError(err)) throw err;
+    }
+    return metrics;
   }
 
   classify = (body: string, status: number): 'refresh-token' | 'reconnect' | 'bad-body' | 'retry' | undefined => {

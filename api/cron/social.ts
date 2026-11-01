@@ -10,7 +10,7 @@
 // cheaper than a separate daily cron. ?refresh=1 raises the scan limit for
 // a manual full pass.
 
-import { socialEngineTick, socialRefreshScan } from '../../src/social/index.js';
+import { socialEngineTick, socialMetricsTick, socialRefreshScan } from '../../src/social/index.js';
 import { socialConfigFromEnv } from '../social.js';
 import { corsHeaders } from '../../src/lib/cors.js';
 
@@ -49,8 +49,20 @@ async function runTick(request: Request): Promise<Response> {
     refresh = { scanned: 0, refreshed: 0, failed: 0, error: message };
   }
 
+  // Metrics sync for published posts (calendar views). Same isolation: a
+  // platform or D1 failure here never 500s a tick that already published.
+  let metrics: { due: number; synced: number; failed: number; error?: string };
+  try {
+    metrics = await socialMetricsTick(socialConfigFromEnv(), { limit: url.searchParams.get('metrics') === '1' ? 25 : 6 });
+    if (metrics.due > 0) console.log(`[social] metrics: ${JSON.stringify(metrics)}`);
+  } catch (err) {
+    const message = (err as Error).message || 'metrics sync failed';
+    console.error(`[social] metrics sync failed: ${message}`);
+    metrics = { due: 0, synced: 0, failed: 0, error: message };
+  }
+
   console.log(`[social] tick: ${JSON.stringify(report)}`);
-  return json(200, { ...report, refresh }, request);
+  return json(200, { ...report, refresh, metrics }, request);
 }
 
 /** GET /api/cron/social           → engine tick + bounded refresh scan

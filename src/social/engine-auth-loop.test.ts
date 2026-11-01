@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { readFileSync } from 'node:fs';
 import { setActiveClient } from '../store.js';
 import { socialEngineTick } from './engine.js';
 import { RefreshTokenError } from './errors.js';
@@ -18,6 +19,7 @@ beforeEach(() => {
     token TEXT, refresh_token TEXT, token_expires_at INTEGER, refresh_needed INTEGER, disabled INTEGER, error TEXT, tags TEXT, created_at INTEGER, updated_at INTEGER)`);
   db.run(`CREATE TABLE social_posts (id TEXT PRIMARY KEY, group_id TEXT, owner_id TEXT, integration_id TEXT, provider TEXT, state TEXT, publish_date INTEGER,
     content TEXT, settings TEXT, media TEXT, pending_data TEXT, release_id TEXT, release_url TEXT, error TEXT, attempts INTEGER, created_at INTEGER, updated_at INTEGER)`);
+  db.exec(readFileSync(new URL('../../prisma/d1-migrations/0026_social_post_metrics.sql', import.meta.url), 'utf8'));
   db.run(
     `INSERT INTO social_integrations (id, owner_id, provider, internal_id, token, refresh_token, token_expires_at, refresh_needed, disabled, created_at, updated_at)
      VALUES ('i1', 'o', 'pinterest', 'p', 't', 'r', ${NOW + 86_400}, 0, 0, 0, 0)`,

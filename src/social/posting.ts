@@ -25,6 +25,14 @@ export interface CalendarGroup {
     releaseUrl: string | null;
     error: string | null;
     needsReconnect?: boolean;
+    /** Published posts only, once synced (src/social/metrics.ts). */
+    metrics?: {
+      views: number | null;
+      likes: number | null;
+      comments: number | null;
+      shares: number | null;
+      syncedAt: number;
+    };
   }>;
 }
 
@@ -50,6 +58,17 @@ export function groupRows(rows: SocialPostRow[]): CalendarGroup[] {
       state: row.state,
       releaseUrl: row.release_url ?? null,
       error: row.error ?? null,
+      ...(row.metrics_synced_at
+        ? {
+            metrics: {
+              views: row.views ?? null,
+              likes: row.likes ?? null,
+              comments: row.comments ?? null,
+              shares: row.shares ?? null,
+              syncedAt: row.metrics_synced_at,
+            },
+          }
+        : {}),
     });
   }
 
