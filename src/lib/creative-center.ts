@@ -72,9 +72,12 @@ export interface TrendHashtag {
 }
 
 export class CreativeCenterError extends Error {
-  constructor(message: string) {
+  /** HTTP status when the failure was a non-200 response; lets callers tell throttling (429/5xx) from a bad payload. */
+  readonly status: number | undefined;
+  constructor(message: string, status?: number) {
     super(message);
     this.name = 'CreativeCenterError';
+    this.status = status;
   }
 }
 
@@ -109,7 +112,7 @@ export async function fetchHashtagList(
     accept: 'application/json, text/plain, */*',
     'agw-js-conv': 'str',
   });
-  if (!res.ok) throw new CreativeCenterError(`creative center http ${res.status}`);
+  if (!res.ok) throw new CreativeCenterError(`creative center http ${res.status}`, res.status);
   let json: any;
   try {
     json = JSON.parse(res.text);

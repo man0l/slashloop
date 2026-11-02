@@ -20,6 +20,8 @@ import {
 } from '../lib/creative-center.js';
 import { processToolsJob, resetPendingDeliveries, type ToolsJobDeps } from './tools-jobs.js';
 import {
+  backoffMs,
+  isThrottled,
   mapSampleItem,
   listBytesEstimate,
   TRENDS_SAMPLE_BYTES_PER_TAG,
@@ -204,10 +206,14 @@ describe('pickSampleTags', () => {
   });
 });
 
-function trendsDeps(over: Partial<TrendsDeps> = {}): TrendsDeps & { log: string[] } {
+function trendsDeps(over: Partial<TrendsDeps> = {}): TrendsDeps & { log: string[]; sleeps: number[] } {
   const log: string[] = [];
+  const sleeps: number[] = [];
   return {
     log,
+    sleeps,
+    sleep: async (ms) => { sleeps.push(ms); },
+    random: () => 0.5,
     assertBudget: async (b) => { log.push(`budget:${b}`); },
     fetchHashtagList: async (period, industryId) => {
       log.push(`list:${period}:${industryId ?? 'overall'}`);
@@ -246,13 +252,13 @@ describe('runTrends', () => {
     expect(d.log).toEqual([]);
   });
 
-  test('an unreadable overall list retries once then fails with code source and samples nothing', async () => {
+  test('an unreadable overall list retries with backoff then fails with code source and samples nothing', async () => {
     let calls = 0;
     const d = trendsDeps({
-      fetchHashtagList: async () => { calls++; throw new CreativeCenterError('creative center http 503'); },
+      fetchHashtagList: async () => { calls++; throw new CreativeCenterError('creative center http 503', 503); },
     });
     expect(await runTrends(payload, d)).toEqual({ status: 'failed', code: 'source' });
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
     expect(d.log.some((l) => l.startsWith('resolve:'))).toBe(false);
   });
 
@@ -261,7 +267,7 @@ describe('runTrends', () => {
     const base = trendsDeps();
     const d = trendsDeps({
       fetchHashtagList: async (p, i) => {
-        if (first) { first = false; throw new CreativeCenterError('creative center http 503'); }
+        if (first) { first = false; throw new CreativeCenterError('creative center http 503', 503); }
         return base.fetchHashtagList(p, i);
       },
     });
@@ -300,6 +306,112 @@ describe('runTrends', () => {
     expect(resolves).toBe(3);
   });
 
+  // SLA-1231: 503 bursts get backoff, a breaker, and one summary line per run.
+  describe('throttle backoff, breaker and summary line', () => {
+    const throttled = (status = 503) => new CreativeCenterError(`creative center http ${status}`, status);
+    const lines = (spy: ReturnType<typeof mock>) => spy.mock.calls.map((c) => String(c[0]));
+    let warn: ReturnType<typeof mock>;
+    let log: ReturnType<typeof mock>;
+    const origWarn = console.warn;
+    const origLog = console.log;
+    beforeEach(() => {
+      warn = mock(() => {});
+      log = mock(() => {});
+      console.warn = warn as unknown as typeof console.warn;
+      console.log = log as unknown as typeof console.log;
+    });
+    const restore = () => { console.warn = origWarn; console.log = origLog; };
+
+    test('isThrottled: 429 and 5xx only', () => {
+      expect([429, 500, 503].map((s) => isThrottled(throttled(s)))).toEqual([true, true, true]);
+      expect(isThrottled(throttled(403))).toBe(false);
+      expect(isThrottled(new CreativeCenterError('creative center status 10001'))).toBe(false);
+      expect(isThrottled(new Error('The operation was aborted.'))).toBe(false);
+    });
+
+    test('backoffMs doubles per attempt, caps at 8s and jitters between 50% and 100%', () => {
+      expect([1, 2, 3, 4, 5].map((a) => backoffMs(a, 1))).toEqual([1000, 2000, 4000, 8000, 8000]);
+      expect([1, 2, 3].map((a) => backoffMs(a, 0))).toEqual([500, 1000, 2000]);
+    });
+
+    test('a 503 is retried after a jittered, growing wait and the list recovers', async () => {
+      const base = trendsDeps();
+      let fails = 2;
+      const d = trendsDeps({
+        fetchHashtagList: async (p, i) => {
+          if (fails-- > 0) throw throttled(503);
+          return base.fetchHashtagList(p, i);
+        },
+      });
+      try {
+        expect((await runTrends(payload, d)).status).toBe('done');
+      } finally { restore(); }
+      expect(d.sleeps).toEqual([750, 1500]);
+    });
+
+    test('a non-throttle failure retries once with no wait', async () => {
+      let calls = 0;
+      const d = trendsDeps({ fetchHashtagList: async () => { calls++; throw new CreativeCenterError('creative center status 10001'); } });
+      try { await runTrends(payload, d); } finally { restore(); }
+      expect(calls).toBe(2);
+      expect(d.sleeps).toEqual([]);
+    });
+
+    test('a backoff that would pass the list deadline skips the retry', async () => {
+      const clock = { t: NOW.getTime() };
+      let calls = 0;
+      const d = trendsDeps({
+        now: () => new Date(clock.t),
+        fetchHashtagList: async () => { calls++; clock.t += TRENDS_LIST_DEADLINE_MS - 100; throw throttled(503); },
+      });
+      try { expect(await runTrends(payload, d)).toEqual({ status: 'failed', code: 'source' }); } finally { restore(); }
+      expect(calls).toBe(1);
+      expect(d.sleeps).toEqual([]);
+    });
+
+    test('breaker: three industry lists exhausted by 503 stop the run; the rest are skipped, one summary line', async () => {
+      const base = trendsDeps();
+      let industryCalls = 0;
+      const d = trendsDeps({
+        fetchHashtagList: async (p, i) => {
+          if (i === null) return base.fetchHashtagList(p, i);
+          industryCalls++;
+          throw throttled(503);
+        },
+      });
+      try { expect(await runTrends(payload, d)).toEqual({ status: 'failed', code: 'source' }); } finally { restore(); }
+      expect(industryCalls).toBe(9);
+      expect(d.log.some((l) => l.startsWith('resolve:'))).toBe(false);
+      const total = 2 * (CC_INDUSTRIES.length + 1);
+      expect(lines(warn)).toEqual([
+        `[tools-trends] lists breaker: ok=1 failed=3 skipped=${total - 4} of ${total}, last failure: ${CC_INDUSTRIES[2]!.name}/7d creative center http 503`,
+      ]);
+    });
+
+    test('a tolerated industry failure logs no per-category warn; the finished run summarises it once', async () => {
+      const base = trendsDeps();
+      const d = trendsDeps({
+        fetchHashtagList: async (p, i) => {
+          if (i === BEAUTY.id) throw new CreativeCenterError('creative center status 10001');
+          return base.fetchHashtagList(p, i);
+        },
+      });
+      try { expect((await runTrends(payload, d)).status).toBe('done'); } finally { restore(); }
+      const listLines = lines(warn).filter((l) => l.includes('list'));
+      expect(listLines).toHaveLength(1);
+      expect(listLines[0]).toContain('lists done: ok=');
+      expect(listLines[0]).toContain('failed=2 skipped=0');
+      expect(listLines[0]).toContain('creative center status 10001');
+    });
+
+    test('a clean run logs one info summary and no warn', async () => {
+      const d = trendsDeps();
+      try { expect((await runTrends(payload, d)).status).toBe('done'); } finally { restore(); }
+      expect(warn).not.toHaveBeenCalled();
+      expect(lines(log).filter((l) => l.startsWith('[tools-trends] lists done'))).toHaveLength(1);
+    });
+  });
+
   // SLA-1162: a degraded Creative Center (30s aborts, 503s) used to run 44
   // lists x 2 attempts past the 300s job timeout, which the queue then re-ran.
   describe('run deadline (fake clock)', () => {
@@ -335,11 +447,11 @@ describe('runTrends', () => {
           if (i === null) return base.fetchHashtagList(p, i);
           industryCalls++;
           clock.t += 1_000;
-          throw new CreativeCenterError('creative center http 503');
+          throw new CreativeCenterError('creative center http 503', 503);
         },
       }));
       expect(await runTrends(payload, d)).toEqual({ status: 'failed', code: 'source' });
-      expect(industryCalls).toBe(3 * 2);
+      expect(industryCalls).toBe(3 * 3);
       expect(elapsed()).toBeLessThan(JOB_TIMEOUT_MS);
     });
 
@@ -349,7 +461,7 @@ describe('runTrends', () => {
       const { d, elapsed } = clocked((clock) => ({
         fetchHashtagList: async (p, i) => {
           clock.t += LIST_TIMEOUT_MS;
-          if (i !== null && n++ % 2 === 0) throw new CreativeCenterError('creative center http 503');
+          if (i !== null && n++ % 2 === 0) throw new CreativeCenterError('creative center http 503', 503);
           return base.fetchHashtagList(p, i);
         },
       }));

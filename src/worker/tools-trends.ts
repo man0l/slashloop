@@ -27,7 +27,13 @@ export const TRENDS_MAX_SAMPLE_TAGS = 20;
 /** Example posts kept per sampled tag (SLA-1149); a niche page shows up to 6 of them, a tag row 3. */
 export const TRENDS_EXAMPLES_PER_TAG = 3;
 const MAX_CONSECUTIVE_SAMPLE_FAILURES = 3;
+/** Consecutive lists that fail after their retries; also the trip point of the 429/5xx breaker. */
 const MAX_CONSECUTIVE_LIST_FAILURES = 3;
+/** Attempts per list: a throttled response (429/5xx) gets backoff and a third try; anything else retries once, immediately. */
+const MAX_THROTTLED_ATTEMPTS = 3;
+const MAX_PLAIN_ATTEMPTS = 2;
+const BACKOFF_BASE_MS = 1_000;
+const BACKOFF_CAP_MS = 8_000;
 /**
  * Run-level deadlines, measured from the start of runTrends, under the 300s
  * job timeout (jobTimeoutMs('tools-trends')). No list attempt starts after
@@ -130,6 +136,10 @@ export interface TrendsDeps {
   /** Direct (off-proxy) cover download plus signed push to the site; returns the stored ids. Unset = no covers. */
   uploadCovers?(targets: AuthoredCoverTarget[]): Promise<string[]>;
   now(): Date;
+  /** Backoff wait between throttled retries; defaults to a real timer. */
+  sleep?(ms: number): Promise<void>;
+  /** Jitter source in [0, 1); defaults to Math.random. */
+  random?(): number;
 }
 
 export type TrendsOutcome =
@@ -198,6 +208,20 @@ class ListDeadlineError extends Error {
   override name = 'ListDeadlineError';
 }
 
+/** 429 and 5xx from the Creative Center: it is shedding load, so waiting helps and hammering does not. */
+export function isThrottled(err: unknown): boolean {
+  const status = (err as { status?: unknown } | null)?.status;
+  return typeof status === 'number' && (status === 429 || status >= 500);
+}
+
+/** Exponential from 1s, capped at 8s, jittered to 50-100% so sibling runs do not retry in lockstep. */
+export function backoffMs(attempt: number, random: number): number {
+  const ceiling = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (attempt - 1));
+  return Math.round(ceiling * (0.5 + random * 0.5));
+}
+
+const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 async function fetchListOnce(
   deps: TrendsDeps,
   period: number,
@@ -205,16 +229,42 @@ async function fetchListOnce(
   deadline: number,
 ): Promise<any[]> {
   let lastError: unknown = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  let attempt = 0;
+  while (true) {
+    attempt++;
     if (deps.now().getTime() >= deadline) throw lastError ?? new ListDeadlineError('list deadline passed');
     try {
       return await deps.fetchHashtagList(period, industryId);
     } catch (err) {
       lastError = err;
-      if (errorCode(err) === 'budget') break;
+      if (errorCode(err) === 'budget') throw err;
+      if (!isThrottled(err)) {
+        if (attempt >= MAX_PLAIN_ATTEMPTS) throw err;
+        continue;
+      }
+      if (attempt >= MAX_THROTTLED_ATTEMPTS) throw err;
+      const wait = backoffMs(attempt, (deps.random ?? Math.random)());
+      // A wait that would run past the list deadline is a retry that cannot happen.
+      if (deps.now().getTime() + wait >= deadline) throw err;
+      await (deps.sleep ?? realSleep)(wait);
     }
   }
-  throw lastError;
+}
+
+interface ListTally {
+  ok: number;
+  failed: number;
+  total: number;
+  lastStatus: string;
+}
+
+/** The one line a run writes about its Creative Center lists, in place of a warn per failed category. */
+function logListSummary(tally: ListTally, outcome: 'done' | 'breaker' | 'deadline' | 'overall-failed' | 'budget'): void {
+  const skipped = tally.total - tally.ok - tally.failed;
+  const line =
+    `[tools-trends] lists ${outcome}: ok=${tally.ok} failed=${tally.failed} skipped=${skipped} of ${tally.total}, last failure: ${tally.lastStatus}`;
+  if (outcome === 'done' && tally.failed === 0) console.log(line);
+  else console.warn(line);
 }
 
 export async function runTrends(payload: TrendsPayload, deps: TrendsDeps): Promise<TrendsOutcome> {
@@ -236,6 +286,12 @@ export async function runTrends(payload: TrendsPayload, deps: TrendsDeps): Promi
   // degraded: fail rather than ship a thin ranking over a good snapshot.
   const results: ListResult[] = [];
   let consecutiveListFailures = 0;
+  const tally: ListTally = {
+    ok: 0,
+    failed: 0,
+    total: payload.periods.length * (CC_INDUSTRIES.length + 1),
+    lastStatus: 'none',
+  };
   for (const period of payload.periods) {
     const scopes: Array<{ scope: string; id: string | null }> = [
       { scope: 'overall', id: null },
@@ -243,21 +299,34 @@ export async function runTrends(payload: TrendsPayload, deps: TrendsDeps): Promi
     ];
     for (const { scope, id } of scopes) {
       if (deps.now().getTime() >= listDeadline) {
-        console.warn(`[tools-trends] list deadline ${TRENDS_LIST_DEADLINE_MS}ms passed before ${scope}/${period}d`);
+        logListSummary(tally, 'deadline');
         return { status: 'failed', code: 'source' };
       }
       try {
         results.push({ period, scope, items: await fetchListOnce(deps, period, id, listDeadline) });
+        tally.ok++;
         consecutiveListFailures = 0;
       } catch (err) {
         consecutiveListFailures++;
-        console.warn(`[tools-trends] list ${scope}/${period}d failed: ${(err as Error).message}`);
-        if (id === null || errorCode(err) === 'budget' || consecutiveListFailures >= MAX_CONSECUTIVE_LIST_FAILURES) {
-          return { status: 'failed', code: errorCode(err) === 'budget' ? 'budget' : 'source' };
+        tally.failed++;
+        tally.lastStatus = `${scope}/${period}d ${(err as Error).message}`;
+        if (errorCode(err) === 'budget') {
+          logListSummary(tally, 'budget');
+          return { status: 'failed', code: 'budget' };
+        }
+        if (id === null) {
+          logListSummary(tally, 'overall-failed');
+          return { status: 'failed', code: 'source' };
+        }
+        // Breaker: the source keeps refusing, so stop here and let the next cron run try again.
+        if (consecutiveListFailures >= MAX_CONSECUTIVE_LIST_FAILURES) {
+          logListSummary(tally, 'breaker');
+          return { status: 'failed', code: 'source' };
         }
       }
     }
   }
+  logListSummary(tally, 'done');
   const hashtags = mapHashtagLists(results, payload.periods);
   if (!hashtags.length) return { status: 'failed', code: 'source' };
 
