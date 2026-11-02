@@ -15,6 +15,7 @@ import {
   S3Client,
   PutObjectCommand,
   DeleteObjectsCommand,
+  ListObjectsV2Command,
   type ObjectIdentifier,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -386,6 +387,48 @@ export async function deleteObjects(bucket: string, paths: string[]): Promise<nu
   }
 
   throw new Error('Storage is not configured');
+}
+
+/**
+ * Delete every object under `prefix` (e.g. `${workspaceId}/` — see the path
+ * helpers above). Backs workspace deletion: covers, MP4s, slides, recreations
+ * and face images all live under the workspace prefix, including ones whose
+ * keys are only recorded inside rawJson. Returns the number of keys deleted.
+ * Supabase (legacy) has no prefix listing here — callers pass known paths to
+ * deleteObjects() instead, so this returns 0 there.
+ */
+export async function deletePrefix(bucket: string, prefix: string): Promise<number> {
+  if (!prefix) throw new Error('deletePrefix requires a non-empty prefix');
+  const backend = storageBackend();
+
+  if (backend === 'r2-binding') {
+    const binding = bindingFor(bucket);
+    if (!binding) throw new Error(`R2 binding not registered for bucket ${bucket}`);
+    let deleted = 0;
+    let cursor: string | undefined;
+    do {
+      const page = await binding.list({ prefix, cursor, limit: 1000 });
+      const keys = page.objects.map((o) => o.key);
+      if (keys.length) await binding.delete(keys);
+      deleted += keys.length;
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    return deleted;
+  }
+
+  if (backend === 'r2') {
+    let deleted = 0;
+    let token: string | undefined;
+    do {
+      const page = await getR2Client().send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ContinuationToken: token }));
+      const keys = (page.Contents ?? []).map((o) => o.Key).filter((k): k is string => !!k);
+      deleted += await deleteObjects(bucket, keys);
+      token = page.IsTruncated ? page.NextContinuationToken : undefined;
+    } while (token);
+    return deleted;
+  }
+
+  return 0;
 }
 
 /** TTL for signed media URLs. Default 24h. */

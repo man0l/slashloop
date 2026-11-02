@@ -10,14 +10,15 @@
 //     multi-workspace and still only ever operate on "the" workspace for a
 //     user, can resolve it the same way without each re-deriving the
 //     ordering rule now that Workspace.ownerId is no longer @unique.
-//   - list/create/rename: backs the new /api/workspaces REST routes used by
+//   - list/create/rename/delete: backs the new /api/workspaces REST routes used by
 //     the site's workspace switcher.
 // ---------------------------------------------------------------------------
 
 import type { Prisma, Workspace } from '@prisma/client';
 import { db } from '../db.js';
-import { cacheKey, getOrFill, invalidateWorkspaceList } from './cache.js';
+import { cacheKey, getOrFill, invalidateWorkspaceList, invalidateWorkspaceReads } from './cache.js';
 import { freeTierGrant } from './credits.js';
+import { deletePrefix, isStorageEnabled, mediaBucket, thumbBucket } from './storage.js';
 
 type WorkspaceClient = Pick<typeof db, 'workspace'> | Prisma.TransactionClient;
 
@@ -231,4 +232,123 @@ export async function disablePublicLink(userId: string, workspaceId: string): Pr
 export async function findWorkspaceByPublicToken(token: string | null | undefined): Promise<Workspace | null> {
   if (!token || !PUBLIC_TOKEN_RE.test(token)) return null;
   return db.workspace.findFirst({ where: { publicToken: token } });
+}
+
+// --- Workspace deletion (SLA-1223) ------------------------------------------
+// Owner-only, irreversible. Removes the workspace and everything keyed to it:
+// sources, videos (+ scores, analyses, hooks, ideas, scripts, briefs), boards,
+// experiments, face library, usage log, credit ledger, jobs, suggestion
+// dismissals, teammates, and every stored object under the workspace's R2
+// prefixes. Social accounts/posts are account-scoped (owner_id) and stay.
+
+export type DeleteWorkspaceRefusal =
+  | 'workspace_not_found'
+  | 'primary_workspace'
+  | 'active_experiments';
+
+export class DeleteWorkspaceError extends Error {
+  constructor(public readonly code: DeleteWorkspaceRefusal, message: string) {
+    super(message);
+    this.name = 'DeleteWorkspaceError';
+  }
+}
+
+export interface DeleteWorkspaceResult {
+  id: string;
+  sources: number;
+  videos: number;
+  experiments: number;
+  usageLogs: number;
+  storedObjects: number;
+}
+
+/**
+ * Delete a workspace the user OWNS, with all of its data.
+ *
+ * Refuses the owner's PRIMARY (earliest-created) workspace: billing, the
+ * Stripe customer/subscription and the account's credit balance are all
+ * anchored there (resolveBillingWorkspaceId in src/lib/credits.ts), so
+ * removing it would silently re-anchor billing onto the next workspace with
+ * none of that state. It is also every free account's only workspace.
+ *
+ * Refuses while an experiment is planning/generating (same rule as
+ * delete_experiment) so a paid render can't land on a deleted workspace.
+ *
+ * Rows go child-first because D1 enforces the RESTRICT foreign keys. Not one
+ * transaction (D1 batch limits); every step is a scoped deleteMany, so a
+ * retry after a partial failure simply finishes the job. `client` is a test
+ * seam (a real SQLite file in workspace-delete.test.ts); callers omit it.
+ */
+export async function deleteWorkspaceForUser(
+  userId: string,
+  workspaceId: string,
+  client: typeof db = db,
+): Promise<DeleteWorkspaceResult> {
+  const owned = await client.workspace.findFirst({ where: { id: workspaceId, ownerId: userId } });
+  if (!owned) throw new DeleteWorkspaceError('workspace_not_found', 'Workspace not found.');
+
+  const primary = await primaryWorkspaceByOwnerId(userId, client);
+  if (primary?.id === owned.id) {
+    throw new DeleteWorkspaceError(
+      'primary_workspace',
+      'This is your primary workspace — it holds your plan, billing and credits, so it cannot be deleted.',
+    );
+  }
+
+  const running = await client.experiment.count({ where: { workspaceId, status: { in: ['planning', 'generating'] } } });
+  if (running > 0) {
+    throw new DeleteWorkspaceError(
+      'active_experiments',
+      `Cancel the ${running} running experiment${running === 1 ? '' : 's'} in this workspace before deleting it.`,
+    );
+  }
+
+  const inWorkspace = { source: { workspaceId } };
+  const ofVideo = { video: inWorkspace };
+  const [sources, videos] = await Promise.all([
+    client.source.count({ where: { workspaceId } }),
+    client.video.count({ where: inWorkspace }),
+  ]);
+
+  await client.brief.deleteMany({ where: { OR: [{ analysis: ofVideo }, { idea: ofVideo }] } });
+  await client.script.deleteMany({ where: { analysis: ofVideo } });
+  await client.hook.deleteMany({ where: ofVideo });
+  await client.swipeEntry.deleteMany({ where: { OR: [ofVideo, { board: { workspaceId } }] } });
+  await client.idea.deleteMany({ where: ofVideo });
+  await client.analysis.deleteMany({ where: ofVideo });
+  await client.score.deleteMany({ where: ofVideo });
+  await client.mediaJob.deleteMany({ where: { workspaceId } });
+  await client.refreshRun.deleteMany({ where: { source: { workspaceId } } });
+  await client.video.deleteMany({ where: inWorkspace });
+  await client.source.deleteMany({ where: { workspaceId } });
+  await client.board.deleteMany({ where: { workspaceId } });
+  const experiments = (await client.experiment.deleteMany({ where: { workspaceId } })).count;
+  await client.experimentWebhookOutbox.deleteMany({ where: { workspaceId } });
+  await client.faceLibrary.deleteMany({ where: { workspaceId } });
+  const usageLogs = (await client.usageLog.deleteMany({ where: { workspaceId } })).count;
+  await client.creditLedger.deleteMany({ where: { workspaceId } });
+  await client.autoAnalyzeRun.deleteMany({ where: { workspaceId } });
+  await client.suggestionDismissal.deleteMany({ where: { workspaceId } });
+  await client.workspaceMember.deleteMany({ where: { workspaceId } });
+  await client.workspace.delete({ where: { id: workspaceId } });
+
+  // Objects last: a failed sweep only leaks storage, never a dangling row.
+  let storedObjects = 0;
+  if (isStorageEnabled()) {
+    const sweeps: Array<[string, string]> = [
+      [thumbBucket(), `${workspaceId}/`],
+      [thumbBucket(), `experiments/retained/${workspaceId}/`],
+      [mediaBucket(), `${workspaceId}/`],
+    ];
+    for (const [bucket, prefix] of sweeps) {
+      storedObjects += await deletePrefix(bucket, prefix).catch((err) => {
+        console.warn(`[workspaces] could not sweep ${bucket}/${prefix}: ${(err as Error).message}`);
+        return 0;
+      });
+    }
+  }
+
+  invalidateWorkspaceList(userId);
+  invalidateWorkspaceReads(workspaceId);
+  return { id: workspaceId, sources, videos, experiments, usageLogs, storedObjects };
 }
