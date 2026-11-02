@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 
 mock.module('../db.js', () => ({
   db: {},
@@ -447,5 +447,31 @@ describe('processToolsJob', () => {
     expect(h.failed).toEqual([['job-12345678', true]]);
     await processToolsJob(job(), h.deps);
     expect(scrapes).toBe(2);
+  });
+
+  test('a 404 (lookup row gone) fails terminally and logs at info, not warn; other 4xx still warn', async () => {
+    const info = spyOn(console, 'info').mockImplementation(() => {});
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const h = harness();
+      let attempts = 0;
+      h.deps.callback.fetch = async () => { attempts++; return { status: 404 }; };
+      const r = await processToolsJob(job(), h.deps);
+      expect(r.ok).toBe(false);
+      expect(attempts).toBe(1);
+      expect(h.failed).toEqual([['job-12345678', true]]);
+      expect(warn).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(String(info.mock.calls[0][0])).toContain('callback answered 404');
+
+      const h2 = harness();
+      h2.deps.callback.fetch = async () => ({ status: 401 });
+      await processToolsJob(job(), h2.deps);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(info).toHaveBeenCalledTimes(1);
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+    }
   });
 });
