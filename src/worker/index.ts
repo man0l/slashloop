@@ -659,6 +659,10 @@ while (!shuttingDown) {
       const t = Date.now();
       const jobSnap = snapshotD1Usage();
       const budgetMs = jobTimeoutMs(job.kind);
+      // Suffix keeps the "job timed out after Nms" prefix that isJobTimeoutMessage matches, and says which row hung.
+      const timeoutMessage =
+        `job timed out after ${budgetMs}ms (kind=${job.kind}, job=${job.id.slice(0, 8)}, ` +
+        `source=${job.sourceId ? job.sourceId.slice(0, 8) : 'none'}, attempt=${job.attempts})`;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const budget = new AbortController();
       try {
@@ -668,8 +672,8 @@ while (!shuttingDown) {
             timer = setTimeout(() => {
               // Cancel in-flight fetches before rejecting: the race alone
               // leaves the scrape retrying TikTok after the row is failed.
-              budget.abort(new Error(`job timed out after ${budgetMs}ms`));
-              reject(new Error(`job timed out after ${budgetMs}ms`));
+              budget.abort(new Error(timeoutMessage));
+              reject(new Error(timeoutMessage));
             }, budgetMs);
           }),
         ]);
