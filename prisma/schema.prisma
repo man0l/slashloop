@@ -397,6 +397,7 @@ model ExperimentWebhookOutbox {
   createdAt      DateTime  @default(now())
 
   @@index([state, nextAttemptAt])
+  @@index([workspaceId])
 }
 
 model CanonicalScrapeLock {
@@ -476,6 +477,8 @@ model Hook {
   // Backs cascade deletes by video (sources-service deleteSourceForWorkspace:
   // Hook/Idea rows are removed per source via their video relation).
   @@index([videoId])
+  // FK child lookup: deleting an Analysis scans Hook by analysisId (SLA-1225).
+  @@index([analysisId])
 }
 
 model Board {
@@ -503,6 +506,8 @@ model SwipeEntry {
 
   @@unique([boardId, videoId])
   @@index([boardId])
+  // FK child lookup: deleting a Video scans SwipeEntry by videoId (SLA-1225).
+  @@index([videoId])
 }
 
 model Idea {
@@ -523,6 +528,8 @@ model Idea {
   @@index([status])
   // Backs cascade deletes by video (sources-service deleteSourceForWorkspace).
   @@index([videoId])
+  // FK child lookup: deleting an Analysis scans Idea by analysisId (SLA-1225).
+  @@index([analysisId])
 }
 
 model Script {
@@ -548,6 +555,10 @@ model Brief {
 
   analysis Analysis? @relation(fields: [analysisId], references: [id])
   idea     Idea?     @relation(fields: [ideaId], references: [id])
+
+  // FK child lookups: deleting an Analysis / Idea scans Brief (SLA-1225).
+  @@index([analysisId])
+  @@index([ideaId])
 }
 
 model UsageLog {
