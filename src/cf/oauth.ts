@@ -25,6 +25,7 @@ import { OAuthProvider } from '@cloudflare/workers-oauth-provider';
 import { verifySupabaseJwt } from '../../remote/auth.js';
 import { ensureStore, type Env } from './env.js';
 import { mcpApiHandler } from './mcp.js';
+import { logOAuthError } from './oauth-error-log.js';
 
 export function createOAuthProvider(
   defaultHandler: (request: Request, env: Env, ctx: ExecutionContext) => Promise<Response>,
@@ -34,6 +35,7 @@ export function createOAuthProvider(
     authorizeEndpoint: '/authorize',
     tokenEndpoint: '/token',
     clientRegistrationEndpoint: '/register',
+    onError: logOAuthError,
     defaultHandler: {
       fetch: (request, env, ctx) => defaultHandler(request, env, ctx as unknown as ExecutionContext),
     },
