@@ -133,11 +133,15 @@ export async function GET(request: Request): Promise<Response> {
   if (!auth.ok) return auth.response;
 
   const workspaces = await listWorkspacesForUser(auth.userId, auth.email);
+  // Owned rows come back createdAt-asc, so the first owned one is the primary
+  // (billing) workspace — the one DELETE refuses. Lets the site hide the button.
+  const primaryId = workspaces.find(w => w.role === 'owner')?.id ?? null;
   return jsonResponse(200, workspaces.map(w => ({
     id: w.id,
     name: w.name,
     planKey: w.planKey,
     role: w.role,
+    primary: w.id === primaryId,
     publicToken: w.role === 'owner' ? w.publicToken : null,
     createdAt: w.createdAt.toISOString(),
   })), request);
