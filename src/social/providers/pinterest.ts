@@ -64,7 +64,7 @@ interface PendingState {
 export class PinterestProvider implements SocialProvider {
   identifier = 'pinterest' as const;
   name = 'Pinterest';
-  scopes = ['boards:read', 'pins:read', 'pins:write', 'user_accounts:read'];
+  scopes = ['boards:read', 'boards:write', 'pins:read', 'pins:write', 'user_accounts:read'];
 
   private clientId = '';
   private clientSecret = '';

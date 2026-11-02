@@ -265,7 +265,7 @@ describe('pinterest provider', () => {
     );
     expect(url.startsWith('https://www.pinterest.com/oauth/?')).toBe(true);
     expect(url).toContain('client_id=1631671');
-    expect(url).toContain('scope=boards%3Aread%2Cpins%3Aread%2Cpins%3Awrite%2Cuser_accounts%3Aread');
+    expect(url).toContain('scope=boards%3Aread%2Cboards%3Awrite%2Cpins%3Aread%2Cpins%3Awrite%2Cuser_accounts%3Aread');
     expect(url).toContain('response_type=code');
     expect(url).toContain('state=ST');
   });

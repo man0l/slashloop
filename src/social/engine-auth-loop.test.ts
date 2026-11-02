@@ -84,4 +84,33 @@ describe('auth-rejected in-flight post', () => {
       warn.mockRestore();
     }
   });
+
+  test('a 401 naming missing scopes fails the post at once, flags the account, and never refreshes', async () => {
+    db.run(
+      `INSERT INTO social_posts (id, group_id, owner_id, integration_id, provider, state, publish_date, content, settings, media, pending_data, attempts, created_at, updated_at)
+       VALUES ('p3', 'g', 'o', 'i1', 'pinterest', 'PROCESSING', ${NOW - 60}, 'x', '{"boardId":"b"}', '[]', '{"mediaId":"m"}', 2, 0, 0)`,
+    );
+    const status = spyOn(PinterestProvider.prototype, 'checkPostStatus').mockRejectedValue(
+      new RefreshTokenError(undefined, `HTTP 401 {"code":3,"message":"Authentication failed. Missing: ['boards:write']"}`),
+    );
+    const refresh = spyOn(PinterestProvider.prototype, 'refreshToken').mockResolvedValue({ accessToken: 'new', expiresIn: 3600, internalId: 'p', name: 'n', profile: 'p' } as never);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await socialEngineTick({}, { nowSeconds: NOW });
+      await socialEngineTick({}, { nowSeconds: NOW });
+      const row = post('p3');
+      expect(row.state).toBe('ERROR');
+      expect(row.error).toContain('boards:write');
+      expect(row.error).toContain('Reconnect Pinterest');
+      expect(refresh).not.toHaveBeenCalled();
+      expect(status).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const integration = db.query("SELECT refresh_needed FROM social_integrations WHERE id = 'i1'").get() as { refresh_needed: number };
+      expect(integration.refresh_needed).toBe(1);
+    } finally {
+      status.mockRestore();
+      refresh.mockRestore();
+      warn.mockRestore();
+    }
+  });
 });

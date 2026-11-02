@@ -306,6 +306,13 @@ async function advancePost(
   }
 }
 
+/** Scope names from a platform 401 body like `Missing: ['boards:write']`. */
+function missingScopes(detail: string | undefined): string[] | undefined {
+  const list = detail?.match(/Missing:\s*\[([^\]]*)\]/)?.[1];
+  const scopes = list?.match(/[A-Za-z_]+(?::[A-Za-z_]+)*/g);
+  return scopes?.length ? scopes : undefined;
+}
+
 /** Refresh-then-retry-once, reconnect marking, or a definite failure. */
 async function handleProviderError(
   err: unknown,
@@ -319,6 +326,18 @@ async function handleProviderError(
     pendingData?: Record<string, unknown>;
   },
 ): Promise<Outcome> {
+  // A 401 that names the scopes the token lacks can never be fixed by a
+  // refresh (a refreshed token carries the same grant): fail now and ask for a
+  // reconnect instead of burning the attempt budget.
+  const missing = err instanceof RefreshTokenError && !isTransientError(err) ? missingScopes(err.detail) : undefined;
+  if (missing) {
+    const message = `${ctx.provider.name} is missing the ${missing.join(', ')} permission. Reconnect ${ctx.provider.name} and approve it, then post again.`;
+    console.warn(`[social] ${ctx.provider.identifier} post ${ctx.post.id} token lacks scope ${missing.join(', ')}: ${(err as RefreshTokenError).detail}`);
+    await store.markIntegrationRefreshNeeded(ctx.integration.id, message);
+    await store.markError(ctx.post.id, message);
+    return { kind: 'errored', error: message };
+  }
+
   if (err instanceof RefreshTokenError && !isTransientError(err) && ctx.integration.refresh_token) {
     let refreshed: Awaited<ReturnType<typeof ctx.provider.refreshToken>> | undefined;
     let refreshError: unknown;
