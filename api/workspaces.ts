@@ -5,6 +5,9 @@
 //       can't farm unlimited free-credit grants.
 // PATCH /api/workspaces/:id { name }   — rename a workspace owned by the caller
 //                                       or shared with them (team member).
+// DELETE /api/workspaces/:id           — delete an owned, non-primary workspace
+//       and all of its data (owner only, irreversible; see
+//       deleteWorkspaceForUser in src/lib/workspaces.ts).
 // GET    /api/workspaces/:id/members           — list teammates (owner or member).
 // POST   /api/workspaces/:id/members { email } — invite a teammate (owner only).
 // DELETE /api/workspaces/:id/members?email=…   — remove a teammate (owner only).
@@ -18,7 +21,7 @@
 // cap). vercel.json rewrites /api/workspaces/:id here with an `id` query param.
 import { corsPreflight } from '../src/lib/cors.js';
 import { requireAuth, requireWorkspaceAccess, jsonResponse } from '../src/lib/authz.js';
-import { listWorkspacesForUser, createWorkspaceForUser, renameWorkspaceForUser, resolveAccountPlanKey, enablePublicLink, disablePublicLink, WorkspaceLimitError } from '../src/lib/workspaces.js';
+import { listWorkspacesForUser, createWorkspaceForUser, renameWorkspaceForUser, resolveAccountPlanKey, enablePublicLink, disablePublicLink, deleteWorkspaceForUser, DeleteWorkspaceError, WorkspaceLimitError } from '../src/lib/workspaces.js';
 import { listMembers, inviteMember, inviteMemberToAllWorkspaces, listTeamRoster, removeMember, removeMemberFromAllWorkspaces, TeamError } from '../src/lib/team.js';
 import { db } from '../src/db.js';
 import { buildWeeklyRetro } from '../src/lib/posts.js';
@@ -130,11 +133,15 @@ export async function GET(request: Request): Promise<Response> {
   if (!auth.ok) return auth.response;
 
   const workspaces = await listWorkspacesForUser(auth.userId, auth.email);
+  // Owned rows come back createdAt-asc, so the first owned one is the primary
+  // (billing) workspace — the one DELETE refuses. Lets the site hide the button.
+  const primaryId = workspaces.find(w => w.role === 'owner')?.id ?? null;
   return jsonResponse(200, workspaces.map(w => ({
     id: w.id,
     name: w.name,
     planKey: w.planKey,
     role: w.role,
+    primary: w.id === primaryId,
     publicToken: w.role === 'owner' ? w.publicToken : null,
     createdAt: w.createdAt.toISOString(),
   })), request);
@@ -243,6 +250,22 @@ export async function DELETE(request: Request): Promise<Response> {
       return jsonResponse(200, { ok: true, ...result }, request);
     } catch (err) {
       if (err instanceof TeamError) return jsonResponse(404, { error: err.code, message: err.message }, request);
+      throw err;
+    }
+  }
+
+  // Delete one workspace with everything in it.
+  const id = url.searchParams.get('id');
+  if (id) {
+    const auth = await requireAuth(request);
+    if (!auth.ok) return auth.response;
+    try {
+      const result = await deleteWorkspaceForUser(auth.userId, id);
+      return jsonResponse(200, { ok: true, ...result }, request);
+    } catch (err) {
+      if (err instanceof DeleteWorkspaceError) {
+        return jsonResponse(err.code === 'workspace_not_found' ? 404 : 409, { error: err.code, message: err.message }, request);
+      }
       throw err;
     }
   }

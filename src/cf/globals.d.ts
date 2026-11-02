@@ -41,6 +41,13 @@ interface R2Bucket {
   ): Promise<R2Object>;
   delete(keys: string | string[]): Promise<void>;
   head(key: string): Promise<R2Object | null>;
+  list(options?: { prefix?: string; cursor?: string; limit?: number }): Promise<R2Objects>;
+}
+
+interface R2Objects {
+  objects: R2Object[];
+  truncated: boolean;
+  cursor?: string;
 }
 
 interface R2Object {
