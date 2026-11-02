@@ -10,7 +10,7 @@
 // suites mock.module), and skipped loudly when the prisma CLI cannot push.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -132,5 +132,44 @@ describeDb('deleteWorkspaceForUser against real SQLite foreign keys', () => {
     const after = await census('ws-client');
     expect(Object.entries(after).filter(([, n]) => n !== 0)).toEqual([]);
     expect(Object.values(await census('ws-primary')).every((n) => n === 1)).toBe(true);
+  });
+
+  // SQLite looks a child table up by the FK column whenever a parent row is
+  // deleted. An unindexed column = a full scan per parent row, which made the
+  // delete hang on real-sized workspaces (SLA-1225). The schema (SQLite push)
+  // and the D1 migrations production actually runs must both index every one.
+  test('every foreign-key column leads an index, in the schema and in the D1 migrations', async () => {
+    const tables: Array<{ name: string }> = await client.$queryRawUnsafe(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_prisma%'",
+    );
+    const d1 = readdirSync(join(REPO_ROOT, 'prisma', 'd1-migrations'))
+      .filter((f) => f.endsWith('.sql'))
+      .map((f) => readFileSync(join(REPO_ROOT, 'prisma', 'd1-migrations', f), 'utf8'))
+      .join('\n');
+    const d1Leading = new Set<string>();
+    for (const m of d1.matchAll(/CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF NOT EXISTS\s+)?"?\w+"?\s+ON\s+"?(\w+)"?\s*\(\s*"?(\w+)"?/gi)) {
+      d1Leading.add(`${m[1]}.${m[2]}`);
+    }
+
+    const unindexedInSchema: string[] = [];
+    const unindexedInD1: string[] = [];
+    for (const { name } of tables) {
+      const fks: Array<{ from: string }> = await client.$queryRawUnsafe(`PRAGMA foreign_key_list("${name}")`);
+      const indexes: Array<{ name: string }> = await client.$queryRawUnsafe(`PRAGMA index_list("${name}")`);
+      const leading = new Set<string>();
+      for (const idx of indexes) {
+        const cols: Array<{ seqno: number; name: string }> = await client.$queryRawUnsafe(`PRAGMA index_info("${idx.name}")`);
+        const first = cols.find((c) => Number(c.seqno) === 0);
+        if (first) leading.add(first.name);
+      }
+      const pk: Array<{ name: string; pk: number }> = await client.$queryRawUnsafe(`PRAGMA table_info("${name}")`);
+      const pkCols = pk.filter((c) => Number(c.pk) === 1).map((c) => c.name);
+      for (const { from } of fks) {
+        if (!leading.has(from) && !pkCols.includes(from)) unindexedInSchema.push(`${name}.${from}`);
+        if (!d1Leading.has(`${name}.${from}`) && !pkCols.includes(from)) unindexedInD1.push(`${name}.${from}`);
+      }
+    }
+    expect(unindexedInSchema).toEqual([]);
+    expect(unindexedInD1).toEqual([]);
   });
 });
