@@ -267,7 +267,7 @@ const CALLBACK_TIMEOUT_MS = 10_000;
 
 /** Carries whether another delivery attempt can plausibly succeed (5xx/408/429/network) or the receiver refused for good (other 4xx). */
 export class CallbackDeliveryError extends Error {
-  constructor(message: string, readonly retryable: boolean) {
+  constructor(message: string, readonly retryable: boolean, readonly status?: number) {
     super(message);
     this.name = 'CallbackDeliveryError';
   }
@@ -283,6 +283,7 @@ export async function postToolsCallback(
   const raw = JSON.stringify(body);
   let last = 'no attempt';
   let retryable = true;
+  let status: number | undefined;
   for (let attempt = 1; attempt <= CALLBACK_ATTEMPTS; attempt++) {
     const headers = signedCallbackHeaders(secret, callbackUrl, raw, String(deps.nowSeconds()), deps.nonce());
     try {
@@ -294,16 +295,18 @@ export async function postToolsCallback(
       });
       if (res.status >= 200 && res.status < 300) return;
       last = `callback answered ${res.status}`;
+      status = res.status;
       if (res.status < 500 && res.status !== 408 && res.status !== 429) {
         retryable = false;
         break;
       }
     } catch (err) {
       last = `callback failed: ${(err as Error).message}`;
+      status = undefined;
     }
     if (attempt < CALLBACK_ATTEMPTS) await deps.sleep(attempt * 1_000);
   }
-  throw new CallbackDeliveryError(last, retryable);
+  throw new CallbackDeliveryError(last, retryable, status);
 }
 
 // --- delivery without re-scraping -----------------------------------------------
@@ -356,7 +359,13 @@ async function deliver(
   } catch (err) {
     const message = (err as Error).message;
     const retryable = !(err instanceof CallbackDeliveryError) || err.retryable;
-    console.warn(`[tools] ${job.kind ?? 'tools'} job ${job.id.slice(0, 8)} callback undelivered (${retryable ? 'will retry callback only' : 'terminal'}): ${message}`);
+    // The receiver answers 404 only for a signed requestId whose lookup row is gone: nobody is waiting, so this is expected, not a fault.
+    const parentGone = err instanceof CallbackDeliveryError && err.status === 404;
+    if (parentGone) {
+      console.info(`[tools] ${job.kind ?? 'tools'} job ${job.id.slice(0, 8)} callback target gone (terminal): ${message}`);
+    } else {
+      console.warn(`[tools] ${job.kind ?? 'tools'} job ${job.id.slice(0, 8)} callback undelivered (${retryable ? 'will retry callback only' : 'terminal'}): ${message}`);
+    }
     if (retryable) stashDelivery(job.id, prepared);
     await deps.failJob(job.id, message, retryable ? undefined : { terminal: true });
     return { ok: false, error: message };
