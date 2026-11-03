@@ -1,8 +1,8 @@
 // Shared social visibility for teams: connected accounts (and the posts
 // scheduled through them) are visible both ways across a workspace share —
 // the owner sees the member's connected accounts and vice versa. Social rows
-// stay owned by the user who connected them (owner_id never changes; only
-// the connector can disconnect); this module only widens READS and the
+// stay owned by the user who connected them (owner_id never changes; the
+// connector or the workspace owner disconnects); this module only widens READS and the
 // per-group mutations that act on already-visible rows.
 //
 // Membership is email-keyed (WorkspaceMember.email vs the JWT email claim),
