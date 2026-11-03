@@ -85,10 +85,12 @@ export async function GET(request: Request): Promise<Response> {
   // Team-shared visibility: connected accounts of teammates (both
   // directions across workspace shares) appear alongside the caller's own.
   // Rows stay owned by their connector — only the connector disconnects.
+  // Accounts whose token expired are included (needsReconnect: true) so the
+  // calendar can show them with a Reconnect prompt instead of hiding them.
   const owners = await visibleOwnerIds(claims.sub, claims.email);
   const seen = new Set<string>();
   const integrations = (
-    await Promise.all(owners.map((ownerId) => socialStore.listIntegrations(ownerId)))
+    await Promise.all(owners.map((ownerId) => socialStore.listAllIntegrationsForOwner(ownerId)))
   )
     .flat()
     .filter((row) => (seen.has(row.id) ? false : (seen.add(row.id), true)));
