@@ -6,9 +6,8 @@ winners into hooks, ideas, and creative briefs.
 
 **Remote HTTP MCP only** (no local stdio server): hosted on Cloudflare
 Workers (D1 + R2 + KV + Cron Triggers), authenticated via Supabase OAuth2
-until the native-IdP swap. Vercel + Supabase Postgres remain as the
-legacy/rollback backend during the cutover soak (see
-`docs/cf-full-backend-plan.md`). API keys (Gemini, the scraper proxy) live server-side,
+until the native-IdP swap (see `docs/cf-full-backend-plan.md`). Vercel is
+retired. API keys (Gemini, the scraper proxy) live server-side,
 so installers never handle them.
 
 | Surface | Where | Install | Client |
@@ -42,11 +41,8 @@ src/
   analysis/          # Gemini native + text analyzers
   lib/               # scrapers, gemini, spend-cap, storage, media, retention
 remote/              # OAuth + Streamable HTTP handlers
-api/                 # Legacy Vercel entrypoints, retained as the rollback path.
-                     # Several URL paths were folded onto one physical function
-                     # via rewrites (see api/sources.ts); that rewrite config
-                     # went away with the Vercel project. Live routing is
-                     # src/cf/router.ts, which mirrors the old rewrites 1:1.
+api/                 # Web-standard per-method handlers, dispatched by the Worker
+                     # via src/cf/router.ts (several URL paths share one file).
 api/billing.ts       # Checkout, Billing Portal, status — called by slashloop-site
 api/stripe/          # Webhook — the only thing that grants/revokes credits
 api/cron/            # Scheduled jobs (media retention sweep, weekly digest)
@@ -77,16 +73,15 @@ All 63 tools (plus `whoami`) are then available; ask in plain language
 
 ---
 
-## Self-host (Workers primary; Vercel + Supabase legacy/rollback)
+## Self-host (Workers primary; Supabase OAuth)
 
 > Cutover in progress: Worker + D1 is primary (`docs/cf-full-backend-plan.md`,
 > runbook `docs/cloudflare-migration.md`, checks `docs/cf-cutover-checklist.md`).
-> Below is the legacy Vercel/Supabase path, kept as the rollback target.
+> Below is the Supabase OAuth setup and local dev server.
 >
-> **The Vercel project has been deleted**, so that path is not currently
-> deployable: `vercel --prod` below needs a project re-created, and `vercel.json`
-> (the URL rewrites the `api/` entrypoints depend on) went with it. The `api/`
-> source and the Supabase steps are still here so the path can be restored.
+> **Vercel is retired** (project deleted, `api/mcp.ts` / `api/pages.ts`
+> entrypoints removed in SLA-1243). The Supabase steps below are kept for the
+> OAuth setup; `remote:dev` is the local server.
 
 ### 1. Supabase dashboard
 1. **Auth → URL Configuration → Site URL** = your public connector URL.
@@ -107,7 +102,6 @@ cp .env.example .env
 ```bash
 bun install
 bun run remote:dev       # local: http://localhost:8788 (+ tunnel for OAuth)
-# or: vercel --prod
 ```
 
 ### Schema changes
