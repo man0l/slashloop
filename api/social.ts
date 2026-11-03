@@ -3,7 +3,8 @@
 //   GET    /api/social/integrations      → list (tokens stripped)
 //   POST   /api/social/integrations?connect=<provider>
 //                                         → { url } to open the consent screen
-//   DELETE /api/social/integrations?id=  → disconnect (+ delete its posts)
+//   DELETE /api/social/integrations?id=  → disconnect (+ delete its posts);
+//                                         404 unknown id, 403 not yours/your teammate's
 //
 // All three are authed fetches from the site (Supabase token, ownership =
 // JWT sub). The browser-facing OAuth callback is a separate module —
@@ -12,7 +13,7 @@
 
 import { verifySupabaseJwt } from '../remote/auth.js';
 import { corsHeaders, corsPreflight } from '../src/lib/cors.js';
-import { signOAuthState, socialStore, getProvider, visibleOwnerIds, createRegistry, type SocialConfig, type ProviderId } from '../src/social/index.js';
+import { signOAuthState, socialStore, getProvider, visibleOwnerIds, managedOwnerIds, createRegistry, type SocialConfig, type ProviderId } from '../src/social/index.js';
 
 const PROVIDERS: ProviderId[] = ['tiktok', 'youtube', 'instagram', 'threads', 'pinterest'];
 
@@ -84,7 +85,8 @@ export async function GET(request: Request): Promise<Response> {
 
   // Team-shared visibility: connected accounts of teammates (both
   // directions across workspace shares) appear alongside the caller's own.
-  // Rows stay owned by their connector — only the connector disconnects.
+  // Rows stay owned by their connector — the connector (or the workspace
+  // owner they are shared with) disconnects.
   // Accounts whose token expired are included (needsReconnect: true) so the
   // calendar can show them with a Reconnect prompt instead of hiding them.
   const owners = await visibleOwnerIds(claims.sub, claims.email);
@@ -173,8 +175,25 @@ export async function DELETE(request: Request): Promise<Response> {
   const id = new URL(request.url).searchParams.get('id');
   if (!id) return json(400, { error: 'missing_id' }, request);
 
-  await socialStore.deleteIntegration(id, claims.sub);
+  // Same rule as tagging: the connector, or the owner of a workspace the
+  // account is shared through. Teammates' accounts show up in the owner's
+  // calendar (visibleOwnerIds), so a stale duplicate left behind by a
+  // reconnect from another login must be removable from there — and a
+  // no-op must not report success.
+  const row = await socialStore.getIntegration(id);
+  if (!row) return json(404, { error: 'not_found' }, request);
+  if (!(await canDisconnect(row.owner_id, claims.sub))) return json(403, { error: 'not_owner' }, request);
+
+  await socialStore.deleteIntegration(id, row.owner_id);
   return json(200, { ok: true }, request);
+}
+
+export async function canDisconnect(
+  rowOwnerId: string,
+  callerId: string,
+  managedOwners: (userId: string) => Promise<string[]> = managedOwnerIds,
+): Promise<boolean> {
+  return rowOwnerId === callerId || (await managedOwners(callerId)).includes(rowOwnerId);
 }
 
 export function sanitizeIntegration(row: {
