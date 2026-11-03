@@ -78,7 +78,7 @@ describe('socialMetricsTick', () => {
     const fetchMetrics = spyOn(YouTubeProvider.prototype, 'fetchMetrics').mockResolvedValue({ views: 1234, likes: 56, comments: 7 });
     try {
       const report = await socialMetricsTick({}, { nowSeconds: NOW, limit: 10 });
-      expect(report).toEqual({ due: 3, synced: 3, failed: 0 });
+      expect(report).toEqual({ due: 3, synced: 3, stale: 0, failed: 0 });
       expect(row('fresh')).toMatchObject({ views: 1234, likes: 56, comments: 7, shares: null, saves: null, metrics_synced_at: NOW, metrics_next_at: NOW + 600 });
       expect(row('mid').metrics_next_at).toBe(NOW + H);
       expect(row('old').metrics_next_at).toBe(NOW + 24 * H);
@@ -111,7 +111,7 @@ describe('socialMetricsTick', () => {
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const report = await socialMetricsTick({}, { nowSeconds: NOW });
-      expect(report).toEqual({ due: 2, synced: 1, failed: 1 });
+      expect(report).toEqual({ due: 2, synced: 1, stale: 0, failed: 1 });
       expect(refresh).toHaveBeenCalledTimes(1);
       expect(row('b').views).toBe(99);
       expect(row('a')).toMatchObject({ views: 10, metrics_error: 'quota exceeded', metrics_next_at: NOW + 600 });
@@ -120,6 +120,28 @@ describe('socialMetricsTick', () => {
       fetchMetrics.mockRestore();
       refresh.mockRestore();
       warn.mockRestore();
+    }
+  });
+
+  test('views going backwards is a stale read: last counters kept, retried on cadence (SLA-1254)', async () => {
+    insertPublished('drop', 'youtube', NOW - H, NOW - 1);
+    insertPublished('first', 'youtube', NOW - H, NOW - 2);
+    insertPublished('grow', 'youtube', NOW - H, NOW - 3);
+    db.run(`UPDATE social_posts SET views = 6, likes = 1, metrics_synced_at = 1 WHERE id IN ('drop', 'grow')`);
+    const fetchMetrics = spyOn(YouTubeProvider.prototype, 'fetchMetrics').mockImplementation(async (ctx) =>
+      ctx.releaseId === 'vid-grow' ? { views: 12, likes: 0, comments: 0 } : { views: 0, likes: 0, comments: 0 },
+    );
+    const info = spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const report = await socialMetricsTick({}, { nowSeconds: NOW });
+      expect(report).toEqual({ due: 3, synced: 2, stale: 1, failed: 0 });
+      expect(row('drop')).toMatchObject({ views: 6, likes: 1, metrics_synced_at: 1, metrics_error: null, metrics_next_at: NOW + 600 });
+      // Zero on a never-synced post is a real zero; other counters may still fall.
+      expect(row('first')).toMatchObject({ views: 0, metrics_synced_at: NOW });
+      expect(row('grow')).toMatchObject({ views: 12, likes: 0, metrics_synced_at: NOW });
+    } finally {
+      fetchMetrics.mockRestore();
+      info.mockRestore();
     }
   });
 });

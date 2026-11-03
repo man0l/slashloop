@@ -9,8 +9,9 @@
 //   next 48h       → hourly
 //   after that     → daily
 //
-// A failed sync keeps the last counters and retries on the normal cadence; a
-// credential failure flags the account exactly like the publish path does.
+// A failed sync — or a stale read whose views went backwards — keeps the last
+// counters and retries on the normal cadence; a credential failure flags the
+// account exactly like the publish path does.
 
 import { createRegistry, getProvider } from './registry.js';
 import * as store from './store.js';
@@ -41,6 +42,8 @@ export interface MetricsTickOptions {
 export interface MetricsReport {
   due: number;
   synced: number;
+  /** Fetched fine but views went backwards — last counters kept. */
+  stale: number;
   failed: number;
 }
 
@@ -49,7 +52,7 @@ export async function socialMetricsTick(cfg: SocialConfig, options: MetricsTickO
   const registry = createRegistry(cfg);
   const providers = [...registry.values()].filter((p) => typeof p.fetchMetrics === 'function').map((p) => p.identifier);
   const due = await store.postsDueForMetrics(providers, options.limit ?? 6, now);
-  const report: MetricsReport = { due: due.length, synced: 0, failed: 0 };
+  const report: MetricsReport = { due: due.length, synced: 0, stale: 0, failed: 0 };
   if (!due.length) return report;
 
   const integrations = new Map<string, SocialIntegrationRow | undefined>();
@@ -66,8 +69,16 @@ export async function socialMetricsTick(cfg: SocialConfig, options: MetricsTickO
       continue;
     }
     try {
-      const metrics = await fetchWithRefresh(registry, cfg, post, integration, now);
-      updates.push({ id: post.id, metrics: normalize(metrics), nextAt });
+      const metrics = normalize(await fetchWithRefresh(registry, cfg, post, integration, now));
+      if (isStaleRead(post, metrics)) {
+        // Lifetime views don't shrink; a drop (YouTube answers 0 from a lagging
+        // replica on fresh uploads) is a stale read — keep the last counters.
+        console.info(`[social] metrics ${post.provider} post ${post.id}: stale read (views ${post.views} → ${metrics.views}), kept last counters`);
+        updates.push({ id: post.id, error: null, nextAt });
+        report.stale++;
+        continue;
+      }
+      updates.push({ id: post.id, metrics, nextAt });
       report.synced++;
     } catch (err) {
       // Invocation fetch cap: every later call fails too — the rest stay due.
@@ -124,6 +135,12 @@ async function fetchWithRefresh(
     await refresh();
     return await provider.fetchMetrics!(ctx);
   }
+}
+
+/** Views went backwards since the last stored sync. */
+function isStaleRead(post: SocialPostRow, metrics: Record<MetricKey, number | null>): boolean {
+  const before = post.views;
+  return typeof before === 'number' && before > 0 && metrics.views !== null && metrics.views < before;
 }
 
 function normalize(m: PostMetrics): Record<MetricKey, number | null> {
