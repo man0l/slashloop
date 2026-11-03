@@ -10,17 +10,15 @@
 //   • Provider path (production): worker.ts wraps this module's
 //     `mcpApiHandler` in OAuthProvider apiHandlers. Provider-issued tokens
 //     arrive with ctx.props set; Supabase JWTs arrive via the provider's
-//     `resolveExternalToken` hook (same jose/cached-JWKS/15s-timeout verify
-//     as api/mcp.ts), which also lands in ctx.props. Either way the `sub`
+//     `resolveExternalToken` hook (jose/cached-JWKS/15s-timeout verify), which also lands in ctx.props. Either way the `sub`
 //     below is the Supabase user id and `runWithUser(sub)` keeps
 //     requireWorkspace() working exactly as before.
 //   • Router path (direct route() dispatch, dev/tests): POST verifies the
-//     Supabase JWT inline, like api/mcp.ts does. Non-POST methods stay 405.
+//     Supabase JWT inline. Non-POST methods stay 405.
 //
 // MCP Apps behavior is unchanged: show_gallery still returns the inline
 // ui:// resource plus the signed /gallery link, and the initialize-only
-// getUiCapability logging below is the same one api/mcp.ts has (kept here
-// because the stateless handshake still discards the negotiating instance,
+// getUiCapability logging below is kept because the stateless handshake still discards the negotiating instance,
 // so per-request capability branching is still impossible).
 
 import { createMcpHandler } from 'agents/mcp';
@@ -38,7 +36,7 @@ export interface McpAuthProps {
   client_id?: string | null;
 }
 
-/** PUBLIC_URL wins, else the request origin — same rule as api/mcp.ts. */
+/** PUBLIC_URL wins, else the request origin. */
 function originOf(request: Request): string {
   if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/$/, '');
   const u = new URL(request.url);
@@ -115,7 +113,7 @@ export async function handleMcpRequest(request: Request, opts: HandleOptions = {
     const handler = createMcpHandler(mcp, { route: '/mcp', authContext });
     response = await handler(request, opts.env, ctx);
 
-    // Same initialize-only capability log as api/mcp.ts: getClientCapabilities()
+    // Initialize-only capability log: getClientCapabilities()
     // is defined only on the request that carried `initialize`, so this logs
     // roughly once per connection and tells "host won't render MCP Apps"
     // apart from "host tried and failed" (ext-apps#671).
@@ -139,7 +137,7 @@ export const mcpApiHandler = {
 
 // ── Router-compatible per-method exports (src/cf/router.ts dispatches by
 // method; worker.ts runs ensureStore(env) before route(), so env is omitted
-// here and Supabase verification happens inline, as in api/mcp.ts). ──
+// here and Supabase verification happens inline). ──
 
 export async function POST(request: Request): Promise<Response> {
   const authHeader = request.headers.get('authorization') ?? '';

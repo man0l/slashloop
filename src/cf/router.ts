@@ -6,7 +6,7 @@
 // `export async function POST(request: Request)`), so the migration moves
 // hosting without touching handler logic. Exception: /mcp is served by the
 // Cloudflare-native module (./mcp.ts — createMcpHandler, no transport
-// boilerplate); api/mcp.ts remains the Vercel path. Order matters exactly like it did
+// boilerplate). Order matters exactly like it did
 // in vercel.json: specific actions before generic `/:id` captures.
 
 import * as mcp from './mcp.js';
@@ -65,7 +65,7 @@ function htmlResponse(body: string, status = 200): Response {
 }
 
 // The pages set — Web-standard ports of remote/handlers.ts handle* (the Node
-// versions stay for remote/dev.ts; api/pages.ts is the Vercel wrapper).
+// versions stay for remote/dev.ts).
 function servePage(page: NonNullable<Route['page']>, url: URL): Response {
   const origin = originOf(url);
   switch (page) {

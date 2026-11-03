@@ -1,7 +1,6 @@
 // Runtime-neutral MCP server assembly.
 //
-// Shared by the HTTP API path (api/mcp.ts — Web-standard transport on Vercel
-// and Workers) and the local Node dev server (remote/handlers.ts — Node
+// Shared by the Workers path (src/cf/mcp.ts) and the local Node dev server (remote/handlers.ts — Node
 // transport). Keep Node-only imports OUT of this module: the Workers bundle
 // compiles it, and the Node StreamableHTTPServerTransport drags in
 // @hono/node-server / node:http, which must never enter that graph.

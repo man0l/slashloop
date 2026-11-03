@@ -1,5 +1,5 @@
 # Keep the published slashloop-mcp package = local stdio MCP only.
-# Remote OAuth / Vercel host surface is repo-only (not on npm).
+# Remote OAuth / Worker host surface is repo-only (not on npm).
 
 remote/
 api/

@@ -1,4 +1,4 @@
-// Local HTTP + OAuth surface (NOT used by Vercel — Vercel builds api/ functions).
+// Local HTTP + OAuth surface for dev (production is the Worker, src/cf/worker.ts).
 // Not part of the published slashloop-mcp npm package.
 import { createServer } from 'node:http';
 import {
