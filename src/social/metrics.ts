@@ -57,6 +57,7 @@ export async function socialMetricsTick(cfg: SocialConfig, options: MetricsTickO
 
   const integrations = new Map<string, SocialIntegrationRow | undefined>();
   const updates: store.MetricsUpdate[] = [];
+  const insights = new Map<string, string>();
 
   for (const post of due) {
     const nextAt = nextMetricsAt(post.published_at ?? post.publish_date, now);
@@ -69,7 +70,13 @@ export async function socialMetricsTick(cfg: SocialConfig, options: MetricsTickO
       continue;
     }
     try {
-      const metrics = normalize(await fetchWithRefresh(registry, cfg, post, integration, now));
+      const raw = await fetchWithRefresh(registry, cfg, post, integration, now);
+      if (raw.insightsStatus && raw.insightsStatus !== integration.insights_status) {
+        insights.set(integration.id, raw.insightsStatus);
+        integration.insights_status = raw.insightsStatus;
+        if (raw.insightsStatus !== 'ok') console.warn(`[social] insights unavailable for ${post.provider} account ${integration.id}: ${raw.insightsStatus}`);
+      }
+      const metrics = normalize(raw);
       if (isStaleRead(post, metrics)) {
         // Lifetime views don't shrink; a drop (YouTube answers 0 from a lagging
         // replica on fresh uploads) is a stale read — keep the last counters.
@@ -91,6 +98,7 @@ export async function socialMetricsTick(cfg: SocialConfig, options: MetricsTickO
   }
 
   await store.saveMetrics(updates, now);
+  await store.saveInsightsStatus(insights);
   return report;
 }
 

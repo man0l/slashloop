@@ -149,7 +149,24 @@ function presentAccount(row: SocialIntegrationRow) {
     tags,
     lane,
     primary,
+    ...presentInsights(row),
   };
+}
+
+const INSIGHTS_HINTS: Record<string, string> = {
+  missing_permission: 'Meta refused the insights call: the connection lacks instagram_business_manage_insights. Reconnect the account in the web app and accept the insights permission.',
+  personal_account: 'Insights are only available for Business/Creator accounts. Switch the account to professional in the Instagram app, then reconnect it.',
+  no_data: 'Instagram returned no insights rows for the latest post (too new, or the account type does not report them).',
+};
+
+/** Instagram only: whether views/reach/saves/shares can be read for this account. */
+function presentInsights(row: SocialIntegrationRow): { insights?: string; insightsReason?: string; insightsHint?: string } {
+  if (row.provider !== 'instagram') return {};
+  const status = row.insights_status;
+  if (!status) return { insights: 'unknown' };
+  if (status === 'ok') return { insights: 'available' };
+  const hint = INSIGHTS_HINTS[status];
+  return { insights: 'unavailable', insightsReason: status, ...(hint ? { insightsHint: hint } : {}) };
 }
 
 function presentRotation(row: SocialRotationRow): RotationConfig {
@@ -188,6 +205,7 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
     'List the connected social accounts (TikTok, YouTube, Instagram, Threads, Pinterest) that posts can be scheduled to. '
       + 'Returns each account id (use as integrationIds in create_social_post), provider, handle and status: active, reconnect_needed '
       + '(token expired — the user must reconnect in the web app) or disabled. Tokens are never returned. '
+      + 'Instagram accounts also carry `insights` (available | unavailable | unknown) with `insightsReason`/`insightsHint` when views/reach/saves/shares cannot be read. '
       + 'Each account also carries `tags`, `lane` and `primary` (see tag_social_account). '
       + 'Includes teammates\' accounts shared through a workspace. Connecting accounts happens in the web app (OAuth); '
       + 'when none are connected the response carries the connect URL. Free; no credits charged.',

@@ -27,7 +27,7 @@
 // under "API setup with Instagram login" in the Meta app dashboard — NOT the
 // parent Facebook app id/secret. (SOCIAL_META_CLIENT_ID / _SECRET)
 
-import { BadBodyError, RefreshTokenError, TransientProviderError, isTransientError } from '../errors.js';
+import { BadBodyError, ReconnectError, RefreshTokenError, TransientProviderError, isTransientError } from '../errors.js';
 import { assertPublicHttpUrl, providerFetch } from '../fetch.js';
 import { num } from '../metrics-util.js';
 import type {
@@ -67,6 +67,16 @@ function thumbOffsetMs(settings: Record<string, unknown> | undefined): number {
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : DEFAULT_THUMB_OFFSET_MS;
 }
 
+/** Fixed reason code for a refused insights call, so list_social_accounts can
+ *  tell the scheduler which accounts cannot report views and what to do. */
+export function insightsFailureReason(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const detail = (err as { detail?: string })?.detail ?? '';
+  if (/personal|professional|business or creator|not a (business|creator)/i.test(`${message} ${detail}`)) return 'personal_account';
+  if (err instanceof ReconnectError || /permission|scope|manage_insights|\(#10\)|OAuthException/i.test(`${message} ${detail}`)) return 'missing_permission';
+  return `error: ${message.replace(/\s+/g, ' ').slice(0, 120)}`;
+}
+
 interface Container {
   creationId: string;
   kind: 'single' | 'carousel-child' | 'carousel';
@@ -102,15 +112,18 @@ export class InstagramProvider implements SocialProvider {
         `/${ctx.releaseId}/insights`,
         { metric: 'views,reach,saved,shares', access_token: ctx.token },
       );
-      for (const row of insights.data ?? []) {
+      const rows = insights.data ?? [];
+      for (const row of rows) {
         const value = num(row.total_value?.value ?? row.values?.[0]?.value);
         if (row.name === 'views') metrics.views = value;
         if (row.name === 'reach') metrics.reach = value;
         if (row.name === 'saved') metrics.saves = value;
         if (row.name === 'shares') metrics.shares = value;
       }
+      metrics.insightsStatus = rows.length ? 'ok' : 'no_data';
     } catch (err) {
       if (err instanceof RefreshTokenError || isTransientError(err)) throw err;
+      metrics.insightsStatus = insightsFailureReason(err);
     }
     return metrics;
   }
