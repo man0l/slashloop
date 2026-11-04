@@ -33,6 +33,14 @@ const UPLOAD = 'https://www.googleapis.com/upload/youtube/v3/videos';
 const API = 'https://www.googleapis.com/youtube/v3';
 const UPLOAD_THUMBNAIL = 'https://www.googleapis.com/upload/youtube/v3/thumbnails/set';
 
+const TITLE_MAX = 100;
+
+/** Reel Factory captions put the hook on line 1; hashtags/credits follow. */
+export function youtubeTitleFromCaption(message: string): string {
+  const firstLine = message.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? '';
+  return firstLine.slice(0, TITLE_MAX);
+}
+
 export class YouTubeProvider implements SocialProvider {
   identifier: ProviderId = 'youtube';
   name = 'YouTube';
@@ -134,7 +142,7 @@ export class YouTubeProvider implements SocialProvider {
     const media = ctx.post.media[0];
     const videoSize = await fetchMediaSize(media.url);
 
-    const title = str(ctx.post.settings.title) || ctx.post.message.slice(0, 100);
+    const title = str(ctx.post.settings.title) || youtubeTitleFromCaption(ctx.post.message);
     const session = await providerFetch(`${UPLOAD}?uploadType=resumable&part=snippet,status&notifySubscribers=true`, {
       method: 'POST',
       headers: {
