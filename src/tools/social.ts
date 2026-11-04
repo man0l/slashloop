@@ -503,6 +503,15 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
         ? await d.schedule(owners, groupId, parsed.seconds)
         : await d.reschedule(owners, groupId, parsed.seconds);
       if (result.processing > 0) return text({ error: 'processing', message: PROCESSING_MESSAGE, groupId }, true);
+      if (result.mismatched > 0) {
+        return text({
+          error: 'not_persisted',
+          message: 'The write returned but the stored publishAt does not match the request. The post may still publish at its old time — check list_social_posts and retry.',
+          groupId,
+          requested: iso(parsed.seconds),
+          stored: result.publishDates.map(iso),
+        }, true);
+      }
       if (result.count === 0) {
         return text({
           error: 'not_found',
@@ -512,7 +521,7 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
           groupId,
         }, true);
       }
-      return text({ groupId, publishAt: iso(parsed.seconds), updated: result.count, state: schedule ? 'scheduled' : undefined });
+      return text({ groupId, publishAt: iso(result.publishDates[0] ?? parsed.seconds), updated: result.count, state: schedule ? 'scheduled' : undefined });
     }),
   );
 
@@ -558,7 +567,10 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
     { readOnlyHint: false, destructiveHint: true },
     ({ groupId }) => withCaller(async ({ userId, email }) => {
       const owners = await d.resolveOwners(userId, email);
-      const { deleted, processing } = await d.deleteGroup(owners, groupId);
+      const { deleted, processing, mismatched } = await d.deleteGroup(owners, groupId);
+      if (mismatched > 0 && processing === 0) {
+        return text({ error: 'not_persisted', message: 'The delete returned but rows still exist for this group. Check list_social_posts and retry.', groupId, deleted }, true);
+      }
       if (processing > 0) {
         return text({
           error: 'processing',
