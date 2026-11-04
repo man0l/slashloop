@@ -149,8 +149,8 @@ describe('processClaimedJob — fetch failure log level', () => {
 
   async function runFetch(err: Error) {
     downloadThrows = err;
-    const warn = mock(() => {});
-    const error = mock(() => {});
+    const warn = mock((..._a: unknown[]) => {});
+    const error = mock((..._a: unknown[]) => {});
     const orig = { warn: console.warn, error: console.error };
     console.warn = warn as any;
     console.error = error as any;
