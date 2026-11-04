@@ -12,10 +12,21 @@
 // importer in the run, so each mock below spreads the REAL module and
 // overrides only what this file drives. db.js can't be spread (same
 // trade-off as the other queue tests).
-import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 
 const realJobs = await import('./jobs.js');
 const realCredits = await import('./credits.js');
+const REAL_JOBS = { ...realJobs };
+const REAL_CREDITS = { ...realCredits };
+
+// mock.module rewrites the registry entry for the whole `bun test` process and
+// mock.restore() cannot undo it; without this, the stubbed jobs.js leaks into
+// any later file that imports the real one (queue-owner.test.ts failed in CI
+// whenever the runner ordered it after this file).
+afterAll(() => {
+  mock.module('./jobs.js', () => ({ ...REAL_JOBS }));
+  mock.module('./credits.js', () => ({ ...REAL_CREDITS }));
+});
 
 const enqueues: Array<{ workspaceId: string; sourceId: string; videoLimit: number; payload: Record<string, unknown> }> = [];
 let balanceTotal = 100;
