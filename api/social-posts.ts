@@ -17,6 +17,7 @@ import { socialStore, visibleOwnerIds, type MediaContent } from '../src/social/i
 import { socialConfigFromEnv } from './social.js';
 import { setPostThumbnail } from '../src/social/thumbnail.js';
 import { applyToOwners, createPost, deleteVisible, listCalendar, type CreatePostInput } from '../src/social/posting.js';
+import type { GroupWriteResult } from '../src/social/store.js';
 
 function json(status: number, body: unknown, request: Request): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
@@ -104,15 +105,17 @@ export async function PATCH(request: Request): Promise<Response> {
     return json(400, { error: 'invalid_json' }, request);
   }
 
-  const processingGuard = (result: { processing: number }, payload: Record<string, unknown>) =>
+  const processingGuard = (result: { processing: number; mismatched?: number }, payload: Record<string, unknown>) =>
     result.processing > 0
       ? json(409, { error: 'processing', message: 'A post in this group is publishing right now — try again in a moment.' }, request)
-      : json(200, payload, request);
+      : result.mismatched
+        ? json(500, { error: 'not_persisted', message: 'The write did not persist; the stored values differ from the request. Retry, and check the calendar before relying on it.' }, request)
+        : json(200, payload, request);
 
   // Group mutations span every visible owner: group ids are UUIDs so at most
   // one owner matches; counts sum, and any PROCESSING hit wins as a 409.
   const owners = await visibleOwnerIds(claims.sub, claims.email);
-  const applyToVisible = <K extends string>(key: K, fn: (ownerId: string) => Promise<{ processing: number } & Record<K, number>>) =>
+  const applyToVisible = <K extends string>(key: K, fn: (ownerId: string) => Promise<{ processing: number } & Partial<Pick<GroupWriteResult, 'mismatched' | 'publishDates'>> & Record<K, number>>) =>
     applyToOwners(owners, key, fn);
 
   if (typeof body.thumbnail === 'string' && typeof body.content !== 'string' && !Array.isArray(body.media)) {
@@ -156,17 +159,17 @@ export async function PATCH(request: Request): Promise<Response> {
   if (body.state === 'QUEUE') {
     const publishDate = Math.floor(Number(body.publishDate));
     if (!Number.isFinite(publishDate)) return json(400, { error: 'invalid_publish_date' }, request);
-    const { processing, count } = await applyToVisible('scheduled', (ownerId) =>
+    const { processing, count, mismatched } = await applyToVisible('scheduled', (ownerId) =>
       socialStore.scheduleGroup(ownerId, id, publishDate, body.stripMetadata ? 'SCRUB' : 'QUEUE'),
     );
-    return processingGuard({ processing }, { scheduled: count, publishDate });
+    return processingGuard({ processing, mismatched }, { scheduled: count, publishDate });
   }
 
   // Plain reschedule.
   const publishDate = Math.floor(Number(body.publishDate));
   if (!Number.isFinite(publishDate)) return json(400, { error: 'invalid_publish_date' }, request);
-  const { processing, count } = await applyToVisible('rescheduled', (ownerId) => socialStore.rescheduleGroup(ownerId, id, publishDate));
-  return processingGuard({ processing }, { rescheduled: count });
+  const { processing, count, mismatched } = await applyToVisible('rescheduled', (ownerId) => socialStore.rescheduleGroup(ownerId, id, publishDate));
+  return processingGuard({ processing, mismatched }, { rescheduled: count });
 }
 
 export async function DELETE(request: Request): Promise<Response> {
@@ -177,7 +180,10 @@ export async function DELETE(request: Request): Promise<Response> {
   if (!id) return json(400, { error: 'missing_id' }, request);
 
   const owners = await visibleOwnerIds(claims.sub, claims.email);
-  const { deleted, processing } = await deleteVisible(owners, id);
+  const { deleted, processing, mismatched } = await deleteVisible(owners, id);
+  if (mismatched > 0 && processing === 0) {
+    return json(500, { error: 'not_persisted', message: 'The delete did not persist; rows still exist.', deleted }, request);
+  }
   if (processing > 0) {
     return json(409, { error: 'processing', message: 'A post in this group is publishing right now and cannot be removed.', deleted }, request);
   }

@@ -287,6 +287,31 @@ describe('reschedule_social_post', () => {
     expect(rowsOf(groupId)).toEqual([{ owner_id: 'alice', state: 'DRAFT', publish_date: 0 }]);
   });
 
+  test('three consecutive reschedules of a draft each match list_social_posts', async () => {
+    const groupId = await createDraft();
+    for (const at of ['2026-11-07T13:00:00Z', '2026-11-07T17:00:00Z', '2026-11-07T23:00:00Z']) {
+      const { isError, body } = await call('reschedule_social_post', { groupId, publishAt: at });
+      expect(isError).toBe(false);
+      expect(body.publishAt).toBe(new Date(at).toISOString());
+      const listed = await call('list_social_posts', { from: '2026-11-07T00:00:00Z', to: '2026-11-08T00:00:00Z' });
+      expect(listed.body.drafts.find((g: { groupId: string }) => g.groupId === groupId).publishAt).toBe(body.publishAt);
+    }
+  });
+
+  test('a write that reports success but is not stored fails loudly (SLA-1276)', async () => {
+    const groupId = (await call('create_social_post', { integrationIds: ['tt-a'], content: 'q', media: [IMG], publishAt: FUTURE })).body.groupId;
+    // Executor that swallows the reschedule UPDATE yet still answers `SELECT changes()` with a stale 1.
+    setActiveClient({} as never, async (statements) => statements.map((st) => {
+      if (st.sql.includes('UPDATE social_posts SET publish_date')) return [];
+      if (st.sql.includes('changes()')) return [{ n: 1 }];
+      return db.query(st.sql).all(...((st.params ?? []) as never[])) as unknown[];
+    }));
+    const { isError, body } = await call('reschedule_social_post', { groupId, publishAt: LATER });
+    expect(isError).toBe(true);
+    expect(body).toMatchObject({ error: 'not_persisted', requested: '2026-11-05T07:30:00.000Z' });
+    expect(body.stored).toEqual([new Date(FUTURE_S * 1000).toISOString()]);
+  });
+
   test('rejects past times, and unknown group ids are not_found', async () => {
     const groupId = await createDraft();
     expect((await call('reschedule_social_post', { groupId, publishAt: '2026-01-01T00:00:00Z' })).body.error).toBe('time_in_past');

@@ -342,9 +342,11 @@ export async function listGroupRows(ownerId: string, target: { groupId?: string;
  *  untouched (409 upstream): that row is mid-upload and moving it would desync
  *  the engine, and a partial move would hand the retry a half-moved group.
  *  DRAFT groups reschedule too (they keep their DRAFT state until explicitly scheduled).
- *  The change count comes from SELECT changes() — rawBatch's executor drops
- *  D1's meta. */
-export async function rescheduleGroup(ownerId: string, groupId: string, publishDate: number): Promise<{ rescheduled: number; processing: number }> {
+ *  The result is READ BACK in a second round trip after the write commits —
+ *  never inferred from SELECT changes(), which is connection-scoped and can
+ *  report a previous request's count. `mismatched` > 0 means rows that should
+ *  have moved still carry another publish_date. */
+export async function rescheduleGroup(ownerId: string, groupId: string, publishDate: number): Promise<GroupWriteResult & { rescheduled: number }> {
   const results = await rawBatch([
     {
       sql: "SELECT COUNT(*) AS n FROM social_posts WHERE group_id = ?1 AND owner_id = ?2 AND state = 'PROCESSING'",
@@ -356,11 +358,33 @@ export async function rescheduleGroup(ownerId: string, groupId: string, publishD
               AND NOT EXISTS (SELECT 1 FROM social_posts p WHERE p.group_id = ?1 AND p.owner_id = ?2 AND p.state = 'PROCESSING')`,
       params: [groupId, ownerId, publishDate, nowSeconds()],
     },
-    { sql: 'SELECT changes() AS n', params: [] },
   ]);
   const processing = Number((results[0]?.[0] as { n?: number } | undefined)?.n ?? 0);
-  const rescheduled = Number((results[2]?.[0] as { n?: number } | undefined)?.n ?? 0);
-  return { rescheduled, processing };
+  if (processing > 0) return { rescheduled: 0, processing, mismatched: 0, publishDates: [] };
+  const stored = await readGroupDates(ownerId, groupId);
+  const movable = stored.filter((r) => r.state === 'QUEUE' || r.state === 'ERROR' || r.state === 'DRAFT');
+  const rescheduled = movable.filter((r) => r.publish_date === publishDate).length;
+  return { rescheduled, processing, mismatched: movable.length - rescheduled, publishDates: uniqueDates(movable) };
+}
+
+export interface GroupWriteResult {
+  processing: number;
+  /** Rows that should have been written but read back unchanged. */
+  mismatched: number;
+  /** Distinct publish_date values stored for the affected rows after the write. */
+  publishDates: number[];
+}
+
+async function readGroupDates(ownerId: string, groupId: string): Promise<Array<{ state: string; publish_date: number }>> {
+  return rows<{ state: string; publish_date: number }>(
+    await rawBatch([
+      { sql: 'SELECT state, publish_date FROM social_posts WHERE group_id = ?1 AND owner_id = ?2', params: [groupId, ownerId] },
+    ]),
+  ).map((r) => ({ state: r.state, publish_date: Number(r.publish_date) }));
+}
+
+function uniqueDates(list: Array<{ publish_date: number }>): number[] {
+  return [...new Set(list.map((r) => r.publish_date))].sort((a, b) => a - b);
 }
 
 /** Update a draft/queued group's caption and media. PROCESSING/PUBLISHED
@@ -390,7 +414,7 @@ export async function updateGroupContent(
 
 /** Schedule a draft: DRAFT → QUEUE (or SCRUB when the post carries media
  *  that still needs the metadata scrub) with a publish date. */
-export async function scheduleGroup(ownerId: string, groupId: string, publishDate: number, targetState: 'QUEUE' | 'SCRUB' = 'QUEUE'): Promise<{ scheduled: number; processing: number }> {
+export async function scheduleGroup(ownerId: string, groupId: string, publishDate: number, targetState: 'QUEUE' | 'SCRUB' = 'QUEUE'): Promise<GroupWriteResult & { scheduled: number }> {
   const results = await rawBatch([
     {
       sql: "SELECT COUNT(*) AS n FROM social_posts WHERE group_id = ?1 AND owner_id = ?2 AND state = 'PROCESSING'",
@@ -415,25 +439,29 @@ export async function scheduleGroup(ownerId: string, groupId: string, publishDat
               AND NOT EXISTS (SELECT 1 FROM social_posts p WHERE p.group_id = ?1 AND p.owner_id = ?2 AND p.state = 'PROCESSING')`,
       params: [groupId, ownerId, publishDate, targetState, nowSeconds()],
     },
-    { sql: 'SELECT changes() AS n', params: [] },
   ]);
   const processing = Number((results[0]?.[0] as { n?: number } | undefined)?.n ?? 0);
-  const scheduled = Number((results[results.length - 1]?.[0] as { n?: number } | undefined)?.n ?? 0);
-  return { scheduled, processing };
+  if (processing > 0) return { scheduled: 0, processing, mismatched: 0, publishDates: [] };
+  const stored = await readGroupDates(ownerId, groupId);
+  const promoted = stored.filter((r) => r.state === targetState && r.publish_date === publishDate);
+  // A row still DRAFT after the write means the promotion was lost.
+  const mismatched = stored.filter((r) => r.state === 'DRAFT').length;
+  return { scheduled: promoted.length, processing, mismatched, publishDates: uniqueDates(promoted) };
 }
 
-export async function deleteGroup(ownerId: string, groupId: string): Promise<{ deleted: number; processing: number }> {
+export async function deleteGroup(ownerId: string, groupId: string): Promise<GroupWriteResult & { deleted: number }> {
   const results = await rawBatch([
     {
       sql: "SELECT COUNT(*) AS n FROM social_posts WHERE group_id = ?1 AND owner_id = ?2 AND state = 'PROCESSING'",
       params: [groupId, ownerId],
     },
+    { sql: "SELECT COUNT(*) AS n FROM social_posts WHERE group_id = ?1 AND owner_id = ?2 AND state != 'PROCESSING'", params: [groupId, ownerId] },
     { sql: "DELETE FROM social_posts WHERE group_id = ?1 AND owner_id = ?2 AND state != 'PROCESSING'", params: [groupId, ownerId] },
-    { sql: 'SELECT changes() AS n', params: [] },
   ]);
   const processing = Number((results[0]?.[0] as { n?: number } | undefined)?.n ?? 0);
-  const deleted = Number((results[2]?.[0] as { n?: number } | undefined)?.n ?? 0);
-  return { deleted, processing };
+  const before = Number((results[1]?.[0] as { n?: number } | undefined)?.n ?? 0);
+  const remaining = (await readGroupDates(ownerId, groupId)).filter((r) => r.state !== 'PROCESSING').length;
+  return { deleted: before - remaining, processing, mismatched: remaining, publishDates: [] };
 }
 
 // ── engine state machine ────────────────────────────────────────────────────

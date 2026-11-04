@@ -6,6 +6,7 @@
 
 import { createRegistry, getProvider } from './registry.js';
 import * as socialStore from './store.js';
+import type { GroupWriteResult } from './store.js';
 import { METRIC_KEYS } from './types.js';
 import type { MediaContent, MetricKey, ProviderId, SocialIntegrationRow, SocialPostRow } from './types.js';
 
@@ -215,16 +216,20 @@ export async function createPost(
 export async function applyToOwners<K extends string>(
   owners: string[],
   key: K,
-  fn: (ownerId: string) => Promise<{ processing: number } & Record<K, number>>,
-): Promise<{ processing: number; count: number }> {
+  fn: (ownerId: string) => Promise<{ processing: number } & Partial<Pick<GroupWriteResult, 'mismatched' | 'publishDates'>> & Record<K, number>>,
+): Promise<{ processing: number; count: number; mismatched: number; publishDates: number[] }> {
   let processing = 0;
   let count = 0;
+  let mismatched = 0;
+  const publishDates = new Set<number>();
   for (const ownerId of owners) {
     const next = await fn(ownerId);
     processing += next.processing;
     count += next[key] ?? 0;
+    mismatched += next.mismatched ?? 0;
+    for (const d of next.publishDates ?? []) publishDates.add(d);
   }
-  return { processing, count };
+  return { processing, count, mismatched, publishDates: [...publishDates].sort((a, b) => a - b) };
 }
 
 export function rescheduleVisible(owners: string[], groupId: string, publishDate: number) {
@@ -237,7 +242,7 @@ export function scheduleVisible(owners: string[], groupId: string, publishDate: 
 }
 
 /** PROCESSING rows survive; `processing` > 0 means some rows stayed. */
-export async function deleteVisible(owners: string[], groupId: string): Promise<{ deleted: number; processing: number }> {
-  const { processing, count } = await applyToOwners(owners, 'deleted', (ownerId) => socialStore.deleteGroup(ownerId, groupId));
-  return { deleted: count, processing };
+export async function deleteVisible(owners: string[], groupId: string): Promise<{ deleted: number; processing: number; mismatched: number }> {
+  const { processing, count, mismatched } = await applyToOwners(owners, 'deleted', (ownerId) => socialStore.deleteGroup(ownerId, groupId));
+  return { deleted: count, processing, mismatched };
 }
