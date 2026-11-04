@@ -506,7 +506,8 @@ export async function processClaimedJob(
         }
       }
 
-      if (deterministic) console.error(`[worker] fetch job ${job.id} failed (terminal=${terminal}): ${message}`);
+      // The size ceiling is a guard doing its job, not a fault: warn, don't page.
+      if (deterministic && !isVideoCeilingError(message)) console.error(`[worker] fetch job ${job.id} failed (terminal=${terminal}): ${message}`);
       else console.warn(`[worker] fetch job ${job.id} failed (terminal=${terminal}): ${message}`);
       return { ok: false, error: message };
     }
