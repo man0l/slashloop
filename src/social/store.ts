@@ -540,6 +540,17 @@ export async function saveMetrics(updates: MetricsUpdate[], now = nowSeconds()):
   );
 }
 
+/** Account-level result of the last insights call (Instagram). */
+export async function saveInsightsStatus(statuses: Map<string, string>): Promise<void> {
+  if (!statuses.size) return;
+  await rawBatch(
+    [...statuses].map(([id, status]) => ({
+      sql: 'UPDATE social_integrations SET insights_status = ?2 WHERE id = ?1',
+      params: [id, status.slice(0, 160)],
+    })),
+  );
+}
+
 export async function markError(id: string, error: string): Promise<void> {
   await rawBatch([
     {

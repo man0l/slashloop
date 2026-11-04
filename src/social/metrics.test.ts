@@ -32,7 +32,7 @@ function insertPublished(id: string, provider: string, publishedAt: number, next
 beforeEach(() => {
   db = new Database(':memory:');
   db.run(`CREATE TABLE social_integrations (id TEXT PRIMARY KEY, owner_id TEXT, provider TEXT, internal_id TEXT, profile TEXT, name TEXT, picture TEXT,
-    token TEXT, refresh_token TEXT, token_expires_at INTEGER, refresh_needed INTEGER, disabled INTEGER, error TEXT, tags TEXT, created_at INTEGER, updated_at INTEGER)`);
+    token TEXT, refresh_token TEXT, token_expires_at INTEGER, refresh_needed INTEGER, disabled INTEGER, error TEXT, tags TEXT, insights_status TEXT, created_at INTEGER, updated_at INTEGER)`);
   db.run(`CREATE TABLE social_posts (id TEXT PRIMARY KEY, group_id TEXT, owner_id TEXT, integration_id TEXT, provider TEXT, state TEXT, publish_date INTEGER,
     content TEXT, settings TEXT, media TEXT, pending_data TEXT, release_id TEXT, release_url TEXT, error TEXT, attempts INTEGER, created_at INTEGER, updated_at INTEGER)`);
   // The real migration, so the test also proves the SQL applies.
@@ -66,6 +66,30 @@ describe('metrics cadence', () => {
     const p = row('p');
     expect(p.published_at).toBeGreaterThan(0);
     expect(p.metrics_next_at).toBe((p.published_at as number) + 600);
+  });
+});
+
+describe('socialMetricsTick insights status', () => {
+  test('stores the Instagram insights status on the account, only when it changes', async () => {
+    db.run(`INSERT INTO social_integrations (id, owner_id, provider, internal_id, token, refresh_token, token_expires_at, refresh_needed, disabled, created_at, updated_at)
+            VALUES ('ig', 'o', 'instagram', 'i', 'x', 'r', ${NOW + 3600}, 0, 0, 0, 0)`);
+    db.run(`INSERT INTO social_posts (id, group_id, owner_id, integration_id, provider, state, publish_date, content, release_id, release_url, attempts, created_at, updated_at, published_at, metrics_next_at)
+            VALUES ('p', 'g', 'o', 'ig', 'instagram', 'PUBLISHED', ${NOW - H}, 'x', 'm1', 'https://example.com', 0, 0, 0, ${NOW - H}, ${NOW - 1})`);
+    const fetchMetrics = spyOn(InstagramProvider.prototype, 'fetchMetrics').mockResolvedValue({ likes: 1, comments: 0, insightsStatus: 'missing_permission' });
+    try {
+      await socialMetricsTick({}, { nowSeconds: NOW, limit: 10 });
+      const account = () => db.query("SELECT insights_status FROM social_integrations WHERE id = 'ig'").get() as { insights_status: string | null };
+      expect(account().insights_status).toBe('missing_permission');
+      expect(row('p')).toMatchObject({ likes: 1, views: null });
+
+      fetchMetrics.mockResolvedValue({ likes: 1, comments: 0, views: 50, insightsStatus: 'ok' });
+      db.run("UPDATE social_posts SET metrics_next_at = ? WHERE id = 'p'", [NOW - 1]);
+      await socialMetricsTick({}, { nowSeconds: NOW + 1, limit: 10 });
+      expect(account().insights_status).toBe('ok');
+      expect(row('p').views).toBe(50);
+    } finally {
+      fetchMetrics.mockRestore();
+    }
   });
 });
 
@@ -159,7 +183,33 @@ describe('platform-specific counters', () => {
         : { like_count: 30, comments_count: 5 },
     );
     try {
-      expect(await new InstagramProvider().fetchMetrics(ctx)).toEqual({ likes: 30, comments: 5, views: 900, reach: 700, saves: 12, shares: 4 });
+      expect(await new InstagramProvider().fetchMetrics(ctx)).toEqual({ likes: 30, comments: 5, views: 900, reach: 700, saves: 12, shares: 4, insightsStatus: 'ok' });
+    } finally {
+      f.mockRestore();
+    }
+  });
+
+  test('Instagram: a refused insights call keeps likes/comments and records why', async () => {
+    const cases: Array<[number, unknown, string]> = [
+      [400, { error: { code: 10, message: '(#10) Application does not have permission for this action' } }, 'missing_permission'],
+      [400, { error: { code: 100, message: 'Insights are only available for professional accounts' } }, 'personal_account'],
+      [400, { error: { code: 100, message: 'Unsupported get request' } }, 'error: Unsupported get request'],
+    ];
+    for (const [status, body, reason] of cases) {
+      const f = spyOn(globalThis, 'fetch').mockImplementation((async (input: string | URL | Request) =>
+        String(input).includes('/insights') ? Response.json(body, { status }) : Response.json({ like_count: 1, comments_count: 0 })) as typeof fetch);
+      try {
+        expect(await new InstagramProvider().fetchMetrics(ctx)).toEqual({ likes: 1, comments: 0, insightsStatus: reason });
+      } finally {
+        f.mockRestore();
+      }
+    }
+  });
+
+  test('Instagram: empty insights data is reported as no_data', async () => {
+    const f = mockFetch((url) => (url.includes('/insights') ? { data: [] } : { like_count: 0, comments_count: 0 }));
+    try {
+      expect((await new InstagramProvider().fetchMetrics(ctx)).insightsStatus).toBe('no_data');
     } finally {
       f.mockRestore();
     }

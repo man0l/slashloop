@@ -66,7 +66,7 @@ async function createDraft(owner = 'alice', integrationIds = ['tt-a']) {
 
 beforeEach(() => {
   db = new Database(':memory:');
-  for (const f of ['0005_social_scheduler.sql', '0025_social_lanes.sql']) {
+  for (const f of ['0005_social_scheduler.sql', '0025_social_lanes.sql', '0029_social_insights_status.sql']) {
     db.exec(readFileSync(new URL(`../../prisma/d1-migrations/${f}`, import.meta.url), 'utf8'));
   }
   setActiveClient({} as never, async (statements) => statements.map((st) => db.query(st.sql).all(...((st.params ?? []) as never[])) as unknown[]));
@@ -114,6 +114,21 @@ describe('list_social_accounts', () => {
     expect(byId['tt-b']).toBeUndefined();
     expect(body.usable).toBe(2);
     expect(raw).not.toContain('SECRET');
+  });
+
+  test('Instagram accounts report whether insights can be read, and why not', async () => {
+    addIntegration('ig-new', 'alice', 'instagram');
+    addIntegration('ig-ok', 'alice', 'instagram');
+    addIntegration('ig-bad', 'alice', 'instagram');
+    db.run("UPDATE social_integrations SET insights_status = 'ok' WHERE id = 'ig-ok'");
+    db.run("UPDATE social_integrations SET insights_status = 'personal_account' WHERE id = 'ig-bad'");
+    const { body } = await call('list_social_accounts');
+    const byId = Object.fromEntries(body.accounts.map((a: { id: string }) => [a.id, a]));
+    expect(byId['ig-new'].insights).toBe('unknown');
+    expect(byId['ig-ok'].insights).toBe('available');
+    expect(byId['ig-bad']).toMatchObject({ insights: 'unavailable', insightsReason: 'personal_account' });
+    expect(byId['ig-bad'].insightsHint).toContain('Business/Creator');
+    expect(byId['tt-a'].insights).toBeUndefined();
   });
 
   test('no accounts → connect URL hint', async () => {

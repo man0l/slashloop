@@ -116,7 +116,10 @@ export const METRIC_KEYS = ['views', 'likes', 'comments', 'shares', 'saves', 're
 export type MetricKey = (typeof METRIC_KEYS)[number];
 
 /** Counters a platform reported; omitted = not available for this post. */
-export type PostMetrics = Partial<Record<MetricKey, number>>;
+export type PostMetrics = Partial<Record<MetricKey, number>> & {
+  /** Instagram only: 'ok', or why the insights call (views/reach/saves/shares) returned nothing. */
+  insightsStatus?: string;
+};
 
 export interface MetricsContext {
   token: string;
@@ -155,6 +158,8 @@ export interface SocialIntegrationRow {
   error: string | null;
   /** JSON string[] (lane:<name>, primary); NULL = no tags. */
   tags?: string | null;
+  /** Instagram: result of the last insights call — 'ok', an unavailability reason code, or NULL = not synced yet. */
+  insights_status?: string | null;
 }
 
 export interface SocialRotationRow {
