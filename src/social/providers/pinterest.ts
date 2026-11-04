@@ -44,6 +44,8 @@ const TOKEN = `${API}/oauth/token`;
 const TITLE_MAX = 100;
 const DESCRIPTION_MAX = 800;
 const CAROUSEL_MAX = 5;
+/** Pin analytics only reach back this many days. */
+const ANALYTICS_DAYS = 90;
 
 /** Per-post settings the composer writes for a Pinterest integration. */
 export interface PinterestPostSettings {
@@ -74,18 +76,32 @@ export class PinterestProvider implements SocialProvider {
     this.clientSecret = cfg.pinterest?.clientSecret ?? '';
   }
 
-  /** Lifetime pin metrics (pins:read): impressions stand in for views,
-   *  saves for shares. */
+  /** Pin analytics (pins:read + user_accounts:read): impressions stand in
+   *  for views. GET /pins/{id} (and its pin_metrics) needs "pinner data"
+   *  access our app tier lacks — it answers code 6410 — so read the
+   *  analytics endpoint instead (SLA-1282). Its summary covers publish day →
+   *  today, capped at Pinterest's 90-day window; data lags about a day
+   *  (today is PROCESSING). Reactions/comments come as lifetime totals. */
   async fetchMetrics(ctx: MetricsContext): Promise<PostMetrics> {
-    const pin = await this.api('GET', `/pins/${encodeURIComponent(ctx.releaseId)}?pin_metrics=true`, ctx.token);
-    const lifetime = (pin?.pin_metrics as Record<string, any> | undefined)?.lifetime_metrics ?? {};
-    // Pinterest has no view count for pins; impressions stand in for views.
+    const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+    const now = Date.now();
+    const published = ctx.publishedAt ? ctx.publishedAt * 1000 : now;
+    const start = Math.min(now, Math.max(published, now - (ANALYTICS_DAYS - 1) * 86_400_000));
+    const params = new URLSearchParams({
+      start_date: day(start),
+      end_date: day(now),
+      metric_types: 'IMPRESSION,SAVE,OUTBOUND_CLICK,TOTAL_COMMENTS,TOTAL_REACTIONS',
+    });
+    const body = await this.api('GET', `/pins/${encodeURIComponent(ctx.releaseId)}/analytics?${params.toString()}`, ctx.token);
+    const all = (body?.all ?? body?.ALL ?? {}) as Record<string, any>;
+    const summary = all.summary_metrics ?? {};
+    const lifetime = all.lifetime_metrics ?? {};
     return {
-      views: num(lifetime.impression),
-      likes: num(lifetime.reaction),
-      comments: num(lifetime.comment),
-      saves: num(lifetime.save),
-      clicks: num(lifetime.outbound_click),
+      views: num(summary.IMPRESSION),
+      likes: num(lifetime.TOTAL_REACTIONS),
+      comments: num(lifetime.TOTAL_COMMENTS),
+      saves: num(summary.SAVE),
+      clicks: num(summary.OUTBOUND_CLICK),
     };
   }
 

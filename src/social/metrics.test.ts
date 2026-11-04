@@ -215,10 +215,31 @@ describe('platform-specific counters', () => {
     }
   });
 
-  test('Pinterest: impressions as views, saves and outbound clicks', async () => {
-    const f = mockFetch(() => ({ pin_metrics: { lifetime_metrics: { impression: 1500, reaction: 8, comment: 2, save: 40, outbound_click: 17 } } }));
+  test('Pinterest: analytics endpoint — impressions as views, saves, outbound clicks, lifetime reactions/comments (SLA-1282)', async () => {
+    const urls: string[] = [];
+    const f = mockFetch((url) => {
+      urls.push(url);
+      return {
+        all: {
+          summary_metrics: { IMPRESSION: 1500.0, SAVE: 40.0, OUTBOUND_CLICK: 17.0 },
+          daily_metrics: [],
+          lifetime_metrics: { TOTAL_REACTIONS: 8, TOTAL_COMMENTS: 2 },
+        },
+      };
+    });
     try {
-      expect(await new PinterestProvider().fetchMetrics(ctx)).toEqual({ views: 1500, likes: 8, comments: 2, saves: 40, clicks: 17 });
+      const publishedAt = Math.floor(Date.now() / 1000) - 3 * 86400;
+      expect(await new PinterestProvider().fetchMetrics({ ...ctx, publishedAt })).toEqual({ views: 1500, likes: 8, comments: 2, saves: 40, clicks: 17 });
+      // Not GET /pins/{id}: that needs "pinner data" access (code 6410).
+      const url = new URL(urls[0]);
+      expect(url.pathname).toBe('/v5/pins/r/analytics');
+      expect(url.searchParams.get('start_date')).toBe(new Date(publishedAt * 1000).toISOString().slice(0, 10));
+      expect(url.searchParams.get('end_date')).toBe(new Date().toISOString().slice(0, 10));
+
+      // Older than the 90-day window: the start clamps to 89 days back.
+      urls.length = 0;
+      await new PinterestProvider().fetchMetrics({ ...ctx, publishedAt: Math.floor(Date.now() / 1000) - 400 * 86400 });
+      expect(new URL(urls[0]).searchParams.get('start_date')).toBe(new Date(Date.now() - 89 * 86_400_000).toISOString().slice(0, 10));
     } finally {
       f.mockRestore();
     }

@@ -127,6 +127,8 @@ export interface MetricsContext {
   releaseId: string;
   releaseUrl: string | null;
   integration: { internalId: string; profile: string };
+  /** Unix seconds the post went live — Pinterest's analytics window starts here. */
+  publishedAt?: number;
 }
 
 export interface SocialConfig {

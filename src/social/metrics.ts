@@ -115,6 +115,7 @@ async function fetchWithRefresh(
     releaseId: post.release_id ?? '',
     releaseUrl: post.release_url,
     integration: { internalId: integration.internal_id, profile: integration.profile ?? '' },
+    publishedAt: post.published_at ?? post.publish_date,
   };
 
   const expired = integration.token_expires_at !== null && integration.token_expires_at <= now + 60;
