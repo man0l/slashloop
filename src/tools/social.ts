@@ -121,7 +121,7 @@ function presentGroup(group: CalendarGroup) {
     state: group.state,
     publishAt: iso(group.publishDate),
     content: group.content,
-    media: group.media.map((m) => ({ type: m.type, url: m.url, ...(m.alt ? { alt: m.alt } : {}) })),
+    media: group.media.map((m) => ({ type: m.type, url: m.url, ...(m.alt ? { alt: m.alt } : {}), ...(m.thumbnail ? { thumbnail: m.thumbnail } : {}) })),
     posts: group.posts.map((p) => ({
       id: p.id,
       provider: p.provider,
@@ -376,7 +376,7 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
           type: z.enum(['image', 'video']),
           url: z.string().url().describe('Public http(s) media URL.'),
           alt: z.string().optional(),
-          thumbnail: z.string().url().optional(),
+          thumbnail: z.string().url().optional().describe('Cover image (JPEG, public URL, 9:16 for reels). Used as the Instagram Reel cover and the YouTube/Pinterest thumbnail; without it Instagram uses the frame at 1s.'),
         }))
         .max(35)
         .optional()
@@ -386,7 +386,7 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
       settings: z
         .record(z.string(), z.record(z.string(), z.unknown()))
         .optional()
-        .describe('Per-account provider settings keyed by integration id (e.g. TikTok privacy, Pinterest board).'),
+        .describe('Per-account provider settings keyed by integration id (e.g. TikTok privacy, Pinterest board, Instagram thumbOffsetMs = Reel cover frame in ms when no thumbnail is set; default 1000).'),
     },
     { readOnlyHint: false },
     ({ integrationIds, content, media, publishAt, stripMetadata, settings }) => withCaller(async ({ userId, email }) => {

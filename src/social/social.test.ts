@@ -194,6 +194,55 @@ describe('instagram provider', () => {
   test('generateAuthUrl fails loudly when the Instagram app is not configured', async () => {
     await expect(provider.generateAuthUrl({}, 'https://x/cb', 'ST')).rejects.toThrow(/not configured/);
   });
+
+  describe('postPending reel cover', () => {
+    const post = (media: Array<{ type: 'image' | 'video'; url: string; thumbnail?: string }>, settings: Record<string, unknown> = {}) => ({
+      token: 'TOK',
+      post: { id: 'p1', message: 'cap', settings, media },
+      integration: { internalId: 'IG1', profile: 'acct' },
+    });
+    const clip = 'https://cdn.example.com/clip.mp4';
+
+    async function containerBodies(ctx: ReturnType<typeof post>): Promise<URLSearchParams[]> {
+      const realFetch = globalThis.fetch;
+      const bodies: URLSearchParams[] = [];
+      globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        bodies.push(new URLSearchParams(String(init?.body ?? '')));
+        return new Response('{"id":"C1"}', { status: 200 });
+      }) as typeof fetch;
+      try {
+        await provider.postPending(ctx);
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+      return bodies;
+    }
+
+    test('sends cover_url (and no thumb_offset) when the video has a thumbnail', async () => {
+      const [body] = await containerBodies(post([{ type: 'video', url: clip, thumbnail: 'https://cdn.example.com/cover.jpg' }], { thumbOffsetMs: 3000 }));
+      expect(body.get('media_type')).toBe('REELS');
+      expect(body.get('cover_url')).toBe('https://cdn.example.com/cover.jpg');
+      expect(body.has('thumb_offset')).toBe(false);
+    });
+
+    test('falls back to thumb_offset=1000 without a thumbnail', async () => {
+      const [body] = await containerBodies(post([{ type: 'video', url: clip }]));
+      expect(body.get('thumb_offset')).toBe('1000');
+      expect(body.has('cover_url')).toBe(false);
+    });
+
+    test('per-account thumbOffsetMs overrides the default; junk values fall back', async () => {
+      expect((await containerBodies(post([{ type: 'video', url: clip }], { thumbOffsetMs: 2500 })))[0].get('thumb_offset')).toBe('2500');
+      expect((await containerBodies(post([{ type: 'video', url: clip }], { thumbOffsetMs: 'x' })))[0].get('thumb_offset')).toBe('1000');
+      expect((await containerBodies(post([{ type: 'video', url: clip }], { thumbOffsetMs: -5 })))[0].get('thumb_offset')).toBe('1000');
+    });
+
+    test('photos send neither cover param', async () => {
+      const [body] = await containerBodies(post([{ type: 'image', url: 'https://cdn.example.com/p.jpg', thumbnail: 'https://cdn.example.com/c.jpg' }]));
+      expect(body.has('cover_url')).toBe(false);
+      expect(body.has('thumb_offset')).toBe(false);
+    });
+  });
 });
 
 // ── Threads ───────────────────────────────────────────────────────────────────
