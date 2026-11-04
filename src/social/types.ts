@@ -94,9 +94,20 @@ export interface SocialProvider {
   postPending(ctx: ProviderPostContext): Promise<PostResponse>;
   checkPostStatus(ctx: ProviderPostContext): Promise<PendingCheck>;
   finalizePost?(ctx: ProviderPostContext): Promise<PendingCheck>;
+  /** Replace the cover/thumbnail of an already-published post. Absent = the
+   *  platform has no API for it (Instagram Reels, TikTok, Threads, Pinterest). */
+  setThumbnail?(ctx: ThumbnailContext): Promise<void>;
   /** Lifetime counters for a published post. Absent = the platform exposes
    *  none to our scopes; the metrics tick never selects the provider. */
   fetchMetrics?(ctx: MetricsContext): Promise<PostMetrics>;
+}
+
+export interface ThumbnailContext {
+  token: string;
+  /** social_posts.release_id — the platform's video id. */
+  releaseId: string;
+  /** Public image URL. */
+  thumbnailUrl: string;
 }
 
 /** Post counters, one social_posts column each (0026 + 0027 migrations).

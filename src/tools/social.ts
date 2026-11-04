@@ -44,6 +44,7 @@ import {
 } from '../social/posting.js';
 import { UploadError, storeSocialMediaFromUrl, type StoredMedia } from '../social/media-upload.js';
 import { siteAwareFetch } from '../lib/site-fetch.js';
+import { setPostThumbnail, type ThumbnailTarget } from '../social/thumbnail.js';
 import type { SocialIntegrationRow, SocialRotationRow } from '../social/types.js';
 
 export interface SocialToolDeps {
@@ -56,6 +57,7 @@ export interface SocialToolDeps {
   reschedule: typeof rescheduleVisible;
   schedule: typeof scheduleVisible;
   deleteGroup: typeof deleteVisible;
+  setThumbnail: (owners: string[], target: ThumbnailTarget, thumbnailUrl: string) => ReturnType<typeof setPostThumbnail>;
   /** Owner ids whose accounts the caller may tag: themselves + teammates of workspaces they own. */
   managedOwners: (userId: string) => Promise<string[]>;
   setTags: typeof socialStore.setIntegrationTags;
@@ -78,6 +80,11 @@ export const defaultSocialDeps: SocialToolDeps = {
   reschedule: rescheduleVisible,
   schedule: scheduleVisible,
   deleteGroup: deleteVisible,
+  // Lazy: api/social.ts owns the env → SocialConfig mapping and pulls in the HTTP auth stack.
+  setThumbnail: async (owners, target, thumbnailUrl) => {
+    const { socialConfigFromEnv } = await import('../../api/social.js');
+    return setPostThumbnail(socialConfigFromEnv(), owners, target, thumbnailUrl);
+  },
   managedOwners: managedOwnerIds,
   setTags: socialStore.setIntegrationTags,
   getRotation: socialStore.getRotation,
@@ -488,6 +495,38 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
         }, true);
       }
       return text({ groupId, publishAt: iso(parsed.seconds), updated: result.count, state: schedule ? 'scheduled' : undefined });
+    }),
+  );
+
+  // ---- set_social_post_thumbnail ----
+  server.tool(
+    'set_social_post_thumbnail',
+    'Set the cover/thumbnail image of a post. Draft/queued/errored posts store it and the platform applies it at publish time. '
+      + 'ALREADY-PUBLISHED YouTube posts are updated live on YouTube (thumbnails.set; the channel must be verified, image JPEG/PNG under 2MB) and echoed by list_social_posts. '
+      + 'Published Instagram Reels CANNOT be changed through the API — those return error "not_supported" (set the cover in the Instagram app). '
+      + 'Pass groupId to cover every post in the group, or postId to target one post; the response lists a per-post status '
+      + '(updated, saved, unsupported, processing, skipped, failed). Free.',
+    {
+      groupId: z.string().min(1).optional().describe('groupId from list_social_posts — applies to every post in the group.'),
+      postId: z.string().min(1).optional().describe('A single post id (posts[].id from list_social_posts) instead of the whole group.'),
+      thumbnail: z.string().url().describe('Public http(s) URL of the cover image (JPEG/PNG, under 2MB for YouTube; 9:16 for reels).'),
+    },
+    { readOnlyHint: false },
+    ({ groupId, postId, thumbnail }) => withCaller(async ({ userId, email }) => {
+      if (!groupId && !postId) return text({ error: 'missing_target', message: 'Pass groupId or postId.' }, true);
+      const owners = await d.resolveOwners(userId, email);
+      const outcome = await d.setThumbnail(owners, postId ? { postId } : { groupId }, thumbnail);
+      if (!outcome.ok) return text({ error: outcome.error, message: outcome.message }, true);
+      const { results } = outcome;
+      if (!results.length) return text({ error: 'not_found', message: 'No posts matched that groupId/postId.' }, true);
+      const done = results.some((r) => r.status === 'updated' || r.status === 'saved');
+      if (!done) {
+        const error = results.some((r) => r.status === 'processing')
+          ? 'processing'
+          : results.some((r) => r.status === 'unsupported') ? 'not_supported' : 'thumbnail_failed';
+        return text({ error, message: results.find((r) => r.message)?.message, results }, true);
+      }
+      return text({ thumbnail, results });
     }),
   );
 

@@ -2,7 +2,8 @@
 //
 //   GET    /api/social/posts?from=&to=   → groups in the epoch range (calendar feed)
 //   POST   /api/social/posts             → create a submission: one row per platform
-//   PATCH  /api/social/posts?id=<group>  → reschedule a group (409 while PROCESSING)
+//   PATCH  /api/social/posts?id=<group>  → reschedule a group (409 while PROCESSING);
+//          body {thumbnail, postId?} sets the cover, also on published YouTube posts
 //   DELETE /api/social/posts?id=<group>  → delete a group (PROCESSING rows survive)
 //
 // Auth: Supabase access token; teams share visibility both ways — every query
@@ -13,6 +14,8 @@
 import { verifySupabaseJwt } from '../remote/auth.js';
 import { corsHeaders, corsPreflight } from '../src/lib/cors.js';
 import { socialStore, visibleOwnerIds, type MediaContent } from '../src/social/index.js';
+import { socialConfigFromEnv } from './social.js';
+import { setPostThumbnail } from '../src/social/thumbnail.js';
 import { applyToOwners, createPost, deleteVisible, listCalendar, type CreatePostInput } from '../src/social/posting.js';
 
 function json(status: number, body: unknown, request: Request): Response {
@@ -89,6 +92,11 @@ export async function PATCH(request: Request): Promise<Response> {
     media?: Array<{ type?: string; url?: string; alt?: string; thumbnail?: string }>;
     /** Mark (or unmark) the group's media for the metadata scrub. */
     stripMetadata?: boolean;
+    /** Cover image URL. Published YouTube posts are updated on the platform;
+     *  Instagram published posts answer 422 not_supported. */
+    thumbnail?: string;
+    /** Limit a thumbnail change to one post of the group. */
+    postId?: string;
   };
   try {
     body = (await request.json()) as typeof body;
@@ -106,6 +114,24 @@ export async function PATCH(request: Request): Promise<Response> {
   const owners = await visibleOwnerIds(claims.sub, claims.email);
   const applyToVisible = <K extends string>(key: K, fn: (ownerId: string) => Promise<{ processing: number } & Record<K, number>>) =>
     applyToOwners(owners, key, fn);
+
+  if (typeof body.thumbnail === 'string' && typeof body.content !== 'string' && !Array.isArray(body.media)) {
+    const outcome = await setPostThumbnail(
+      socialConfigFromEnv(),
+      owners,
+      typeof body.postId === 'string' && body.postId ? { postId: body.postId } : { groupId: id },
+      body.thumbnail,
+    );
+    if (!outcome.ok) return json(400, { error: outcome.error, message: outcome.message }, request);
+    const { results } = outcome;
+    const has = (s: string) => results.some((r) => r.status === s);
+    if (!results.length) return json(404, { error: 'not_found' }, request);
+    if (has('processing')) return json(409, { error: 'processing', results }, request);
+    if (!has('updated') && !has('saved')) {
+      return json(has('unsupported') ? 422 : 502, { error: has('unsupported') ? 'not_supported' : 'thumbnail_failed', results }, request);
+    }
+    return json(200, { results }, request);
+  }
 
   // Caption + media update (drafts/queued only — the guard rejects PROCESSING).
   const hasContent = typeof body.content === 'string';

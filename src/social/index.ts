@@ -10,3 +10,4 @@ export { visibleOwnerIds, managedOwnerIds } from './visibility.js';
 export { socialEngineTick, socialRefreshScan, type TickOptions, type TickReport, type RefreshReport } from './engine.js';
 export { socialMetricsTick, metricsInterval, nextMetricsAt, type MetricsReport, type MetricsTickOptions } from './metrics.js';
 export * as socialStore from './store.js';
+export { setPostThumbnail, type SetThumbnailOutcome, type ThumbnailResult, type ThumbnailStatus } from './thumbnail.js';
