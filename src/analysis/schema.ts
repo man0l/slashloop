@@ -53,16 +53,19 @@ export const BACKENDS = ['gemini-native', 'gemini-text'] as const;
 
 // ---- Video-native observation sub-schemas ----
 
+/** A model-filled time offset: null / non-numeric / negative lands on 0 rather than sinking the analysis. */
+const seconds = () => z.number().min(0).catch(0);
+
 export const ShotSchema = z.object({
-  timestampSec: z.number().min(0),
-  durationSec: z.number().min(0),
+  timestampSec: seconds(),
+  durationSec: seconds(),
   type: z.enum(['talking_head', 'b_roll', 'product_closeup', 'text_overlay', 'split_screen', 'transition', 'reaction', 'demonstration', 'other'] as const).catch('other'),
   description: z.string().catch(''),
   onScreenText: z.string().nullable().catch(null).describe('Text visible in frame, null if none'),
 });
 
 export const OnScreenTextEntrySchema = z.object({
-  timestampSec: z.number().min(0),
+  timestampSec: seconds(),
   text: z.string().catch(''),
   style: z.enum(['overlay', 'subtitle', 'caption_packed', 'title_card', 'watermark'] as const).nullable().catch(null),
 });
@@ -76,7 +79,7 @@ export const AudioAnalysisSchema = z.object({
 });
 
 export const EmotionalArcPointSchema = z.object({
-  timestampSec: z.number().min(0),
+  timestampSec: seconds(),
   primaryEmotion: z.string().catch(''),
   intensity: z.number().min(1).max(10),
   trigger: z.string().catch('').describe('What in the video triggers this emotion'),
@@ -98,7 +101,7 @@ export const AngleSchema = z.object({
 
 export const StorytellingBeatSchema = z.object({
   type: z.enum(BEAT_TYPES).catch('other'),
-  timestampSec: z.number().min(0),
+  timestampSec: seconds(),
   description: z.string().catch(''),
 });
 
@@ -161,7 +164,7 @@ function softEnum<const T extends readonly [string, ...string[]]>(values: T) {
 
 export const KeyMomentSchema = z.object({
   /** Mid-shot, not the cut. See prompts/gemini-observe.v2.md — transition frames are usually motion-blurred. */
-  timestampSec: z.number().min(0),
+  timestampSec: seconds(),
   role: z.enum(['hook', 'setup', 'turn', 'payoff', 'cta', 'other'] as const).catch('other')
     .describe('What this moment does for the video, not what it depicts'),
   framing: softEnum(['extreme_close_up', 'close_up', 'medium', 'wide', 'other'] as const),

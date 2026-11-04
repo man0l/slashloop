@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { determineBasis, assertSlideshowVisuals } from './gemini-text.js';
 import type { AnalysisContext } from './types.js';
+import { VideoAnalysisDataSchema } from './schema.js';
 
 const ctx = (over: Partial<AnalysisContext> = {}): AnalysisContext => ({
   videoId: 'v1',
@@ -89,5 +90,51 @@ describe('assertSlideshowVisuals', () => {
       ...base,
       keyMoments: [moment('')],
     } as any, 2)).toThrow(/subjectAction/);
+  });
+});
+
+describe('VideoAnalysisDataSchema time offsets', () => {
+  const payload = (over: Record<string, unknown> = {}) => ({
+    shots: [{ timestampSec: null, durationSec: null, type: 'other', description: 'd', onScreenText: null }],
+    onScreenText: [{ timestampSec: null, text: 't', style: null }],
+    audioAnalysis: null,
+    emotionalArc: [{ timestampSec: null, primaryEmotion: 'joy', intensity: 5, trigger: 'x' }],
+    keyMoments: [{ timestampSec: null, role: 'hook', subjectAction: 'a' }],
+    hook: { text: 'x', type: 'other', placement: 'on_screen', mechanism: 'y' },
+    angle: { type: 'other', description: 'z' },
+    storytellingBeats: [0, 1, 2, 3, 4].map(() => ({ type: 'hook', timestampSec: null, description: 'b' })),
+    keyMechanisms: ['a'],
+    emotionalDrivers: ['b'],
+    pacing: { rhythm: 'r', retentionStrategy: 's', cutsPerMinute: null },
+    visualTechniques: ['v'],
+    audioTechniques: ['none'],
+    audienceInsight: { targetDemographic: 't', unspokenDesire: 'u' },
+    transferablePatterns: [{ pattern: 'p', description: 'd', adaptationNotes: 'n' }],
+    overallAssessment: { summary: 'sum', viralityScore: 7, replicability: 'high' },
+    ...over,
+  });
+
+  test('null timestampSec on beats/shots/text/moments parses and lands on 0', () => {
+    const r = VideoAnalysisDataSchema.safeParse(payload());
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.storytellingBeats.map(b => b.timestampSec)).toEqual([0, 0, 0, 0, 0]);
+    expect(r.data.shots?.[0]).toMatchObject({ timestampSec: 0, durationSec: 0 });
+    expect(r.data.onScreenText?.[0].timestampSec).toBe(0);
+    expect(r.data.emotionalArc?.[0].timestampSec).toBe(0);
+    expect(r.data.keyMoments?.[0].timestampSec).toBe(0);
+  });
+
+  test('valid timestamps are preserved; negative or non-numeric fall back to 0', () => {
+    const r = VideoAnalysisDataSchema.safeParse(payload({
+      storytellingBeats: [
+        { type: 'hook', timestampSec: 3.5, description: 'a' },
+        { type: 'hook', timestampSec: -2, description: 'b' },
+        { type: 'hook', timestampSec: '0:07', description: 'c' },
+      ],
+    }));
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.storytellingBeats.map(b => b.timestampSec)).toEqual([3.5, 0, 0]);
   });
 });
