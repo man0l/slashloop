@@ -7,7 +7,7 @@ import { signOAuthState, verifyOAuthState } from './oauth-state.js';
 import { assertPublicHttpUrl, extractMessage } from './fetch.js';
 import { BadBodyError, classifyHttpError, connectFailureReason } from './errors.js';
 import { TikTokProvider } from './providers/tiktok.js';
-import { YouTubeProvider } from './providers/youtube.js';
+import { YouTubeProvider, youtubeTitleFromCaption } from './providers/youtube.js';
 import { InstagramProvider } from './providers/instagram.js';
 import { ThreadsProvider } from './providers/threads.js';
 import { PinterestProvider } from './providers/pinterest.js';
@@ -113,6 +113,39 @@ describe('youtube provider', () => {
     expect(provider.checkValidity({ message: '', settings: {}, media: [video] })).toBe(true);
     expect(provider.checkValidity({ message: '', settings: {}, media: [photo] })).not.toBe(true);
     expect(provider.checkValidity({ message: '', settings: {}, media: [video, video] })).not.toBe(true);
+  });
+
+  test('title is caption line 1 (hook), trimmed to 100 chars; single-line captions unchanged', () => {
+    const caption = 'This is the hook\nSave this for later\n#a #b #c\nPhotos: Wikimedia Commons';
+    expect(youtubeTitleFromCaption(caption)).toBe('This is the hook');
+    expect(youtubeTitleFromCaption('\n  \r\n Hook after blank lines \r\nrest')).toBe('Hook after blank lines');
+    expect(youtubeTitleFromCaption('x'.repeat(150) + '\nrest')).toHaveLength(100);
+    expect(youtubeTitleFromCaption('plain pre-SLA-1273 content')).toBe('plain pre-SLA-1273 content');
+    expect(youtubeTitleFromCaption('')).toBe('');
+  });
+
+  test('postPending sends title = line 1 and description = full caption; settings.title wins', async () => {
+    const realFetch = globalThis.fetch;
+    const bodies: Array<Record<string, any>> = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('uploadType=resumable')) {
+        bodies.push(JSON.parse(String(init?.body)));
+        return new Response('{}', { status: 200, headers: { location: 'https://upload.example/session' } });
+      }
+      return new Response('', { status: 200, headers: { 'content-length': '1000' } });
+    }) as typeof fetch;
+    const caption = 'The hook\nSave this\n#a #b #c\nPhotos: Wikimedia Commons';
+    const ctx = (settings: Record<string, unknown>) =>
+      ({ token: 'TOK', post: { id: 'p1', message: caption, settings, media: [{ type: 'video', url: 'https://cdn.example/clip.mp4' }] } }) as any;
+    try {
+      await provider.postPending(ctx({}));
+      await provider.postPending(ctx({ title: 'Manual title' }));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(bodies[0].snippet).toMatchObject({ title: 'The hook', description: caption });
+    expect(bodies[1].snippet).toMatchObject({ title: 'Manual title', description: caption });
   });
 
   test('classify flags expired Google grants and daily upload limits', () => {
