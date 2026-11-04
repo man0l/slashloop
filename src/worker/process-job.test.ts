@@ -22,6 +22,7 @@ const refunds: Array<{ workspaceId: string; amount: number; refId: string }> = [
 let jobRow: Record<string, unknown> = {};
 let runRefreshResult: Record<string, unknown> = {};
 let runRefreshThrows: Error | null = null;
+let downloadThrows: Error | null = null;
 
 mock.module('../db.js', () => ({
   db: {
@@ -32,7 +33,7 @@ mock.module('../db.js', () => ({
       create: async () => ({}),
     },
     source: { findFirst: async () => ({ platform: 'tiktok', sourceType: 'creator', query: '@a' }) },
-    video: { findFirst: async () => null },
+    video: { findFirst: async () => null, findUnique: async () => ({ url: 'https://tiktok.test/v', platform: 'tiktok' }) },
     workspace: { findUnique: async () => null },
   },
 }));
@@ -60,7 +61,7 @@ mock.module('../analysis/index.js', () => ({
 mock.module('../lib/media.js', () => ({
   ...realMedia,
   ingestThumbnails: async () => ({ stored: 0, skipped: 0, failed: 0 }),
-  downloadAndStoreVideo: async () => { throw new Error('not under test'); },
+  downloadAndStoreVideo: async () => { throw downloadThrows ?? new Error('not under test'); },
 }));
 
 const { processClaimedJob } = await import('./process-job.js');
@@ -88,6 +89,7 @@ beforeEach(() => {
   jobRow = refreshJob();
   runRefreshResult = {};
   runRefreshThrows = null;
+  downloadThrows = null;
 });
 
 describe('processClaimedJob — refresh refusals', () => {
@@ -139,5 +141,39 @@ describe('processClaimedJob — job budget timer (SLA-947)', () => {
     const res = await withJobBudget(budget.signal, Date.now() + 120_000, () => processClaimedJob(refreshJob() as any));
     expect(res.ok).toBe(false);
     expect(updates[0]!.data.status).toBe('queued');
+  });
+});
+
+describe('processClaimedJob — fetch failure log level', () => {
+  const fetchJob = () => refreshJob({ kind: 'fetch', videoId: 'vid-1', sourceId: null, opId: null, preAuthCredits: null, payloadJson: '{}' });
+
+  async function runFetch(err: Error) {
+    downloadThrows = err;
+    const warn = mock((..._a: unknown[]) => {});
+    const error = mock((..._a: unknown[]) => {});
+    const orig = { warn: console.warn, error: console.error };
+    console.warn = warn as any;
+    console.error = error as any;
+    try {
+      const res = await processClaimedJob(fetchJob() as any);
+      return { res, warn, error };
+    } finally {
+      console.warn = orig.warn;
+      console.error = orig.error;
+    }
+  }
+
+  test('the proxy size ceiling is terminal but logged as a warning, not an error', async () => {
+    const { res, warn, error } = await runFetch(new Error(
+      'Video is 48.88MB, above the 12.00MB SCRAPER_PROXY_MAX_VIDEO_MB ceiling — refusing to spend the traffic'));
+    expect(res.ok).toBe(false);
+    expect(updates[0]!.data.status).toBe('failed');
+    expect(warn.mock.calls.some(c => String(c[0]).includes('terminal=true'))).toBe(true);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  test('other deterministic fetch failures still log at error', async () => {
+    const { error } = await runFetch(new Error('no downloadable TikTok URL'));
+    expect(error.mock.calls.some(c => String(c[0]).includes('terminal=true'))).toBe(true);
   });
 });
