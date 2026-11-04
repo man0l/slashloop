@@ -327,6 +327,17 @@ export async function getPost(id: string): Promise<SocialPostRow | undefined> {
   return rows<SocialPostRow>(await rawBatch([{ sql: 'SELECT * FROM social_posts WHERE id = ?1', params: [id] }]))[0];
 }
 
+/** Rows of one group (or one post when `postId`) for an owner, any state. */
+export async function listGroupRows(ownerId: string, target: { groupId?: string; postId?: string }): Promise<SocialPostRow[]> {
+  return rows<SocialPostRow>(
+    await rawBatch([
+      target.postId
+        ? { sql: 'SELECT * FROM social_posts WHERE id = ?1 AND owner_id = ?2', params: [target.postId, ownerId] }
+        : { sql: 'SELECT * FROM social_posts WHERE group_id = ?1 AND owner_id = ?2 ORDER BY id', params: [target.groupId ?? '', ownerId] },
+    ]),
+  );
+}
+
 /** Reschedule a whole group. A group with any PROCESSING row is left entirely
  *  untouched (409 upstream): that row is mid-upload and moving it would desync
  *  the engine, and a partial move would hand the retry a half-moved group.

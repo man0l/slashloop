@@ -48,6 +48,8 @@ export function groupRows(rows: SocialPostRow[]): CalendarGroup[] {
         posts: [],
       };
       byGroup.set(groupId, group);
+    } else {
+      adoptThumbnails(group.media, safeMedia(row.media));
     }
     group.posts.push({
       id: row.id,
@@ -80,6 +82,15 @@ export function groupRows(rows: SocialPostRow[]): CalendarGroup[] {
     else if (group.posts.every((p) => p.state === 'PUBLISHED')) group.state = 'published';
   }
   return [...byGroup.values()];
+}
+
+/** The group shows one media list (the first row's); a thumbnail set on only
+ *  one platform's row (a published YouTube cover) must still be echoed. */
+function adoptThumbnails(shown: MediaContent[], other: MediaContent[]): void {
+  shown.forEach((m, i) => {
+    const o = other[i];
+    if (!m.thumbnail && o?.thumbnail && o.url === m.url) m.thumbnail = o.thumbnail;
+  });
 }
 
 function safeMedia(raw: unknown): MediaContent[] {
