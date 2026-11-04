@@ -46,6 +46,10 @@ const AUTH = 'https://www.instagram.com/oauth/authorize';
 const TOKEN = 'https://api.instagram.com/oauth/access_token';
 const GRAPH = 'https://graph.instagram.com';
 
+// Without cover_url/thumb_offset Instagram uses frame 0 of the MP4, which is
+// blank for reels that fade their content in. 1s lands on a settled frame.
+export const DEFAULT_THUMB_OFFSET_MS = 1000;
+
 // Prefix connect-flow failures with the step that failed — Meta's messages
 // ("Unsupported request - method type: get") don't say which call rejected.
 async function step<T>(label: string, work: Promise<T>): Promise<T> {
@@ -56,6 +60,11 @@ async function step<T>(label: string, work: Promise<T>): Promise<T> {
     if (err instanceof BadBodyError) throw new BadBodyError(`${label}: ${err.message}`, err.detail);
     throw err;
   }
+}
+
+function thumbOffsetMs(settings: Record<string, unknown> | undefined): number {
+  const value = Number(settings?.thumbOffsetMs);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : DEFAULT_THUMB_OFFSET_MS;
 }
 
 interface Container {
@@ -208,6 +217,11 @@ export class InstagramProvider implements SocialProvider {
       if (media.url.toLowerCase().includes('.mp4')) {
         params.video_url = media.url;
         params.media_type = isCarousel ? 'VIDEO' : 'REELS';
+        if (!isCarousel) {
+          // cover_url wins over thumb_offset when both are sent, so only one goes out.
+          if (media.thumbnail) params.cover_url = assertPublicHttpUrl(media.thumbnail, 'cover image');
+          else params.thumb_offset = String(thumbOffsetMs(ctx.post.settings));
+        }
       } else {
         params.image_url = media.url;
         if (isCarousel) params.media_type = 'IMAGE';

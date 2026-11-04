@@ -208,6 +208,13 @@ describe('list_social_posts', () => {
     expect(JSON.stringify(body)).not.toContain(outside);
   });
 
+  test('echoes a video thumbnail on each media item', async () => {
+    const video = { type: 'video', url: 'https://cdn.example.com/c.mp4', thumbnail: 'https://cdn.example.com/c.jpg' };
+    await call('create_social_post', { integrationIds: ['tt-a'], content: 's', media: [video], publishAt: FUTURE });
+    const { body } = await call('list_social_posts', { from: '2026-11-01T00:00:00Z', to: '2026-11-30T00:00:00Z' });
+    expect(body.posts[0].media).toEqual([video]);
+  });
+
   test('defaults to now → +30 days', async () => {
     await call('create_social_post', { integrationIds: ['tt-a'], content: 's', media: [IMG], publishAt: FUTURE });
     const { body } = await call('list_social_posts');
