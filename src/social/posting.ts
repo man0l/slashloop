@@ -7,6 +7,7 @@
 import { createRegistry, getProvider } from './registry.js';
 import * as socialStore from './store.js';
 import type { GroupWriteResult } from './store.js';
+import { laneAndPrimary, parseStoredTags } from './rotation.js';
 import { METRIC_KEYS } from './types.js';
 import type { MediaContent, MetricKey, ProviderId, SocialIntegrationRow, SocialPostRow } from './types.js';
 
@@ -24,7 +25,7 @@ export interface CalendarGroup {
     id: string;
     provider: ProviderId;
     /** The connected account this row publishes to. */
-    account: { id: string; name: string | null; profile: string | null; picture: string | null };
+    account: { id: string; name: string | null; profile: string | null; picture: string | null; lane: string | null };
     state: string;
     releaseUrl: string | null;
     error: string | null;
@@ -60,6 +61,7 @@ export function groupRows(rows: SocialPostRow[]): CalendarGroup[] {
         name: row.account_name ?? null,
         profile: row.account_profile ?? null,
         picture: row.account_picture ?? null,
+        lane: laneAndPrimary(parseStoredTags(row.account_tags)).lane,
       },
       state: row.state,
       releaseUrl: row.release_url ?? null,

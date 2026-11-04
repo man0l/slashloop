@@ -213,4 +213,5 @@ export interface SocialPostRow {
   account_name?: string | null;
   account_profile?: string | null;
   account_picture?: string | null;
+  account_tags?: string | null;
 }

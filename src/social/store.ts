@@ -259,7 +259,7 @@ export async function createPostGroup(inputs: CreatePostInput[]): Promise<void> 
 // Calendar reads carry the account each row publishes to, so the drawer can
 // say which profile a post went out on (LEFT JOIN: a disconnected account
 // deletes its posts, but a race must not drop the row).
-const WITH_ACCOUNT = `SELECT p.*, i.name AS account_name, i.profile AS account_profile, i.picture AS account_picture
+const WITH_ACCOUNT = `SELECT p.*, i.name AS account_name, i.profile AS account_profile, i.picture AS account_picture, i.tags AS account_tags
               FROM social_posts p LEFT JOIN social_integrations i ON i.id = p.integration_id`;
 
 /** One user submission's rows (all platforms), newest first. */

@@ -12,6 +12,7 @@
 // and this router dispatches one HTTP method set per module.
 
 import { verifySupabaseJwt } from '../remote/auth.js';
+import { parseStoredTags, laneAndPrimary } from '../src/social/rotation.js';
 import { corsHeaders, corsPreflight } from '../src/lib/cors.js';
 import { signOAuthState, socialStore, getProvider, visibleOwnerIds, managedOwnerIds, createRegistry, type SocialConfig, type ProviderId } from '../src/social/index.js';
 
@@ -205,7 +206,10 @@ export function sanitizeIntegration(row: {
   refresh_needed: number;
   disabled: number;
   error: string | null;
+  tags?: string | null;
 }) {
+  const tags = parseStoredTags(row.tags);
+  const { lane, primary } = laneAndPrimary(tags);
   return {
     id: row.id,
     provider: row.provider,
@@ -215,5 +219,8 @@ export function sanitizeIntegration(row: {
     needsReconnect: Boolean(row.refresh_needed),
     disabled: Boolean(row.disabled),
     error: row.error,
+    tags,
+    lane,
+    primary,
   };
 }
