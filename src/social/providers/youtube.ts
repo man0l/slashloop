@@ -11,7 +11,7 @@
 // when token_expires_at is near.
 
 import { BadBodyError, isTransientError } from '../errors.js';
-import { fetchMediaRange, fetchMediaSize, providerFetch } from '../fetch.js';
+import { assertPublicHttpUrl, fetchMediaRange, fetchMediaSize, providerFetch } from '../fetch.js';
 import { num as count } from '../metrics-util.js';
 import type {
   AuthTokenDetails,
@@ -24,12 +24,14 @@ import type {
   ProviderPostContext,
   SocialConfig,
   SocialProvider,
+  ThumbnailContext,
 } from '../types.js';
 
 const OAUTH = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN = 'https://oauth2.googleapis.com/token';
 const UPLOAD = 'https://www.googleapis.com/upload/youtube/v3/videos';
 const API = 'https://www.googleapis.com/youtube/v3';
+const UPLOAD_THUMBNAIL = 'https://www.googleapis.com/upload/youtube/v3/thumbnails/set';
 
 export class YouTubeProvider implements SocialProvider {
   identifier: ProviderId = 'youtube';
@@ -42,6 +44,7 @@ export class YouTubeProvider implements SocialProvider {
    *  engine (pendingData.uploadedBytes makes the resume exact). Keeps a big
    *  video from monopolizing the shared cron tick. */
   static readonly UPLOAD_BATCH_MS = 60_000;
+  static readonly MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024;
 
   classify = (body: string, status: number): 'refresh-token' | 'reconnect' | 'bad-body' | 'retry' | undefined => {
     if (status === 401 || body.includes('invalid_grant') || body.includes('invalid_credentials')) return 'refresh-token';
@@ -248,8 +251,9 @@ export class YouTubeProvider implements SocialProvider {
         uploaded = videoSize;
 
         if (ctx.pendingData?.thumbnail) {
-          await this.setThumbnail(ctx.token, videoId, String(ctx.pendingData.thumbnail)).catch(() => {
-            /* thumbnail is idempotent-best-effort; video is live either way */
+          await this.setThumbnail({ token: ctx.token, releaseId: videoId, thumbnailUrl: String(ctx.pendingData.thumbnail) }).catch((err) => {
+            // The video is live either way; set_social_post_thumbnail can retry.
+            console.warn(`[social] youtube thumbnail for ${videoId} not set: ${(err as Error).message}`);
           });
         }
         return { status: 'completed', postId: videoId, releaseUrl: `https://www.youtube.com/watch?v=${videoId}` };
@@ -308,13 +312,22 @@ export class YouTubeProvider implements SocialProvider {
     throw new BadBodyError(`YouTube upload status check failed (${probe.status})`);
   }
 
-  private async setThumbnail(token: string, videoId: string, thumbnailUrl: string): Promise<void> {
-    const thumb = await fetch(thumbnailUrl);
-    if (!thumb.ok || !thumb.body) return;
-    await fetch(`${API}/thumbnails/set?videoId=${encodeURIComponent(videoId)}&uploadType=media`, {
+  /** thumbnails.set — works on any video the channel owns, published or not.
+   *  Custom thumbnails need a verified channel and a JPEG/PNG up to 2MB. */
+  async setThumbnail(ctx: ThumbnailContext): Promise<void> {
+    assertPublicHttpUrl(ctx.thumbnailUrl, 'thumbnail');
+    const thumb = await fetch(ctx.thumbnailUrl);
+    if (!thumb.ok) throw new BadBodyError(`Could not download the thumbnail image (${thumb.status})`);
+    const bytes = await thumb.arrayBuffer();
+    if (bytes.byteLength === 0 || bytes.byteLength > YouTubeProvider.MAX_THUMBNAIL_BYTES) {
+      throw new BadBodyError('YouTube thumbnails must be a JPEG or PNG under 2MB');
+    }
+    const declared = (thumb.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+    await providerFetch(`${UPLOAD_THUMBNAIL}?videoId=${encodeURIComponent(ctx.releaseId)}&uploadType=media`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': thumb.headers.get('content-type') ?? 'image/jpeg' },
-      body: thumb.body,
+      headers: { Authorization: `Bearer ${ctx.token}`, 'Content-Type': declared === 'image/png' ? 'image/png' : 'image/jpeg' },
+      body: bytes,
+      classify: this.classify,
     });
   }
 }

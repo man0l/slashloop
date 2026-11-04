@@ -10,6 +10,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { setActiveClient } from '../store.js';
 import { UploadError } from '../social/media-upload.js';
+import { setPostThumbnail } from '../social/thumbnail.js';
 import { defaultSocialDeps, registerSocialTools, type SocialToolDeps } from './social.js';
 
 const NOW_MS = Date.parse('2026-11-01T00:00:00Z');
@@ -79,14 +80,14 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 describe('registration', () => {
-  test('all nine tools are listed', async () => {
+  test('all ten tools are listed', async () => {
     const server = new McpServer({ name: 't', version: '0' });
     registerSocialTools(server, deps());
     const [a, b] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'c', version: '0' });
     await Promise.all([server.connect(a), client.connect(b)]);
     const names = (await client.listTools()).tools.map((t) => t.name);
-    for (const n of ['list_social_accounts', 'upload_social_media', 'create_social_post', 'list_social_posts', 'reschedule_social_post', 'delete_social_post', 'tag_social_account', 'set_rotation', 'plan_rotation']) {
+    for (const n of ['list_social_accounts', 'upload_social_media', 'create_social_post', 'list_social_posts', 'reschedule_social_post', 'delete_social_post', 'set_social_post_thumbnail', 'tag_social_account', 'set_rotation', 'plan_rotation']) {
       expect(names).toContain(n);
     }
     const create = (await client.listTools()).tools.find((t) => t.name === 'create_social_post')!;
@@ -479,5 +480,126 @@ describe('rotations: set_rotation + plan_rotation', () => {
     await call('set_rotation', ROT);
     expect((await call('plan_rotation', { rotation: 'maxxing', from: '11/02/2026', days: 1, slots: ['09:00'] })).body.error).toBe('invalid_date');
     expect((await call('plan_rotation', { rotation: 'maxxing', from: '2026-11-02', days: 1, slots: ['9am'] })).body.error).toBe('invalid_slots');
+  });
+});
+
+describe('set_social_post_thumbnail', () => {
+  const COVER = 'https://cdn.example.com/cover.jpg';
+  const VIDEO = { type: 'video', url: 'https://cdn.example.com/c.mp4' };
+  const RANGE = { from: '2026-11-01T00:00:00Z', to: '2026-12-30T00:00:00Z' };
+  const cfg = { youtube: { clientId: 'cid', clientSecret: 'sec' } };
+  const realFetch = globalThis.fetch;
+  let requests: Array<{ url: string; method: string; auth: string | null; type: string | null; bytes: number }>;
+
+  const withThumbnail = (over: Partial<SocialToolDeps> = {}) => ({
+    setThumbnail: (owners: string[], target: { groupId?: string; postId?: string }, url: string) => setPostThumbnail(cfg, owners, target, url, NOW_MS / 1000),
+    ...over,
+  });
+
+  beforeEach(() => {
+    requests = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === COVER) return new Response(new Uint8Array(1234), { status: 200, headers: { 'content-type': 'image/jpeg' } });
+      requests.push({
+        url,
+        method: init?.method ?? 'GET',
+        auth: new Headers(init?.headers).get('authorization'),
+        type: new Headers(init?.headers).get('content-type'),
+        bytes: (init?.body as ArrayBuffer | undefined)?.byteLength ?? 0,
+      });
+      return new Response('{"items":[{}]}', { status: 200 });
+    }) as typeof fetch;
+    addIntegration('yt-a', 'alice', 'youtube');
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  async function publishedGroup(integrationIds: string[]) {
+    const { body } = await call('create_social_post', { integrationIds, content: 'c', media: [VIDEO], publishAt: FUTURE });
+    db.run("UPDATE social_posts SET state = 'PUBLISHED', release_id = 'VID123' WHERE group_id = ?", [body.groupId]);
+    return body.groupId as string;
+  }
+
+  test('published YouTube post: thumbnails.set is called and list_social_posts echoes the thumbnail', async () => {
+    const groupId = await publishedGroup(['yt-a']);
+    const { isError, body } = await call('set_social_post_thumbnail', { groupId, thumbnail: COVER }, withThumbnail());
+    expect(isError).toBe(false);
+    expect(body.results).toEqual([expect.objectContaining({ provider: 'youtube', status: 'updated' })]);
+    expect(requests).toEqual([
+      { url: 'https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=VID123&uploadType=media', method: 'POST', auth: 'Bearer SECRET-TOKEN', type: 'image/jpeg', bytes: 1234 },
+    ]);
+    const listed = await call('list_social_posts', RANGE);
+    expect(listed.body.posts[0].media).toEqual([{ ...VIDEO, thumbnail: COVER }]);
+  });
+
+  test('a thumbnail set only on the YouTube row is echoed even when another row comes first', async () => {
+    const groupId = await publishedGroup(['ig-a', 'yt-a']);
+    const postId = (db.query("SELECT id FROM social_posts WHERE group_id = ? AND provider = 'youtube'").get(groupId) as { id: string }).id;
+    const { isError, body } = await call('set_social_post_thumbnail', { postId, thumbnail: COVER }, withThumbnail());
+    expect(isError).toBe(false);
+    expect(body.results).toHaveLength(1);
+    const listed = await call('list_social_posts', RANGE);
+    expect(listed.body.posts[0].media[0].thumbnail).toBe(COVER);
+    const ig = db.query("SELECT media FROM social_posts WHERE group_id = ? AND provider = 'instagram'").get(groupId) as { media: string };
+    expect(ig.media).not.toContain(COVER);
+  });
+
+  test('published Instagram post: clear "not supported" error, nothing stored or called', async () => {
+    const groupId = await publishedGroup(['ig-a']);
+    const { isError, body } = await call('set_social_post_thumbnail', { groupId, thumbnail: COVER }, withThumbnail());
+    expect(isError).toBe(true);
+    expect(body.error).toBe('not_supported');
+    expect(body.message).toContain('Not supported by Instagram');
+    expect(requests).toEqual([]);
+    expect((db.query('SELECT media FROM social_posts WHERE group_id = ?').get(groupId) as { media: string }).media).not.toContain(COVER);
+  });
+
+  test('mixed group: YouTube updates, Instagram reports unsupported, call still succeeds', async () => {
+    const groupId = await publishedGroup(['ig-a', 'yt-a']);
+    const { isError, body } = await call('set_social_post_thumbnail', { groupId, thumbnail: COVER }, withThumbnail());
+    expect(isError).toBe(false);
+    expect(body.results.map((r: { provider: string; status: string }) => `${r.provider}:${r.status}`).sort()).toEqual(['instagram:unsupported', 'youtube:updated']);
+  });
+
+  test('queued group: thumbnail is stored on the video for publish time, no platform call', async () => {
+    const { body: created } = await call('create_social_post', { integrationIds: ['yt-a', 'ig-a'], content: 'c', media: [VIDEO], publishAt: FUTURE });
+    const { isError, body } = await call('set_social_post_thumbnail', { groupId: created.groupId, thumbnail: COVER }, withThumbnail());
+    expect(isError).toBe(false);
+    expect(body.results.every((r: { status: string }) => r.status === 'saved')).toBe(true);
+    expect(requests).toEqual([]);
+    const listed = await call('list_social_posts', RANGE);
+    expect(listed.body.posts[0].media).toEqual([{ ...VIDEO, thumbnail: COVER }]);
+  });
+
+  test('YouTube rejection surfaces as thumbnail_failed and stores nothing', async () => {
+    const groupId = await publishedGroup(['yt-a']);
+    globalThis.fetch = (async (input: string | URL | Request) =>
+      String(input) === COVER
+        ? new Response(new Uint8Array(10), { status: 200, headers: { 'content-type': 'image/jpeg' } })
+        : new Response('{"error":{"message":"The authenticated user cannot upload custom video thumbnails."}}', { status: 403 })) as typeof fetch;
+    const { isError, body } = await call('set_social_post_thumbnail', { groupId, thumbnail: COVER }, withThumbnail());
+    expect(isError).toBe(true);
+    expect(body.error).toBe('thumbnail_failed');
+    expect(body.message).toContain('custom video thumbnails');
+    expect((db.query('SELECT media FROM social_posts WHERE group_id = ?').get(groupId) as { media: string }).media).not.toContain(COVER);
+  });
+
+  test('a PROCESSING post is not touched', async () => {
+    const groupId = await publishedGroup(['yt-a']);
+    db.run("UPDATE social_posts SET state = 'PROCESSING' WHERE group_id = ?", [groupId]);
+    const { isError, body } = await call('set_social_post_thumbnail', { groupId, thumbnail: COVER }, withThumbnail());
+    expect(isError).toBe(true);
+    expect(body.error).toBe('processing');
+  });
+
+  test('another owner\'s group is not found; missing target and private URLs are rejected', async () => {
+    const groupId = await publishedGroup(['yt-a']);
+    me = { userId: 'bob', email: null };
+    expect((await call('set_social_post_thumbnail', { groupId, thumbnail: COVER }, withThumbnail())).body.error).toBe('not_found');
+    me = { userId: 'alice', email: null };
+    expect((await call('set_social_post_thumbnail', { thumbnail: COVER }, withThumbnail())).body.error).toBe('missing_target');
+    expect((await call('set_social_post_thumbnail', { groupId, thumbnail: 'http://127.0.0.1/x.jpg' }, withThumbnail())).body.error).toBe('invalid_thumbnail');
   });
 });
