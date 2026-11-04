@@ -1,4 +1,4 @@
-import { describe, expect, mock, test, beforeEach } from 'bun:test';
+import { afterAll, describe, expect, mock, test, beforeEach } from 'bun:test';
 
 // ── module mocks (see the spread note: later test files re-import these
 // modules, so a partial mock would break them — spread the real surface,
@@ -6,6 +6,17 @@ import { describe, expect, mock, test, beforeEach } from 'bun:test';
 
 const realJobs = await import('./jobs.js');
 const realCredits = await import('./credits.js');
+const REAL_JOBS = { ...realJobs };
+const REAL_CREDITS = { ...realCredits };
+
+// mock.module rewrites the registry entry for the whole `bun test` process and
+// mock.restore() cannot undo it; without this, the stubbed enqueueRefreshJob
+// leaks into later files (queue-owner.test.ts saw 6 creates instead of 7 and
+// failed verify on master, blocking deploy-worker — SLA-1277).
+afterAll(() => {
+  mock.module('./jobs.js', () => ({ ...REAL_JOBS }));
+  mock.module('./credits.js', () => ({ ...REAL_CREDITS }));
+});
 
 const enqueueCalls: Array<{ workspaceId: string; sourceId: string; payload: Record<string, unknown> }> = [];
 let balanceTotal = 100;
