@@ -45,6 +45,16 @@ A **lane** is a group of accounts that post the same video at the same minute
 user: a lane whose primary is `reconnect_needed`/`disabled` passes its video to
 the next lane with a healthy primary, skipped accounts need a reconnect in the
 web app, and a duplicate connection of the same platform account posts once.
+
+**Lane questions and lane posts.** When the user asks which account is in which
+lane, call `list_social_accounts` once and print its `lanes` block as a short
+table (lane, primary, members; list `untagged` accounts as "no lane"). When the
+user names a lane for a post, call `create_social_post({ lane, ... })` instead of
+listing ids: it posts to every active account in that lane at once (pass exactly
+one of `lane` or `integrationIds`). `lane_not_found` means no account carries
+that tag; `lane_unhealthy` means the lane's primary needs a reconnect, so tell the
+user rather than switching lanes. Pinterest members still need
+`settings[integrationId].boardId`.
 After the user confirms the plan, call `create_social_post` once per row:
 
 ```

@@ -149,7 +149,7 @@ function presentAccount(row: SocialIntegrationRow) {
     provider: row.provider,
     profile: row.profile,
     name: row.name,
-    status: row.disabled ? 'disabled' : row.refresh_needed ? 'reconnect_needed' : 'active',
+    status: statusOf(row),
     needsReconnect: Boolean(row.refresh_needed),
     disabled: Boolean(row.disabled),
     error: row.error,
@@ -190,6 +190,36 @@ function handleOf(row: SocialIntegrationRow): string {
   return row.profile || row.name || row.internal_id;
 }
 
+const statusOf = (row: SocialIntegrationRow): 'active' | 'reconnect_needed' | 'disabled' =>
+  row.disabled ? 'disabled' : row.refresh_needed ? 'reconnect_needed' : 'active';
+
+const laneMember = (row: SocialIntegrationRow) => ({ integrationId: row.id, provider: row.provider, handle: handleOf(row) });
+
+/** Lane → accounts view for list_social_accounts; healthy = the planner's rule (an active primary). */
+function buildLanes(rows: SocialIntegrationRow[]) {
+  const byLane = new Map<string, SocialIntegrationRow[]>();
+  const untagged: SocialIntegrationRow[] = [];
+  for (const row of rows) {
+    const { lane } = laneAndPrimary(parseStoredTags(row.tags));
+    if (lane === null) untagged.push(row);
+    else byLane.set(lane, [...(byLane.get(lane) ?? []), row]);
+  }
+  const isPrimary = (row: SocialIntegrationRow) => laneAndPrimary(parseStoredTags(row.tags)).primary;
+  const lanes = [...byLane.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([lane, members]) => {
+      const ordered = [...members].sort((a, b) => Number(isPrimary(b)) - Number(isPrimary(a)));
+      const primary = ordered.find(isPrimary);
+      return {
+        lane,
+        primary: primary ? laneMember(primary) : null,
+        members: ordered.map((row) => ({ ...laneMember(row), role: isPrimary(row) ? ('primary' as const) : ('repost' as const), status: statusOf(row) })),
+        healthy: Boolean(primary && statusOf(primary) === 'active'),
+      };
+    });
+  return { lanes, untagged: untagged.map((row) => ({ ...laneMember(row), status: statusOf(row) })) };
+}
+
 const PROCESSING_MESSAGE = 'A post in this group is publishing right now — try again in a moment.';
 
 export function registerSocialTools(server: McpServer, d: SocialToolDeps = defaultSocialDeps) {
@@ -214,16 +244,21 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
       + '(token expired — the user must reconnect in the web app) or disabled. Tokens are never returned. '
       + 'Instagram accounts also carry `insights` (available | unavailable | unknown) with `insightsReason`/`insightsHint` when views/reach/saves/shares cannot be read. '
       + 'Each account also carries `tags`, `lane` and `primary` (see tag_social_account). '
+      + 'The top-level `lanes` block answers "which account is in which lane" in one call: per lane its primary, its members (role primary | repost, status) and `healthy` '
+      + '(the primary is active); `untagged` lists accounts with no lane. To post to a whole lane, pass its name to create_social_post as `lane`. '
       + 'Includes teammates\' accounts shared through a workspace. Connecting accounts happens in the web app (OAuth); '
       + 'when none are connected the response carries the connect URL. Free; no credits charged.',
     {},
     { readOnlyHint: true },
     () => withCaller(async ({ userId, email }) => {
       const owners = await d.resolveOwners(userId, email);
-      const accounts = (await d.listIntegrations(owners, false)).map(presentAccount);
+      const rows = await d.listIntegrations(owners, false);
+      const accounts = rows.map(presentAccount);
       if (!accounts.length) {
         return text({
           accounts,
+          lanes: [],
+          untagged: [],
           connectUrl: d.connectUrl(),
           message: 'No social accounts are connected. Connect them in the Slashloop web app (OAuth cannot be done from MCP), then call this again.',
         });
@@ -231,6 +266,7 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
       const usable = accounts.filter((a) => a.status === 'active').length;
       return text({
         accounts,
+        ...buildLanes(rows),
         usable,
         ...(usable < accounts.length ? { message: 'Some accounts need attention (reconnect_needed / disabled) and cannot be targeted until fixed in the web app.', connectUrl: d.connectUrl() } : {}),
       });
@@ -390,11 +426,13 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
     'Create a social post for one or more connected accounts: SAVES A DRAFT when publishAt is omitted, otherwise SCHEDULES it to go live at publishAt. '
       + 'CONFIRM FIRST: a scheduled post publishes publicly on the user\'s real accounts without further prompts — get an explicit yes on the caption, media, '
       + 'accounts and time before scheduling; when unsure, save a draft (omit publishAt) and let the user approve it. '
-      + 'integrationIds come from list_social_accounts; media is an ordered list of {type: image|video, url} with public URLs (see upload_social_media). '
+      + 'Target accounts with exactly one of: integrationIds (from list_social_accounts) or `lane` (a lane name; expands to every active account in that lane, '
+      + 'errors lane_not_found / lane_unhealthy when the lane\'s primary needs a reconnect — it never falls through to another lane); media is an ordered list of {type: image|video, url} with public URLs (see upload_social_media). '
       + 'publishAt is ISO 8601 with an offset (e.g. 2026-11-03T15:00:00Z). Platforms that reject the post (e.g. too many slides) are skipped and reported in `skipped`; '
       + 'the post is still created for the rest. Free; no credits charged.',
     {
-      integrationIds: z.array(z.string()).min(1).max(20).describe('Account ids from list_social_accounts.'),
+      integrationIds: z.array(z.string()).min(1).max(20).optional().describe('Account ids from list_social_accounts. Pass this or `lane`, not both.'),
+      lane: z.string().min(1).optional().describe('Lane name (e.g. "alice"): posts to every active account tagged lane:<name>. Pass this or integrationIds, not both.'),
       content: z.string().min(1).describe('Caption / post text.'),
       media: z
         .array(z.object({
@@ -414,7 +452,35 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
         .describe('Per-account provider settings keyed by integration id (e.g. TikTok privacy, Pinterest board, Instagram thumbOffsetMs = Reel cover frame in ms when no thumbnail is set; default 1000).'),
     },
     { readOnlyHint: false },
-    ({ integrationIds, content, media, publishAt, stripMetadata, settings }) => withCaller(async ({ userId, email }) => {
+    ({ integrationIds, lane, content, media, publishAt, stripMetadata, settings }) => withCaller(async ({ userId, email }) => {
+      if ((integrationIds?.length ? 1 : 0) + (lane !== undefined ? 1 : 0) !== 1) {
+        return text({ error: 'invalid_target', message: 'Pass exactly one of integrationIds or lane.' }, true);
+      }
+      let targetIds = integrationIds ?? [];
+      let laneName: string | null = null;
+      if (lane !== undefined) {
+        laneName = normalizeLaneName(lane);
+        const members = laneName === null
+          ? []
+          : (await d.listIntegrations(await d.resolveOwners(userId, email), false)).filter((r) => laneAndPrimary(parseStoredTags(r.tags)).lane === laneName);
+        if (laneName === null || !members.length) {
+          return text({ error: 'lane_not_found', message: `No visible account is tagged lane:${lane}. Call list_social_accounts and read its \`lanes\` block.`, lane }, true);
+        }
+        const primary = members.find((r) => laneAndPrimary(parseStoredTags(r.tags)).primary);
+        const active = members.filter((r) => statusOf(r) === 'active');
+        if ((primary && statusOf(primary) !== 'active') || !active.length) {
+          const bad = primary && statusOf(primary) !== 'active' ? primary : members[0];
+          return text({
+            error: 'lane_unhealthy',
+            message: `Lane "${laneName}" cannot be posted to: ${primary && statusOf(primary) !== 'active' ? 'its primary' : 'no member'} ${handleOf(bad)} is ${statusOf(bad)}. Reconnect it in the web app, or target accounts with integrationIds.`,
+            lane: laneName,
+            integrationId: bad.id,
+          }, true);
+        }
+        targetIds = active
+          .sort((a, b) => Number(laneAndPrimary(parseStoredTags(b.tags)).primary) - Number(laneAndPrimary(parseStoredTags(a.tags)).primary))
+          .map((r) => r.id);
+      }
       let publishDate: number | undefined;
       if (publishAt !== undefined) {
         const parsed = parseInstant(publishAt, d.now(), { allowPast: false });
@@ -422,7 +488,7 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
         publishDate = parsed.seconds;
       }
       const result = await d.createPost(userId, () => d.resolveOwners(userId, email), {
-        integrationIds,
+        integrationIds: targetIds,
         content,
         media,
         publishDate,
@@ -435,6 +501,7 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
       }
       return text({
         groupId: result.groupId,
+        ...(laneName !== null ? { lane: laneName, integrationIds: targetIds } : {}),
         state: result.draft ? 'draft' : 'scheduled',
         publishAt: iso(result.publishDate),
         accounts: result.posts,
@@ -588,7 +655,7 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
 
 function createErrorMessage(error: string): string {
   switch (error) {
-    case 'no_integrations': return 'Pass at least one integrationId from list_social_accounts.';
+    case 'no_integrations': return 'Pass at least one integrationId from list_social_accounts, or a lane name.';
     case 'missing_content': return 'content (the caption) is required.';
     case 'invalid_publish_date': return 'publishAt could not be read as a time.';
     case 'media_urls_must_be_absolute': return 'Every media url must be an absolute http(s) URL (see upload_social_media).';

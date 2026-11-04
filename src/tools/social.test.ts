@@ -384,6 +384,107 @@ describe('upload_social_media', () => {
   });
 });
 
+describe('lanes block + create_social_post({ lane })', () => {
+  const VID = { type: 'video', url: 'https://cdn.example.com/a.mp4' };
+
+  async function setupJenny() {
+    addIntegration('yt-a', 'alice', 'youtube');
+    addIntegration('pi-a', 'alice', 'pinterest');
+    await call('tag_social_account', { integrationId: 'ig-a', tags: ['lane:jenny', 'primary'] });
+    await call('tag_social_account', { integrationId: 'yt-a', tags: ['lane:jenny'] });
+    await call('tag_social_account', { integrationId: 'tt-a', tags: ['lane:alice', 'primary'] });
+  }
+
+  test('list_social_accounts returns one lanes entry per lane plus untagged', async () => {
+    await setupJenny();
+    const { body } = await call('list_social_accounts');
+    expect(body.lanes.map((l: { lane: string }) => l.lane)).toEqual(['alice', 'jenny']);
+    expect(body.lanes[1]).toEqual({
+      lane: 'jenny',
+      primary: { integrationId: 'ig-a', provider: 'instagram', handle: 'ig-a_handle' },
+      members: [
+        { integrationId: 'ig-a', provider: 'instagram', handle: 'ig-a_handle', role: 'primary', status: 'active' },
+        { integrationId: 'yt-a', provider: 'youtube', handle: 'yt-a_handle', role: 'repost', status: 'active' },
+      ],
+      healthy: true,
+    });
+    expect(body.untagged).toEqual([{ integrationId: 'pi-a', provider: 'pinterest', handle: 'pi-a_handle', status: 'active' }]);
+  });
+
+  test('a lane whose primary needs a reconnect reports healthy:false', async () => {
+    await setupJenny();
+    db.run("UPDATE social_integrations SET refresh_needed = 1 WHERE id = 'ig-a'");
+    const { body } = await call('list_social_accounts');
+    const jenny = body.lanes.find((l: { lane: string }) => l.lane === 'jenny');
+    expect(jenny.healthy).toBe(false);
+    expect(jenny.members[0]).toMatchObject({ integrationId: 'ig-a', status: 'reconnect_needed' });
+  });
+
+  test('lane expands to every active member, primary first, and echoes lane + ids', async () => {
+    await setupJenny();
+    const { isError, body } = await call('create_social_post', { lane: 'Jenny', content: 'hi', media: [VID], publishAt: FUTURE });
+    expect(isError).toBe(false);
+    expect(body).toMatchObject({ lane: 'jenny', integrationIds: ['ig-a', 'yt-a'], accounts: 2, state: 'scheduled' });
+    const rows = db.query('SELECT integration_id, publish_date FROM social_posts WHERE group_id = ?').all(body.groupId) as Array<{ integration_id: string; publish_date: number }>;
+    expect(rows.map((r) => r.integration_id).sort()).toEqual(['ig-a', 'yt-a']);
+    expect(new Set(rows.map((r) => r.publish_date))).toEqual(new Set([FUTURE_S]));
+  });
+
+  test('inactive non-primary members are left out of the expansion', async () => {
+    await setupJenny();
+    db.run("UPDATE social_integrations SET disabled = 1 WHERE id = 'yt-a'");
+    const { body } = await call('create_social_post', { lane: 'jenny', content: 'hi', media: [VID], publishAt: FUTURE });
+    expect(body.integrationIds).toEqual(['ig-a']);
+  });
+
+  test('lane_not_found when nothing carries the tag (or the name is invalid)', async () => {
+    await setupJenny();
+    for (const lane of ['spoon', 'Bad Name!']) {
+      const { isError, body } = await call('create_social_post', { lane, content: 'hi', media: [VID] });
+      expect(isError).toBe(true);
+      expect(body.error).toBe('lane_not_found');
+    }
+    expect(db.query('SELECT COUNT(*) AS n FROM social_posts').get()).toEqual({ n: 0 });
+  });
+
+  test('lane_unhealthy when the primary is reconnect_needed or disabled; nothing is created', async () => {
+    await setupJenny();
+    for (const col of ['refresh_needed', 'disabled']) {
+      db.run(`UPDATE social_integrations SET ${col} = 1 WHERE id = 'ig-a'`);
+      const { isError, body } = await call('create_social_post', { lane: 'jenny', content: 'hi', media: [VID], publishAt: FUTURE });
+      expect(isError).toBe(true);
+      expect(body).toMatchObject({ error: 'lane_unhealthy', lane: 'jenny', integrationId: 'ig-a' });
+      db.run(`UPDATE social_integrations SET ${col} = 0 WHERE id = 'ig-a'`);
+    }
+    expect(db.query('SELECT COUNT(*) AS n FROM social_posts').get()).toEqual({ n: 0 });
+  });
+
+  test('exactly one of lane / integrationIds', async () => {
+    await setupJenny();
+    for (const args of [{}, { lane: 'jenny', integrationIds: ['ig-a'] }]) {
+      const { isError, body } = await call('create_social_post', { ...args, content: 'hi', media: [VID] });
+      expect(isError).toBe(true);
+      expect(body.error).toBe('invalid_target');
+    }
+  });
+
+  test('a Pinterest member without a board is skipped with its reason', async () => {
+    await setupJenny();
+    await call('tag_social_account', { integrationId: 'pi-a', tags: ['lane:jenny'] });
+    const { body } = await call('create_social_post', { lane: 'jenny', content: 'hi', media: [VID], publishAt: FUTURE });
+    expect(body.skipped.map((s: { provider: string }) => s.provider)).toEqual(['pinterest']);
+    expect(body.accounts).toBe(2);
+  });
+
+  test('list_social_posts carries account.lane', async () => {
+    await setupJenny();
+    await call('create_social_post', { lane: 'jenny', content: 'hi', media: [VID], publishAt: FUTURE });
+    const { body } = await call('list_social_posts', { from: '2026-11-01T00:00:00Z', to: '2026-11-10T00:00:00Z' });
+    const lanes = body.posts[0].posts.map((p: { account: { lane: string | null } }) => p.account.lane);
+    expect(lanes).toEqual(['jenny', 'jenny']);
+  });
+});
+
 describe('lanes: tag_social_account + list_social_accounts', () => {
   test('list exposes tags / lane / primary (untagged → [] / null / false)', async () => {
     await call('tag_social_account', { integrationId: 'tt-a', tags: ['lane:jenny', 'primary'] });

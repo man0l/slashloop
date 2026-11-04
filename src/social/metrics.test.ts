@@ -271,13 +271,13 @@ describe('platform-specific counters', () => {
 
 describe('calendar account', () => {
   test('each post carries the account it publishes to', async () => {
-    db.run("UPDATE social_integrations SET name = 'Slashloop', profile = 'slashloop', picture = 'https://cdn/p.jpg' WHERE id = 'yt'");
+    db.run("UPDATE social_integrations SET name = 'Slashloop', profile = 'slashloop', picture = 'https://cdn/p.jpg', tags = '[\"lane:jenny\",\"primary\"]' WHERE id = 'yt'");
     insertPublished('a', 'youtube', NOW, null);
     insertPublished('b', 'tiktok', NOW, null);
     db.run("DELETE FROM social_integrations WHERE id = 'tt'");
     const { groups } = await listCalendar(['o'], NOW - 1, NOW + 1);
     const byId = Object.fromEntries(groups[0].posts.map((p) => [p.id, p.account]));
-    expect(byId.a).toEqual({ id: 'yt', name: 'Slashloop', profile: 'slashloop', picture: 'https://cdn/p.jpg' });
-    expect(byId.b).toEqual({ id: 'tt', name: null, profile: null, picture: null });
+    expect(byId.a).toEqual({ id: 'yt', name: 'Slashloop', profile: 'slashloop', picture: 'https://cdn/p.jpg', lane: 'jenny' });
+    expect(byId.b).toEqual({ id: 'tt', name: null, profile: null, picture: null, lane: null });
   });
 });
