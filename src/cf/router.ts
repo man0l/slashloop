@@ -38,6 +38,7 @@ import { AUTHORIZATION_SERVER } from '../../remote/mcp-server.js';
 import { corsHeaders } from '../lib/cors.js';
 import { healthBody } from './health.js';
 import { mcpiVerifyResponse } from './mcpi-verify.js';
+import { allagentsProofResponse } from './allagents-proof.js';
 
 type HandlerModule = Record<string, unknown>;
 
@@ -47,7 +48,7 @@ interface Route {
   /** Static query params injected before dispatch (vercel.json dest params). */
   inject?: Record<string, string>;
   /** Non-module handlers (the pages set, re-implemented below). */
-  page?: 'well-known' | 'mcpi-verify' | 'login' | 'consent' | 'health' | '404';
+  page?: 'well-known' | 'mcpi-verify' | 'allagents-proof' | 'login' | 'consent' | 'health' | '404';
 }
 
 /** PUBLIC_URL wins, else the request origin — same rule as api/mcp.ts. */
@@ -77,6 +78,8 @@ function servePage(page: NonNullable<Route['page']>, url: URL): Response {
       return jsonResponse({ resource: `${origin}/mcp`, authorization_servers: [AUTHORIZATION_SERVER] });
     case 'mcpi-verify':
       return mcpiVerifyResponse();
+    case 'allagents-proof':
+      return allagentsProofResponse();
     case 'login':
       return htmlResponse(loginPage());
     case 'consent':
@@ -97,6 +100,7 @@ const ROUTES: Route[] = [
   // the defaultHandler): Phase 1 reuses the Supabase login page. Completing
   // the provider browser flow (parseAuthRequest → approve → grant) is later.
   { re: /^\/\.well-known\/mcpi-verify$/, page: 'mcpi-verify' },
+  { re: /^\/\.well-known\/allagents-proof\.txt$/, page: 'allagents-proof' },
   { re: /^\/authorize$/, page: 'login' },
   { re: /^\/oauth\/consent$/, page: 'consent' },
   { re: /^\/login$/, page: 'login' },
