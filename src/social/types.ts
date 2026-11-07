@@ -115,8 +115,22 @@ export interface ThumbnailContext {
 export const METRIC_KEYS = ['views', 'likes', 'comments', 'shares', 'saves', 'reposts', 'quotes', 'reach', 'clicks'] as const;
 export type MetricKey = (typeof METRIC_KEYS)[number];
 
+/** Watch-retention figures stored on social_posts (0030 migration). */
+export interface PostRetention {
+  engagedViews: number | null;
+  /** averageViewPercentage, 0-100. */
+  avgViewPercentage: number | null;
+  avgViewDurationSecs: number | null;
+  /** engagedViews / views, 0-1 — Studio's "stayed to watch". */
+  stayedToWatch: number | null;
+  /** audienceWatchRatio sampled across elapsedVideoTimeRatio 0→1. */
+  curve: number[] | null;
+}
+
 /** Counters a platform reported; omitted = not available for this post. */
 export type PostMetrics = Partial<Record<MetricKey, number>> & {
+  /** YouTube only: Analytics-API retention (yt-analytics.readonly); absent = not reported. */
+  retention?: PostRetention;
   /** Instagram only: 'ok', or why the insights call (views/reach/saves/shares) returned nothing. */
   insightsStatus?: string;
 };
@@ -206,6 +220,11 @@ export interface SocialPostRow {
   quotes?: number | null;
   reach?: number | null;
   clicks?: number | null;
+  engaged_views?: number | null;
+  avg_view_pct?: number | null;
+  avg_view_secs?: number | null;
+  stayed_to_watch?: number | null;
+  retention_curve?: string | null;
   metrics_synced_at?: number | null;
   metrics_next_at?: number | null;
   metrics_error?: string | null;
