@@ -19,6 +19,7 @@ import type {
   PendingCheck,
   PostDetails,
   PostMetrics,
+  PostRetention,
   PostResponse,
   ProviderId,
   ProviderPostContext,
@@ -31,6 +32,7 @@ const OAUTH = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN = 'https://oauth2.googleapis.com/token';
 const UPLOAD = 'https://www.googleapis.com/upload/youtube/v3/videos';
 const API = 'https://www.googleapis.com/youtube/v3';
+const ANALYTICS = 'https://youtubeanalytics.googleapis.com/v2/reports';
 const UPLOAD_THUMBNAIL = 'https://www.googleapis.com/upload/youtube/v3/thumbnails/set';
 
 const TITLE_MAX = 100;
@@ -44,7 +46,12 @@ export function youtubeTitleFromCaption(message: string): string {
 export class YouTubeProvider implements SocialProvider {
   identifier: ProviderId = 'youtube';
   name = 'YouTube';
-  scopes = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly'];
+  scopes = [
+    'https://www.googleapis.com/auth/youtube.upload',
+    'https://www.googleapis.com/auth/youtube.readonly',
+    // Retention (engagedViews, averageViewPercentage, audienceWatchRatio) — SLA-1403.
+    'https://www.googleapis.com/auth/yt-analytics.readonly',
+  ];
 
   /** 5MB = 20 × 256KB — Google requires chunk sizes aligned to 256KB. */
   static readonly CHUNK_SIZE = 5 * 1024 * 1024;
@@ -179,9 +186,55 @@ export class YouTubeProvider implements SocialProvider {
     }).then((r) => r.json())) as Record<string, any>;
     const stats = res?.items?.[0]?.statistics;
     if (!stats) throw new BadBodyError('YouTube returned no statistics for this video (deleted or private?)');
-    // Shares/saves exist only in the YouTube Analytics API (yt-analytics.readonly,
-    // not granted); the Data API's favoriteCount is deprecated and always 0.
-    return { views: count(stats.viewCount), likes: count(stats.likeCount), comments: count(stats.commentCount) };
+    // The Data API's favoriteCount is deprecated and always 0.
+    const base: PostMetrics = { views: count(stats.viewCount), likes: count(stats.likeCount), comments: count(stats.commentCount) };
+    // Retention needs yt-analytics.readonly; a channel connected before that
+    // scope existed answers 403 until reconnected — keep the Data API counters.
+    try {
+      const retention = await this.fetchRetention(ctx, base.views);
+      return { ...base, ...(retention ? { retention } : {}), insightsStatus: 'ok' };
+    } catch (err) {
+      const msg = String((err as Error).message ?? '');
+      const denied = /\b(403|401)\b|insufficient|forbidden/i.test(msg);
+      return { ...base, insightsStatus: denied ? 'missing_permission' : 'analytics_error' };
+    }
+  }
+
+  /** youtubeAnalytics.reports.query for one video: lifetime totals + the
+   *  audience-retention curve. engagedViews is Studio's "stayed to watch"
+   *  numerator (views that did not swipe away). */
+  private async fetchRetention(ctx: MetricsContext, dataApiViews: number | undefined): Promise<PostRetention | undefined> {
+    const startDate = ctx.publishedAt ? new Date(ctx.publishedAt * 1000).toISOString().slice(0, 10) : '2005-02-14';
+    const query = (params: Record<string, string>) =>
+      providerFetch(`${ANALYTICS}?${new URLSearchParams({ ids: 'channel==MINE', filters: `video==${ctx.releaseId}`, startDate, endDate: new Date().toISOString().slice(0, 10), ...params })}`, {
+        headers: { Authorization: `Bearer ${ctx.token}` },
+        classify: this.classify,
+      }).then((r) => r.json() as Promise<Record<string, any>>);
+
+    const totals = await query({ metrics: 'views,engagedViews,averageViewPercentage,averageViewDuration' });
+    const row = totals?.rows?.[0];
+    if (!Array.isArray(row)) return undefined; // too fresh — Analytics lags the Data API by a day or so
+    const cols: string[] = (totals.columnHeaders ?? []).map((h: { name: string }) => h.name);
+    const at = (name: string) => count(row[cols.indexOf(name)]);
+    const views = at('views') ?? dataApiViews;
+    const engaged = at('engagedViews');
+
+    let curve: number[] | null = null;
+    try {
+      const c = await query({ dimensions: 'elapsedVideoTimeRatio', metrics: 'audienceWatchRatio', sort: 'elapsedVideoTimeRatio' });
+      const vals = (c?.rows as unknown[][] | undefined)?.map((r) => count(r[1]));
+      if (vals?.length && vals.every((v): v is number => v !== undefined)) curve = vals.map((v) => Math.round(v * 1000) / 1000);
+    } catch {
+      /* the curve is a bonus; totals are what matter */
+    }
+
+    return {
+      engagedViews: engaged ?? null,
+      avgViewPercentage: at('averageViewPercentage') ?? null,
+      avgViewDurationSecs: at('averageViewDuration') ?? null,
+      stayedToWatch: engaged !== undefined && views ? Math.min(1, engaged / views) : null,
+      curve,
+    };
   }
 
   async checkPostStatus(ctx: ProviderPostContext): Promise<PendingCheck> {

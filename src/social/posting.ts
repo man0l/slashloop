@@ -31,7 +31,16 @@ export interface CalendarGroup {
     error: string | null;
     needsReconnect?: boolean;
     /** Published posts only, once synced (src/social/metrics.ts). */
-    metrics?: Record<MetricKey, number | null> & { syncedAt: number };
+    metrics?: Record<MetricKey, number | null> & {
+      syncedAt: number;
+      /** YouTube Analytics retention; null until the channel is connected with yt-analytics.readonly. */
+      engagedViews?: number | null;
+      avgViewPercentage?: number | null;
+      avgViewDurationSecs?: number | null;
+      /** engagedViews / views as 0-1 — Studio's "stayed to watch". */
+      stayedToWatch?: number | null;
+      retentionCurve?: number[] | null;
+    };
   }>;
 }
 
@@ -71,6 +80,15 @@ export function groupRows(rows: SocialPostRow[]): CalendarGroup[] {
             metrics: {
               ...(Object.fromEntries(METRIC_KEYS.map((k) => [k, row[k] ?? null])) as Record<MetricKey, number | null>),
               syncedAt: row.metrics_synced_at,
+              ...(row.stayed_to_watch != null || row.engaged_views != null
+                ? {
+                    engagedViews: row.engaged_views ?? null,
+                    avgViewPercentage: row.avg_view_pct ?? null,
+                    avgViewDurationSecs: row.avg_view_secs ?? null,
+                    stayedToWatch: row.stayed_to_watch ?? null,
+                    retentionCurve: parseCurve(row.retention_curve),
+                  }
+                : {}),
             },
           }
         : {}),
@@ -247,4 +265,14 @@ export function scheduleVisible(owners: string[], groupId: string, publishDate: 
 export async function deleteVisible(owners: string[], groupId: string): Promise<{ deleted: number; processing: number; mismatched: number }> {
   const { processing, count, mismatched } = await applyToOwners(owners, 'deleted', (ownerId) => socialStore.deleteGroup(ownerId, groupId));
   return { deleted: count, processing, mismatched };
+}
+
+function parseCurve(raw: string | null | undefined): number[] | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
 }

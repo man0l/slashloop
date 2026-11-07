@@ -85,7 +85,7 @@ export async function socialMetricsTick(cfg: SocialConfig, options: MetricsTickO
         report.stale++;
         continue;
       }
-      updates.push({ id: post.id, metrics, nextAt });
+      updates.push({ id: post.id, metrics, ...(raw.retention ? { retention: raw.retention } : {}), nextAt });
       report.synced++;
     } catch (err) {
       // Invocation fetch cap: every later call fails too — the rest stay due.
