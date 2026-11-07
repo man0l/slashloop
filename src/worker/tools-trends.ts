@@ -38,12 +38,15 @@ const BACKOFF_CAP_MS = 8_000;
  * Run-level deadlines, measured from the start of runTrends, under the 300s
  * job timeout (jobTimeoutMs('tools-trends')). No list attempt starts after
  * the list deadline; one in flight can still take LIST_TIMEOUT_MS (30s). No
- * tag sample starts after the sample deadline. A degraded Creative Center
- * then ends the run as failed:source instead of a job-level timeout that the
- * queue re-runs (SLA-1162).
+ * tag sample starts after the sample deadline. A Creative Center too slow to
+ * read half the lists (or the overall lists) ends the run as failed:source
+ * instead of a job-level timeout that the queue re-runs (SLA-1162); a slow one
+ * that got that far ships the partial ranking (SLA-1364).
  */
 export const TRENDS_LIST_DEADLINE_MS = 150_000;
 export const TRENDS_SAMPLE_DEADLINE_MS = 210_000;
+/** At the list deadline, ship a partial ranking only if at least this share of the lists was read. */
+const MIN_PARTIAL_LIST_SHARE = 0.5;
 const DESC_MAX_CHARS = 300;
 
 export interface TrendsPayload {
@@ -259,7 +262,7 @@ interface ListTally {
 }
 
 /** The one line a run writes about its Creative Center lists, in place of a warn per failed category. */
-function logListSummary(tally: ListTally, outcome: 'done' | 'breaker' | 'deadline' | 'overall-failed' | 'budget'): void {
+function logListSummary(tally: ListTally, outcome: 'done' | 'partial' | 'breaker' | 'deadline' | 'overall-failed' | 'budget'): void {
   const skipped = tally.total - tally.ok - tally.failed;
   const line =
     `[tools-trends] lists ${outcome}: ok=${tally.ok} failed=${tally.failed} skipped=${skipped} of ${tally.total}, last failure: ${tally.lastStatus}`;
@@ -292,41 +295,54 @@ export async function runTrends(payload: TrendsPayload, deps: TrendsDeps): Promi
     total: payload.periods.length * (CC_INDUSTRIES.length + 1),
     lastStatus: 'none',
   };
-  for (const period of payload.periods) {
-    const scopes: Array<{ scope: string; id: string | null }> = [
-      { scope: 'overall', id: null },
-      ...CC_INDUSTRIES.map((i) => ({ scope: i.name, id: i.id })),
-    ];
-    for (const { scope, id } of scopes) {
-      if (deps.now().getTime() >= listDeadline) {
-        logListSummary(tally, 'deadline');
+  // Every period's overall list first, then each industry for all periods, so a slow
+  // Creative Center run always has the core ranking and each niche has both periods or neither.
+  const scopes: Array<{ period: number; scope: string; id: string | null }> = [
+    ...payload.periods.map((period) => ({ period, scope: 'overall', id: null })),
+    ...CC_INDUSTRIES.flatMap((i) => payload.periods.map((period) => ({ period, scope: i.name, id: i.id }))),
+  ];
+  let overallDone = 0;
+  let passedListDeadline = false;
+  for (const { period, scope, id } of scopes) {
+    if (deps.now().getTime() >= listDeadline) {
+      passedListDeadline = true;
+      break;
+    }
+    try {
+      results.push({ period, scope, items: await fetchListOnce(deps, period, id, listDeadline) });
+      tally.ok++;
+      if (id === null) overallDone++;
+      consecutiveListFailures = 0;
+    } catch (err) {
+      consecutiveListFailures++;
+      tally.failed++;
+      tally.lastStatus = `${scope}/${period}d ${(err as Error).message}`;
+      if (errorCode(err) === 'budget') {
+        logListSummary(tally, 'budget');
+        return { status: 'failed', code: 'budget' };
+      }
+      if (id === null) {
+        logListSummary(tally, 'overall-failed');
         return { status: 'failed', code: 'source' };
       }
-      try {
-        results.push({ period, scope, items: await fetchListOnce(deps, period, id, listDeadline) });
-        tally.ok++;
-        consecutiveListFailures = 0;
-      } catch (err) {
-        consecutiveListFailures++;
-        tally.failed++;
-        tally.lastStatus = `${scope}/${period}d ${(err as Error).message}`;
-        if (errorCode(err) === 'budget') {
-          logListSummary(tally, 'budget');
-          return { status: 'failed', code: 'budget' };
-        }
-        if (id === null) {
-          logListSummary(tally, 'overall-failed');
-          return { status: 'failed', code: 'source' };
-        }
-        // Breaker: the source keeps refusing, so stop here and let the next cron run try again.
-        if (consecutiveListFailures >= MAX_CONSECUTIVE_LIST_FAILURES) {
-          logListSummary(tally, 'breaker');
-          return { status: 'failed', code: 'source' };
-        }
+      // Breaker: the source keeps refusing, so stop here and let the next cron run try again.
+      if (consecutiveListFailures >= MAX_CONSECUTIVE_LIST_FAILURES) {
+        logListSummary(tally, 'breaker');
+        return { status: 'failed', code: 'source' };
       }
     }
   }
-  logListSummary(tally, 'done');
+  // A slow but answering source: with the overall lists in and most industries read, ship the
+  // ranking (skipped industries just have fewer tags) rather than leave the pages on a stale snapshot.
+  if (passedListDeadline) {
+    const enough = overallDone === payload.periods.length && tally.ok >= tally.total * MIN_PARTIAL_LIST_SHARE;
+    if (!enough) {
+      logListSummary(tally, 'deadline');
+      return { status: 'failed', code: 'source' };
+    }
+    logListSummary(tally, 'partial');
+  }
+  if (!passedListDeadline) logListSummary(tally, 'done');
   const hashtags = mapHashtagLists(results, payload.periods);
   if (!hashtags.length) return { status: 'failed', code: 'source' };
 
