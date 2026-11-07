@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 
 mock.module('../db.js', () => ({
   db: {},
@@ -384,7 +384,7 @@ describe('runTrends', () => {
       expect(d.log.some((l) => l.startsWith('resolve:'))).toBe(false);
       const total = 2 * (CC_INDUSTRIES.length + 1);
       expect(lines(warn)).toEqual([
-        `[tools-trends] lists breaker: ok=1 failed=3 skipped=${total - 4} of ${total}, last failure: ${CC_INDUSTRIES[2]!.name}/7d creative center http 503`,
+        `[tools-trends] lists breaker: ok=2 failed=3 skipped=${total - 5} of ${total}, last failure: ${CC_INDUSTRIES[1]!.name}/7d creative center http 503`,
       ]);
     });
 
@@ -468,6 +468,36 @@ describe('runTrends', () => {
       expect(await runTrends(payload, d)).toEqual({ status: 'failed', code: 'source' });
       expect(elapsed()).toBeGreaterThanOrEqual(TRENDS_LIST_DEADLINE_MS);
       expect(elapsed()).toBeLessThanOrEqual(TRENDS_LIST_DEADLINE_MS + LIST_TIMEOUT_MS);
+      expect(d.log.some((l) => l.startsWith('resolve:'))).toBe(false);
+    });
+
+    test('slow lists that pass the deadline with the overall lists and most industries read ship the partial ranking', async () => {
+      const base = trendsDeps();
+      const warn = spyOn(console, 'warn').mockImplementation(() => {});
+      const fetched: string[] = [];
+      const { d, elapsed } = clocked((clock) => ({
+        fetchHashtagList: async (p, i) => {
+          clock.t += 4_500;
+          fetched.push(`${p}:${i}`);
+          return base.fetchHashtagList(p, i);
+        },
+      }));
+      const o = await runTrends(payload, d);
+      expect(o.status).toBe('done');
+      expect(fetched.slice(0, 2)).toEqual(['7:null', '30:null']);
+      expect(fetched.length).toBeLessThan(2 * (CC_INDUSTRIES.length + 1));
+      expect(fetched.length).toBeGreaterThanOrEqual(2 * (CC_INDUSTRIES.length + 1) / 2);
+      expect(warn.mock.calls.some((c) => /lists partial: ok=\d+ failed=0 skipped=\d+ of 44/.test(String(c[0])))).toBe(true);
+      expect(elapsed()).toBeLessThan(JOB_TIMEOUT_MS);
+      warn.mockRestore();
+    });
+
+    test('slow lists that pass the deadline before half the lists are read still fail source', async () => {
+      const base = trendsDeps();
+      const { d } = clocked((clock) => ({
+        fetchHashtagList: async (p, i) => { clock.t += 10_000; return base.fetchHashtagList(p, i); },
+      }));
+      expect(await runTrends(payload, d)).toEqual({ status: 'failed', code: 'source' });
       expect(d.log.some((l) => l.startsWith('resolve:'))).toBe(false);
     });
 
