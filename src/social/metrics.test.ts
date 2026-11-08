@@ -38,6 +38,7 @@ beforeEach(() => {
   // The real migration, so the test also proves the SQL applies.
   db.exec(readFileSync(new URL('../../prisma/d1-migrations/0026_social_post_metrics.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../../prisma/d1-migrations/0027_social_post_more_metrics.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../../prisma/d1-migrations/0030_social_post_retention.sql', import.meta.url), 'utf8'));
   db.run(
     `INSERT INTO social_integrations (id, owner_id, provider, internal_id, token, refresh_token, token_expires_at, refresh_needed, disabled, created_at, updated_at)
      VALUES ('yt', 'o', 'youtube', 'c', 'old', 'r', ${NOW + 3600}, 0, 0, 0, 0), ('tt', 'o', 'tiktok', 't', 'x', 'r', ${NOW + 3600}, 0, 0, 0, 0)`,
@@ -112,6 +113,52 @@ describe('socialMetricsTick', () => {
       expect(group.posts[0].metrics).toEqual({ views: 1234, likes: 56, comments: 7, shares: null, saves: null, reposts: null, quotes: null, reach: null, clicks: null, syncedAt: NOW });
     } finally {
       fetchMetrics.mockRestore();
+    }
+  });
+
+  test('stores YouTube retention and surfaces stayedToWatch', async () => {
+    insertPublished('r', 'youtube', NOW - 2 * H, NOW - 1);
+    const fetchMetrics = spyOn(YouTubeProvider.prototype, 'fetchMetrics').mockResolvedValue({
+      views: 200,
+      retention: { engagedViews: 123, avgViewPercentage: 80.5, avgViewDurationSecs: 12.3, stayedToWatch: 0.615, curve: [1, 0.8, 0.5] },
+    });
+    try {
+      await socialMetricsTick({}, { nowSeconds: NOW, limit: 10 });
+      expect(row('r')).toMatchObject({ engaged_views: 123, avg_view_pct: 80.5, avg_view_secs: 12.3, stayed_to_watch: 0.615, retention_curve: '[1,0.8,0.5]' });
+      expect(groupRows([row('r')])[0].posts[0].metrics).toMatchObject({ engagedViews: 123, stayedToWatch: 0.615, retentionCurve: [1, 0.8, 0.5] });
+      // A later sync without retention (scope missing) keeps what was stored.
+      db.run('UPDATE social_posts SET metrics_next_at = ? WHERE id = ?', [NOW - 1, 'r']);
+      fetchMetrics.mockResolvedValue({ views: 210 });
+      await socialMetricsTick({}, { nowSeconds: NOW, limit: 10 });
+      expect(row('r')).toMatchObject({ views: 210, stayed_to_watch: 0.615 });
+    } finally {
+      fetchMetrics.mockRestore();
+    }
+  });
+
+  test('YouTube fetchMetrics computes stayedToWatch from the Analytics API and survives a missing scope', async () => {
+    const realFetch = globalThis.fetch;
+    let denied = false;
+    globalThis.fetch = (async (url: string) => {
+      const u = String(url);
+      if (u.includes('/youtube/v3/videos')) return Response.json({ items: [{ statistics: { viewCount: '200', likeCount: '5', commentCount: '1' } }] });
+      if (denied) return new Response(JSON.stringify({ error: { message: 'Insufficient Permission' } }), { status: 403 });
+      if (u.includes('elapsedVideoTimeRatio')) return Response.json({ rows: [[0.01, 1], [0.5, 0.6]] });
+      return Response.json({
+        columnHeaders: [{ name: 'views' }, { name: 'engagedViews' }, { name: 'averageViewPercentage' }, { name: 'averageViewDuration' }],
+        rows: [[200, 123, 80.5, 12.3]],
+      });
+    }) as never;
+    try {
+      const ctx = { token: 't', releaseId: 'vid', releaseUrl: null, integration: { internalId: 'c', profile: '' }, publishedAt: NOW };
+      const ok = await new YouTubeProvider().fetchMetrics(ctx);
+      expect(ok.retention).toEqual({ engagedViews: 123, avgViewPercentage: 80.5, avgViewDurationSecs: 12.3, stayedToWatch: 0.615, curve: [1, 0.6] });
+      expect(ok.insightsStatus).toBe('ok');
+      denied = true;
+      const no = await new YouTubeProvider().fetchMetrics(ctx);
+      expect(no).toEqual({ views: 200, likes: 5, comments: 1, insightsStatus: 'missing_permission' });
+    } finally {
+      globalThis.fetch = realFetch;
     }
   });
 

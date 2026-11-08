@@ -6,7 +6,7 @@
 
 import { rawBatch, type RawStatement } from '../store.js';
 import { METRIC_KEYS } from './types.js';
-import type { MetricKey, ProviderId, SocialIntegrationRow, SocialPostRow, SocialRotationRow } from './types.js';
+import type { MetricKey, PostRetention, ProviderId, SocialIntegrationRow, SocialPostRow, SocialRotationRow } from './types.js';
 
 function rows<T>(result: unknown[][]): T[] {
   return (result[0] ?? []) as T[];
@@ -545,6 +545,8 @@ export interface MetricsUpdate {
   id: string;
   /** Present = a successful sync (NULL counters = not reported). */
   metrics?: Record<MetricKey, number | null>;
+  /** Present = YouTube Analytics answered; absent keeps the stored retention. */
+  retention?: PostRetention;
   error?: string | null;
   nextAt: number | null;
 }
@@ -557,8 +559,21 @@ export async function saveMetrics(updates: MetricsUpdate[], now = nowSeconds()):
       u.metrics
         ? {
             sql: `UPDATE social_posts SET ${METRIC_KEYS.map((k, i) => `${k} = ?${i + 4}`).join(', ')}, metrics_synced_at = ?2,
-                    metrics_next_at = ?3, metrics_error = NULL WHERE id = ?1`,
-            params: [u.id, now, u.nextAt, ...METRIC_KEYS.map((k) => u.metrics![k])],
+                    metrics_next_at = ?3, metrics_error = NULL${
+                      u.retention
+                        ? `, engaged_views = ?${METRIC_KEYS.length + 4}, avg_view_pct = ?${METRIC_KEYS.length + 5}, avg_view_secs = ?${METRIC_KEYS.length + 6},
+                    stayed_to_watch = ?${METRIC_KEYS.length + 7}, retention_curve = ?${METRIC_KEYS.length + 8}`
+                        : ''
+                    } WHERE id = ?1`,
+            params: [
+              u.id,
+              now,
+              u.nextAt,
+              ...METRIC_KEYS.map((k) => u.metrics![k]),
+              ...(u.retention
+                ? [u.retention.engagedViews, u.retention.avgViewPercentage, u.retention.avgViewDurationSecs, u.retention.stayedToWatch, u.retention.curve ? JSON.stringify(u.retention.curve) : null]
+                : []),
+            ],
           }
         : {
             sql: 'UPDATE social_posts SET metrics_next_at = ?2, metrics_error = ?3 WHERE id = ?1',
