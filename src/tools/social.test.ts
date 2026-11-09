@@ -87,7 +87,7 @@ describe('registration', () => {
     const client = new Client({ name: 'c', version: '0' });
     await Promise.all([server.connect(a), client.connect(b)]);
     const names = (await client.listTools()).tools.map((t) => t.name);
-    for (const n of ['list_social_accounts', 'upload_social_media', 'create_social_post', 'list_social_posts', 'reschedule_social_post', 'delete_social_post', 'set_social_post_thumbnail', 'tag_social_account', 'set_rotation', 'plan_rotation']) {
+    for (const n of ['list_social_accounts', 'upload_social_media', 'create_social_post', 'list_social_posts', 'get_social_stats', 'reschedule_social_post', 'delete_social_post', 'set_social_post_thumbnail', 'tag_social_account', 'set_rotation', 'plan_rotation']) {
       expect(names).toContain(n);
     }
     const create = (await client.listTools()).tools.find((t) => t.name === 'create_social_post')!;
@@ -207,6 +207,34 @@ describe('create_social_post', () => {
     const { body } = await call('create_social_post', { integrationIds: ['tt-a'], content: 'x', media: [IMG], publishAt: FUTURE, stripMetadata: true });
     expect(rowsOf(body.groupId)[0]!.state).toBe('SCRUB');
     expect((db.query('SELECT media FROM social_posts WHERE group_id = ?').get(body.groupId) as { media: string }).media).toContain('"scrub":true');
+  });
+});
+
+describe('get_social_stats', () => {
+  test('returns per-account buckets for the caller, defaulting to the last 30 days', async () => {
+    for (const f of ['0026_social_post_metrics.sql', '0027_social_post_more_metrics.sql', '0031_social_post_metrics_daily.sql']) {
+      db.exec(readFileSync(new URL(`../../prisma/d1-migrations/${f}`, import.meta.url), 'utf8'));
+    }
+    db.run(`INSERT INTO social_posts (id, group_id, owner_id, integration_id, provider, state, publish_date, content, attempts, created_at, updated_at, published_at, views)
+            VALUES ('p', 'g', 'alice', 'tt-a', 'tiktok', 'PUBLISHED', 0, 'x', 0, 0, 0, ${Date.parse('2026-10-30T10:00:00Z') / 1000}, 42),
+                   ('pb', 'g', 'bob', 'tt-b', 'tiktok', 'PUBLISHED', 0, 'x', 0, 0, 0, ${Date.parse('2026-10-30T10:00:00Z') / 1000}, 999)`);
+    const { isError, body } = await call('get_social_stats', { mode: 'posted', bucket: 'week' });
+    expect(isError).toBe(false);
+    expect(body).toMatchObject({ mode: 'posted', bucket: 'week', trackingSince: null });
+    expect(body.accounts.map((a: { id: string }) => a.id).sort()).toEqual(['ig-a', 'tt-a']);
+    expect(body.buckets.find((b: { start: string }) => b.start === '2026-10-26').byAccount).toEqual({ 'tt-a': 42, 'ig-a': 0 });
+
+    const filtered = await call('get_social_stats', { accounts: ['ig-a'], from: '2026-10-28', to: '2026-11-01' });
+    expect(filtered.body.accounts.map((a: { id: string }) => a.id)).toEqual(['ig-a']);
+    expect(filtered.body.buckets).toHaveLength(5);
+  });
+
+  test('rejects a range over 400 days and refuses without a caller', async () => {
+    const tooBig = await call('get_social_stats', { from: '2025-01-01', to: '2026-11-01' });
+    expect(tooBig.isError).toBe(true);
+    expect(tooBig.body.error).toBe('range_too_large');
+    me = null;
+    expect((await call('get_social_stats')).isError).toBe(true);
   });
 });
 

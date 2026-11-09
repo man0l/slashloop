@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // MCP Tools: social post scheduler — list_social_accounts, upload_social_media,
-// create_social_post, list_social_posts, reschedule_social_post,
+// create_social_post, list_social_posts, get_social_stats, reschedule_social_post,
 // delete_social_post, plus the lane/rotation planner: tag_social_account,
 // set_rotation, plan_rotation.
 //
@@ -45,6 +45,7 @@ import {
 import { UploadError, storeSocialMediaFromUrl, type StoredMedia } from '../social/media-upload.js';
 import { siteAwareFetch } from '../lib/site-fetch.js';
 import { setPostThumbnail, type ThumbnailTarget } from '../social/thumbnail.js';
+import { STATS_BUCKETS, STATS_MODES, getSocialStats, parseStatsQuery } from '../social/stats.js';
 import type { SocialIntegrationRow, SocialRotationRow } from '../social/types.js';
 
 export interface SocialToolDeps {
@@ -54,6 +55,7 @@ export interface SocialToolDeps {
   listIntegrations: (owners: string[], healthyOnly: boolean) => ReturnType<typeof visibleIntegrations>;
   createPost: (userId: string, owners: () => Promise<string[]>, body: CreatePostInput) => Promise<CreatePostResult>;
   listCalendar: typeof listCalendar;
+  getStats: typeof getSocialStats;
   reschedule: typeof rescheduleVisible;
   schedule: typeof scheduleVisible;
   deleteGroup: typeof deleteVisible;
@@ -77,6 +79,7 @@ export const defaultSocialDeps: SocialToolDeps = {
   listIntegrations: visibleIntegrations,
   createPost,
   listCalendar,
+  getStats: getSocialStats,
   reschedule: rescheduleVisible,
   schedule: scheduleVisible,
   deleteGroup: deleteVisible,
@@ -510,6 +513,29 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
           ? 'Saved as a draft. Nothing will publish until it is scheduled (reschedule_social_post with schedule=true).'
           : `Scheduled for ${iso(result.publishDate)}.`,
       });
+    }),
+  );
+
+  // ---- get_social_stats ----
+  server.tool(
+    'get_social_stats',
+    'Views per connected account over time, bucketed by day, week (Monday start) or month (UTC). '
+      + 'mode "gained" (default) = views each account gained in the bucket, from daily snapshots (tracking starts at `trackingSince`; the first snapshot of a post counts only if it was published that day); '
+      + 'mode "posted" = current views of the posts published in the bucket. from/to are inclusive YYYY-MM-DD dates, at most 400 days apart (default: last 30 days). '
+      + 'accounts filters by integration id (list_social_accounts). Includes teammates\' accounts shared through a workspace. Free.',
+    {
+      from: z.string().optional().describe('First day, YYYY-MM-DD (UTC). Default: 29 days before `to`.'),
+      to: z.string().optional().describe('Last day, inclusive, YYYY-MM-DD (UTC). Default: today.'),
+      bucket: z.enum(STATS_BUCKETS).optional().describe('day (default), week (starts Monday) or month (starts on the 1st).'),
+      mode: z.enum(STATS_MODES).optional().describe('gained (default) or posted.'),
+      accounts: z.array(z.string().min(1)).optional().describe('Integration ids to include. Default: every account.'),
+    },
+    { readOnlyHint: true },
+    ({ from, to, bucket, mode, accounts }) => withCaller(async ({ userId, email }) => {
+      const parsed = parseStatsQuery({ from, to, bucket, mode, accounts: accounts?.join(',') }, d.now());
+      if (!parsed.ok) return text({ error: parsed.error, message: parsed.message }, true);
+      const owners = await d.resolveOwners(userId, email);
+      return text(await d.getStats(owners, parsed.query));
     }),
   );
 

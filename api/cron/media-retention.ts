@@ -12,6 +12,7 @@
 // automatically when that env var is set on the project.
 
 import { db } from '../../src/db.js';
+import { carryForwardMetrics } from '../../src/social/stats.js';
 import { dbDialect, rawBatch, type RawStatement } from '../../src/store.js';
 import { deleteObjects, isStorageEnabled, thumbBucket, mediaBucket } from '../../src/lib/storage.js';
 import {
@@ -317,12 +318,21 @@ export async function GET(request: Request): Promise<Response> {
   const auth = request.headers.get('authorization') ?? '';
   if (auth !== `Bearer ${secret}`) return json(401, { error: 'unauthorized' });
 
-  if (!isStorageEnabled()) {
-    return json(200, { skipped: 'storage_disabled' });
-  }
-
   const started = Date.now();
   const errors: string[] = [];
+
+  // Stats snapshots (SLA-1439) are independent of media storage, so they run
+  // before the storage_disabled bail-out; a failure only reports, never stops the sweeps.
+  let socialMetrics = { carried: 0 };
+  try {
+    socialMetrics = await carryForwardMetrics(started);
+  } catch (err) {
+    errors.push(`socialMetrics: ${(err as Error).message}`);
+  }
+
+  if (!isStorageEnabled()) {
+    return json(errors.length > 0 ? 500 : 200, { skipped: 'storage_disabled', socialMetrics, errors });
+  }
 
   let thumbs = { scanned: 0, deleted: 0 };
   let media = { scanned: 0, deleted: 0 };
@@ -360,6 +370,7 @@ export async function GET(request: Request): Promise<Response> {
     media,
     listings,
     stream,
+    socialMetrics,
     errors,
     // A full batch means there is more to do — the next run picks it up.
     moreToSweep: thumbs.scanned >= BATCH_LIMIT || media.scanned >= BATCH_LIMIT || listings.scanned >= BATCH_LIMIT,
