@@ -102,6 +102,7 @@ export const TOOL_ANNOTATION_ROWS = {
   upload_social_media: ['Upload Social Media', F, F, F, T], // fetches a public URL into storage
   create_social_post: ['Create Social Post', F, F, F, T], // saves a draft or schedules a public post on connected accounts
   list_social_posts: ['List Social Posts', T, F, T, F], // DB read
+  get_social_stats: ['Get Social Stats', T, F, T, F], // DB read
   reschedule_social_post: ['Reschedule Social Post', F, F, T, T], // changes when (or whether) a post goes live on the platforms
   set_social_post_thumbnail: ['Set Social Post Thumbnail', F, F, T, T], // replaces the cover on a published YouTube video or stores it for a queued post
   delete_social_post: ['Delete Social Post', F, T, T, F], // deletes draft or scheduled groups, irreversible

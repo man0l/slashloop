@@ -39,6 +39,7 @@ beforeEach(() => {
   db.exec(readFileSync(new URL('../../prisma/d1-migrations/0026_social_post_metrics.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../../prisma/d1-migrations/0027_social_post_more_metrics.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../../prisma/d1-migrations/0030_social_post_retention.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../../prisma/d1-migrations/0031_social_post_metrics_daily.sql', import.meta.url), 'utf8'));
   db.run(
     `INSERT INTO social_integrations (id, owner_id, provider, internal_id, token, refresh_token, token_expires_at, refresh_needed, disabled, created_at, updated_at)
      VALUES ('yt', 'o', 'youtube', 'c', 'old', 'r', ${NOW + 3600}, 0, 0, 0, 0), ('tt', 'o', 'tiktok', 't', 'x', 'r', ${NOW + 3600}, 0, 0, 0, 0)`,

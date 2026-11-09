@@ -554,8 +554,9 @@ export interface MetricsUpdate {
 /** One batch for the whole tick. A failed sync keeps the last counters. */
 export async function saveMetrics(updates: MetricsUpdate[], now = nowSeconds()): Promise<void> {
   if (!updates.length) return;
-  await rawBatch(
-    updates.map((u) =>
+  const statements: RawStatement[] = [];
+  for (const u of updates) {
+    statements.push(
       u.metrics
         ? {
             sql: `UPDATE social_posts SET ${METRIC_KEYS.map((k, i) => `${k} = ?${i + 4}`).join(', ')}, metrics_synced_at = ?2,
@@ -579,8 +580,20 @@ export async function saveMetrics(updates: MetricsUpdate[], now = nowSeconds()):
             sql: 'UPDATE social_posts SET metrics_next_at = ?2, metrics_error = ?3 WHERE id = ?1',
             params: [u.id, u.nextAt, (u.error ?? '').slice(0, 300) || null],
           },
-    ),
-  );
+    );
+    // Today's snapshot for the stats chart; a later sync the same UTC day overwrites it.
+    if (u.metrics) {
+      const m = u.metrics;
+      statements.push({
+        sql: `INSERT INTO social_post_metrics_daily (post_id, day, views, likes, comments, shares, saves, reach, synced_at)
+              VALUES (?1, date(?2, 'unixepoch'), ?3, ?4, ?5, ?6, ?7, ?8, ?2)
+              ON CONFLICT(post_id, day) DO UPDATE SET views = excluded.views, likes = excluded.likes, comments = excluded.comments,
+                shares = excluded.shares, saves = excluded.saves, reach = excluded.reach, synced_at = excluded.synced_at`,
+        params: [u.id, now, m.views, m.likes, m.comments, m.shares, m.saves, m.reach],
+      });
+    }
+  }
+  await rawBatch(statements);
 }
 
 /** Account-level result of the last insights call (Instagram). */

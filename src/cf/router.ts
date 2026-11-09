@@ -26,6 +26,7 @@ import * as cronSocial from '../../api/cron/social.js';
 import * as socialIntegrations from '../../api/social.js';
 import * as socialCallback from '../../api/social-callback.js';
 import * as socialPosts from '../../api/social-posts.js';
+import * as socialStats from '../../api/social-stats.js';
 import * as socialUpload from '../../api/social-upload.js';
 import * as internalRawBatch from './internal.js';
 import * as mediaRoutes from './media-routes.js';
@@ -144,6 +145,7 @@ const ROUTES: Route[] = [
   { re: /^\/api\/social\/upload$/, mod: socialUpload },
   { re: /^\/api\/social\/callback\/([^/]+?)$/, mod: socialCallback, inject: { callback: '$1' } },
   { re: /^\/api\/social\/posts$/, mod: socialPosts },
+  { re: /^\/api\/social\/stats$/, mod: socialStats },
   { re: /^\/api\/digest-settings$/, mod: digestSettings },
   { re: /^\/api\/jobs\/video-recreate$/, mod: videoRecreateCron },
   { re: /^\/api\/stripe\/webhook$/, mod: stripeWebhook },
