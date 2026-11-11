@@ -26,7 +26,8 @@
         "y": 0.45
       }
     },
-    "cropBottom": 0.09
+    "cropBottom": 0.09,
+    "morphPrompt": "Edit this photo of a man. Give him {shape} This must be an obvious, dramatic change to the outline of his face. Everything else must stay identical so the two photos line up when overlaid: same man (same eyes, eyebrows, nose, mouth, hair, skin tone, neutral expression), same suit, shirt and tie, same head position, same head size, same camera framing and crop, same lighting, same plain sage-green background. Photorealistic studio portrait."
   },
   "shapes": [
     {
@@ -34,42 +35,48 @@
       "name": "Oval",
       "celeb": "Mark Zuckerberg",
       "role": "Tech founder",
-      "line": "Oval. Slightly longer than wide, with a softly rounded jaw. The most balanced shape."
+      "line": "Oval. Slightly longer than wide, with a softly rounded jaw. The most balanced shape.",
+      "morph": "a clearly OVAL face shape: the face slightly longer than it is wide, smooth balanced curves, gently rounded jaw, chin a little narrower than the forehead, no sharp angles"
     },
     {
       "id": "oblong",
       "name": "Oblong",
       "celeb": "Adam Driver",
       "role": "Actor",
-      "line": "Oblong. Long and narrow, with the forehead, cheeks and jaw all about the same width."
+      "line": "Oblong. Long and narrow, with the forehead, cheeks and jaw all about the same width.",
+      "morph": "a clearly OBLONG (long) face shape: a noticeably longer, narrower face with a longer lower face and chin, straight sides, forehead, cheekbones and jaw all about the same narrow width"
     },
     {
       "id": "round",
       "name": "Round",
       "celeb": "Jonah Hill",
       "role": "Actor",
-      "line": "Round. Almost as wide as it is long, with full cheeks and a soft chin."
+      "line": "Round. Almost as wide as it is long, with full cheeks and a soft chin.",
+      "morph": "a clearly ROUND face shape, an obvious change: the face as wide as it is long, full, soft, rounded cheeks, a short soft rounded chin, a soft jawline with no visible angles, slightly fuller face overall"
     },
     {
       "id": "heart",
       "name": "Heart",
       "celeb": "Ryan Gosling",
       "role": "Actor",
-      "line": "Heart. A wide forehead that tapers down to a narrow, pointed chin."
+      "line": "Heart. A wide forehead that tapers down to a narrow, pointed chin.",
+      "morph": "a clearly HEART-shaped face: a wide forehead and broad temples, the face tapering strongly down to a narrow, pointed chin, a slim jaw"
     },
     {
       "id": "diamond",
       "name": "Diamond",
       "celeb": "Robert Pattinson",
       "role": "Actor",
-      "line": "Diamond. The cheekbones are the widest point, with a narrow forehead and chin."
+      "line": "Diamond. The cheekbones are the widest point, with a narrow forehead and chin.",
+      "morph": "a strongly DIAMOND face shape, exaggerated: very high, very wide, sharp, protruding cheekbones that are clearly the widest point of the face; a clearly narrower forehead and temples above them; hollow cheeks below; the face narrowing to a small, pointed chin, giving an angular diamond outline"
     },
     {
       "id": "triangle",
       "name": "Triangle",
       "celeb": "Tom Hardy",
       "role": "Actor",
-      "line": "Triangle. A narrow forehead sitting on top of a wide, heavy jaw."
+      "line": "Triangle. A narrow forehead sitting on top of a wide, heavy jaw.",
+      "morph": "a strongly TRIANGLE face shape, exaggerated: a clearly narrow forehead and temples, and a very wide, heavy, square, bulky jaw that sticks out past the cheekbones as by far the widest part of the face, with a broad flat chin — the face widens from top to bottom like a pyramid"
     },
     {
       "id": "square",

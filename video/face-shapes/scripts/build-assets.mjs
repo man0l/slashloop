@@ -5,12 +5,16 @@
 //
 //   1. base face   — an AI-generated, fictional model (no real person)
 //   2. landmarks   — a vision model locates the face so outlines line up
+//   2b. face morphs — the same man re-shaped into each face shape
+//                    (google/gemini-3-pro-image), then aligned to the base
+//                    by scripts/align_faces.py (needs opencv-python-headless)
 //   3. celebs      — Pinterest search per shape; a vision model picks the
 //                    best frontal headshot and returns a face crop box
 //   4. voiceover   — openai/gpt-audio, one clip per segment
 //   5. music       — an original bed from google/lyria (optional)
 //
-// Writes public/manifest.json, which the Remotion composition reads.
+// Writes public/manifest.json, which the Remotion composition reads; every
+// call's OpenRouter cost is appended to manifest.costLog.
 //
 // Requires OPENROUTER_API_KEY and ffmpeg/ffprobe on PATH.
 
@@ -18,6 +22,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PUB = join(ROOT, 'public');
@@ -33,11 +38,13 @@ const MODELS = {
   vision: process.env.FS_VISION_MODEL ?? 'google/gemini-2.5-flash',
   tts: process.env.FS_TTS_MODEL ?? 'openai/gpt-audio-mini',
   music: process.env.FS_MUSIC_MODEL ?? 'google/lyria-3-clip-preview',
+  // the cheaper flash image model barely changes face outlines; pro does
+  morph: process.env.FS_MORPH_MODEL ?? 'google/gemini-3-pro-image',
 };
 const VOICE = process.env.FS_VOICE ?? 'onyx';
 const TEMPO = Number(process.env.FS_VO_TEMPO ?? 1.15); // speed-up, pitch preserved
 
-for (const d of ['', 'celebs', 'celebs/candidates', 'vo']) mkdirSync(join(PUB, d), { recursive: true });
+for (const d of ['', 'celebs', 'celebs/candidates', 'vo', 'faces']) mkdirSync(join(PUB, d), { recursive: true });
 
 const manifestPath = join(PUB, 'manifest.json');
 const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : {};
@@ -51,12 +58,43 @@ async function openrouter(body, { stream = false } = {}) {
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json', 'X-Title': 'face-shapes-video' },
-      body: JSON.stringify({ ...body, stream }),
+      body: JSON.stringify({ ...body, stream, usage: { include: true } }),
     });
-    if (res.ok) return stream ? res : res.json();
+    if (res.ok && stream) return res;
+    if (res.ok) {
+      const json = await res.json();
+      logCost(body.model, json.usage?.cost);
+      return json;
+    }
     const text = await res.text();
     if (attempt >= 3 || res.status < 500) throw new Error(`OpenRouter ${res.status}: ${text.slice(0, 400)}`);
     await new Promise((r) => setTimeout(r, 2000 * attempt));
+  }
+}
+
+// Every call's USD cost (OpenRouter `usage.cost`) is appended to manifest.costLog.
+function logCost(model, cost) {
+  if (typeof cost !== 'number') return;
+  manifest.costLog ??= [];
+  manifest.costLog.push({ at: new Date().toISOString(), model, cost });
+  save();
+}
+
+/** Read an SSE completion stream: yields each choice delta, logs the final usage cost. */
+async function* sseDeltas(res, model) {
+  const decoder = new TextDecoder();
+  let buf = '';
+  for await (const part of res.body) {
+    buf += decoder.decode(part, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith('data:') || line.endsWith('[DONE]')) continue;
+      const evt = JSON.parse(line.slice(5));
+      if (evt.usage) logCost(model, evt.usage.cost);
+      for (const c of evt.choices ?? []) if (c.delta) yield c.delta;
+    }
   }
 }
 
@@ -128,6 +166,48 @@ if (force.has('landmarks') || !manifest.detectedLandmarks) {
 // content.json → baseFace.landmarkOverrides lets you nudge any point (0-1 coords)
 manifest.landmarks = { ...manifest.detectedLandmarks, ...(content.baseFace.landmarkOverrides ?? {}) };
 save();
+
+// --- 2b. face morphs -----------------------------------------------------------
+// The same man, re-shaped into each face shape. The composition dissolves
+// between them, so the face itself turns round, long, heart-shaped… The
+// `reveal` shape uses the untouched base (his real shape).
+
+manifest.faces ??= {};
+const morphed = [];
+for (const shape of content.shapes) {
+  if (shape.reveal || !shape.morph) continue;
+  const out = join(PUB, 'faces', `${shape.id}.png`);
+  if (!need('faces', out) && !force.has(`face:${shape.id}`) && manifest.faces[shape.id]?.morph === shape.morph) continue;
+  console.log(`• morphing face → ${shape.name}…`);
+  const r = await openrouter({
+    model: MODELS.morph,
+    modalities: ['image', 'text'],
+    image_config: { aspect_ratio: '9:16' },
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: content.baseFace.morphPrompt.replace('{shape}', shape.morph + '.') },
+          { type: 'image_url', image_url: { url: dataUrl(baseFile) } },
+        ],
+      },
+    ],
+  });
+  const url = r.choices[0].message.images?.[0]?.image_url?.url;
+  if (!url) throw new Error(`morph model returned no image for ${shape.id}`);
+  // the model returns a slightly different 9:16 size; stretch back onto the
+  // base dimensions (a ~2% change) so the frames overlay 1:1
+  const { w, h } = manifest.base;
+  await sharp(Buffer.from(url.split(',', 2)[1], 'base64')).resize(w, h, { fit: 'fill' }).png().toFile(out);
+  manifest.faces[shape.id] = { file: `faces/${shape.id}.png`, morph: shape.morph };
+  morphed.push(out);
+  save();
+}
+if (morphed.length) {
+  // re-register each new face onto the base so the dissolves don't jump
+  console.log('• aligning faces…');
+  execFileSync('python3', [join(ROOT, 'scripts/align_faces.py'), manifestPath, baseFile, ...morphed], { stdio: 'inherit' });
+}
 
 // --- 3. celebrity reference shots (Pinterest) ---------------------------------
 
@@ -220,20 +300,8 @@ async function tts(text, file) {
     { stream: true },
   );
   const chunks = [];
-  const decoder = new TextDecoder();
-  let buf = '';
-  for await (const part of res.body) {
-    buf += decoder.decode(part, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line.startsWith('data:') || line.endsWith('[DONE]')) continue;
-      for (const c of JSON.parse(line.slice(5)).choices ?? []) {
-        const a = c.delta?.audio?.data;
-        if (a) chunks.push(Buffer.from(a, 'base64'));
-      }
-    }
+  for await (const d of sseDeltas(res, MODELS.tts)) {
+    if (d.audio?.data) chunks.push(Buffer.from(d.audio.data, 'base64'));
   }
   const raw = `${file}.pcm`;
   writeFileSync(raw, Buffer.concat(chunks));
@@ -285,21 +353,9 @@ if (need('music', musicFile) && process.env.FS_SKIP_MUSIC !== '1') {
     );
     const chunks = [];
     let fmt = 'mp3';
-    const decoder = new TextDecoder();
-    let buf = '';
-    for await (const part of res.body) {
-      buf += decoder.decode(part, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line.startsWith('data:') || line.endsWith('[DONE]')) continue;
-        for (const c of JSON.parse(line.slice(5)).choices ?? []) {
-          const a = c.delta?.audio;
-          if (a?.data) chunks.push(Buffer.from(a.data, 'base64'));
-          if (a?.format) fmt = a.format;
-        }
-      }
+    for await (const d of sseDeltas(res, MODELS.music)) {
+      if (d.audio?.data) chunks.push(Buffer.from(d.audio.data, 'base64'));
+      if (d.audio?.format) fmt = d.audio.format;
     }
     if (!chunks.length) throw new Error('no audio returned');
     const raw = `${musicFile}.${fmt}`;
@@ -313,4 +369,5 @@ if (need('music', musicFile) && process.env.FS_SKIP_MUSIC !== '1') {
   save();
 }
 
-console.log('✓ assets ready →', manifestPath);
+const spent = (manifest.costLog ?? []).reduce((a, c) => a + c.cost, 0);
+console.log(`✓ assets ready → ${manifestPath}  (logged OpenRouter spend: $${spent.toFixed(4)})`);

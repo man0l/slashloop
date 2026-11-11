@@ -29,6 +29,7 @@ export interface Manifest {
   base: { file: string; w: number; h: number };
   landmarks: Record<string, Pt>;
   celebs: Record<string, { file: string; name: string; source: string }>;
+  faces?: Record<string, { file: string }>;
   vo: Record<string, { file: string; text: string; durationSec: number }>;
   music: string | null;
 }
@@ -215,55 +216,83 @@ const Captions: React.FC<{ text: string; durationSec: number; y?: number }> = ({
   );
 };
 
-const CelebCard: React.FC<{ shape: Shape; img: string; index: number; count: number }> = ({ shape, img, index, count }) => {
+/** Big shape name + counter, replaces the hook title once shapes start. */
+const ShapeHeader: React.FC<{ shape: Shape; index: number; count: number }> = ({ shape, index, count }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const pop = spring({ frame, fps, config: { damping: 14, stiffness: 160 } });
+  const s = spring({ frame, fps, config: { damping: 16, stiffness: 140 } });
   return (
-    <div
-      style={{
-        position: 'absolute',
-        left: 34,
-        top: 660,
-        width: 210,
-        transform: `translateX(${(1 - pop) * -320}px)`,
-        opacity: pop,
-      }}
-    >
-      <div style={{ fontFamily: MONO, fontSize: 24, color: CREAM, opacity: 0.85, letterSpacing: 2 }}>
-        {String(index + 1).padStart(2, '0')} / {String(count).padStart(2, '0')}
+    <div style={{ position: 'absolute', top: 120, width: '100%', textAlign: 'center', color: CREAM }}>
+      <div style={{ fontFamily: MONO, fontSize: 28, letterSpacing: 6, opacity: 0.85 }}>
+        SHAPE {String(index + 1).padStart(2, '0')} / {String(count).padStart(2, '0')}
       </div>
       <div
         style={{
           fontFamily: SERIF,
           fontStyle: 'italic',
           fontWeight: 600,
-          fontSize: 58,
+          fontSize: 150,
+          lineHeight: 1,
           color: ACCENT,
-          margin: '4px 0 12px',
-          textShadow: '0 3px 14px rgba(0,0,0,0.35)',
+          transform: `scale(${0.6 + 0.4 * s})`,
+          opacity: s,
+          textShadow: '0 6px 30px rgba(0,0,0,0.35)',
         }}
       >
         {shape.name}
       </div>
-      <Img
-        src={staticFile(img)}
-        style={{
-          width: 196,
-          height: 196,
-          objectFit: 'cover',
-          borderRadius: 24,
-          border: `4px solid ${CREAM}`,
-          boxShadow: '0 18px 40px rgba(0,0,0,0.35)',
-        }}
-      />
-      <div style={{ fontFamily: MONO, fontSize: 20, color: CREAM, marginTop: 12, lineHeight: 1.35, textTransform: 'uppercase' }}>
-        {shape.celeb}
-        <br />
-        <span style={{ opacity: 0.7 }}>{shape.role}</span>
+      {/* progress pips */}
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 18 }}>
+        {Array.from({ length: count }, (_, i) => (
+          <div key={i} style={{ width: i === index ? 46 : 14, height: 8, borderRadius: 8, background: i <= index ? ACCENT : 'rgba(251,247,238,0.4)' }} />
+        ))}
       </div>
     </div>
   );
+};
+
+/** "Same shape as" chip along the bottom, over the suit. */
+const CelebChip: React.FC<{ shape: Shape; img: string }> = ({ shape, img }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const pop = spring({ frame: frame - 18, fps, config: { damping: 15, stiffness: 150 } });
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: 90,
+        right: 90,
+        top: 1290,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 28,
+        padding: 18,
+        borderRadius: 36,
+        background: 'rgba(19,32,28,0.72)',
+        border: '2px solid rgba(251,247,238,0.18)',
+        boxShadow: '0 20px 50px rgba(0,0,0,0.35)',
+        transform: `translateY(${(1 - pop) * 140}px)`,
+        opacity: pop,
+      }}
+    >
+      <Img src={staticFile(img)} style={{ width: 150, height: 150, objectFit: 'cover', borderRadius: 24 }} />
+      <div style={{ color: CREAM }}>
+        <div style={{ fontFamily: MONO, fontSize: 24, letterSpacing: 3, opacity: 0.75 }}>SAME SHAPE AS</div>
+        <div style={{ fontFamily: SANS, fontWeight: 800, fontSize: 48, lineHeight: 1.1 }}>{shape.celeb}</div>
+        <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 34, color: ACCENT }}>{shape.role}</div>
+      </div>
+    </div>
+  );
+};
+
+/** The model's face for one segment, dissolving in over the previous one. */
+const MorphFace: React.FC<{ file: string; rect: React.CSSProperties; first: boolean }> = ({ file, rect, first }) => {
+  const frame = useCurrentFrame();
+  const FADE = 16;
+  const t = first ? 1 : interpolate(frame, [0, FADE], [0, 1], { extrapolateRight: 'clamp' });
+  // a soft blur peak mid-dissolve reads as the face reshaping rather than a cut
+  const blur = first ? 0 : interpolate(frame, [0, FADE / 2, FADE], [0, 5, 0], { extrapolateRight: 'clamp' });
+  return <Img src={staticFile(file)} style={{ position: 'absolute', ...rect, opacity: t, filter: `blur(${blur}px)` }} />;
 };
 
 const RevealBadge: React.FC = () => {
@@ -274,8 +303,8 @@ const RevealBadge: React.FC = () => {
     <div
       style={{
         position: 'absolute',
-        right: 60,
-        top: 690,
+        right: 50,
+        top: 520,
         padding: '16px 26px',
         borderRadius: 999,
         background: ACCENT,
@@ -438,9 +467,18 @@ export const FaceShapes: React.FC<Props> = ({ manifest, content }) => {
   return (
     <AbsoluteFill style={{ background: '#8fa69b' }}>
       <AbsoluteFill style={{ transform: `scale(${zoom})`, transformOrigin: `${box.cx}px ${box.top + box.height / 2}px` }}>
-        <Img src={staticFile(manifest.base.file)} style={{ position: 'absolute', ...rect }} />
+        {segs.map((seg, i) => {
+          // the reveal shape (and the hook) show the untouched base face
+          const file = manifest.faces?.[seg.id]?.file ?? manifest.base.file;
+          const next = i === segs.length - 1 ? outro.dur : segs[i + 1].dur;
+          return (
+            <Sequence key={`face-${seg.id}`} from={seg.from} durationInFrames={seg.dur + next} layout="none">
+              <MorphFace file={file} rect={rect} first={i === 0} />
+            </Sequence>
+          );
+        })}
         {segs.slice(1).map((seg) => (
-          <Sequence key={seg.id} from={seg.from} durationInFrames={seg.dur} layout="none">
+          <Sequence key={seg.id} from={seg.from + 8} durationInFrames={seg.dur - 8} layout="none">
             <Outline id={seg.id as ShapeId} box={box} />
           </Sequence>
         ))}
@@ -454,7 +492,7 @@ export const FaceShapes: React.FC<Props> = ({ manifest, content }) => {
         }}
       />
 
-      <Sequence durationInFrames={outro.from} layout="none">
+      <Sequence durationInFrames={segs[0].dur} layout="none">
         <Title lines={content.title} />
       </Sequence>
 
@@ -462,9 +500,8 @@ export const FaceShapes: React.FC<Props> = ({ manifest, content }) => {
         const shape = content.shapes[i - 1];
         return (
           <Sequence key={seg.id} from={seg.from} durationInFrames={seg.dur}>
-            {shape && (
-              <CelebCard shape={shape} img={manifest.celebs[shape.id].file} index={i - 1} count={content.shapes.length} />
-            )}
+            {shape && <ShapeHeader shape={shape} index={i - 1} count={content.shapes.length} />}
+            {shape && <CelebChip shape={shape} img={manifest.celebs[shape.id].file} />}
             {shape?.reveal && <RevealBadge />}
             <Captions text={manifest.vo[seg.id].text} durationSec={manifest.vo[seg.id].durationSec} />
             <Audio src={staticFile(manifest.vo[seg.id].file)} />
