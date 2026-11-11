@@ -18,6 +18,8 @@ workspace-scoped. OAuth connecting happens in the web app, never over MCP.
    with the user first**.
 4. `list_social_posts`, `reschedule_social_post`, `delete_social_post` to review
    and change them.
+   `list_social_posts` returns at most `limit` groups (default 50); narrow it with
+   `state` (e.g. `["queued"]`) and `lane`, or page with `truncated.nextFrom`.
 
 ## Lanes and rotation
 

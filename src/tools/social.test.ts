@@ -281,6 +281,52 @@ describe('list_social_posts', () => {
     expect(teamView.body.drafts.map((p: { groupId: string }) => p.groupId)).toEqual([draft]);
   });
 
+  test('compact output without account pictures (SLA-1508)', async () => {
+    db.run("UPDATE social_integrations SET picture = 'https://cdn.example.com/avatar.jpg?sig=xyz' WHERE id = 'tt-a'");
+    await call('create_social_post', { integrationIds: ['tt-a'], content: 's', media: [IMG], publishAt: FUTURE });
+    const { raw, body } = await call('list_social_posts', { from: '2026-11-01T00:00:00Z', to: '2026-11-30T00:00:00Z' });
+    expect(raw).not.toContain('\n');
+    expect(raw).not.toContain('avatar.jpg');
+    expect(body.posts[0].posts[0].account).toEqual({ id: 'tt-a', name: 'tt-a name', profile: 'tt-a_handle', lane: null });
+  });
+
+  test('limit caps each list and reports truncated + nextFrom; paging with nextFrom reads the rest', async () => {
+    const times = ['2026-11-03T15:00:00Z', '2026-11-04T15:00:00Z', '2026-11-05T15:00:00Z'];
+    const ids: string[] = [];
+    for (const t of times) ids.push((await call('create_social_post', { integrationIds: ['tt-a'], content: 's', media: [IMG], publishAt: t })).body.groupId);
+    await createDraft();
+    await createDraft();
+
+    const first = await call('list_social_posts', { from: '2026-11-01T00:00:00Z', to: '2026-11-30T00:00:00Z', limit: 2 });
+    expect(first.body.posts.map((p: { groupId: string }) => p.groupId)).toEqual(ids.slice(0, 2));
+    expect(first.body.drafts).toHaveLength(2);
+    expect(first.body.truncated).toEqual({ posts: 1, nextFrom: '2026-11-05T15:00:00.000Z' });
+
+    const next = await call('list_social_posts', { from: first.body.truncated.nextFrom, to: '2026-11-30T00:00:00Z', limit: 2 });
+    expect(next.body.posts.map((p: { groupId: string }) => p.groupId)).toEqual([ids[2]]);
+    expect(next.body.truncated).toBeUndefined();
+  });
+
+  test('state and lane filters', async () => {
+    await createDraft();
+    const queued = (await call('create_social_post', { integrationIds: ['tt-a'], content: 's', media: [IMG], publishAt: FUTURE })).body.groupId;
+    await call('tag_social_account', { integrationId: 'ig-a', tags: ['lane:jenny'] });
+    const jenny = (await call('create_social_post', { lane: 'jenny', content: 'j', media: [IMG], publishAt: LATER })).body.groupId;
+    const range = { from: '2026-11-01T00:00:00Z', to: '2026-11-30T00:00:00Z' };
+
+    const onlyQueued = await call('list_social_posts', { ...range, state: ['queued'] });
+    expect(onlyQueued.body.posts.map((p: { groupId: string }) => p.groupId)).toEqual([queued, jenny]);
+    expect(onlyQueued.body.drafts).toEqual([]);
+
+    const lane = await call('list_social_posts', { ...range, lane: 'Jenny' });
+    expect(lane.body.posts.map((p: { groupId: string }) => p.groupId)).toEqual([jenny]);
+    expect(lane.body.drafts).toEqual([]);
+
+    const bad = await call('list_social_posts', { ...range, lane: 'not a lane!' });
+    expect(bad.isError).toBe(true);
+    expect(bad.body.error).toBe('invalid_lane');
+  });
+
   test('rejects an inverted range', async () => {
     const { isError, body } = await call('list_social_posts', { from: FUTURE, to: '2026-11-01T00:00:00Z' });
     expect(isError).toBe(true);
