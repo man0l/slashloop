@@ -1,0 +1,5 @@
+node_modules/
+out/
+# Generated/downloaded by scripts/build-assets.mjs (AI images, voiceover,
+# music, Mixkit stock clips). Rebuild with `npm run assets`.
+public/

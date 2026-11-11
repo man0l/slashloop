@@ -1,0 +1,88 @@
+{
+  "model": {
+    "prompt": "Photorealistic beauty portrait of a fictional 26-year-old woman (not a real person), dark brown hair loosely pinned up with a few face-framing strands, small gold hoop earrings, cream knit off-shoulder top, natural makeup, NO lipstick, natural bare lips, soft closed-mouth smile, looking straight into the camera, face centered and frontal, head and shoulders, plain warm blush-pink studio background, soft even beauty lighting, sharp focus, vertical 9:16, face in the upper-middle of the frame",
+    "editPrompt": "Edit this photo: apply {shade} lipstick to her lips, evenly, with a clean natural lip line. Change nothing else at all: same woman, same face, same expression, same hair, earrings, top, pose, framing, lighting and background, so the two photos line up exactly when overlaid. Photorealistic."
+  },
+  "shades": [
+    {
+      "id": "bare",
+      "label": "No lipstick",
+      "swatch": "#c98f86"
+    },
+    {
+      "id": "pink",
+      "label": "Pink",
+      "swatch": "#e0739a",
+      "shade": "a soft bubblegum PINK"
+    },
+    {
+      "id": "brown",
+      "label": "Brown",
+      "swatch": "#8a4f3d",
+      "shade": "a matte warm BROWN nude"
+    },
+    {
+      "id": "red",
+      "label": "Red",
+      "swatch": "#c4122f",
+      "shade": "a classic TRUE RED (blue-based, neither orange nor dark)"
+    }
+  ],
+  "reds": [
+    {
+      "id": "red",
+      "label": "True red",
+      "swatch": "#c4122f"
+    },
+    {
+      "id": "orangered",
+      "label": "Orange-red",
+      "swatch": "#e2401c",
+      "shade": "a bright ORANGE-RED (warm, coral-leaning red)"
+    },
+    {
+      "id": "cameo",
+      "label": "Cameo red",
+      "swatch": "#a8505a",
+      "shade": "a muted CAMEO RED (soft, dusty rose-red, low saturation)"
+    }
+  ],
+  "stock": {
+    "source": "Mixkit (mixkit.co) — Mixkit Stock Video Free License",
+    "clips": {
+      "bar": "https://assets.mixkit.co/videos/4043/4043-720.mp4",
+      "approach": "https://assets.mixkit.co/videos/42721/42721-720.mp4",
+      "redclose": "https://assets.mixkit.co/videos/46604/46604-720.mp4",
+      "mirror": "https://assets.mixkit.co/videos/15812/15812-720.mp4"
+    }
+  },
+  "citations": {
+    "gueguen": {
+      "authors": "Guéguen, N. (2012)",
+      "title": "Does red lipstick really attract men? An evaluation in a bar",
+      "journal": "International Journal of Psychological Studies, 4(2)"
+    },
+    "tian": {
+      "authors": "Tian et al. (2023)",
+      "title": "Red vs orange-red vs cameo red lipstick, rated by men",
+      "journal": "Frontiers in Neuroscience · doi:10.3389/fnins.2023.1280270",
+      "titleIsSummary": true
+    }
+  },
+  "vo": {
+    "hook": "Same woman, four lipsticks. Which one gets approached first in a bar?",
+    "answer": "If you picked red, a real field study backs you up.",
+    "method": "Researchers sent women into bars on the French Atlantic coast wearing red, pink, brown, or no lipstick, then counted how many men came over, and how fast.",
+    "result": "Red won on both. More men approached her, and the first one showed up sooner.",
+    "reds": "But the exact red matters. In a twenty twenty-three study, men rated true red as more attractive than orange-red or cameo red.",
+    "pivot": "Then again, nobody picks a lipstick to impress strangers in a bar. Wear the shade that makes you feel like you.",
+    "cta": "So which shade are you wearing tonight? Tell me in the comments."
+  },
+  "comments": [
+    "red. always red 💋",
+    "brown nude gang 🤎"
+  ],
+  "captions": {
+    "reds": "But the exact red matters. In a 2023 study, men rated true red as more attractive than orange-red or cameo red."
+  }
+}
