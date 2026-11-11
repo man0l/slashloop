@@ -102,6 +102,12 @@ const text = (payload: unknown, isError = false): ToolResult => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }],
   ...(isError ? { isError: true } : {}),
 });
+/** Unindented JSON for list payloads that grow with the calendar. */
+const compact = (payload: unknown): ToolResult => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
+
+const GROUP_STATES = ['draft', 'queued', 'processing', 'published', 'error', 'scrubbing'] as const;
+const LIST_DEFAULT_LIMIT = 50;
+const LIST_MAX_LIMIT = 200;
 
 /** An ISO-8601 instant WITH an offset: a bare "2026-11-01T10:00:00" would be
  *  read in the server's zone, which is never what an agent means. */
@@ -135,7 +141,9 @@ function presentGroup(group: CalendarGroup) {
     posts: group.posts.map((p) => ({
       id: p.id,
       provider: p.provider,
-      account: p.account,
+      // No `picture`: a signed CDN avatar URL (~600 chars) repeated on every row
+      // was a third of a 2-week listing and pushed it past MCP client limits (SLA-1508).
+      account: { id: p.account.id, name: p.account.name, profile: p.account.profile, lane: p.account.lane },
       state: p.state,
       releaseUrl: p.releaseUrl,
       error: p.error,
@@ -544,13 +552,18 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
     'list_social_posts',
     'List scheduled and published social posts in a time range, plus all drafts. from/to are ISO 8601 with an offset; default is now → 30 days ahead. '
       + 'Each post group has a groupId (use for reschedule/delete), aggregate state (draft, queued, processing, published, error, scrubbing), '
-      + 'publishAt, caption, media and one entry per account with its own state, releaseUrl and error. Includes teammates\' posts shared through a workspace. Free.',
+      + 'publishAt, caption, media and one entry per account with its own state, releaseUrl and error. Includes teammates\' posts shared through a workspace. '
+      + `Returns at most \`limit\` groups per list (default ${LIST_DEFAULT_LIMIT}), earliest first; when more match, \`truncated\` gives the omitted count and \`nextFrom\` `
+      + '(pass it as `from` to read the next page). Narrow with `state` and `lane` instead of paging when you can. Free.',
     {
       from: z.string().optional().describe('Range start, ISO 8601 with offset. Default: now.'),
       to: z.string().optional().describe('Range end, ISO 8601 with offset. Default: 30 days after from.'),
+      state: z.array(z.enum(GROUP_STATES)).min(1).optional().describe('Only groups in these aggregate states, e.g. ["queued"]. Omit "draft" to skip drafts.'),
+      lane: z.string().min(1).optional().describe('Only groups with at least one post on an account in this lane.'),
+      limit: z.number().int().min(1).max(LIST_MAX_LIMIT).optional().describe(`Max groups per list (posts, drafts). Default ${LIST_DEFAULT_LIMIT}.`),
     },
     { readOnlyHint: true },
-    ({ from, to }) => withCaller(async ({ userId, email }) => {
+    ({ from, to, state, lane, limit }) => withCaller(async ({ userId, email }) => {
       const nowS = Math.floor(d.now() / 1000);
       let fromS = nowS;
       if (from !== undefined) {
@@ -568,10 +581,23 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
 
       const owners = await d.resolveOwners(userId, email);
       const { groups, drafts } = await d.listCalendar(owners, fromS, toS);
-      return text({
+      const laneName = lane === undefined ? undefined : normalizeLaneName(lane);
+      if (laneName === null) return text({ error: 'invalid_lane', message: `"${lane}" is not a lane name.` }, true);
+      const keep = (g: CalendarGroup) => (!state || state.includes(g.state))
+        && (laneName === undefined || g.posts.some((p) => p.account.lane === laneName));
+      const max = limit ?? LIST_DEFAULT_LIMIT;
+      // Per-owner reads are each sorted; merged across teammates they are not.
+      const matched = groups.filter(keep).sort((a, b) => a.publishDate - b.publishDate || a.groupId.localeCompare(b.groupId));
+      const matchedDrafts = drafts.filter(keep);
+      const truncated = {
+        ...(matched.length > max ? { posts: matched.length - max, nextFrom: iso(matched[max].publishDate) } : {}),
+        ...(matchedDrafts.length > max ? { drafts: matchedDrafts.length - max } : {}),
+      };
+      return compact({
         range: { from: iso(fromS), to: iso(toS) },
-        posts: groups.map(presentGroup),
-        drafts: drafts.map(presentGroup),
+        posts: matched.slice(0, max).map(presentGroup),
+        drafts: matchedDrafts.slice(0, max).map(presentGroup),
+        ...(Object.keys(truncated).length ? { truncated } : {}),
       });
     }),
   );
