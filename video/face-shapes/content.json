@@ -1,0 +1,88 @@
+{
+  "title": [
+    "Every man has one of",
+    "these 7 face shapes"
+  ],
+  "hook": "Every man has one of these seven face shapes. Here's how to spot yours.",
+  "baseFace": {
+    "file": "base.png",
+    "label": "AI MODEL",
+    "prompt": "Photorealistic passport-style studio portrait of a fictional 25-year-old man (not a real person), square jaw, short dark wavy hair, neutral expression, looking straight at camera, face perfectly centered and frontal, head and shoulders, charcoal suit, white shirt, dark tie, plain flat dusty-sage green background, soft even frontal lighting, sharp focus, vertical 9:16, face occupies middle of frame with space above head",
+    "landmarkOverrides": {
+      "hairline": {
+        "x": 0.5,
+        "y": 0.3
+      },
+      "chin": {
+        "x": 0.5,
+        "y": 0.675
+      },
+      "cheekL": {
+        "x": 0.265,
+        "y": 0.45
+      },
+      "cheekR": {
+        "x": 0.735,
+        "y": 0.45
+      }
+    },
+    "cropBottom": 0.09
+  },
+  "shapes": [
+    {
+      "id": "oval",
+      "name": "Oval",
+      "celeb": "Mark Zuckerberg",
+      "role": "Tech founder",
+      "line": "Oval. Slightly longer than wide, with a softly rounded jaw. The most balanced shape."
+    },
+    {
+      "id": "oblong",
+      "name": "Oblong",
+      "celeb": "Adam Driver",
+      "role": "Actor",
+      "line": "Oblong. Long and narrow, with the forehead, cheeks and jaw all about the same width."
+    },
+    {
+      "id": "round",
+      "name": "Round",
+      "celeb": "Jonah Hill",
+      "role": "Actor",
+      "line": "Round. Almost as wide as it is long, with full cheeks and a soft chin."
+    },
+    {
+      "id": "heart",
+      "name": "Heart",
+      "celeb": "Ryan Gosling",
+      "role": "Actor",
+      "line": "Heart. A wide forehead that tapers down to a narrow, pointed chin."
+    },
+    {
+      "id": "diamond",
+      "name": "Diamond",
+      "celeb": "Robert Pattinson",
+      "role": "Actor",
+      "line": "Diamond. The cheekbones are the widest point, with a narrow forehead and chin."
+    },
+    {
+      "id": "triangle",
+      "name": "Triangle",
+      "celeb": "Tom Hardy",
+      "role": "Actor",
+      "line": "Triangle. A narrow forehead sitting on top of a wide, heavy jaw."
+    },
+    {
+      "id": "square",
+      "name": "Square",
+      "celeb": "Henry Cavill",
+      "role": "Actor",
+      "reveal": true,
+      "line": "And square. Straight sides and sharp jaw corners. That's this guy's real shape."
+    }
+  ],
+  "cta": "So which one are you? Drop your face shape in the comments.",
+  "comments": [
+    "Square gang 🗿",
+    "wait… I'm a diamond?? 💎"
+  ]
+}
