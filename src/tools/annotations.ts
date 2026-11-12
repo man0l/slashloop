@@ -99,6 +99,7 @@ export const TOOL_ANNOTATION_ROWS = {
   tag_social_account: ['Tag Social Account', F, F, T, F], // sets the tag list
   set_rotation: ['Set Posting Rotation', F, F, T, F], // upsert by rotation name
   plan_rotation: ['Plan Posting Rotation', T, F, T, F], // computes a schedule, creates nothing
+  search_instagram_audio: ['Search Instagram Audio', T, F, T, T], // read-only Meta Audio API catalogue search
   upload_social_media: ['Upload Social Media', F, F, F, T], // fetches a public URL into storage
   create_social_post: ['Create Social Post', F, F, F, T], // saves a draft or schedules a public post on connected accounts
   list_social_posts: ['List Social Posts', T, F, T, F], // DB read

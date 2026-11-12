@@ -15,7 +15,7 @@
 //                    bytes, publish IG containers, set thumbnails) — guarded
 //                    so a retry can never duplicate a post.
 
-export type ProviderId = 'tiktok' | 'youtube' | 'instagram' | 'threads' | 'pinterest';
+export type ProviderId = 'tiktok' | 'youtube' | 'instagram' | 'instagram_fb' | 'threads' | 'pinterest';
 
 export interface MediaContent {
   type: 'image' | 'video';
@@ -100,6 +100,24 @@ export interface SocialProvider {
   /** Lifetime counters for a published post. Absent = the platform exposes
    *  none to our scopes; the metrics tick never selects the provider. */
   fetchMetrics?(ctx: MetricsContext): Promise<PostMetrics>;
+  /** Search the platform's licensed music catalogue. Absent = the connection
+   *  cannot attach music (Instagram via Instagram Login). */
+  searchAudio?(ctx: AudioSearchContext): Promise<AudioTrack[]>;
+}
+
+export interface AudioSearchContext {
+  token: string;
+  internalId: string;
+  /** Keyword filter; omitted = the platform's trending tracks. */
+  query?: string;
+  limit: number;
+}
+
+export interface AudioTrack {
+  id: string;
+  title: string;
+  artist: string;
+  durationMs: number | null;
 }
 
 export interface ThumbnailContext {
@@ -149,6 +167,10 @@ export interface SocialConfig {
   tiktok?: { clientId: string; clientSecret: string };
   youtube?: { clientId: string; clientSecret: string };
   instagram?: { clientId: string; clientSecret: string; graphVersion?: string };
+  /** Instagram API with Facebook Login (graph.facebook.com) — the only Instagram
+   *  connection the Audio API accepts. configId = "Facebook Login for Business"
+   *  configuration id, required when the Meta app is Business-type. */
+  instagramFb?: { clientId: string; clientSecret: string; graphVersion?: string; configId?: string };
   threads?: { clientId: string; clientSecret: string };
   pinterest?: { clientId: string; clientSecret: string };
   /** Cloudflare Stream credentials for the metadata scrub (video re-encode).
