@@ -8,8 +8,7 @@ import { assertPublicHttpUrl, extractMessage } from './fetch.js';
 import { BadBodyError, classifyHttpError, connectFailureReason } from './errors.js';
 import { TikTokProvider } from './providers/tiktok.js';
 import { YouTubeProvider, youtubeTitleFromCaption } from './providers/youtube.js';
-import { InstagramProvider, parseAudioConfiguration } from './providers/instagram.js';
-import { InstagramFacebookProvider } from './providers/instagram-facebook.js';
+import { InstagramProvider } from './providers/instagram.js';
 import { ThreadsProvider } from './providers/threads.js';
 import { PinterestProvider } from './providers/pinterest.js';
 import { mediaWithScrubbedUrl, nextScrubItem } from './scrub.js';
@@ -276,108 +275,6 @@ describe('instagram provider', () => {
       expect(body.has('cover_url')).toBe(false);
       expect(body.has('thumb_offset')).toBe(false);
     });
-  });
-});
-
-// ── Instagram Audio API (Facebook Login) ────────────────────────────────────
-
-describe('instagram audio_configuration', () => {
-  const clip = 'https://cdn.example.com/clip.mp4';
-  const audio = { audio_id: '2006821089449485', audio_volume: 20, video_volume: 100 };
-  const video = { type: 'video' as const, url: clip };
-  const ctx = (settings: Record<string, unknown>, media: Array<{ type: 'image' | 'video'; url: string }> = [video]) => ({
-    token: 'TOK',
-    post: { id: 'p1', message: 'cap', settings, media },
-    integration: { internalId: 'IG1', profile: 'acct' },
-  });
-  const fb = new InstagramFacebookProvider();
-  fb.configure({ instagramFb: { clientId: 'FBID', clientSecret: 'FBSECRET' } });
-
-  async function requests(provider: InstagramProvider, c: ReturnType<typeof ctx>) {
-    const realFetch = globalThis.fetch;
-    const seen: Array<{ url: string; body: URLSearchParams }> = [];
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      seen.push({ url: String(url), body: new URLSearchParams(String(init?.body ?? '')) });
-      return new Response('{"id":"C1"}', { status: 200 });
-    }) as typeof fetch;
-    try {
-      await provider.postPending(c);
-    } finally {
-      globalThis.fetch = realFetch;
-    }
-    return seen;
-  }
-
-  test('parseAudioConfiguration validates id and volumes', () => {
-    expect(parseAudioConfiguration({})).toEqual({ ok: true });
-    expect(parseAudioConfiguration({ audio_configuration: audio })).toEqual({ ok: true, value: audio });
-    expect(parseAudioConfiguration({ audio_configuration: { audio_id: 123 } })).toEqual({ ok: true, value: { audio_id: '123' } });
-    for (const bad of [{}, { audio_id: '' }, { audio_id: 'a b' }, { audio_id: '1', audio_volume: 0 }, { audio_id: '1', video_volume: 101 }, { audio_id: '1', audio_volume: 2.5 }, { audio_id: '1', video_volume: '50' }, 'x', []]) {
-      expect(parseAudioConfiguration({ audio_configuration: bad }).ok).toBe(false);
-    }
-  });
-
-  test('Facebook Login Reel sends audio_configuration as JSON to graph.facebook.com', async () => {
-    const [req] = await requests(fb, ctx({ audio_configuration: audio }));
-    expect(req.url.startsWith('https://graph.facebook.com/')).toBe(true);
-    expect(req.body.get('media_type')).toBe('REELS');
-    expect(JSON.parse(req.body.get('audio_configuration')!)).toEqual(audio);
-  });
-
-  test('audio_id alone sends just the id; no setting sends no param', async () => {
-    expect(JSON.parse((await requests(fb, ctx({ audio_configuration: { audio_id: '9' } })))[0].body.get('audio_configuration')!)).toEqual({ audio_id: '9' });
-    expect((await requests(fb, ctx({})))[0].body.has('audio_configuration')).toBe(false);
-  });
-
-  test('Instagram Login accounts fail with a clear error instead of dropping the music', async () => {
-    const login = new InstagramProvider();
-    expect(login.checkValidity({ message: '', settings: { audio_configuration: audio }, media: [video] })).toMatch(/Facebook Login/);
-    await expect(requests(login, ctx({ audio_configuration: audio }))).rejects.toThrow(/Facebook Login/);
-    // without audio the Instagram Login provider is unchanged
-    expect(login.checkValidity({ message: '', settings: {}, media: [video] })).toBe(true);
-  });
-
-  test('checkValidity rejects bad values, photos and carousels', () => {
-    const photo = { type: 'image' as const, url: 'https://x/p.jpg' };
-    const settings = { audio_configuration: audio };
-    expect(fb.checkValidity({ message: '', settings, media: [video] })).toBe(true);
-    expect(fb.checkValidity({ message: '', settings: { audio_configuration: { audio_id: '1', audio_volume: 500 } }, media: [video] })).toMatch(/audio_volume/);
-    expect(fb.checkValidity({ message: '', settings, media: [photo] })).toMatch(/single-video Reel/);
-    expect(fb.checkValidity({ message: '', settings, media: [video, video] })).toMatch(/single-video Reel/);
-  });
-
-  test('searchAudio hits /ig_audio (trending without a query) and maps tracks', async () => {
-    const realFetch = globalThis.fetch;
-    const urls: URL[] = [];
-    globalThis.fetch = (async (url: string | URL | Request) => {
-      urls.push(new URL(String(url)));
-      return new Response(JSON.stringify({ audio: [
-        { audio_id: '111', title: 'Song', display_artist: 'Artist', duration_in_ms: 30500, download_url: 'https://x' },
-        { title: 'no id' },
-      ] }), { status: 200 });
-    }) as typeof fetch;
-    try {
-      const tracks = await fb.searchAudio({ token: 'TOK', internalId: 'IG1', limit: 10 });
-      expect(tracks).toEqual([{ id: '111', title: 'Song', artist: 'Artist', durationMs: 30500 }]);
-      await fb.searchAudio({ token: 'TOK', internalId: 'IG1', query: ' lofi ', limit: 10 });
-    } finally {
-      globalThis.fetch = realFetch;
-    }
-    expect(urls[0].pathname).toBe('/v21.0/ig_audio');
-    expect(urls[0].searchParams.get('audio_type')).toBe('music');
-    expect(urls[0].searchParams.get('user_id')).toBe('IG1');
-    expect(urls[0].searchParams.has('search_query')).toBe(false);
-    expect(urls[1].searchParams.get('search_query')).toBe('lofi');
-  });
-
-  test('generateAuthUrl uses the Facebook dialog with scopes, or config_id for Business apps', async () => {
-    const url = await fb.generateAuthUrl({ instagramFb: { clientId: 'FBID', clientSecret: 's' } }, 'https://x/cb', 'ST');
-    expect(url.startsWith('https://www.facebook.com/v21.0/dialog/oauth?')).toBe(true);
-    expect(url).toContain('instagram_content_publish');
-    const biz = await fb.generateAuthUrl({ instagramFb: { clientId: 'FBID', clientSecret: 's', configId: 'CFG1' } }, 'https://x/cb', 'ST');
-    expect(biz).toContain('config_id=CFG1');
-    expect(biz).not.toContain('scope=');
-    await expect(new InstagramFacebookProvider().generateAuthUrl({}, 'https://x/cb', 'ST')).rejects.toThrow(/not configured/);
   });
 });
 

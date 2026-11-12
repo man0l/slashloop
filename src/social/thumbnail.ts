@@ -114,13 +114,13 @@ function failureMessage(err: unknown): string {
   return (err as Error).message || 'Could not set the thumbnail.';
 }
 
-export async function callWithFreshToken<T = void>(
+async function callWithFreshToken(
   provider: SocialProvider,
   cfg: SocialConfig,
   integration: SocialIntegrationRow,
   now: number,
-  call: (token: string) => Promise<T>,
-): Promise<T> {
+  call: (token: string) => Promise<void>,
+): Promise<void> {
   let refreshed = false;
   const refresh = async () => {
     if (!integration.refresh_token) throw new RefreshTokenError();
@@ -137,11 +137,11 @@ export async function callWithFreshToken<T = void>(
 
   if (integration.token_expires_at !== null && integration.token_expires_at <= now + 60) await refresh();
   try {
-    return await call(integration.token);
+    await call(integration.token);
   } catch (err) {
     if (!(err instanceof RefreshTokenError) || refreshed) throw err;
     await refresh();
-    return await call(integration.token);
+    await call(integration.token);
   }
 }
 

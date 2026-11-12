@@ -37,7 +37,6 @@ import type {
   PostDetails,
   PostMetrics,
   PostResponse,
-  ProviderId,
   ProviderPostContext,
   SocialConfig,
   SocialProvider,
@@ -78,40 +77,6 @@ export function insightsFailureReason(err: unknown): string {
   return `error: ${message.replace(/\s+/g, ' ').slice(0, 120)}`;
 }
 
-export interface AudioConfiguration {
-  audio_id: string;
-  audio_volume?: number;
-  video_volume?: number;
-}
-
-export type AudioParse = { ok: true; value?: AudioConfiguration } | { ok: false; error: string };
-
-/** settings.audio_configuration → the Graph API object. Absent/empty = no
- *  music; anything malformed is an error, never silently dropped. */
-export function parseAudioConfiguration(settings: Record<string, unknown> | undefined): AudioParse {
-  const raw = settings?.audio_configuration;
-  if (raw === undefined || raw === null) return { ok: true };
-  if (typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'audio_configuration must be an object: { audio_id, audio_volume?, video_volume? }' };
-  const cfg = raw as Record<string, unknown>;
-  const id = typeof cfg.audio_id === 'number' ? String(cfg.audio_id) : cfg.audio_id;
-  if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id.trim())) {
-    return { ok: false, error: 'audio_configuration.audio_id is required (an id from search_instagram_audio)' };
-  }
-  const value: AudioConfiguration = { audio_id: id.trim() };
-  for (const key of ['audio_volume', 'video_volume'] as const) {
-    if (cfg[key] === undefined || cfg[key] === null) continue;
-    const n = cfg[key];
-    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || n > 100) {
-      return { ok: false, error: `audio_configuration.${key} must be an integer from 1 to 100` };
-    }
-    value[key] = n;
-  }
-  return { ok: true, value };
-}
-
-export const AUDIO_NEEDS_FACEBOOK_LOGIN =
-  'Instagram music needs an account connected through Facebook Login (provider instagram_fb); Meta\'s Audio API is not supported on Instagram Login connections. Reconnect this account via Facebook Login, or remove audio_configuration.';
-
 interface Container {
   creationId: string;
   kind: 'single' | 'carousel-child' | 'carousel';
@@ -119,20 +84,16 @@ interface Container {
 }
 
 export class InstagramProvider implements SocialProvider {
-  identifier: ProviderId = 'instagram';
+  identifier = 'instagram' as const;
   name = 'Instagram';
   // manage_insights unlocks views/reach/saves/shares in fetchMetrics. Accounts
   // connected before it was requested keep working for publishing; they get
   // the basic counters only until the user reconnects.
   scopes = ['instagram_business_basic', 'instagram_business_content_publish', 'instagram_business_manage_insights'];
 
-  /** Only Facebook Login connections can attach Audio API music. */
-  protected supportsAudio = false;
-  /** Graph host; the Facebook Login subclass points this at graph.facebook.com. */
-  protected host = GRAPH;
-  protected graphVersion = 'v21.0';
-  protected clientId = '';
-  protected clientSecret = '';
+  private graphVersion = 'v21.0';
+  private clientId = '';
+  private clientSecret = '';
 
   configure(cfg: SocialConfig): void {
     this.graphVersion = cfg.instagram?.graphVersion ?? this.graphVersion;
@@ -255,23 +216,10 @@ export class InstagramProvider implements SocialProvider {
   checkValidity(post: PostDetails): string | true {
     if (!post.media?.length) return 'Instagram posts need at least one photo or video';
     if (post.media.length > 10) return 'Instagram carousels take at most 10 items';
-    return this.audioProblem(post) ?? true;
-  }
-
-  /** Why settings.audio_configuration cannot be honoured, or undefined. */
-  private audioProblem(post: PostDetails): string | undefined {
-    const audio = parseAudioConfiguration(post.settings);
-    if (!audio.ok) return audio.error;
-    if (!audio.value) return undefined;
-    if (post.media.length !== 1 || post.media[0].type !== 'video') return 'Instagram music (audio_configuration) only applies to a single-video Reel';
-    return this.supportsAudio ? undefined : AUDIO_NEEDS_FACEBOOK_LOGIN;
+    return true;
   }
 
   async postPending(ctx: ProviderPostContext): Promise<PostResponse> {
-    const problem = this.audioProblem(ctx.post);
-    if (problem) throw new BadBodyError(problem);
-    const parsed = parseAudioConfiguration(ctx.post.settings);
-    const audio = parsed.ok ? parsed.value : undefined;
     const igId = ctx.integration.internalId;
     const medias = ctx.post.media.map((m) => ({ ...m, url: assertPublicHttpUrl(m.url, 'media') }));
     const isCarousel = medias.length > 1;
@@ -286,7 +234,6 @@ export class InstagramProvider implements SocialProvider {
           // cover_url wins over thumb_offset when both are sent, so only one goes out.
           if (media.thumbnail) params.cover_url = assertPublicHttpUrl(media.thumbnail, 'cover image');
           else params.thumb_offset = String(thumbOffsetMs(ctx.post.settings));
-          if (audio) params.audio_configuration = JSON.stringify(audio);
         }
       } else {
         params.image_url = media.url;
@@ -407,12 +354,12 @@ export class InstagramProvider implements SocialProvider {
     };
   }
 
-  protected async graph<T = Record<string, any>>(
+  private async graph<T = Record<string, any>>(
     path: string,
     params: Record<string, string>,
     opts: { versioned?: boolean; method?: 'GET' | 'POST' } = {},
   ): Promise<T> {
-    const base = opts.versioned === false ? this.host : `${this.host}/${this.graphVersion}`;
+    const base = opts.versioned === false ? GRAPH : `${GRAPH}/${this.graphVersion}`;
     const query = new URLSearchParams(params).toString();
     const response = opts.method === 'POST'
       ? await providerFetch(`${base}${path}`, {
