@@ -44,7 +44,6 @@ import {
 } from '../social/posting.js';
 import { UploadError, storeSocialMediaFromUrl, type StoredMedia } from '../social/media-upload.js';
 import { siteAwareFetch } from '../lib/site-fetch.js';
-import { AUDIO_SEARCH_DEFAULT_LIMIT, AUDIO_SEARCH_MAX_LIMIT, searchInstagramAudio } from '../social/audio.js';
 import { setPostThumbnail, type ThumbnailTarget } from '../social/thumbnail.js';
 import { STATS_BUCKETS, STATS_MODES, getSocialStats, parseStatsQuery } from '../social/stats.js';
 import type { SocialIntegrationRow, SocialRotationRow } from '../social/types.js';
@@ -61,7 +60,6 @@ export interface SocialToolDeps {
   schedule: typeof scheduleVisible;
   deleteGroup: typeof deleteVisible;
   setThumbnail: (owners: string[], target: ThumbnailTarget, thumbnailUrl: string) => ReturnType<typeof setPostThumbnail>;
-  searchAudio: (owners: string[], integrationId: string, query: string | undefined, limit: number) => ReturnType<typeof searchInstagramAudio>;
   /** Owner ids whose accounts the caller may tag: themselves + teammates of workspaces they own. */
   managedOwners: (userId: string) => Promise<string[]>;
   setTags: typeof socialStore.setIntegrationTags;
@@ -89,10 +87,6 @@ export const defaultSocialDeps: SocialToolDeps = {
   setThumbnail: async (owners, target, thumbnailUrl) => {
     const { socialConfigFromEnv } = await import('../../api/social.js');
     return setPostThumbnail(socialConfigFromEnv(), owners, target, thumbnailUrl);
-  },
-  searchAudio: async (owners, integrationId, query, limit) => {
-    const { socialConfigFromEnv } = await import('../../api/social.js');
-    return searchInstagramAudio(socialConfigFromEnv(), owners, integrationId, query, limit);
   },
   managedOwners: managedOwnerIds,
   setTags: socialStore.setIntegrationTags,
@@ -185,7 +179,7 @@ const INSIGHTS_HINTS: Record<string, string> = {
 
 /** Instagram only: whether views/reach/saves/shares can be read for this account. */
 function presentInsights(row: SocialIntegrationRow): { insights?: string; insightsReason?: string; insightsHint?: string } {
-  if (!row.provider.startsWith('instagram')) return {};
+  if (row.provider !== 'instagram') return {};
   const status = row.insights_status;
   if (!status) return { insights: 'unknown' };
   if (status === 'ok') return { insights: 'available' };
@@ -466,9 +460,7 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
       settings: z
         .record(z.string(), z.record(z.string(), z.unknown()))
         .optional()
-        .describe('Per-account provider settings keyed by integration id (e.g. TikTok privacy, Pinterest board, Instagram thumbOffsetMs = Reel cover frame in ms when no thumbnail is set; default 1000; '
-          + 'Instagram Reel music: { audio_configuration: { audio_id, audio_volume?: 1-100, video_volume?: 1-100 } } on a single-video post, with audio_id from search_instagram_audio — '
-          + 'only accounts connected through Facebook Login (provider instagram_fb) can attach music; others are skipped with the reason, never silently posted without it).'),
+        .describe('Per-account provider settings keyed by integration id (e.g. TikTok privacy, Pinterest board, Instagram thumbOffsetMs = Reel cover frame in ms when no thumbnail is set; default 1000).'),
     },
     { readOnlyHint: false },
     ({ integrationIds, lane, content, media, publishAt, stripMetadata, settings }) => withCaller(async ({ userId, email }) => {
@@ -529,28 +521,6 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
           ? 'Saved as a draft. Nothing will publish until it is scheduled (reschedule_social_post with schedule=true).'
           : `Scheduled for ${iso(result.publishDate)}.`,
       });
-    }),
-  );
-
-  // ---- search_instagram_audio ----
-  server.tool(
-    'search_instagram_audio',
-    'Search Instagram\'s licensed music catalogue (Meta Audio API) for tracks to put under a Reel. Pass the Instagram account id from list_social_accounts as `accountId` '
-      + 'and an optional `query`; without a query it returns the currently trending tracks. Each track has id, title, artist and durationMs; pass the id as '
-      + 'settings[<accountId>].audio_configuration.audio_id to create_social_post. Availability may differ from the Instagram app. '
-      + 'Only accounts connected through Facebook Login (provider instagram_fb) work; Instagram Login accounts return audio_unsupported. '
-      + `Errors: account_not_found, audio_unsupported, reconnect_required, audio_search_failed. Free. At most ${AUDIO_SEARCH_MAX_LIMIT} tracks.`,
-    {
-      accountId: z.string().min(1).describe('Instagram account id from list_social_accounts.'),
-      query: z.string().optional().describe('Keyword filter. Omit for trending tracks.'),
-      limit: z.number().int().min(1).max(AUDIO_SEARCH_MAX_LIMIT).optional().describe(`Max tracks (default ${AUDIO_SEARCH_DEFAULT_LIMIT}).`),
-    },
-    { readOnlyHint: true },
-    ({ accountId, query, limit }) => withCaller(async ({ userId, email }) => {
-      const owners = await d.resolveOwners(userId, email);
-      const result = await d.searchAudio(owners, accountId, query, limit ?? AUDIO_SEARCH_DEFAULT_LIMIT);
-      if (!result.ok) return text({ error: result.error, message: result.message }, true);
-      return text({ account: result.handle, trending: result.trending, tracks: result.tracks });
     }),
   );
 
