@@ -16,7 +16,7 @@ import { parseStoredTags, laneAndPrimary } from '../src/social/rotation.js';
 import { corsHeaders, corsPreflight } from '../src/lib/cors.js';
 import { signOAuthState, socialStore, getProvider, visibleOwnerIds, managedOwnerIds, createRegistry, type SocialConfig, type ProviderId } from '../src/social/index.js';
 
-const PROVIDERS: ProviderId[] = ['tiktok', 'youtube', 'instagram', 'threads', 'pinterest'];
+const PROVIDERS: ProviderId[] = ['tiktok', 'youtube', 'instagram', 'instagram_fb', 'threads', 'pinterest'];
 
 export function socialConfigFromEnv(): SocialConfig {
   return {
@@ -37,6 +37,14 @@ export function socialConfigFromEnv(): SocialConfig {
           clientId: process.env.SOCIAL_META_CLIENT_ID,
           clientSecret: process.env.SOCIAL_META_CLIENT_SECRET ?? '',
           graphVersion: process.env.SOCIAL_META_GRAPH_VERSION,
+        }
+      : undefined,
+    instagramFb: process.env.SOCIAL_META_FB_CLIENT_ID
+      ? {
+          clientId: process.env.SOCIAL_META_FB_CLIENT_ID,
+          clientSecret: process.env.SOCIAL_META_FB_CLIENT_SECRET ?? '',
+          graphVersion: process.env.SOCIAL_META_GRAPH_VERSION,
+          configId: process.env.SOCIAL_META_FB_CONFIG_ID,
         }
       : undefined,
     threads: process.env.SOCIAL_THREADS_CLIENT_ID
@@ -100,7 +108,7 @@ export async function GET(request: Request): Promise<Response> {
   // Which platforms have developer-app credentials on this deployment —
   // the site hides connect buttons for the rest instead of erroring on click.
   const cfg = socialConfigFromEnv();
-  const configured = [cfg.tiktok && 'tiktok', cfg.youtube && 'youtube', cfg.instagram && 'instagram', cfg.threads && 'threads', cfg.pinterest && 'pinterest'].filter(Boolean);
+  const configured = [cfg.tiktok && 'tiktok', cfg.youtube && 'youtube', cfg.instagram && 'instagram', cfg.instagramFb && 'instagram_fb', cfg.threads && 'threads', cfg.pinterest && 'pinterest'].filter(Boolean);
   return json(200, { integrations: integrations.map(sanitizeIntegration), configured }, request);
 }
 

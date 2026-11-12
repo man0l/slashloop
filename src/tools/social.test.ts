@@ -10,6 +10,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { setActiveClient } from '../store.js';
 import { UploadError } from '../social/media-upload.js';
+import { searchInstagramAudio } from '../social/audio.js';
 import { setPostThumbnail } from '../social/thumbnail.js';
 import { defaultSocialDeps, registerSocialTools, type SocialToolDeps } from './social.js';
 
@@ -87,7 +88,7 @@ describe('registration', () => {
     const client = new Client({ name: 'c', version: '0' });
     await Promise.all([server.connect(a), client.connect(b)]);
     const names = (await client.listTools()).tools.map((t) => t.name);
-    for (const n of ['list_social_accounts', 'upload_social_media', 'create_social_post', 'list_social_posts', 'get_social_stats', 'reschedule_social_post', 'delete_social_post', 'set_social_post_thumbnail', 'tag_social_account', 'set_rotation', 'plan_rotation']) {
+    for (const n of ['list_social_accounts', 'upload_social_media', 'create_social_post', 'list_social_posts', 'get_social_stats', 'reschedule_social_post', 'delete_social_post', 'set_social_post_thumbnail', 'search_instagram_audio', 'tag_social_account', 'set_rotation', 'plan_rotation']) {
       expect(names).toContain(n);
     }
     const create = (await client.listTools()).tools.find((t) => t.name === 'create_social_post')!;
@@ -816,5 +817,65 @@ describe('set_social_post_thumbnail', () => {
     me = { userId: 'alice', email: null };
     expect((await call('set_social_post_thumbnail', { thumbnail: COVER }, withThumbnail())).body.error).toBe('missing_target');
     expect((await call('set_social_post_thumbnail', { groupId, thumbnail: 'http://127.0.0.1/x.jpg' }, withThumbnail())).body.error).toBe('invalid_thumbnail');
+  });
+});
+
+describe('search_instagram_audio', () => {
+  const realFetch = globalThis.fetch;
+  let urls: URL[];
+  const search = (owners: string[], id: string, query: string | undefined, limit: number) =>
+    searchInstagramAudio({ instagramFb: { clientId: 'FBID', clientSecret: 'FBSECRET' } }, owners, id, query, limit, NOW_MS / 1000);
+
+  beforeEach(() => {
+    urls = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      urls.push(new URL(String(url)));
+      return new Response(JSON.stringify({ audio: [{ audio_id: '42', title: 'Track', display_artist: 'Band', duration_in_ms: 61000 }] }), { status: 200 });
+    }) as typeof fetch;
+    addIntegration('igfb-a', 'alice', 'instagram_fb');
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test('is registered and returns id/title/artist/duration, trending without a query', async () => {
+    const { isError, body } = await call('search_instagram_audio', { accountId: 'igfb-a' }, { searchAudio: search });
+    expect(isError).toBe(false);
+    expect(body).toEqual({ account: 'igfb-a_handle', trending: true, tracks: [{ id: '42', title: 'Track', artist: 'Band', durationMs: 61000 }] });
+    expect(urls[0].pathname).toEndWith('/ig_audio');
+    expect(urls[0].searchParams.get('user_id')).toBe('igfb-a');
+    expect(urls[0].searchParams.has('search_query')).toBe(false);
+  });
+
+  test('passes the query through', async () => {
+    const { body } = await call('search_instagram_audio', { accountId: 'igfb-a', query: 'lofi' }, { searchAudio: search });
+    expect(body.trending).toBe(false);
+    expect(urls[0].searchParams.get('search_query')).toBe('lofi');
+  });
+
+  test('Instagram Login accounts get audio_unsupported, no Meta call', async () => {
+    const { isError, body } = await call('search_instagram_audio', { accountId: 'ig-a' }, { searchAudio: search });
+    expect(isError).toBe(true);
+    expect(body.error).toBe('audio_unsupported');
+    expect(urls).toHaveLength(0);
+  });
+
+  test('other owners\' accounts, non-Instagram accounts and reconnect-needed accounts are refused', async () => {
+    addIntegration('igfb-bob', 'bob', 'instagram_fb');
+    addIntegration('igfb-dead', 'alice', 'instagram_fb', { refreshNeeded: 1 });
+    expect((await call('search_instagram_audio', { accountId: 'igfb-bob' }, { searchAudio: search })).body.error).toBe('account_not_found');
+    expect((await call('search_instagram_audio', { accountId: 'tt-a' }, { searchAudio: search })).body.error).toBe('account_not_found');
+    expect((await call('search_instagram_audio', { accountId: 'igfb-dead' }, { searchAudio: search })).body.error).toBe('reconnect_required');
+    expect(urls).toHaveLength(0);
+  });
+
+  test('create_social_post skips an Instagram Login account that asks for music, keeps the Facebook Login one', async () => {
+    const settings = { 'ig-a': { audio_configuration: { audio_id: '42' } }, 'igfb-a': { audio_configuration: { audio_id: '42', audio_volume: 20 } } };
+    const { body } = await call('create_social_post', {
+      integrationIds: ['ig-a', 'igfb-a'], content: 'c', media: [{ type: 'video', url: 'https://cdn.example.com/c.mp4' }], publishAt: FUTURE, settings,
+    });
+    expect(body.accounts).toBe(1);
+    expect(body.skipped).toEqual([expect.objectContaining({ provider: 'instagram' })]);
+    expect(JSON.stringify(body.skipped)).toMatch(/Facebook Login/);
   });
 });
