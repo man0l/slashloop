@@ -207,7 +207,7 @@ export class ThreadsProvider implements SocialProvider {
       if (container.published) continue;
       let status: { status?: string; error_message?: string };
       try {
-        status = await this.threads(`/${container.creationId}`, ctx.token, { fields: 'status' });
+        status = await this.threadsGet(`/${container.creationId}`, ctx.token, { fields: 'status,error_message' });
       } catch (err) {
         // Transient poll errors must not fail the post — the container may
         // already be FINISHED; keep pending so the engine checks next tick.
@@ -251,10 +251,23 @@ export class ThreadsProvider implements SocialProvider {
     }
 
     const profile = ctx.integration.profile || ctx.integration.internalId;
-    const permalink = await this.threads<{ permalink?: string }>(`/${publishedIds[0]}`, ctx.token, { fields: 'permalink' })
+    const permalink = await this.threadsGet<{ permalink?: string }>(`/${publishedIds[0]}`, ctx.token, { fields: 'permalink' })
       .then((r) => String(r.permalink ?? ''))
       .catch(() => '');
     return { status: 'completed', postId: publishedIds[publishedIds.length - 1], releaseUrl: permalink || `https://www.threads.com/@${profile}` };
+  }
+
+  /** Reads (container status, permalink) must be GET: Threads answers a POST
+   *  to an object id with "Unsupported post request … does not support this
+   *  operation", which used to fail every media post at the status check. */
+  private async threadsGet<T = Record<string, any>>(path: string, token: string, params: Record<string, string>): Promise<T> {
+    const query = new URLSearchParams(params).toString();
+    const response = await providerFetch(`${API}${path}?${query}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+      classify: this.classify,
+    });
+    return (await response.json()) as T;
   }
 
   private async threads<T = Record<string, any>>(path: string, token: string, params: Record<string, string>): Promise<T> {

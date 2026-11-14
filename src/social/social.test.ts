@@ -299,6 +299,30 @@ describe('threads provider', () => {
     expect(provider.classify('{}', 500)).toBe('retry');
   });
 
+  test('checkPostStatus reads the container status with GET (a POST to an object id is rejected)', async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      calls.push({ url: String(input), method: String(init?.method ?? 'GET') });
+      return new Response(JSON.stringify({ status: 'FINISHED' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      const res = await provider.checkPostStatus({
+        token: 'T',
+        integration: { internalId: 'U1', profile: 'me' },
+        post: { message: 'hi', settings: {}, media: [] },
+        pendingData: { containers: [{ creationId: 'C1', kind: 'single', published: false }], publishedIds: [] },
+      } as any);
+      expect(res.status).toBe('ready');
+      expect(calls).toHaveLength(1);
+      expect(calls[0].method).toBe('GET');
+      expect(calls[0].url).toContain('/C1?');
+      expect(calls[0].url).toContain('fields=status');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   test('generateAuthUrl points at threads.com with the right scopes', async () => {
     const url = await provider.generateAuthUrl(
       { threads: { clientId: 'CID', clientSecret: 'CS' } },
