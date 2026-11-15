@@ -384,12 +384,19 @@ export class YouTubeProvider implements SocialProvider {
       throw new BadBodyError('YouTube thumbnails must be a JPEG or PNG under 2MB');
     }
     const declared = (thumb.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
-    await providerFetch(`${UPLOAD_THUMBNAIL}?videoId=${encodeURIComponent(ctx.releaseId)}&uploadType=media`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${ctx.token}`, 'Content-Type': declared === 'image/png' ? 'image/png' : 'image/jpeg' },
-      body: bytes,
-      classify: this.classify,
-    });
+    try {
+      await providerFetch(`${UPLOAD_THUMBNAIL}?videoId=${encodeURIComponent(ctx.releaseId)}&uploadType=media`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${ctx.token}`, 'Content-Type': declared === 'image/png' ? 'image/png' : 'image/jpeg' },
+        body: bytes,
+        classify: this.classify,
+      });
+    } catch (err) {
+      if (err instanceof BadBodyError && /permission|forbidden/i.test(`${err.message} ${err.detail ?? ''}`)) {
+        throw new BadBodyError('YouTube refused the custom thumbnail: the channel must be verified (youtube.com/verify) before custom thumbnails are allowed.', err.detail ?? err.message);
+      }
+      throw err;
+    }
   }
 }
 
