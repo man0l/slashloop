@@ -176,6 +176,8 @@ export interface SocialIntegrationRow {
   tags?: string | null;
   /** Instagram: result of the last insights call — 'ok', an unavailability reason code, or NULL = not synced yet. */
   insights_status?: string | null;
+  /** Pinterest: board a post lands on when its settings carry no boardId; NULL = none set. */
+  default_board_id?: string | null;
 }
 
 export interface SocialRotationRow {

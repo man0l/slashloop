@@ -251,6 +251,20 @@ describe('instagram provider', () => {
       return bodies;
     }
 
+    test('sends alt_text on image carousel children, trimmed and capped at 1000', async () => {
+      const bodies = await containerBodies(post([
+        { type: 'image', url: 'https://cdn.example.com/1.jpg', alt: ` ${'a'.repeat(1200)} ` },
+        { type: 'image', url: 'https://cdn.example.com/2.jpg' },
+      ]));
+      expect(bodies[0].get('alt_text')).toBe('a'.repeat(1000));
+      expect(bodies[1].has('alt_text')).toBe(false);
+    });
+
+    test('never sends alt_text on a video', async () => {
+      const [body] = await containerBodies(post([{ type: 'video', url: clip, alt: 'x' } as never]));
+      expect(body.has('alt_text')).toBe(false);
+    });
+
     test('sends cover_url (and no thumb_offset) when the video has a thumbnail', async () => {
       const [body] = await containerBodies(post([{ type: 'video', url: clip, thumbnail: 'https://cdn.example.com/cover.jpg' }], { thumbOffsetMs: 3000 }));
       expect(body.get('media_type')).toBe('REELS');
@@ -282,6 +296,36 @@ describe('instagram provider', () => {
 
 describe('threads provider', () => {
   const provider = new ThreadsProvider();
+
+  test('sends alt_text on image carousel items only', async () => {
+    const realFetch = globalThis.fetch;
+    const bodies: URLSearchParams[] = [];
+    globalThis.fetch = (async (_url: any, init?: any) => {
+      bodies.push(new URLSearchParams(String(init?.body ?? '')));
+      return new Response('{"id":"C1"}', { status: 200 });
+    }) as typeof fetch;
+    try {
+      await provider.postPending({
+        token: 'T',
+        integration: { internalId: 'U1', profile: 'me' },
+        post: {
+          id: 'p1',
+          message: 'cap',
+          settings: {},
+          media: [
+            { type: 'image', url: 'https://cdn.example.com/1.jpg', alt: '  A long face, labelled  ' },
+            { type: 'image', url: 'https://cdn.example.com/2.jpg' },
+            { type: 'video', url: 'https://cdn.example.com/3.mp4', alt: 'ignored' },
+          ],
+        },
+      } as any);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(bodies[0].get('alt_text')).toBe('A long face, labelled');
+    expect(bodies[1].has('alt_text')).toBe(false);
+    expect(bodies[2].has('alt_text')).toBe(false);
+  });
 
   test('checkValidity enforces text-or-media, 500 chars, max 20 items', () => {
     const photo = { type: 'image' as const, url: 'https://x/pic.jpg' };

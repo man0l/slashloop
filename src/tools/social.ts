@@ -63,6 +63,7 @@ export interface SocialToolDeps {
   /** Owner ids whose accounts the caller may tag: themselves + teammates of workspaces they own. */
   managedOwners: (userId: string) => Promise<string[]>;
   setTags: typeof socialStore.setIntegrationTags;
+  setDefaultBoard: typeof socialStore.setIntegrationDefaultBoard;
   getRotation: typeof socialStore.getRotation;
   upsertRotation: typeof socialStore.upsertRotation;
   uploadFromUrl: (url: string) => Promise<StoredMedia>;
@@ -90,6 +91,7 @@ export const defaultSocialDeps: SocialToolDeps = {
   },
   managedOwners: managedOwnerIds,
   setTags: socialStore.setIntegrationTags,
+  setDefaultBoard: socialStore.setIntegrationDefaultBoard,
   getRotation: socialStore.getRotation,
   upsertRotation: socialStore.upsertRotation,
   uploadFromUrl: (url) => storeSocialMediaFromUrl(url, siteAwareFetch),
@@ -167,6 +169,7 @@ function presentAccount(row: SocialIntegrationRow) {
     tags,
     lane,
     primary,
+    ...(row.provider === 'pinterest' ? { defaultBoardId: row.default_board_id ?? null } : {}),
     ...presentInsights(row),
   };
 }
@@ -314,6 +317,32 @@ export function registerSocialTools(server: McpServer, d: SocialToolDeps = defau
       }
       await d.setTags(row.id, parsed.tags);
       return text({ integrationId: row.id, provider: row.provider, handle: handleOf(row), tags: parsed.tags, lane: parsed.lane, primary: parsed.primary });
+    }),
+  );
+
+  // ---- set_pinterest_default_board ----
+  server.tool(
+    'set_pinterest_default_board',
+    'Set (or clear with boardId: null) the default Pinterest board of a connected Pinterest account. A lane holds one Pinterest account, so this is the lane\'s default board: '
+      + 'create_social_post uses it for a Pinterest post whose settings carry no `boardId` (an explicit settings.boardId still wins). '
+      + 'The id is the Pinterest board id (shown as defaultBoardId in list_social_accounts). Same ownership rule as tag_social_account. '
+      + 'Errors: not_found, not_owner, not_pinterest. Free.',
+    {
+      integrationId: z.string().min(1).describe('Pinterest account id from list_social_accounts.'),
+      boardId: z.string().trim().min(1).max(64).nullable().describe('Pinterest board id, or null to clear.'),
+    },
+    { readOnlyHint: false },
+    ({ integrationId, boardId }) => withCaller(async ({ userId, email }) => {
+      const owners = await d.resolveOwners(userId, email);
+      const visible = await d.listIntegrations(owners, false);
+      const row = visible.find((r) => r.id === integrationId);
+      if (!row) return text({ error: 'not_found', message: 'No visible account has that id. Call list_social_accounts.', integrationId }, true);
+      if (row.provider !== 'pinterest') return text({ error: 'not_pinterest', message: 'Default boards only apply to Pinterest accounts.', integrationId }, true);
+      if (row.owner_id !== userId && !(await d.managedOwners(userId)).includes(row.owner_id)) {
+        return text({ error: 'not_owner', message: 'Only the user who connected this account, or the owner of a workspace it is shared through, can change its default board.', integrationId }, true);
+      }
+      await d.setDefaultBoard(row.id, boardId);
+      return text({ integrationId: row.id, handle: handleOf(row), lane: laneAndPrimary(parseStoredTags(row.tags)).lane, defaultBoardId: boardId });
     }),
   );
 

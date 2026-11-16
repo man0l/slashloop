@@ -45,6 +45,8 @@ import type {
 const AUTH = 'https://www.instagram.com/oauth/authorize';
 const TOKEN = 'https://api.instagram.com/oauth/access_token';
 const GRAPH = 'https://graph.instagram.com';
+/** Meta's per-image alt_text cap. */
+const ALT_TEXT_MAX = 1000;
 
 // Without cover_url/thumb_offset Instagram uses frame 0 of the MP4, which is
 // blank for reels that fade their content in. 1s lands on a settled frame.
@@ -238,6 +240,7 @@ export class InstagramProvider implements SocialProvider {
       } else {
         params.image_url = media.url;
         if (isCarousel) params.media_type = 'IMAGE';
+        if (media.alt?.trim()) params.alt_text = media.alt.trim().slice(0, ALT_TEXT_MAX);
       }
       if (isCarousel) {
         params.is_carousel_item = 'true';
