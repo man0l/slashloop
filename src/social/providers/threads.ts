@@ -36,6 +36,19 @@ interface Container {
   published: boolean;
 }
 
+// Meta's topic_tag rules: 1-50 chars, no periods or ampersands. A leading '#'
+// is tolerated on input (reel-factory sends seo.threads.topic_tag as-is) but
+// never sent. Returns undefined when no tag is set; throws on an invalid one.
+function topicTag(settings: Record<string, unknown> | undefined): string | undefined {
+  const raw = settings?.topicTag;
+  if (raw === undefined || raw === null) return undefined;
+  const tag = String(raw).trim().replace(/^#+/, '').trim();
+  if (!tag) return undefined;
+  if (tag.length > 50) throw new BadBodyError('Threads topic tag is limited to 50 characters');
+  if (/[.&]/.test(tag)) throw new BadBodyError('Threads topic tags cannot contain periods (.) or ampersands (&)');
+  return tag;
+}
+
 export class ThreadsProvider implements SocialProvider {
   identifier: ProviderId = 'threads';
   name = 'Threads';
@@ -155,6 +168,11 @@ export class ThreadsProvider implements SocialProvider {
     if (!media.length && !post.message.trim()) return 'Threads posts need text or media';
     if (post.message.length > 500) return 'Threads text is limited to 500 characters';
     if (media.length > 20) return 'Threads carousels take at most 20 items';
+    try {
+      topicTag(post.settings);
+    } catch (err) {
+      return (err as Error).message;
+    }
     return true;
   }
 
@@ -162,6 +180,7 @@ export class ThreadsProvider implements SocialProvider {
     const userId = ctx.integration.internalId;
     const medias = ctx.post.media.map((m) => ({ ...m, url: m.url.toLowerCase().includes('.mp4') ? assertPublicHttpUrl(m.url, 'video') : m.url }));
     const isCarousel = medias.length > 1;
+    const tag = topicTag(ctx.post.settings);
     const containers: Container[] = [];
 
     if (!medias.length) {
@@ -169,6 +188,7 @@ export class ThreadsProvider implements SocialProvider {
       const created = await this.threads<{ id?: string }>(`/${userId}/threads`, ctx.token, {
         media_type: 'TEXT',
         text: ctx.post.message.slice(0, 500),
+        ...(tag ? { topic_tag: tag } : {}),
       });
       if (!created.id) throw new BadBodyError('Threads did not create the text container');
       containers.push({ creationId: String(created.id), kind: 'single', published: false });
@@ -182,7 +202,10 @@ export class ThreadsProvider implements SocialProvider {
       else params.image_url = assertPublicHttpUrl(media.url, 'photo');
       if (!isVideo && media.alt?.trim()) params.alt_text = media.alt.trim().slice(0, ALT_TEXT_MAX);
       if (isCarousel) params.is_carousel_item = 'true';
-      else if (ctx.post.message.trim()) params.text = ctx.post.message.slice(0, 500);
+      else {
+        if (ctx.post.message.trim()) params.text = ctx.post.message.slice(0, 500);
+        if (tag) params.topic_tag = tag;
+      }
 
       const created = await this.threads<{ id?: string }>(`/${userId}/threads`, ctx.token, params);
       if (!created.id) throw new BadBodyError('Threads did not create the media container');
@@ -194,6 +217,7 @@ export class ThreadsProvider implements SocialProvider {
         media_type: 'CAROUSEL',
         children: containers.map((c) => c.creationId).join(','),
         ...(ctx.post.message.trim() ? { text: ctx.post.message.slice(0, 500) } : {}),
+        ...(tag ? { topic_tag: tag } : {}),
       });
       if (!created.id) throw new BadBodyError('Threads did not create the carousel container');
       containers.push({ creationId: String(created.id), kind: 'carousel', published: false });
