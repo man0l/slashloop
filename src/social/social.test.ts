@@ -155,6 +155,60 @@ describe('threads provider', () => {
     expect(provider.checkValidity({ message: '', settings: {}, media: Array(21).fill(photo) })).not.toBe(true);
   });
 
+  describe('topic tag', () => {
+    const photo = (n: number) => ({ type: 'image' as const, url: `https://example.com/${n}.jpg` });
+    // Capture container-create bodies by stubbing the global fetch.
+    const run = async (settings: Record<string, unknown>, media: ReturnType<typeof photo>[], message = 'hi') => {
+      const bodies: Record<string, string>[] = [];
+      const real = globalThis.fetch;
+      let n = 0;
+      globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+        bodies.push(Object.fromEntries(new URLSearchParams(init?.body ?? '')));
+        return new Response(JSON.stringify({ id: `c${++n}` }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as unknown as typeof fetch;
+      try {
+        await provider.postPending({
+          token: 't',
+          integration: { internalId: 'u1' },
+          post: { message, settings, media },
+        } as never);
+      } finally {
+        globalThis.fetch = real;
+      }
+      return bodies;
+    };
+
+    test('text post sends topic_tag with the leading # stripped', async () => {
+      const [body] = await run({ topicTag: '#Fitness' }, []);
+      expect(body.media_type).toBe('TEXT');
+      expect(body.topic_tag).toBe('Fitness');
+    });
+
+    test('single media sends topic_tag; carousel only tags the CAROUSEL container', async () => {
+      const [single] = await run({ topicTag: 'Fitness' }, [photo(1)]);
+      expect(single.topic_tag).toBe('Fitness');
+      const bodies = await run({ topicTag: '##Fitness' }, [photo(1), photo(2)]);
+      expect(bodies.map((b) => b.media_type)).toEqual(['IMAGE', 'IMAGE', 'CAROUSEL']);
+      expect(bodies[0].topic_tag).toBeUndefined();
+      expect(bodies[1].topic_tag).toBeUndefined();
+      expect(bodies[2].topic_tag).toBe('Fitness');
+    });
+
+    test('no topic_tag when unset or blank', async () => {
+      expect((await run({}, []))[0].topic_tag).toBeUndefined();
+      expect((await run({ topicTag: ' # ' }, []))[0].topic_tag).toBeUndefined();
+    });
+
+    test('checkValidity rejects tags over 50 chars or containing . or &', () => {
+      const base = { message: 'hi', media: [] };
+      expect(provider.checkValidity({ ...base, settings: { topicTag: '#ok tag' } })).toBe(true);
+      expect(provider.checkValidity({ ...base, settings: { topicTag: 'x'.repeat(50) } })).toBe(true);
+      expect(provider.checkValidity({ ...base, settings: { topicTag: 'x'.repeat(51) } })).not.toBe(true);
+      expect(provider.checkValidity({ ...base, settings: { topicTag: 'a.b' } })).not.toBe(true);
+      expect(provider.checkValidity({ ...base, settings: { topicTag: 'a&b' } })).not.toBe(true);
+    });
+  });
+
   test('classify maps Threads/Meta error codes', () => {
     expect(provider.classify('{"error":{"code":190,"message":"Session expired"}}', 400)).toBe('refresh-token');
     expect(provider.classify('{"error":{"code":4,"message":"Application request limit reached"}}', 429)).toBe('retry');
