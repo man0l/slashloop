@@ -97,6 +97,7 @@ export const TOOL_ANNOTATION_ROWS = {
   // Social posting
   list_social_accounts: ['List Social Accounts', T, F, T, F], // DB read, tokens never returned
   tag_social_account: ['Tag Social Account', F, F, T, F], // sets the tag list
+  set_pinterest_default_board: ['Set Pinterest Default Board', F, F, T, F], // sets or clears the account's default board id
   set_rotation: ['Set Posting Rotation', F, F, T, F], // upsert by rotation name
   plan_rotation: ['Plan Posting Rotation', T, F, T, F], // computes a schedule, creates nothing
   upload_social_media: ['Upload Social Media', F, F, F, T], // fetches a public URL into storage
