@@ -229,7 +229,7 @@ describe('instagram provider', () => {
   });
 
   describe('postPending reel cover', () => {
-    const post = (media: Array<{ type: 'image' | 'video'; url: string; thumbnail?: string }>, settings: Record<string, unknown> = {}) => ({
+    const post = (media: Array<{ type: 'image' | 'video'; url: string; alt?: string; thumbnail?: string }>, settings: Record<string, unknown> = {}) => ({
       token: 'TOK',
       post: { id: 'p1', message: 'cap', settings, media },
       integration: { internalId: 'IG1', profile: 'acct' },
