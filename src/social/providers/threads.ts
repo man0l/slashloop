@@ -27,6 +27,8 @@ import type {
 const AUTH = 'https://www.threads.com/oauth/authorize';
 const TOKEN = 'https://graph.threads.net/oauth/access_token';
 const API = 'https://graph.threads.net/v1.0';
+/** Meta's per-image alt_text cap. */
+const ALT_TEXT_MAX = 1000;
 
 interface Container {
   creationId: string;
@@ -178,6 +180,7 @@ export class ThreadsProvider implements SocialProvider {
       const params: Record<string, string> = { media_type: isVideo ? 'VIDEO' : 'IMAGE' };
       if (isVideo) params.video_url = assertPublicHttpUrl(media.url, 'video');
       else params.image_url = assertPublicHttpUrl(media.url, 'photo');
+      if (!isVideo && media.alt?.trim()) params.alt_text = media.alt.trim().slice(0, ALT_TEXT_MAX);
       if (isCarousel) params.is_carousel_item = 'true';
       else if (ctx.post.message.trim()) params.text = ctx.post.message.slice(0, 500);
 

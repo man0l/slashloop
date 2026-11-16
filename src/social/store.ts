@@ -142,6 +142,16 @@ export async function setIntegrationTags(id: string, tags: string[]): Promise<vo
   ]);
 }
 
+/** Set (or clear with null) the Pinterest board used when a post names none. Ownership is checked by the caller. */
+export async function setIntegrationDefaultBoard(id: string, boardId: string | null): Promise<void> {
+  await rawBatch([
+    {
+      sql: 'UPDATE social_integrations SET default_board_id = ?2, updated_at = ?3 WHERE id = ?1',
+      params: [id, boardId, nowSeconds()],
+    },
+  ]);
+}
+
 // ── rotations ───────────────────────────────────────────────────────────────
 
 export async function getRotation(ownerId: string, name: string): Promise<SocialRotationRow | undefined> {

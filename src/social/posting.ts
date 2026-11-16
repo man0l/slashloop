@@ -162,6 +162,12 @@ export type CreatePostResult =
   | { ok: true; groupId: string; posts: number; publishDate: number; draft: boolean; skipped: Array<{ provider: string; message: string }> }
   | { ok: false; status: 400 | 422; error: string; skipped?: Array<{ provider: string; message: string }> };
 
+/** A Pinterest post that names no board lands on the account's default board (when one is set). */
+function withDefaultBoard(integration: SocialIntegrationRow, settings: Record<string, unknown>): Record<string, unknown> {
+  if (integration.provider !== 'pinterest' || !integration.default_board_id || settings.boardId) return settings;
+  return { ...settings, boardId: integration.default_board_id };
+}
+
 /**
  * Validate and persist one submission (one row per platform). `resolveOwners`
  * is lazy so malformed bodies are rejected before any team lookup.
@@ -204,7 +210,7 @@ export async function createPost(
   const valid: typeof selected = [];
   const skipped: Array<{ provider: string; message: string }> = [];
   for (const integration of selected) {
-    const settings = settingsByIntegration[integration.id] ?? {};
+    const settings = withDefaultBoard(integration, settingsByIntegration[integration.id] ?? {});
     const validity = getProvider(registry, integration.provider).checkValidity({ message: body.content, settings, media });
     if (validity === true) valid.push(integration);
     else skipped.push({ provider: integration.provider, message: validity });
@@ -220,7 +226,7 @@ export async function createPost(
       integration,
       publishDate,
       content: body.content!.trim(),
-      settings: settingsByIntegration[integration.id] ?? {},
+      settings: withDefaultBoard(integration, settingsByIntegration[integration.id] ?? {}),
       media,
       state: asDraft ? ('DRAFT' as const) : media.some((m) => m.scrub) ? ('SCRUB' as const) : ('QUEUE' as const),
     })),

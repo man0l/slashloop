@@ -66,7 +66,7 @@ async function createDraft(owner = 'alice', integrationIds = ['tt-a']) {
 
 beforeEach(() => {
   db = new Database(':memory:');
-  for (const f of ['0005_social_scheduler.sql', '0025_social_lanes.sql', '0029_social_insights_status.sql']) {
+  for (const f of ['0005_social_scheduler.sql', '0025_social_lanes.sql', '0029_social_insights_status.sql', '0032_social_default_board.sql']) {
     db.exec(readFileSync(new URL(`../../prisma/d1-migrations/${f}`, import.meta.url), 'utf8'));
   }
   setActiveClient({} as never, async (statements) => statements.map((st) => db.query(st.sql).all(...((st.params ?? []) as never[])) as unknown[]));
@@ -87,7 +87,7 @@ describe('registration', () => {
     const client = new Client({ name: 'c', version: '0' });
     await Promise.all([server.connect(a), client.connect(b)]);
     const names = (await client.listTools()).tools.map((t) => t.name);
-    for (const n of ['list_social_accounts', 'upload_social_media', 'create_social_post', 'list_social_posts', 'get_social_stats', 'reschedule_social_post', 'delete_social_post', 'set_social_post_thumbnail', 'tag_social_account', 'set_rotation', 'plan_rotation']) {
+    for (const n of ['list_social_accounts', 'upload_social_media', 'create_social_post', 'list_social_posts', 'get_social_stats', 'reschedule_social_post', 'delete_social_post', 'set_social_post_thumbnail', 'tag_social_account', 'set_pinterest_default_board', 'set_rotation', 'plan_rotation']) {
       expect(names).toContain(n);
     }
     const create = (await client.listTools()).tools.find((t) => t.name === 'create_social_post')!;
@@ -556,6 +556,38 @@ describe('lanes block + create_social_post({ lane })', () => {
     const { body } = await call('list_social_posts', { from: '2026-11-01T00:00:00Z', to: '2026-11-10T00:00:00Z' });
     const lanes = body.posts[0].posts.map((p: { account: { lane: string | null } }) => p.account.lane);
     expect(lanes).toEqual(['jenny', 'jenny']);
+  });
+});
+
+describe('set_pinterest_default_board', () => {
+  const boardOf = (groupId: string) => JSON.parse((db.query('SELECT settings FROM social_posts WHERE group_id = ?').get(groupId) as { settings: string }).settings).boardId;
+
+  test('a Pinterest post with no boardId lands on the default; an explicit boardId wins', async () => {
+    addIntegration('pi-a', 'alice', 'pinterest');
+    const set = await call('set_pinterest_default_board', { integrationId: 'pi-a', boardId: 'B-default' });
+    expect(set.body).toMatchObject({ integrationId: 'pi-a', defaultBoardId: 'B-default' });
+    expect((await call('list_social_accounts')).body.accounts.find((a: { id: string }) => a.id === 'pi-a').defaultBoardId).toBe('B-default');
+
+    const fallback = await call('create_social_post', { integrationIds: ['pi-a'], content: 'pin', media: [IMG] });
+    expect(boardOf(fallback.body.groupId)).toBe('B-default');
+    const explicit = await call('create_social_post', { integrationIds: ['pi-a'], content: 'pin', media: [IMG], settings: { 'pi-a': { boardId: 'B-other' } } });
+    expect(boardOf(explicit.body.groupId)).toBe('B-other');
+  });
+
+  test('without a default the post is still skipped for the missing board; null clears', async () => {
+    addIntegration('pi-a', 'alice', 'pinterest');
+    const none = await call('create_social_post', { integrationIds: ['pi-a'], content: 'pin', media: [IMG] });
+    expect(none.isError).toBe(true);
+    await call('set_pinterest_default_board', { integrationId: 'pi-a', boardId: 'B1' });
+    await call('set_pinterest_default_board', { integrationId: 'pi-a', boardId: null });
+    expect((db.query('SELECT default_board_id FROM social_integrations WHERE id = ?').get('pi-a') as { default_board_id: string | null }).default_board_id).toBeNull();
+  });
+
+  test('rejects non-Pinterest, unknown and foreign accounts', async () => {
+    addIntegration('pi-b', 'bob', 'pinterest');
+    expect((await call('set_pinterest_default_board', { integrationId: 'tt-a', boardId: 'B' })).body.error).toBe('not_pinterest');
+    expect((await call('set_pinterest_default_board', { integrationId: 'nope', boardId: 'B' })).body.error).toBe('not_found');
+    expect((await call('set_pinterest_default_board', { integrationId: 'pi-b', boardId: 'B' })).body.error).toBe('not_found');
   });
 });
 
