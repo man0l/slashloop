@@ -10,12 +10,14 @@
 // Every mock below therefore spreads the REAL module and overrides only the
 // few functions under test. (db.js stays narrow: it's the one module whose
 // surface can't be spread, same trade-off the other queue tests make.)
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 
-const realMedia = await import('../lib/media.js');
-const realCredits = await import('../lib/credits.js');
-const realRefresh = await import('../lib/refresh.js');
-const realAnalysis = await import('../analysis/index.js');
+// Snapshots, not the live namespaces: mock.module patches a namespace in place,
+// so restoring from one in afterAll would just re-install the overrides.
+const realMedia = { ...(await import('../lib/media.js')) };
+const realCredits = { ...(await import('../lib/credits.js')) };
+const realRefresh = { ...(await import('../lib/refresh.js')) };
+const realAnalysis = { ...(await import('../analysis/index.js')) };
 
 const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
 const refunds: Array<{ workspaceId: string; amount: number; refId: string }> = [];
@@ -63,6 +65,16 @@ mock.module('../lib/media.js', () => ({
   ingestThumbnails: async () => ({ stored: 0, skipped: 0, failed: 0 }),
   downloadAndStoreVideo: async () => { throw downloadThrows ?? new Error('not under test'); },
 }));
+
+// Spreading the real module is not enough on its own: the overrides stay live
+// for every later file in the run, and media-cover-log.test.ts then calls the
+// stubbed ingestThumbnails (0/0/0) whenever CI orders it after this file.
+afterAll(() => {
+  mock.module('../lib/media.js', () => realMedia);
+  mock.module('../lib/credits.js', () => realCredits);
+  mock.module('../lib/refresh.js', () => realRefresh);
+  mock.module('../analysis/index.js', () => realAnalysis);
+});
 
 const { processClaimedJob } = await import('./process-job.js');
 const { MAX_ATTEMPTS } = await import('../lib/jobs.js');
