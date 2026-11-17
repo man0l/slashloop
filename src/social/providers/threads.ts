@@ -212,17 +212,9 @@ export class ThreadsProvider implements SocialProvider {
       containers.push({ creationId: String(created.id), kind: isCarousel ? 'carousel-child' : 'single', published: false });
     }
 
-    if (isCarousel) {
-      const created = await this.threads<{ id?: string }>(`/${userId}/threads`, ctx.token, {
-        media_type: 'CAROUSEL',
-        children: containers.map((c) => c.creationId).join(','),
-        ...(ctx.post.message.trim() ? { text: ctx.post.message.slice(0, 500) } : {}),
-        ...(tag ? { topic_tag: tag } : {}),
-      });
-      if (!created.id) throw new BadBodyError('Threads did not create the carousel container');
-      containers.push({ creationId: String(created.id), kind: 'carousel', published: false });
-    }
-
+    // The CAROUSEL container is created in checkPostStatus once every child is
+    // FINISHED; creating it here races child processing and Meta answers
+    // 'Invalid carousel children' (subcode 4279004).
     return { pendingData: { containers, publishedIds: [] } };
   }
 
@@ -247,6 +239,20 @@ export class ThreadsProvider implements SocialProvider {
       if (status.status !== 'FINISHED') {
         return { status: 'pending', pendingData: { ...ctx.pendingData } };
       }
+    }
+
+    const children = containers.filter((c) => c.kind === 'carousel-child');
+    if (children.length && !containers.some((c) => c.kind === 'carousel')) {
+      const tag = topicTag(ctx.post.settings);
+      const created = await this.threads<{ id?: string }>(`/${ctx.integration.internalId}/threads`, ctx.token, {
+        media_type: 'CAROUSEL',
+        children: children.map((c) => c.creationId).join(','),
+        ...(ctx.post.message.trim() ? { text: ctx.post.message.slice(0, 500) } : {}),
+        ...(tag ? { topic_tag: tag } : {}),
+      });
+      if (!created.id) throw new BadBodyError('Threads did not create the carousel container');
+      const next = [...containers, { creationId: String(created.id), kind: 'carousel' as const, published: false }];
+      return { status: 'pending', pendingData: { ...ctx.pendingData, containers: next } };
     }
 
     return { status: 'ready', pendingData: { ...ctx.pendingData } };

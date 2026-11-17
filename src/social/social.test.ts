@@ -365,14 +365,51 @@ describe('threads provider', () => {
       expect(body.topic_tag).toBe('Fitness');
     });
 
-    test('single media sends topic_tag; carousel only tags the CAROUSEL container', async () => {
+    test('single media sends topic_tag; carousel children are untagged', async () => {
       const [single] = await run({ topicTag: 'Fitness' }, [photo(1)]);
       expect(single.topic_tag).toBe('Fitness');
       const bodies = await run({ topicTag: '##Fitness' }, [photo(1), photo(2)]);
-      expect(bodies.map((b) => b.media_type)).toEqual(['IMAGE', 'IMAGE', 'CAROUSEL']);
-      expect(bodies[0].topic_tag).toBeUndefined();
-      expect(bodies[1].topic_tag).toBeUndefined();
-      expect(bodies[2].topic_tag).toBe('Fitness');
+      expect(bodies.map((b) => b.media_type)).toEqual(['IMAGE', 'IMAGE']);
+      expect(bodies.every((b) => b.topic_tag === undefined)).toBe(true);
+    });
+
+    test('carousel container is created only after every child is FINISHED, and carries the tag', async () => {
+      const bodies: Record<string, string>[] = [];
+      let status = 'IN_PROGRESS';
+      const real = globalThis.fetch;
+      globalThis.fetch = (async (url: unknown, init?: { body?: string; method?: string }) => {
+        if (init?.method === 'GET') {
+          return new Response(JSON.stringify({ status }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        bodies.push(Object.fromEntries(new URLSearchParams(init?.body ?? '')));
+        return new Response(JSON.stringify({ id: 'car1' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as unknown as typeof fetch;
+      try {
+        const ctx = {
+          token: 't',
+          integration: { internalId: 'u1' },
+          post: { message: 'hi', settings: { topicTag: '#Fitness' }, media: [photo(1), photo(2)] },
+          pendingData: {
+            containers: [
+              { creationId: 'a', kind: 'carousel-child', published: false },
+              { creationId: 'b', kind: 'carousel-child', published: false },
+            ],
+            publishedIds: [],
+          },
+        } as never;
+        const waiting = await provider.checkPostStatus(ctx);
+        expect(waiting.status).toBe('pending');
+        expect(bodies).toHaveLength(0);
+        status = 'FINISHED';
+        const created = await provider.checkPostStatus(ctx);
+        expect(created.status).toBe('pending');
+        expect(bodies).toHaveLength(1);
+        expect(bodies[0]).toMatchObject({ media_type: 'CAROUSEL', children: 'a,b', topic_tag: 'Fitness' });
+        const kinds = ((created as { pendingData?: unknown }).pendingData as { containers: { kind: string }[] }).containers.map((c) => c.kind);
+        expect(kinds).toEqual(['carousel-child', 'carousel-child', 'carousel']);
+      } finally {
+        globalThis.fetch = real;
+      }
     });
 
     test('no topic_tag when unset or blank', async () => {
