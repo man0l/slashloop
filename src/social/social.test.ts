@@ -405,7 +405,7 @@ describe('threads provider', () => {
         expect(created.status).toBe('pending');
         expect(bodies).toHaveLength(1);
         expect(bodies[0]).toMatchObject({ media_type: 'CAROUSEL', children: 'a,b', topic_tag: 'Fitness' });
-        const kinds = (created.pendingData as { containers: { kind: string }[] }).containers.map((c) => c.kind);
+        const kinds = ((created as { pendingData?: unknown }).pendingData as { containers: { kind: string }[] }).containers.map((c) => c.kind);
         expect(kinds).toEqual(['carousel-child', 'carousel-child', 'carousel']);
       } finally {
         globalThis.fetch = real;
