@@ -20,7 +20,7 @@ every later call.
 
 Required: `platform`, `sourceType`, and `query`.
 
-- `platform` must be `tiktok`; Reels and Shorts are refused by the service.
+- `platform` is `tiktok` (any source type) or `reels` (Instagram, `creator` only; query is `@handle` or the profile URL; each refresh sees the latest 12 Reels). Reels hashtag/keyword and Shorts are refused by the service.
 - `sourceType` is `creator`, `keyword`, `hashtag`, or `collection`.
 - `query` is `@handle`, a phrase, `#hashtag`, or a collection share URL/ID.
   Keep the leading `#`; keep or add `@` for creators.

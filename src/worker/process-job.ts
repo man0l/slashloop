@@ -451,7 +451,9 @@ export async function processClaimedJob(
   if (job.kind === 'fetch') {
     try {
       const v = await db.video.findUnique({ where: { id: videoId }, select: { url: true, platform: true } });
-      if (!v || v.platform !== 'tiktok' || !v.url) throw new Error('no downloadable TikTok URL');
+      if (!v || (v.platform !== 'tiktok' && v.platform !== 'reels') || !v.url) {
+        throw new Error('no downloadable TikTok or Instagram Reel URL');
+      }
       const { downloadAndStoreVideo } = await import('../lib/media.js');
       // Throws (and marks the video mediaStatus='failed') on any failure with
       // the REAL Apify reason — that message becomes this job's lastError,

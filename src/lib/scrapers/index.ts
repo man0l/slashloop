@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------
 // Scraper registry — the one place that decides WHO scrapes.
 //
-//   SCRAPER_PROVIDER=proxy   (default) — direct TikTok, billed per gigabyte
+//   SCRAPER_PROVIDER=proxy   (default) — direct TikTok + Instagram Reels,
+//                                       billed per gigabyte
 //
 // Unset (or empty, or "default") resolves to proxy. If SCRAPER_PROXY_URL is
 // missing the scrape fails closed with ScraperUnavailableError. An unknown
@@ -93,14 +94,15 @@ function requireAdapter(platform: string, name?: string): ScraperAdapter {
 /**
  * Single-video download adapter.
  *
- * Proxy when SCRAPER_PROXY_URL is set (TikTok CDN needs a residential exit).
+ * Proxy when SCRAPER_PROXY_URL is set (TikTok CDN needs a residential exit;
+ * the Instagram Reel page does too, its CDN file does not).
  * Otherwise the exclusive SCRAPER_PROVIDER. An explicit `name` wins.
  */
 export function selectDownloadAdapter(platform = 'tiktok', name?: string): ScraperAdapter {
   if (name?.trim()) return requireAdapter(platform, name);
 
   const proxy = REGISTRY.get(PROXY_PROVIDER_NAME);
-  if (platform === 'tiktok' && proxy?.isConfigured()) return proxy;
+  if ((platform === 'tiktok' || platform === 'reels') && proxy?.isConfigured()) return proxy;
 
   return requireAdapter(platform);
 }

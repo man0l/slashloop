@@ -28,4 +28,4 @@ If anything is ambiguous, ask one short question. Otherwise:
 
 If the user clearly only wants to register the source without scraping now, skip
 steps 2–4. If refresh returns zero videos, skip `show_gallery` and say so.
-Only TikTok is live; Reels and Shorts are stubs.
+TikTok is live for every source type. Instagram Reels (`platform: "reels"`) is live for **creators only**: each refresh sees the creator's latest 12 Reels (Instagram serves no more without login), and Reels hashtag/keyword sources are refused. Likes read 0 on Reels whose owner hid like counts. Shorts is a stub.

@@ -41,6 +41,10 @@ import {
   itemStructFromWatchHtml, withTikTokHttp, ESTIMATED_LOOKUP_BYTES,
   type TikTokHttp,
 } from './tiktok-web.js';
+import {
+  estimateInstagramScrapeBytes, fetchCreatorReels, fetchReelMedia, isInstagramUrl,
+  proxyInstagramHttp, reelVideoUrls, type InstagramHttp,
+} from './instagram-web.js';
 import { infoNote } from '../refresh-notes.js';
 import type { NormalizedVideo } from '../../normalizers.js';
 import { splitSpend } from '../spend-split.js';
@@ -282,11 +286,41 @@ export async function runTikTokProxyScrape(
   });
 }
 
+/** Per-Reel page reads per scrape (caption, exact date, duration). */
+function instagramHydrateCount(): number {
+  const n = Number(process.env.SCRAPER_IG_HYDRATE ?? 12);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 12;
+}
+
+/**
+ * Instagram Reels scrape body (creator sources only — hashtag and keyword
+ * search are login-walled logged out). Tests inject a fake InstagramHttp.
+ */
+export async function runInstagramProxyScrape(
+  opts: ScrapeOptions & { platform: string },
+  http: InstagramHttp,
+): Promise<{ items: NormalizedVideo[]; rawCount: number; notices: string[]; canonicalQuery: string | null }> {
+  if (opts.sourceType !== 'creator') {
+    return {
+      items: [],
+      rawCount: 0,
+      canonicalQuery: null,
+      notices: [`Instagram ${opts.sourceType} sources cannot be scraped without login — track the creator instead`],
+    };
+  }
+  const r = await fetchCreatorReels(opts.query, {
+    limit: opts.limit,
+    postedAfter: opts.postedAfter,
+    hydrate: instagramHydrateCount(),
+  }, http);
+  return { ...r, notices: r.notices.filter(Boolean), canonicalQuery: null };
+}
+
 export const proxyAdapter: ScraperAdapter = {
   name: PROXY_PROVIDER_NAME,
 
   supports(platform: string): boolean {
-    return platform === 'tiktok';
+    return platform === 'tiktok' || platform === 'reels';
   },
 
   isConfigured(): boolean {
@@ -299,12 +333,13 @@ export const proxyAdapter: ScraperAdapter = {
   },
 
   async scrape(opts: ScrapeOptions & { platform: string }): Promise<ScrapeResult> {
-    if (opts.platform !== 'tiktok') {
+    if (!proxyAdapter.supports(opts.platform)) {
       throw new Error(
-        `The proxy scraper only supports TikTok (asked for "${opts.platform}"). `
+        `The proxy scraper supports TikTok and Instagram Reels (asked for "${opts.platform}"). `
         + 'No other platform has a scraper provider yet.',
       );
     }
+    const instagram = opts.platform === 'reels';
     if (!proxyAdapter.isConfigured()) throw new Error(proxyAdapter.configurationHint());
 
     if (opts.resumeDatasetId) {
@@ -331,12 +366,14 @@ export const proxyAdapter: ScraperAdapter = {
 
     // Pre-authorise the WORST case: a cold lookup plus a full page of results.
     const needsLookup = opts.sourceType !== 'keyword';
-    const estimate = estimateScrapeBytes(opts.limit, needsLookup);
+    const estimate = instagram
+      ? estimateInstagramScrapeBytes(opts.limit, instagramHydrateCount())
+      : estimateScrapeBytes(opts.limit, needsLookup);
     for (const s of splitSpend(costSharers(opts), estimate)) {
       await assertProxyBudget(s.workspaceId, s.cents);
     }
 
-    const context = `${opts.sourceType}="${opts.query}"`;
+    const context = `${instagram ? 'instagram ' : ''}${opts.sourceType}="${opts.query}"`;
     console.log(
       `[proxy] scraping ${context} limit=${opts.limit}`
       + `${opts.postedAfter ? ` postedAfter=${opts.postedAfter.toISOString()}` : ''} `
@@ -347,9 +384,13 @@ export const proxyAdapter: ScraperAdapter = {
     let value: Awaited<ReturnType<typeof runTikTokProxyScrape>> | null = null;
     try {
       value = await withMeterScope(async () => {
-        const http = (await createImpersonatedHttp()) ?? unsignedHttp;
         try {
-          const v = await runTikTokProxyScrape(opts, http);
+          // Instagram skips the Impit session: it is TikTok-tuned (signing,
+          // a tiktok.com warm-up hit) and plain proxy fetch is what passed
+          // the logged-out Reels probes.
+          const v = instagram
+            ? await runInstagramProxyScrape(opts, proxyInstagramHttp)
+            : await runTikTokProxyScrape(opts, (await createImpersonatedHttp()) ?? unsignedHttp);
           bytes = scopeBytesUsed();
           return v;
         } catch (err) {
@@ -399,6 +440,8 @@ export const proxyAdapter: ScraperAdapter = {
   async downloadVideo(opts: DownloadOptions): Promise<DownloadResult> {
     if (!proxyAdapter.isConfigured()) throw new Error(proxyAdapter.configurationHint());
     if (!opts.workspaceId) throw new Error('workspaceId is required (needed for traffic accounting).');
+
+    if (isInstagramUrl(opts.videoUrl)) return downloadInstagramReel(opts, proxyInstagramHttp);
 
     const itemId = extractVideoId(opts.videoUrl);
     if (!itemId) throw new Error(`Could not read a video id out of "${opts.videoUrl}"`);
@@ -468,6 +511,65 @@ export const proxyAdapter: ScraperAdapter = {
     });
   },
 };
+
+/**
+ * One Reel's MP4: read the /reel/<code>/ page (proxy) for `video_versions`,
+ * then pull the progressive file — CDN direct first, proxy if that refuses.
+ */
+export async function downloadInstagramReel(
+  opts: DownloadOptions,
+  http: InstagramHttp,
+): Promise<DownloadResult> {
+  await assertProxyBudget(opts.workspaceId, maxVideoBytes() + ESTIMATED_LOOKUP_BYTES);
+
+  return withMeterScope(async () => {
+    const media = await fetchReelMedia(opts.videoUrl, http);
+    const urls = reelVideoUrls(media);
+    if (!urls.length) {
+      throw new Error(
+        Number(media.media_type) === 8
+          ? 'Instagram post is a carousel (no MP4) — only Reels can be fetched'
+          : 'Instagram returned no playable URL for this Reel',
+      );
+    }
+
+    const ceiling = maxVideoBytes();
+    let buffer: Buffer | null = null;
+    let used = '';
+    let lastStatus = 0;
+    for (const url of urls) {
+      const r = await http.getBuffer(url, ceiling + 1);
+      lastStatus = r.status;
+      if (!r.ok) continue;
+      if (r.buffer.length > ceiling) {
+        throw new Error(`Reel exceeds the SCRAPER_PROXY_MAX_VIDEO_MB ceiling (${fmtBytes(ceiling)})`);
+      }
+      buffer = r.buffer;
+      used = url;
+      break;
+    }
+    if (!buffer) throw new Error(`Instagram CDN refused every Reel rendition (last http=${lastStatus})`);
+    if (buffer.length < 1024) {
+      throw new Error(`Downloaded file too small (${buffer.length} bytes) — likely an error page`);
+    }
+
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(opts.outputPath, buffer);
+
+    const bytes = scopeBytesUsed() || buffer.length;
+    const costCents = await recordTrafficBytes(opts.workspaceId, bytes, opts.videoUrl);
+    const cover = media.image_versions2?.candidates?.[0]?.url;
+    return {
+      costCents,
+      sizeBytes: buffer.length,
+      cdnUrl: used,
+      actorRunId: null,
+      provider: PROXY_PROVIDER_NAME,
+      bytesUsed: bytes,
+      coverUrl: typeof cover === 'string' && cover ? cover : null,
+    };
+  });
+}
 
 /** `.../video/1234567890` or `/v/1234.html` — the id is the long digit run. */
 export function extractVideoId(url: string): string | null {

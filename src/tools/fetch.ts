@@ -103,7 +103,7 @@ export function registerFetchTool(server: McpServer) {
       for (const t of pool) {
         if (eligible.length >= cap) break;
         const v = await db.video.findUnique({ where: { id: t.id }, select: { mediaStatus: true, platform: true, url: true } });
-        if (!v || v.platform !== 'tiktok' || !v.url) continue;
+        if (!v || (v.platform !== 'tiktok' && v.platform !== 'reels') || !v.url) continue;
         if (v.mediaStatus === 'stored') { skippedStored++; continue; }
         if (await outstandingJobForVideo(t.id)) { skippedQueued++; continue; }
         eligible.push(t);

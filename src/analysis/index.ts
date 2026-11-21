@@ -487,10 +487,9 @@ export async function analyzeVideoWithDownload(
   // If the backend needs a video file, download it via the exclusive scraper
   // (proxy when SCRAPER_PROXY_URL is set, otherwise Apify).
   //
-  // TikTok only: downloadVideo goes through the configured scraper. Reels
-  // and shorts still have no working adapter (the Apify path throws for
-  // both), but create_source still accepts them — so the guard is on
-  // platform, not on whether a row can exist.
+  // TikTok and Instagram Reels: downloadVideo goes through the proxy scraper.
+  // Shorts has no adapter, so the guard is on platform, not on whether a row
+  // can exist.
   // Phase 2.2: with a live Files API handle there is nothing to download OR
   // upload — Gemini already holds the video. This is the case §2.2 called
   // "needs no download at all, from any source", and it skips both the Apify
@@ -500,7 +499,7 @@ export async function analyzeVideoWithDownload(
   let videoFilePath: string | undefined;
   if (cachedGeminiFile) {
     console.log(`[analysis] Gemini still holds ${videoId} — skipping download and upload`);
-  } else if (needsFile && video.platform === 'tiktok' && video.url && workspaceId) {
+  } else if (needsFile && (video.platform === 'tiktok' || video.platform === 'reels') && video.url && workspaceId) {
     try {
       const { mkdtempSync } = await import('node:fs');
       const { tmpdir } = await import('node:os');
@@ -534,7 +533,7 @@ export async function analyzeVideoWithDownload(
           workspaceId,
           videoUrl: video.url,
           outputPath: videoFilePath,
-          platform: 'tiktok',
+          platform: video.platform,
         });
 
         // Sanity-check the file landed and has real content

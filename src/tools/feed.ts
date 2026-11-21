@@ -345,10 +345,11 @@ export function registerFeedTools(server: McpServer) {
             : undefined,
         }, [
           // Only offer tracking on a platform that can actually be scraped.
-          // Suggesting a Reels source sends the user into create_source →
-          // refresh → failure, which reads as a broken product rather than an
-          // unfinished one.
-          platform === 'tiktok' ? {
+          // Suggesting a Shorts source (or a Reels hashtag/keyword, which is
+          // login-walled) sends the user into create_source → refresh →
+          // failure, which reads as a broken product rather than an
+          // unfinished one. Reels creators scrape fine.
+          platform === 'tiktok' || (platform === 'reels' && query.startsWith('@')) ? {
             label: `Track ${query} on ${platform}`,
             tool: 'create_source',
             args: {
@@ -367,9 +368,12 @@ export function registerFeedTools(server: McpServer) {
               sourceType: query.startsWith('#') ? 'hashtag' : query.startsWith('@') ? 'creator' : 'keyword',
               query,
             },
-            why: `Free. ${platform} has no scraper yet, so a ${platform} source would be created and then fail `
-              + 'at refresh. TikTok is the only live platform — say so plainly rather than letting the user '
-              + 'discover it two steps later.',
+            why: platform === 'reels'
+              ? 'Free. Instagram hashtag and keyword pages need a login, so only Reels creators (@handle) can be '
+                + 'tracked on Instagram — say so plainly rather than letting the user discover it two steps later.'
+              : `Free. ${platform} has no scraper yet, so a ${platform} source would be created and then fail `
+                + 'at refresh. TikTok and Instagram Reels creators are the live platforms — say so plainly rather '
+                + 'than letting the user discover it two steps later.',
           },
         ]), null, 2) }],
       };
