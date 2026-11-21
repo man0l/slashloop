@@ -17,6 +17,7 @@
 
 import { CREDIT_COSTS } from './credits.js';
 import { ESTIMATED_LOOKUP_BYTES, estimateScrapeBytes, maxVideoBytes, scrapeCapKind, selectDownloadAdapter } from './scrapers/index.js';
+import { estimateInstagramScrapeBytes, INSTAGRAM_TAB_PAGE_SIZE } from './scrapers/instagram-web.js';
 import { bytesToCents, fmtBytes } from './scrapers/bandwidth.js';
 
 /** Apify cost constants mirrored from src/lib/apify.ts for estimation only. */
@@ -68,18 +69,26 @@ export function apifyCostCents(results: number): number {
 // worst case (creator sources need a secUid lookup, hashtags don't).
 // ---------------------------------------------------------------------------
 
+// Reels read one ~500KB page per Reel (caption, exact date) on top of the
+// tab page — ~15x a TikTok item — so they get their own estimator.
+function listScrapeBytes(results: number, platform: string): number {
+  return platform === 'reels'
+    ? estimateInstagramScrapeBytes(results, INSTAGRAM_TAB_PAGE_SIZE)
+    : estimateScrapeBytes(results, true);
+}
+
 /** Estimated scraper spend for a list scrape of `n` results, in cents. */
-export function listScrapeCostCents(results: number): number {
-  if (scrapeCapKind('tiktok') === 'proxy') {
-    return bytesToCents(estimateScrapeBytes(results, true));
+export function listScrapeCostCents(results: number, platform = 'tiktok'): number {
+  if (scrapeCapKind(platform) === 'proxy') {
+    return bytesToCents(listScrapeBytes(results, platform));
   }
   return apifyCostCents(results);
 }
 
 /** Estimated scraper spend for `n` results, as user-facing text. */
-export function scraperCostLabel(results: number): string {
-  if (scrapeCapKind('tiktok') === 'proxy') {
-    return `~${fmtBytes(estimateScrapeBytes(results, true))} proxy traffic`;
+export function scraperCostLabel(results: number, platform = 'tiktok'): string {
+  if (scrapeCapKind(platform) === 'proxy') {
+    return `~${fmtBytes(listScrapeBytes(results, platform))} proxy traffic`;
   }
   return apifyCostLabel(results);
 }

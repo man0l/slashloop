@@ -398,6 +398,7 @@ export type RefreshSourceResult =
       jobId: string;
       sourceId: string;
       query: string;
+      platform: string;
       videoLimit: number;
       deadlineAt: string;
     }
@@ -483,6 +484,7 @@ export async function refreshSourceForWorkspace(
       jobId: job.id,
       sourceId,
       query: source.query,
+      platform: source.platform,
       videoLimit: limit,
       deadlineAt: deadlineAt.toISOString(),
     };
