@@ -142,8 +142,8 @@ async function collectDue(
       hoursOverdue: overdueBy != null ? Math.round(overdueBy / 3_600_000) : null,
       neverRefreshed: last === null,
       estimatedCredits: Math.ceil(CREDIT_COSTS.refreshSourcePerVideo * plan.limit),
-      estimatedScraper: scraperCostLabel(plan.limit),
-      estimatedApify: scraperCostLabel(plan.limit),
+      estimatedScraper: scraperCostLabel(plan.limit, s.platform),
+      estimatedApify: scraperCostLabel(plan.limit, s.platform),
       hasOutstandingJob: Boolean(outstanding),
     });
   }

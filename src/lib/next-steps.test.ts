@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { costBlock, downloadCeilingBytes, downloadCostCents, listScrapeCostCents, scraperCostLabel } from './next-steps.js';
 import { ESTIMATED_LOOKUP_BYTES, maxVideoBytes } from './scrapers/index.js';
-import { bytesToCents } from './scrapers/bandwidth.js';
+import { bytesToCents, fmtBytes } from './scrapers/bandwidth.js';
+import { estimateInstagramScrapeBytes, INSTAGRAM_TAB_PAGE_SIZE } from './scrapers/instagram-web.js';
 import { ScriptDataSchema, SCRIPT_FORMATS } from '../analysis/schema.js';
 
 describe('costBlock', () => {
@@ -53,6 +54,15 @@ describe('proxy quotes use the existing gigabyte helpers', () => {
     process.env.SCRAPER_PROXY_URL = 'user:pass@gw.example.com:8080';
     expect(scraperCostLabel(20)).toContain('proxy traffic');
     expect(scraperCostLabel(20)).not.toContain('Apify');
+  });
+
+  test('Reels are quoted with the Instagram estimator (tab + one page per Reel)', () => {
+    process.env.SCRAPER_PROVIDER = 'proxy';
+    process.env.SCRAPER_PROXY_URL = 'user:pass@gw.example.com:8080';
+    const bytes = estimateInstagramScrapeBytes(12, INSTAGRAM_TAB_PAGE_SIZE);
+    expect(listScrapeCostCents(12, 'reels')).toBe(bytesToCents(bytes));
+    expect(listScrapeCostCents(12, 'reels')).toBeGreaterThan(listScrapeCostCents(12));
+    expect(scraperCostLabel(12, 'reels')).toBe(`~${fmtBytes(bytes)} proxy traffic`);
   });
 
   test('download ceiling is the proxy video ceiling plus the watch-page lookup', () => {

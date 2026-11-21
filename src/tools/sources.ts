@@ -112,7 +112,7 @@ export function registerSourceTools(server: McpServer) {
             label: `Pull videos for ${query} now`,
             tool: 'refresh_source',
             args: { sourceId: result.source.id },
-            cost: `${scraperCostLabel(videoLimit)} + ${refreshCreditLabel(videoLimit)}`,
+            cost: `${scraperCostLabel(videoLimit, platform)} + ${refreshCreditLabel(videoLimit)}`,
             spendsMoney: true,
             why: 'This source has no videos yet — it stays empty until refreshed. '
               + `Estimate assumes the full ${videoLimit}-video limit; a smaller scrape costs proportionally less.`,
@@ -194,9 +194,9 @@ export function registerSourceTools(server: McpServer) {
             sourceId: result.sourceId,
             query: result.query,
             videoLimit: result.videoLimit,
-            estimatedCost: `${scraperCostLabel(result.videoLimit)} + ${refreshCreditLabel(result.videoLimit)} (worst case — settled down to actual videos returned)`,
+            estimatedCost: `${scraperCostLabel(result.videoLimit, result.platform)} + ${refreshCreditLabel(result.videoLimit)} (worst case — settled down to actual videos returned)`,
             cost: costBlock(Math.ceil(result.videoLimit * CREDIT_COSTS.refreshSourcePerVideo), {
-              scraperCents: listScrapeCostCents(result.videoLimit),
+              scraperCents: listScrapeCostCents(result.videoLimit, result.platform),
               quoted: true,
               note: 'Worst case for the queued scrape — settled down to actual videos returned when the worker runs.',
             }),
