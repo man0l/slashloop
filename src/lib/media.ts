@@ -65,7 +65,12 @@ function imageContentType(headerValue: string | null, url: string): string {
 
 /** Only these platforms have a real scraper and real CDN URLs behind them. */
 export function isIngestablePlatform(platform: string): boolean {
-  return platform === 'tiktok';
+  return platform === 'tiktok' || platform === 'reels';
+}
+
+/** `reels` for instagram.com URLs, else `tiktok` — the download adapter key. */
+export function platformForVideoUrl(url: string): 'tiktok' | 'reels' {
+  return /^https?:\/\/(?:www\.|m\.)?instagram\.com\//i.test(url) ? 'reels' : 'tiktok';
 }
 
 const MAX_THUMB_BYTES = 5 * 1024 * 1024;
@@ -638,7 +643,7 @@ export async function downloadAndStoreVideo(
   const filePath = join(tmpDir, `video_${videoId.slice(0, 8)}.mp4`);
 
   try {
-    const dl = await downloadVideo({ workspaceId, videoUrl, outputPath: filePath, platform: 'tiktok' });
+    const dl = await downloadVideo({ workspaceId, videoUrl, outputPath: filePath, platform: platformForVideoUrl(videoUrl) });
     if (dl.slideshow?.length) {
       await persistSlideshow(workspaceId, videoId, dl.slideshow);
       return { bytes: dl.sizeBytes, slideshow: true };

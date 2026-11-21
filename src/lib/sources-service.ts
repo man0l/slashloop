@@ -17,6 +17,7 @@ import { db } from '../db.js';
 import { chunked } from '../store.js';
 import { cacheKey, getOrFill, invalidateWorkspaceReads } from './cache.js';
 import { scrapeCapKind, scrapeSource, trafficStatus } from './scrapers/index.js';
+import { parseInstagramUsername } from './scrapers/instagram-web.js';
 import { getApifyCapStatus, SpendCapExceededError } from './spend-cap.js';
 import { TrafficCapExceededError } from './scrapers/bandwidth.js';
 import { batchScoreVideos } from '../scoring.js';
@@ -263,21 +264,42 @@ export async function createSourceForWorkspace(
   const { platform, sourceType, query, language, videoLimit, refreshSchedule, nicheTag } = input;
   const isSelf = Boolean(input.isSelf) && sourceType === 'creator';
 
-  // Refuse platforms that cannot be scraped, at the moment the user asks —
-  // not two steps later at refresh.
-  //
-  // scrapeSource throws for reels and shorts (src/lib/apify.ts): there is no
-  // scraper for either. Accepting the source anyway produced the worst
+  // Refuse what cannot be scraped, at the moment the user asks — not two
+  // steps later at refresh. Accepting the source anyway produced the worst
   // possible onboarding path — track succeeds, refresh fails, and the
   // product looks broken rather than incomplete. Found by walking the
   // new-user journey: search_library on an empty Reels library offered
   // exactly this dead end.
-  if (platform !== 'tiktok') {
+  //
+  // Instagram Reels scrape creators only: hashtag and keyword pages are
+  // login-walled logged out (src/lib/scrapers/instagram-web.ts).
+  if (platform === 'reels') {
+    if (sourceType !== 'creator') {
+      return {
+        ok: false,
+        error: 'platform_not_supported',
+        platform,
+        message: `Instagram ${sourceType} sources cannot be scraped — Instagram serves hashtag and keyword pages only to logged-in users. `
+          + 'Reels creators can be tracked.',
+        suggestion: `Track a Reels creator (create_source with platform="reels", sourceType="creator", query="@handle"), `
+          + `or track the ${sourceType} on TikTok: platform="tiktok", sourceType="${sourceType}", query="${query}".`,
+      };
+    }
+    if (!parseInstagramUsername(query)) {
+      return {
+        ok: false,
+        error: 'platform_not_supported',
+        platform,
+        message: `"${query}" is not an Instagram username.`,
+        suggestion: 'Pass the handle (e.g. "@glowupmenclub") or the profile URL (https://www.instagram.com/glowupmenclub/).',
+      };
+    }
+  } else if (platform !== 'tiktok') {
     return {
       ok: false,
       error: 'platform_not_supported',
       platform,
-      message: `${platform} cannot be scraped yet — TikTok is the only live platform. `
+      message: `${platform} cannot be scraped yet — TikTok and Instagram Reels (creators) are the live platforms. `
         + 'Creating this source would succeed and then fail at refresh, so it is refused here instead.',
       suggestion: `If this query also exists on TikTok, track it there: `
         + `create_source with platform="tiktok", sourceType="${sourceType}", query="${query}".`,

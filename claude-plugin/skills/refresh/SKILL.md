@@ -57,4 +57,4 @@ hashtag source still reading `estimated` — call `rescore_sources` with that
 
 If the refresh failed or returned zero videos, skip `show_gallery` and say so.
 
-Only TikTok is live; Reels and Shorts scraping are stubs.
+TikTok is live for every source type. Instagram Reels (`platform: "reels"`) is live for **creators only**: each refresh sees the creator's latest 12 Reels (Instagram serves no more without login), and Reels hashtag/keyword sources are refused. Likes read 0 on Reels whose owner hid like counts. Shorts is a stub.

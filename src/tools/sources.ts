@@ -58,7 +58,9 @@ export function registerSourceTools(server: McpServer) {
 
   // ---- create_source ----
   server.tool('create_source',
-    'Add a new tracked source (creator, keyword, hashtag, or collection) to monitor.',
+    'Add a new tracked source (creator, keyword, hashtag, or collection) to monitor. '
+      + 'TikTok supports every source type; Instagram Reels (platform="reels") supports creators only '
+      + 'and sees each creator\'s latest 12 Reels per refresh.',
     {
       workspaceId: workspaceIdField,
       platform: z.enum(['tiktok', 'reels', 'shorts']).describe('Platform to track'),
