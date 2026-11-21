@@ -71,6 +71,7 @@ import {
 } from './experiment-tick.js';
 import { controlEnabled, filterKindsByControl } from '../lib/worker-control.js';
 import { snapshotD1Usage, deltaD1Usage, formatD1Usage, totalD1Usage } from '../lib/d1-usage.js';
+import { PhaseTracker, withPhaseTracker } from '../lib/job-phases.js';
 import { errorDetail } from '../lib/error-detail.js';
 
 // D1 is single-writer with per-request billing: the 3s Postgres poll default
@@ -663,11 +664,12 @@ while (!shuttingDown) {
       const timeoutMessage =
         `job timed out after ${budgetMs}ms (kind=${job.kind}, job=${job.id.slice(0, 8)}, ` +
         `source=${job.sourceId ? job.sourceId.slice(0, 8) : 'none'}, attempt=${job.attempts})`;
+      const phases = new PhaseTracker();
       let timer: ReturnType<typeof setTimeout> | undefined;
       const budget = new AbortController();
       try {
         const result = await Promise.race([
-          withMeterScope(() => withJobBudget(budget.signal, t + budgetMs, () => processClaimedJob(job))),
+          withPhaseTracker(phases, () => withMeterScope(() => withJobBudget(budget.signal, t + budgetMs, () => processClaimedJob(job)))),
           new Promise<never>((_, reject) => {
             timer = setTimeout(() => {
               // Cancel in-flight fetches before rejecting: the race alone
@@ -691,7 +693,13 @@ while (!shuttingDown) {
       } catch (err) {
         const message = (err as Error).message;
         kindBreaker.record(job.kind, false);
-        console.error(`[worker] ${job.kind} job ${job.id.slice(0, 8)} threw: ${message}`);
+        // A timeout says nothing about where the time went; attach the phase
+        // timings and D1 usage so a shared stall (D1 vs scrape) is visible.
+        const timedOut = message.startsWith('job timed out');
+        console.error(
+          `[worker] ${job.kind} job ${job.id.slice(0, 8)} threw: ${message}`
+          + (timedOut ? ` | phases: ${phases.summary()}${formatD1Usage(deltaD1Usage(jobSnap))}` : ''),
+        );
         // An uncaught throw or timeout used to leave the row `running` until
         // reclaimStuckJobs (15 min), which is how one hung scrape stalled the
         // whole queue. Fail it here so the next loop iteration can claim.

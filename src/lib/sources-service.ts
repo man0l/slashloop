@@ -23,7 +23,7 @@ import { batchScoreVideos } from '../scoring.js';
 import { infoNote } from './refresh-notes.js';
 import { CREDIT_COSTS, InsufficientCreditsError, debitCredits, refundCredits } from './credits.js';
 import { resolveThumbUrl, ingestThumbnails, ingestSlideshows, slideshowTargetFromNormalized, isPhotoPost, type ThumbIngestTarget, type SlideshowIngestTarget } from './media.js';
-import { enqueueRefreshJob, enqueueRescoreJob, outstandingJobForSource, enqueueSlideshowFetches } from './jobs.js';
+import { cancelQueuedJobsForSource, enqueueRefreshJob, enqueueRescoreJob, outstandingJobForSource, enqueueSlideshowFetches } from './jobs.js';
 import { dismissSuggestion } from './suggestions.js';
 import { resolveRefreshPlan } from './refresh-policy.js';
 
@@ -344,6 +344,11 @@ export async function deleteSourceForWorkspace(workspace: Workspace, sourceId: s
     await db.score.deleteMany({ where: { videoId: { in: ids } } });
   });
   await db.refreshRun.deleteMany({ where: { sourceId } });
+  // Queued jobs for this source would otherwise be claimed later and refused
+  // "Source not found". Best-effort: the worker's terminal refusal is the backstop.
+  await cancelQueuedJobsForSource(sourceId).catch((err) => {
+    console.warn(`[sources] cancel queued jobs for deleted source ${sourceId} failed: ${(err as Error).message}`);
+  });
   await db.video.deleteMany({ where: { sourceId } });
   await db.source.delete({ where: { id: sourceId } }).catch(() => null);
 

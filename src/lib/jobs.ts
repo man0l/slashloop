@@ -1539,6 +1539,61 @@ export async function failJob(
 }
 
 /**
+ * Cancel a source's not-yet-claimed jobs when the source is deleted, and give
+ * the pre-auth credits back. Without this each queued refresh survives its
+ * source and is later claimed only to be refused "Source not found" (an
+ * orphan job: terminal, so no retry storm, but a wasted claim + log line).
+ *
+ * Only D1-owned `queued` rows: a running job finishes through its own
+ * refusal path (which refunds), and PG-owned/parked rows belong to the
+ * queue-db / reconciler. Best-effort by contract — callers must not fail the
+ * delete on it, the worker's refusal handling stays the backstop.
+ */
+export async function cancelQueuedJobsForSource(
+  sourceId: string,
+  reason = 'Source was deleted before this job ran. Credits were refunded.',
+): Promise<{ cancelled: number; refunded: number }> {
+  const pending = await db.mediaJob.findMany({
+    where: { sourceId, status: 'queued', queueOwner: 'd1' },
+    select: { id: true, workspaceId: true, opId: true, kind: true, preAuthCredits: true },
+    take: QUEUE_SWEEP_TAKE,
+  });
+  if (pending.length === 0) return { cancelled: 0, refunded: 0 };
+
+  const refundItems: RefundItem[] = [];
+  let cancelled = 0;
+  for (const job of pending) {
+    // Status guard in the WHERE: a worker that claimed the row since the
+    // findMany owns it now and must not be failed (or double-refunded) here.
+    const { count } = await db.mediaJob.updateMany({
+      where: { id: job.id, status: 'queued' },
+      data: { status: 'failed', finishedAt: new Date(), lastError: reason },
+    });
+    if (count === 0) continue;
+    cancelled++;
+    if (job.opId) {
+      refundItems.push({
+        workspaceId: job.workspaceId,
+        credits: job.preAuthCredits ?? CREDIT_COSTS.analyzeVideo,
+        tool: jobCreditTool(job.kind),
+        refId: `${job.opId}:fail`,
+        reason: 'call_failed',
+      });
+    }
+  }
+
+  let refunded = 0;
+  if (refundItems.length > 0) {
+    try {
+      refunded = (await refundCreditsBatched(refundItems)).refunded;
+    } catch (err) {
+      console.warn(`[jobs] refund on source-delete job cancel failed: ${(err as Error).message}`);
+    }
+  }
+  return { cancelled, refunded };
+}
+
+/**
  * Fail `queued` rows nobody ever drained, and give the credits back.
  *
  * reclaimStuckJobs only ever looked at `running`, so this whole class of job

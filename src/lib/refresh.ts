@@ -33,6 +33,7 @@ import { enqueueMissingCreatorBaselines } from './creator-baselines.js';
 import { resolveRefreshPlan, type RefreshPlan } from './refresh-policy.js';
 import { canonicalKey } from './canonical-query.js';
 import { infoNote } from './refresh-notes.js';
+import { markPhase } from './job-phases.js';
 import type { NormalizedVideo } from '../normalizers.js';
 
 /**
@@ -216,6 +217,7 @@ export async function applyScrapeItems(opts: {
     workspaceId, sourceId, items, isBaselineOnly, modeLabel, postedAfter, limit, costCents,
   } = opts;
 
+  markPhase('apply-items');
   const errors: string[] = [];
   const recencyCutoff = subMonths(new Date(), RECENCY_CUTOFF_MONTHS);
   let skippedOld = 0;
@@ -446,6 +448,7 @@ export async function applyScrapeItems(opts: {
   }
 
   if (newVideos > 0 || updatedVideos > 0) {
+    markPhase('score');
     await batchScoreVideos(sourceId).catch(err => errors.push(`Scoring failed: ${(err as Error).message}`));
     // Hashtag/keyword hits are usually one video per creator. Queue 5 more
     // from each thin-history creator so the next score is `actual` (vs their
@@ -468,6 +471,7 @@ export async function applyScrapeItems(opts: {
   if (thumbTargets.length > 0) {
     const batch = thumbTargets.slice(0, THUMB_INGEST_MAX_PER_RUN);
     const overflow = thumbTargets.slice(THUMB_INGEST_MAX_PER_RUN);
+    markPhase('thumbs');
     const ingest = await ingestThumbnails(workspaceId, batch);
     if (ingest.failed > 0) {
       errors.push(`Thumbnail ingest: ${ingest.failed}/${ingest.stored + ingest.failed} failed`);
@@ -500,6 +504,7 @@ export async function applyScrapeItems(opts: {
 
   const slideshowStoredIds = new Set<string>();
   if (slideshowTargets.length > 0) {
+    markPhase('slideshows');
     const ingest = await ingestSlideshows(workspaceId, slideshowTargets);
     if (ingest.failed > 0) {
       errors.push(`Slideshow ingest: ${ingest.failed}/${ingest.stored + ingest.failed} failed`);
@@ -521,6 +526,7 @@ export async function applyScrapeItems(opts: {
     }
   }
 
+  markPhase('record-run');
   await db.refreshRun.create({
     data: {
       sourceId,
@@ -808,6 +814,7 @@ async function runRefreshSolo(opts: {
   const errors: string[] = [];
 
   try {
+    markPhase('scrape');
     const result = await scrapeSource({
       workspaceId,
       platform: source.platform,
@@ -1032,6 +1039,7 @@ export async function runBatchedRefresh(
 
   let scrape: ScrapeResult;
   try {
+    markPhase('scrape');
     scrape = await scrapeSource({
       workspaceId: leader.member.workspaceId,
       costShareWorkspaceIds,

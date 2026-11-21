@@ -61,6 +61,10 @@ export class ThreadsProvider implements SocialProvider {
     try {
       const parsed = JSON.parse(body) as { error?: { code?: number; message?: string; error_subcode?: number } };
       const code = parsed?.error?.code;
+      // 2207003 "It takes too long to download the media": Meta's fetcher timed
+      // out on our media URL. Meta flags it is_transient:false, but a re-attempt
+      // routinely succeeds, so back off and retry anyway.
+      if (parsed?.error?.error_subcode === 2207003) return 'retry';
       if (code === 190) return 'refresh-token'; // expired/invalid token
       if (code === 4 || code === 17 || code === 32) return 'retry'; // rate limits
       if (code === 10) return 'reconnect'; // permission revoked by user
