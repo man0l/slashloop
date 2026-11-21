@@ -442,11 +442,11 @@ describe('cancelQueuedJobsForSource — source deleted with refreshes pending', 
   test('a job claimed between select and update is left alone and not refunded', async () => {
     jobs = [job({ id: 'a', sourceId: 'src-1' })];
     const realFindMany = (await import('../db.js')).db.mediaJob.findMany;
-    (await import('../db.js')).db.mediaJob.findMany = async (args: any) => {
+    (await import('../db.js')).db.mediaJob.findMany = (async (args: any) => {
       const rows = await realFindMany(args);
       jobs[0]!.status = 'running'; // worker claims after the read
       return rows;
-    };
+    }) as any;
     try {
       expect(await cancelQueuedJobsForSource('src-1')).toEqual({ cancelled: 0, refunded: 0 });
       expect(batchedRefunds).toHaveLength(0);
