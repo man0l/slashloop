@@ -458,6 +458,13 @@ describe('threads provider', () => {
     }
   });
 
+  test('classify retries media-download timeout 2207003 despite is_transient:false', () => {
+    const body = '{"error":{"message":"The media could not be fetched","type":"THApiException","code":24,"error_subcode":2207003,"is_transient":false,"error_user_msg":"It takes too long to download the media"}}';
+    expect(provider.classify(body, 400)).toBe('retry');
+    // Other 400s with a different subcode stay terminal.
+    expect(provider.classify('{"error":{"code":24,"error_subcode":2207004}}', 400)).toBe('bad-body');
+  });
+
   test('generateAuthUrl points at threads.com with the right scopes', async () => {
     const url = await provider.generateAuthUrl(
       { threads: { clientId: 'CID', clientSecret: 'CS' } },

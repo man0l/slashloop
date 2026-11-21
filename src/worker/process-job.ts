@@ -228,7 +228,9 @@ export async function processClaimedJob(
               `${job.opId}:fail`, 'call_failed',
             ).catch(e => console.warn(`[worker] refund failed for ${job.id}: ${(e as Error).message}`));
           }
-          console.warn(`[worker] refresh job ${job.id} refused (terminal=${terminal}): ${message}`);
+          // A deleted source is an orphan job, not a fault: expected, terminal, already refunded.
+          const log = result.refusal === 'source_not_found' ? console.info : console.warn;
+          log(`[worker] refresh job ${job.id} refused (terminal=${terminal}): ${message}`);
           return { ok: false, error: message };
         }
         await completeJob(job.id, null);
@@ -393,7 +395,9 @@ export async function processClaimedJob(
               `${j.opId}:fail`, 'call_failed',
             ).catch(e => console.warn(`[worker] refund failed for ${j.id}: ${(e as Error).message}`));
           }
-          console.warn(`[worker] refresh job ${j.id} refused (terminal=${terminal}): ${message}`);
+          // A deleted source is an orphan job, not a fault: expected, terminal, already refunded.
+          const log = result?.refusal === 'source_not_found' ? console.info : console.warn;
+          log(`[worker] refresh job ${j.id} refused (terminal=${terminal}): ${message}`);
           if (j.id === job.id) leaderResult = { ok: false, error: message };
           continue;
         }

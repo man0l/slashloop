@@ -26,6 +26,7 @@
 import { keepAlive } from './cf/wait-until.js';
 import { CircuitBreaker, isInfraFailure } from './lib/circuit-breaker.js';
 import { recordD1Usage } from './lib/d1-usage.js';
+import { isReadOnlyD1Body, isReadOnlySql, retryD1Request } from './lib/d1-retry.js';
 
 /** Which SQL dialect the raw queries must speak. Set DB_DIALECT=sqlite on Workers. */
 export type Dialect = 'postgres' | 'sqlite';
@@ -450,12 +451,13 @@ export function d1HttpRawExecutor(params: D1HttpParams): RawExecutor {
     // Bounded: a stalled D1 REST call would otherwise hang the VPS worker's
     // current operation until the job timeout. 25s fails fast under D1's 30s
     // per-query ceiling (these calls normally resolve in milliseconds).
-    const res = await fetch(d1Url, {
+    const send = () => fetch(d1Url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ sql, params: sqlParams }),
       signal: AbortSignal.timeout(25_000),
     });
+    const res = await (isReadOnlySql(sql) ? retryD1Request(send) : send());
     const body = res.ok
       ? (await res.json()) as { success?: boolean; errors?: Array<{ message?: string }>; result?: Array<{ results?: { columns?: string[]; rows?: unknown[][] }; meta?: { rows_read?: number; rows_written?: number } }> }
       : { success: false as const, errors: [{ message: `HTTP ${res.status}` }] };
@@ -563,7 +565,12 @@ function installD1FetchTracker(): void {
       }
       const isD1Query =
         typeof url === 'string' && url.includes('/d1/database/') && !url.includes('/raw');
-      const res = await (original as (...args: [unknown, unknown?]) => Promise<Response>)(input, init);
+      const call = () => (original as (...args: [unknown, unknown?]) => Promise<Response>)(input, init);
+      // /raw reads only: a timed-out request may still have been applied, so
+      // writes are never replayed (see lib/d1-retry.ts).
+      const isRawRead = typeof url === 'string' && url.includes('/d1/database/') && url.endsWith('/raw')
+        && isReadOnlyD1Body((init as { body?: unknown } | undefined)?.body);
+      const res = await (isRawRead ? retryD1Request(call) : call());
       if (isD1Query) {
         try {
           void res

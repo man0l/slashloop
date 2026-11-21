@@ -14,6 +14,7 @@ type JobRow = {
   attempts: number;
   createdAt: Date; startedAt: Date | null; finishedAt: Date | null;
   availableAt?: Date | null;
+  sourceId?: string | null;
   lastError: string | null;
 };
 
@@ -37,6 +38,7 @@ mock.module('../db.js', () => ({
         const notAvail = where.NOT?.availableAt?.gt as Date | undefined;
         return jobs.filter(j =>
           j.status === where.status
+          && (where.sourceId ? j.sourceId === where.sourceId : true)
           && (where.createdAt?.lt ? j.createdAt < where.createdAt.lt : true)
           && (where.startedAt === null ? j.startedAt === null : true)
           && (notAvail ? (j as any).availableAt == null || (j as any).availableAt <= notAvail : true));
@@ -45,6 +47,13 @@ mock.module('../db.js', () => ({
         updates.push({ id: where.id, data });
         if (updateError) throw updateError;
         return {};
+      },
+      updateMany: async ({ where, data }: any) => {
+        const row = jobs.find(j => j.id === where.id && (!where.status || j.status === where.status));
+        if (!row) return { count: 0 };
+        updates.push({ id: where.id, data });
+        row.status = data.status;
+        return { count: 1 };
       },
       findUnique: async ({ where }: any) => jobs.find(j => j.id === where.id) ?? null,
     },
@@ -66,7 +75,7 @@ mock.module('./credits.js', () => ({
   creditBalance: async () => ({ planCredits: 100, packCredits: 0, total: 100 }),
 }));
 
-const { failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds, jobTimeoutMs, QUEUE_SWEEP_TAKE, failJob, yieldJob, requeueBackoffMs, MAX_ATTEMPTS, completeJob, setJobLifecycleSink, isPrismaRecordNotFound, recordD1ProjectionMiss, snapshotD1ProjectionMisses, resetD1ProjectionMissesForTests } = await import('./jobs.js');
+const { cancelQueuedJobsForSource, failAbandonedQueuedJobs, QUEUED_ABANDONED_AFTER_MINUTES, jobCreditTool, parseDiscoverJobPayload, expandWorkerKinds, jobTimeoutMs, QUEUE_SWEEP_TAKE, failJob, yieldJob, requeueBackoffMs, MAX_ATTEMPTS, completeJob, setJobLifecycleSink, isPrismaRecordNotFound, recordD1ProjectionMiss, snapshotD1ProjectionMisses, resetD1ProjectionMissesForTests } = await import('./jobs.js');
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
 
@@ -412,5 +421,41 @@ describe('D1 projection mirror — missing row (SLA-361)', () => {
     expect(isPrismaRecordNotFound(new Error('x'))).toBe(false);
     expect(isPrismaRecordNotFound(null)).toBe(false);
     expect(isPrismaRecordNotFound('P2025')).toBe(false);
+  });
+});
+
+describe('cancelQueuedJobsForSource — source deleted with refreshes pending', () => {
+  test('cancels only that source\'s queued jobs and refunds the pre-auth', async () => {
+    jobs = [
+      job({ id: 'a', sourceId: 'src-1' }),
+      job({ id: 'b', sourceId: 'src-2' }),
+      job({ id: 'c', sourceId: 'src-1', status: 'running' }),
+    ];
+    const res = await cancelQueuedJobsForSource('src-1');
+    expect(res).toEqual({ cancelled: 1, refunded: 1 });
+    expect(jobs.find(j => j.id === 'a')!.status).toBe('failed');
+    expect(jobs.find(j => j.id === 'b')!.status).toBe('queued');
+    expect(jobs.find(j => j.id === 'c')!.status).toBe('running');
+    expect(batchedRefunds).toEqual([{ workspaceId: 'ws-1', amount: 8, kind: 'refresh_source', refId: 'op-1:fail' }]);
+  });
+
+  test('a job claimed between select and update is left alone and not refunded', async () => {
+    jobs = [job({ id: 'a', sourceId: 'src-1' })];
+    const realFindMany = (await import('../db.js')).db.mediaJob.findMany;
+    (await import('../db.js')).db.mediaJob.findMany = (async (args: any) => {
+      const rows = await realFindMany(args);
+      jobs[0]!.status = 'running'; // worker claims after the read
+      return rows;
+    }) as any;
+    try {
+      expect(await cancelQueuedJobsForSource('src-1')).toEqual({ cancelled: 0, refunded: 0 });
+      expect(batchedRefunds).toHaveLength(0);
+    } finally {
+      (await import('../db.js')).db.mediaJob.findMany = realFindMany;
+    }
+  });
+
+  test('no pending jobs is a no-op', async () => {
+    expect(await cancelQueuedJobsForSource('src-9')).toEqual({ cancelled: 0, refunded: 0 });
   });
 });
