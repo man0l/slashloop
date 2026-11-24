@@ -3,8 +3,9 @@ import { Database } from 'bun:sqlite';
 import { readFileSync } from 'node:fs';
 import { setActiveClient } from '../store.js';
 import { saveMetrics } from './store.js';
-import { bucketStart, bucketStarts, carryForwardMetrics, getSocialStats, parseStatsQuery, type StatsQuery } from './stats.js';
+import { bucketStart, bucketStarts, carryForwardMetrics, getSocialStats, getSocialStatsDay, parseDayQuery, parseStatsQuery, type StatsQuery } from './stats.js';
 import { GET } from '../../api/social-stats.js';
+import { GET as GET_DAY } from '../../api/social-stats-day.js';
 
 let db: Database;
 
@@ -277,6 +278,105 @@ describe('carryForwardMetrics', () => {
     expect(await carryForwardMetrics(NOW, 3)).toEqual({ carried: 3 });
     expect(await carryForwardMetrics(NOW, 3)).toEqual({ carried: 2 });
     expect(await carryForwardMetrics(NOW, 3)).toEqual({ carried: 0 });
+  });
+});
+
+describe('mode=age', () => {
+  const ageOf = async (q: Partial<StatsQuery> = {}) => {
+    const r = await getSocialStats(['alice'], { ...Q, mode: 'age', ...q });
+    return Object.fromEntries(r.buckets.map((b) => [b.start, b]));
+  };
+
+  test('re-stacks each day\'s gain by post age, summing to the gained total', async () => {
+    addPost('p1', 'yt', { publishedAt: '2026-11-03T10:00:00Z' });
+    snap('p1', '2026-11-03', 100); // age 0, counted in full
+    snap('p1', '2026-11-04', 160); // age 1 → +60
+    snap('p1', '2026-11-05', 180); // age 2 → +20
+    snap('p1', '2026-11-06', 185); // age 3 → +5
+    snap('p1', '2026-11-10', 200); // age 7 → +15
+    const r = await ageOf();
+    expect(r['2026-11-03']!.byAge).toMatchObject({ '0-24h': 100 });
+    expect(r['2026-11-04']!.byAge).toMatchObject({ '24-48h': 60 });
+    expect(r['2026-11-05']!.byAge).toMatchObject({ '48-72h': 20 });
+    expect(r['2026-11-06']!.byAge).toMatchObject({ '3-7d': 5 });
+    expect(r['2026-11-10']!.byAge).toMatchObject({ '7d+': 15 });
+    const gained = await series();
+    for (const [day, b] of Object.entries(r)) {
+      const bands = Object.values(b.byAge!).reduce((a, n) => a + n, 0);
+      expect(bands).toBe(Object.values(gained[day]!).reduce((a, n) => a + n, 0));
+    }
+  });
+
+  test('a post with no publish-day snapshot is unattributed: in the totals, out of the bands', async () => {
+    addPost('p1', 'yt', { publishedAt: '2026-11-03T10:00:00Z' });
+    snap('p1', '2026-11-04', 500); // first snapshot, baseline → 0
+    snap('p1', '2026-11-05', 540);
+    addPost('p2', 'ig', { publishedAt: '2026-11-04T10:00:00Z' });
+    snap('p2', '2026-11-04', 10);
+    snap('p2', '2026-11-05', 30);
+    const r = await ageOf();
+    expect(r['2026-11-05']!.byAccount).toEqual({ yt: 40, ig: 20 });
+    expect(r['2026-11-05']!.byAge).toMatchObject({ '24-48h': 20, unattributed: 40 });
+    expect(r['2026-11-04']!.byAge).toMatchObject({ '0-24h': 10, unattributed: 0 });
+  });
+
+  test('byAge is only present in age mode', async () => {
+    expect((await getSocialStats(['alice'], Q)).buckets[0]).not.toHaveProperty('byAge');
+  });
+});
+
+describe('getSocialStatsDay', () => {
+  test('lists posts by views gained that day with age bands, unattributed split and caption/publishedAt', async () => {
+    addPost('new', 'yt', { publishedAt: '2026-11-05T09:00:00Z' });
+    db.run("UPDATE social_posts SET content = 'fresh hook' WHERE id = 'new'");
+    snap('new', '2026-11-05', 40);
+    snap('new', '2026-11-06', 100); // +60, age 1
+    addPost('old', 'ig', { publishedAt: '2026-10-01T00:00:00Z' });
+    snap('old', '2026-11-05', 1000);
+    snap('old', '2026-11-06', 1500); // +500, no publish-day snapshot
+    addPost('flat', 'ig', { publishedAt: '2026-10-01T00:00:00Z' });
+    snap('flat', '2026-11-05', 7);
+    snap('flat', '2026-11-06', 7); // +0, omitted
+    addPost('bobs', 'yt-bob', { owner: 'bob', publishedAt: '2026-10-01T00:00:00Z' });
+    snap('bobs', '2026-11-05', 1);
+    snap('bobs', '2026-11-06', 99999);
+
+    const r = await getSocialStatsDay(['alice'], '2026-11-06');
+    expect(r.total).toBe(560);
+    expect(r.truncated).toBe(false);
+    expect(r.posts.map((p) => [p.postId, p.gained, p.ageBand])).toEqual([['old', 500, null], ['new', 60, '24-48h']]);
+    expect(r.posts[1]).toMatchObject({ integrationId: 'yt', caption: 'fresh hook', publishedAt: Date.parse('2026-11-05T09:00:00Z') / 1000 });
+    expect(r.byAge).toEqual({ '0-24h': 0, '24-48h': 60, '48-72h': 0, '3-7d': 0, '7d+': 0, unattributed: 500 });
+  });
+
+  test('counts a first snapshot on its publish day in full, and filters by account', async () => {
+    addPost('p1', 'yt', { publishedAt: '2026-11-06T01:00:00Z' });
+    snap('p1', '2026-11-06', 250);
+    addPost('p2', 'ig', { publishedAt: '2026-11-06T01:00:00Z' });
+    snap('p2', '2026-11-06', 9);
+    const all = await getSocialStatsDay(['alice'], '2026-11-06');
+    expect(all.posts.map((p) => [p.postId, p.gained, p.ageBand])).toEqual([['p1', 250, '0-24h'], ['p2', 9, '0-24h']]);
+    const only = await getSocialStatsDay(['alice'], '2026-11-06', ['ig']);
+    expect(only.posts.map((p) => p.postId)).toEqual(['p2']);
+    expect(only.accounts.map((a) => a.id)).toEqual(['ig']);
+  });
+
+  test('an empty day returns zeros', async () => {
+    const r = await getSocialStatsDay(['alice'], '2026-11-06');
+    expect(r).toMatchObject({ total: 0, posts: [], truncated: false });
+  });
+
+  test('parseDayQuery validates the day', () => {
+    expect(parseDayQuery({ day: '2026-11-06' })).toMatchObject({ ok: true, day: '2026-11-06' });
+    expect(parseDayQuery({})).toMatchObject({ ok: false, error: 'invalid_day' });
+    expect(parseDayQuery({ day: '2026-02-30' })).toMatchObject({ ok: false, error: 'invalid_day' });
+  });
+});
+
+describe('GET /api/social/stats/day auth', () => {
+  test('401 without a valid bearer token', async () => {
+    expect((await GET_DAY(new Request('https://x.test/api/social/stats/day?day=2026-11-06'))).status).toBe(401);
+    expect((await GET_DAY(new Request('https://x.test/api/social/stats/day?day=2026-11-06', { headers: { authorization: 'Bearer nope' } }))).status).toBe(401);
   });
 });
 

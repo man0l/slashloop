@@ -1,6 +1,8 @@
 // /api/social/stats — views per account over time (the Calendar "Stats" view).
 //
-//   GET /api/social/stats?from=&to=&bucket=day|week|month&mode=gained|posted&accounts=<id>,<id>
+//   GET /api/social/stats?from=&to=&bucket=day|week|month&mode=gained|posted|age&accounts=<id>,<id>
+//
+//   GET /api/social/stats/day?day=YYYY-MM-DD&accounts=<id>,<id>   (per-post gains for one day)
 //
 // from/to are inclusive UTC dates (YYYY-MM-DD), at most 400 days apart.
 // Auth and team visibility match api/social-posts.ts.
