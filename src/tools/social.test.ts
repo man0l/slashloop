@@ -229,6 +229,20 @@ describe('get_social_stats', () => {
     expect(filtered.body.buckets).toHaveLength(5);
   });
 
+  test('day returns the per-post breakdown and validates the date', async () => {
+    for (const f of ['0026_social_post_metrics.sql', '0027_social_post_more_metrics.sql', '0031_social_post_metrics_daily.sql']) {
+      db.exec(readFileSync(new URL(`../../prisma/d1-migrations/${f}`, import.meta.url), 'utf8'));
+    }
+    db.run(`INSERT INTO social_posts (id, group_id, owner_id, integration_id, provider, state, publish_date, content, attempts, created_at, updated_at, published_at)
+            VALUES ('p', 'g', 'alice', 'tt-a', 'tiktok', 'PUBLISHED', 0, 'cap', 0, 0, 0, ${Date.parse('2026-11-05T10:00:00Z') / 1000})`);
+    db.run("INSERT INTO social_post_metrics_daily (post_id, day, views, synced_at) VALUES ('p', '2026-11-05', 10, 0), ('p', '2026-11-06', 40, 0)");
+    const ok = await call('get_social_stats', { day: '2026-11-06' });
+    expect(ok.isError).toBe(false);
+    expect(ok.body).toMatchObject({ day: '2026-11-06', total: 30 });
+    expect(ok.body.posts[0]).toMatchObject({ postId: 'p', gained: 30, ageBand: '24-48h', caption: 'cap' });
+    expect((await call('get_social_stats', { day: 'nope' })).body.error).toBe('invalid_day');
+  });
+
   test('rejects a range over 400 days and refuses without a caller', async () => {
     const tooBig = await call('get_social_stats', { from: '2025-01-01', to: '2026-11-01' });
     expect(tooBig.isError).toBe(true);
