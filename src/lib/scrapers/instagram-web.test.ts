@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import {
-  blobClosed, extractInstagramShortcode, fetchCreatorReels, isInstagramUrl, normalizeReel,
-  parseInstagramUsername, parseReelPage, parseReelsTab, postedAtFromPk, reelDurationSec, reelVideoUrls,
-  type InstagramHttp,
+  blobClosed, extractInstagramShortcode, fetchCreatorReels, INSTAGRAM_TAB_ATTEMPTS, isInstagramUrl, normalizeReel,
+  parseInstagramUsername, parseReelPage, parseReelsTab, postedAtFromPk, profileMissing, reelDurationSec, reelVideoUrls,
+  setInstagramSleep, type InstagramHttp,
 } from './instagram-web.js';
 import { proxyAdapter, runInstagramProxyScrape } from './proxy-adapter.js';
 import { selectDownloadAdapter } from './index.js';
@@ -84,6 +84,10 @@ const MEDIA = {
   },
   ai_label_info: { attribution_label_text: 'AI content' },
 };
+
+let realSleep: ((ms: number) => Promise<void>) | null = null;
+beforeAll(() => { realSleep = setInstagramSleep(async () => {}); });
+afterAll(() => { if (realSleep) setInstagramSleep(realSleep); });
 
 function fakeHttp(pages: Record<string, Array<{ status: number; text: string }>>): InstagramHttp & { calls: string[] } {
   const calls: string[] = [];
@@ -231,6 +235,34 @@ describe('fetchCreatorReels', () => {
     expect(r.items[1]).toMatchObject({ externalId: 'OLDREEL01', caption: '', durationSec: null });
     expect(r.items[1]!.raw.hydrated).toBe(false);
     expect(r.notices.some(n => n.includes('latest 12 Reels'))).toBe(true);
+  });
+
+  test('login walls (302) are retried on fresh exits up to the attempt cap', async () => {
+    const wall = { status: 302, text: '' };
+    const http = fakeHttp({ [TAB]: Array.from({ length: INSTAGRAM_TAB_ATTEMPTS + 1 }, () => wall) });
+    const r = await fetchCreatorReels('glowupmenclub', { limit: 5 }, http);
+    expect(http.calls).toHaveLength(INSTAGRAM_TAB_ATTEMPTS);
+    expect(r.notices[0]).toContain('did not serve');
+
+    const late = fakeHttp({
+      [TAB]: [wall, wall, wall, { status: 200, text: tabHtml([tabNode('NEWREEL01', PK_NEW)]) }],
+      [reel('NEWREEL01')]: [{ status: 200, text: reelHtml('NEWREEL01', { ...MEDIA, pk: PK_NEW }) }],
+    });
+    const ok = await fetchCreatorReels('glowupmenclub', { limit: 5 }, late);
+    expect(ok.items.map(i => i.externalId)).toEqual(['NEWREEL01']);
+  });
+
+  test('a handle that does not exist stops after two exits agree', async () => {
+    const shell = '<html><head><title>Instagram</title></head><body>' + 'x'.repeat(200) + '</body></html>';
+    expect(profileMissing(shell)).toBe(true);
+    expect(profileMissing(tabHtml([]))).toBe(false);
+    expect(profileMissing('<html><head><title>Instagram</title>')).toBe(false);
+
+    const http = fakeHttp({ [TAB]: [{ status: 302, text: '' }, { status: 200, text: shell }, { status: 200, text: shell }] });
+    const r = await fetchCreatorReels('glowupmenclub', { limit: 5 }, http);
+    expect(http.calls).toHaveLength(3);
+    expect(r.items).toEqual([]);
+    expect(r.notices[0]).toContain('no account @glowupmenclub');
   });
 
   test('unreachable tab and bad handles return notices, not throws', async () => {

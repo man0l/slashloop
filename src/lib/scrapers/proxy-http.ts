@@ -35,10 +35,24 @@ export interface ProxyConfig {
 }
 
 /**
+ * Exit countries in failover order, from SCRAPER_PROXY_COUNTRY (`US,GB`).
+ * The first pins every request; the rest are only tried when the gateway
+ * cannot open a tunnel in the one before (SLA-1753: the US pool 502'd every
+ * CONNECT for hours while GB exits answered). Unset → US then GB. Empty →
+ * one unpinned candidate (`''`), no failover.
+ */
+export function proxyCountries(): string[] {
+  const raw = process.env.SCRAPER_PROXY_COUNTRY;
+  if (raw == null) return ['US', 'GB'];
+  const list = raw.split(/[\s,]+/).map(c => c.trim()).filter(Boolean);
+  return list.length ? [...new Set(list)] : [''];
+}
+
+/**
  * Parse SCRAPER_PROXY_URL. Accepts a full URL or the bare
  * `user:pass@host:port` form the proxy vendors hand out.
  */
-export function parseProxyUrl(raw: string | undefined): ProxyConfig | null {
+export function parseProxyUrl(raw: string | undefined, country = proxyCountries()[0] ?? ''): ProxyConfig | null {
   const trimmed = (raw ?? '').trim();
   if (!trimmed) return null;
   const withScheme = /^[a-z0-9+.-]+:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
@@ -56,7 +70,6 @@ export function parseProxyUrl(raw: string | undefined): ProxyConfig | null {
   // Proxy-Cheap encodes geo in the password. A random IN/CN/HK exit serves
   // TikTok's discontinued /in/about page. Default US; set SCRAPER_PROXY_COUNTRY
   // empty to leave the password untouched.
-  const country = (process.env.SCRAPER_PROXY_COUNTRY ?? 'US').trim();
   if (password && country && !/_country-/i.test(password)) {
     password = `${password}_country-${country}`;
   }
@@ -72,8 +85,41 @@ export function parseProxyUrl(raw: string | undefined): ProxyConfig | null {
   };
 }
 
-export function proxyConfig(): ProxyConfig | null {
-  return parseProxyUrl(process.env.SCRAPER_PROXY_URL);
+export function proxyConfig(country?: string): ProxyConfig | null {
+  return parseProxyUrl(process.env.SCRAPER_PROXY_URL, country);
+}
+
+// --- Exit failover ------------------------------------------------------------
+// A country whose pool would not open a tunnel is skipped for a while, so the
+// requests after it do not each pay the gateway's ~7s wait before its 502.
+
+export const DEAD_EXIT_COOLDOWN_MS = 5 * 60_000;
+
+const deadExitUntil = new Map<string, number>();
+
+/** Failover order with exits that just refused a tunnel moved to the back. */
+export function exitCountryOrder(now = Date.now()): string[] {
+  const all = proxyCountries();
+  const alive = all.filter(c => (deadExitUntil.get(c) ?? 0) <= now);
+  return [...alive, ...all.filter(c => !alive.includes(c))];
+}
+
+export function markExitDead(country: string, now = Date.now()): void {
+  deadExitUntil.set(country, now + DEAD_EXIT_COOLDOWN_MS);
+}
+
+/**
+ * The gateway, not the site, refused the tunnel. Bun hands that back as a
+ * Response (`502` + `proxy-message: Upstream connection failed`); undici
+ * throws "Proxy response (502) !== 200 when HTTP Tunneling".
+ */
+export function isTunnelRefusal(resOrErr: unknown): boolean {
+  if (resOrErr instanceof Response) {
+    return resOrErr.status >= 500 && resOrErr.headers.has('proxy-message');
+  }
+  const err = resOrErr as { message?: unknown; cause?: { message?: unknown } } | null;
+  const text = `${String(err?.message ?? '')} ${String(err?.cause?.message ?? '')}`;
+  return /CONNECT tunnel|HTTP Tunneling|Proxy response \(5\d\d\)/i.test(text);
 }
 
 /**
@@ -105,25 +151,29 @@ export function withStickySession(cfg: ProxyConfig, country = 'UnitedStates'): P
 // bandwidth optimisation: a fresh proxy CONNECT + TLS handshake per request
 // is several KB of pure overhead repeated for every page of a scrape.
 
-let dispatcherPromise: Promise<unknown> | null = null;
+// One pool per proxy URL: a failover country is a different URL.
+const dispatchers = new Map<string, Promise<unknown>>();
 
 function isBun(): boolean {
   return typeof (globalThis as any).Bun !== 'undefined';
 }
 
 async function proxyDispatcher(proxyUrl: string): Promise<unknown> {
-  if (!dispatcherPromise) {
-    dispatcherPromise = (async () => {
+  let d = dispatchers.get(proxyUrl);
+  if (!d) {
+    d = (async () => {
       const { ProxyAgent } = await import('undici');
       return new ProxyAgent({ uri: proxyUrl, keepAliveTimeout: 30_000, keepAliveMaxTimeout: 60_000 });
     })();
+    dispatchers.set(proxyUrl, d);
   }
-  return dispatcherPromise;
+  return d;
 }
 
-/** Test seam — drops the pooled dispatcher so a new proxy URL takes effect. */
+/** Test seam — drops the pooled dispatchers and exit cooldowns so a new proxy URL takes effect. */
 export function resetDispatcher(): void {
-  dispatcherPromise = null;
+  dispatchers.clear();
+  deadExitUntil.clear();
 }
 
 // --- Request ----------------------------------------------------------------
@@ -151,6 +201,15 @@ export interface ProxyFetchOptions {
    * without saving a billed byte.
    */
   compress?: boolean;
+  /**
+   * Close the tunnel after this request instead of pooling it. The gateway
+   * picks the exit IP per tunnel, so a pooled retry leaves from the same IP
+   * that was just login-walled; a fresh one does not. Costs one CONNECT + TLS
+   * handshake (~6KB, ~1s).
+   */
+  freshExit?: boolean;
+  /** `manual` returns a 3xx as-is instead of paying for the page it points at. */
+  redirect?: 'follow' | 'manual';
 }
 
 export interface ProxyFetchResult {
@@ -175,9 +234,12 @@ async function openRequest(url: string, opts: ProxyFetchOptions): Promise<{
   res: Response;
   controller: AbortController;
   clearTimer: () => void;
+  /** Closes a one-shot tunnel (freshExit on Node); call once the body is read. */
+  dispose: () => void;
 }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const clearTimer = () => clearTimeout(timeout);
 
   const headers: Record<string, string> = {
     'User-Agent': DEFAULT_USER_AGENT,
@@ -189,30 +251,69 @@ async function openRequest(url: string, opts: ProxyFetchOptions): Promise<{
   if (opts.compress !== false && !headers['Accept-Encoding'] && !headers['accept-encoding']) {
     headers['Accept-Encoding'] = 'br, gzip';
   }
+  // Bun drops the tunnel after a `Connection: close` exchange; undici forbids
+  // the header, so Node gets a one-shot agent below instead.
+  if (opts.freshExit && !opts.direct && isBun()) headers.Connection = 'close';
 
   const init: Record<string, unknown> = {
     method: opts.method ?? 'GET',
     signal: controller.signal,
     headers,
+    redirect: opts.redirect ?? 'follow',
   };
   if (opts.body != null) init.body = opts.body;
 
-  if (!opts.direct) {
-    const cfg = proxyConfig();
-    if (cfg) {
-      if (isBun()) init.proxy = cfg.url;
-      else init.dispatcher = await proxyDispatcher(cfg.url);
+  const countries = opts.direct ? [] : exitCountryOrder();
+  if (!countries.length || !proxyConfig(countries[0])) {
+    try {
+      return { res: await fetch(url, init as RequestInit), controller, clearTimer, dispose: () => {} };
+    } catch (err) {
+      clearTimer();
+      throw err;
     }
   }
 
-  const clearTimer = () => clearTimeout(timeout);
-  try {
-    const res = await fetch(url, init as RequestInit);
-    return { res, controller, clearTimer };
-  } catch (err) {
-    clearTimer();
-    throw err;
+  for (let i = 0; i < countries.length; i++) {
+    const country = countries[i]!;
+    const last = i === countries.length - 1;
+    const cfg = proxyConfig(country)!;
+    let oneShot: { close(): Promise<unknown> } | null = null;
+    if (isBun()) {
+      init.proxy = cfg.url;
+    } else if (opts.freshExit) {
+      const { ProxyAgent } = await import('undici');
+      oneShot = new ProxyAgent({ uri: cfg.url });
+      init.dispatcher = oneShot;
+    } else {
+      init.dispatcher = await proxyDispatcher(cfg.url);
+    }
+    const dispose = () => { oneShot?.close().catch(() => {}); };
+    let res: Response;
+    try {
+      res = await fetch(url, init as RequestInit);
+    } catch (err) {
+      dispose();
+      if (!last && !controller.signal.aborted && isTunnelRefusal(err)) {
+        markExitDead(country);
+        console.info(`[proxy] no tunnel via ${country || 'any'} exit, failing over to ${countries[i + 1] || 'any'}`);
+        continue;
+      }
+      clearTimer();
+      throw err;
+    }
+    if (!last && isTunnelRefusal(res)) {
+      await res.body?.cancel().catch(() => {});
+      dispose();
+      markExitDead(country);
+      console.info(`[proxy] no tunnel via ${country || 'any'} exit (http ${res.status}), failing over to ${countries[i + 1] || 'any'}`);
+      continue;
+    }
+    deadExitUntil.delete(country);
+    return { res, controller, clearTimer, dispose };
   }
+  // Unreachable: the last candidate always returns or throws.
+  clearTimer();
+  throw new Error('[proxy] no exit country to try');
 }
 
 function billedBytes(res: Response, decodedBytes: number, truncated: boolean): number {
@@ -225,7 +326,7 @@ function billedBytes(res: Response, decodedBytes: number, truncated: boolean): n
 
 export async function proxyFetch(url: string, opts: ProxyFetchOptions = {}): Promise<ProxyFetchResult> {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
-  const { res, controller, clearTimer } = await openRequest(url, opts);
+  const { res, controller, clearTimer, dispose } = await openRequest(url, opts);
   // The timer stays armed through the body read: a stalled stream after the
   // headers would otherwise hang the caller until the whole job times out.
   let read: Awaited<ReturnType<typeof readCapped>>;
@@ -233,6 +334,7 @@ export async function proxyFetch(url: string, opts: ProxyFetchOptions = {}): Pro
     read = await readCapped(res, maxBytes, opts.stopWhen, controller);
   } finally {
     clearTimer();
+    dispose();
   }
   const { text, decodedBytes, truncated } = read;
   const bytes = billedBytes(res, decodedBytes, truncated);
@@ -258,9 +360,15 @@ export async function proxyFetchBuffer(
   opts: ProxyFetchOptions = {},
 ): Promise<ProxyFetchBufferResult> {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
-  const { res, controller, clearTimer } = await openRequest(url, { ...opts, compress: opts.compress ?? false });
+  const { res, controller, clearTimer, dispose } = await openRequest(url, { ...opts, compress: opts.compress ?? false });
   clearTimer();
-  const { buffer, decodedBytes, truncated } = await readCappedBytes(res, maxBytes, controller);
+  let read: Awaited<ReturnType<typeof readCappedBytes>>;
+  try {
+    read = await readCappedBytes(res, maxBytes, controller);
+  } finally {
+    dispose();
+  }
+  const { buffer, decodedBytes, truncated } = read;
   const bytes = billedBytes(res, decodedBytes, truncated);
   meterBytes(bytes);
   return { status: res.status, ok: res.ok, buffer, bytes, truncated, headers: res.headers };
