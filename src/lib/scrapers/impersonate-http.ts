@@ -14,7 +14,7 @@ import { gzipSync } from 'node:zlib';
 
 import { currentJobSignal, jobBudgetRemainingMs } from '../job-abort.js';
 import { meterBytes } from './bandwidth.js';
-import { proxyConfig } from './proxy-http.js';
+import { exitCountryOrder, isTunnelRefusal, markExitDead, proxyConfig } from './proxy-http.js';
 import { signTikTokUrl } from './sign.js';
 import { isWafChallenge, solveWafCookies, type WafCookie } from './waf.js';
 import { pageBlobComplete, type TikTokHttp, type TikTokHttpBufferResult, type TikTokHttpResult } from './tiktok-web.js';
@@ -127,12 +127,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string, jobSigna
   });
 }
 
-/** Same Impit client; retry only a flaky CONNECT/timeout, never a different provider. */
+/** Same Impit client; retry only a flaky CONNECT/timeout, never a different provider.
+ *  `retryTunnelRefusal: false` surfaces a gateway CONNECT refusal at once so the
+ *  caller can fail over to another exit country instead of re-asking a dead pool. */
 export async function fetchThrough(
   client: ImpitLike,
   url: string,
   headers: Record<string, string>,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise(r => setTimeout(r, ms)),
+  retryTunnelRefusal = true,
 ): Promise<Response> {
   const jobSignal = currentJobSignal();
   let last: unknown;
@@ -154,6 +157,7 @@ export async function fetchThrough(
     } catch (err) {
       last = err;
       if (jobSignal?.aborted || !isRetryableFetch(err) || attempt === IMPIT_FETCH_RETRIES) throw err;
+      if (!retryTunnelRefusal && isTunnelRefusal(err)) throw err;
       // A retry that cannot finish inside the job budget only buys a second
       // timeout; fail now so the caller sees the real error, not the race.
       const delay = retryDelayMs(attempt + 1);
@@ -168,14 +172,138 @@ export async function fetchThrough(
   throw last;
 }
 
-// One Impit client + cookie jar per proxy URL, process-wide. A fresh client
-// per scrape used to re-pay a proxy CONNECT, a TLS handshake AND a ~1-2MB
-// homepage fetch every time. Reusing the session keeps the tunnel warm.
-let sharedSession: { cfgUrl: string; client: ImpitLike; jar: CookieJar } | null = null;
+// One Impit client + cookie jar per proxy URL (= per exit country), process-wide.
+// A fresh client per scrape used to re-pay a proxy CONNECT, a TLS handshake AND
+// a ~1-2MB homepage fetch every time. Reusing the session keeps the tunnel warm.
+// Cookies are minted against one exit IP, so each country keeps its own jar.
+interface Session { country: string; cfgUrl: string; client: ImpitLike; jar: CookieJar }
+const sessions = new Map<string, Session>();
 
-/** Test seam — drops the pooled client so a new proxy URL takes effect. */
+/** Test seam — drops the pooled clients so a new proxy URL takes effect. */
 export function resetImpersonatedClient(): void {
-  sharedSession = null;
+  sessions.clear();
+}
+
+/** The scraper's view of the pool: the session in use, and a way off a dead exit. */
+interface Route {
+  session: Session;
+  /** Bench the current exit and move to the next untried country; false when none is left. */
+  failover(): Promise<boolean>;
+  hasNext(): boolean;
+}
+
+type ImpitCtor = new (opts: Record<string, unknown>) => ImpitLike;
+
+async function loadImpit(): Promise<ImpitCtor | null> {
+  try {
+    return (await import('impit') as unknown as { Impit: ImpitCtor }).Impit;
+  } catch (err) {
+    console.warn(`[proxy:impit] not available: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+/** Pooled session for one exit country, built and cookie-warmed on first use.
+ *  `warmRefused` is set when the warm-up itself hit a gateway tunnel refusal. */
+async function sessionFor(
+  Impit: ImpitCtor,
+  country: string,
+): Promise<{ session: Session; warmRefused: boolean } | null> {
+  const cfg = proxyConfig(country);
+  if (!cfg) return null;
+  const pooled = sessions.get(cfg.url);
+  if (pooled) return { session: pooled, warmRefused: false };
+
+  // Do not add Proxy-Cheap `_session-`: that suffix 500s CONNECT (2026-08-14).
+  const client = new Impit({
+    browser: 'chrome',
+    proxyUrl: cfg.url,
+    ignoreTlsErrors: true,
+  });
+  const jar = new CookieJar();
+  console.log(`[proxy:impit] chrome TLS via residential proxy${country ? ` (${country})` : ''}`);
+  try {
+    // Bounded like every other fetch here: a stalled warmup would hang
+    // scrape creation with no error (the catch below only sees failures).
+    const warm = await client.fetch('https://www.tiktok.com/', {
+      headers: { 'User-Agent': CHROME_UA, Accept: 'text/html' },
+      signal: AbortSignal.timeout(IMPIT_FETCH_TIMEOUT_MS),
+    });
+    jar.absorb(warm.headers);
+    // Cookies live in headers; the body is ~1-2MB we never read. Cancel it.
+    await warm.body?.cancel().catch(() => {});
+  } catch (err) {
+    // A dead pool is not worth pooling; anything else only costs us the
+    // cookies, and the first API call can still sign.
+    if (isTunnelRefusal(err)) return { session: { country, cfgUrl: cfg.url, client, jar }, warmRefused: true };
+  }
+  const session: Session = { country, cfgUrl: cfg.url, client, jar };
+  sessions.set(cfg.url, session);
+  return { session, warmRefused: false };
+}
+
+async function openRoute(Impit: ImpitCtor): Promise<Route | null> {
+  const tried = new Set<string>();
+  let current: Session | null = null;
+
+  const nextCountries = () => exitCountryOrder().filter(c => !tried.has(c) && proxyConfig(c));
+
+  // Start on the first live exit. A warm-up the gateway refuses benches that
+  // country and moves on, so a dead pool costs one probe, not every job.
+  for (const country of nextCountries()) {
+    tried.add(country);
+    const got = await sessionFor(Impit, country);
+    if (!got) continue;
+    if (got.warmRefused) {
+      console.warn(`[proxy:impit] exit ${country || '(unpinned)'} refused the tunnel, trying the next country`);
+      markExitDead(country);
+      current ??= got.session;
+      continue;
+    }
+    current = got.session;
+    break;
+  }
+  if (!current) return null;
+
+  const route: Route = {
+    session: current,
+    hasNext: () => nextCountries().length > 0,
+    async failover() {
+      markExitDead(route.session.country);
+      for (const country of nextCountries()) {
+        tried.add(country);
+        const got = await sessionFor(Impit, country);
+        if (!got) continue;
+        console.warn(`[proxy:impit] exit ${route.session.country || '(unpinned)'} refused the tunnel, failing over to ${country || '(unpinned)'}`);
+        route.session = got.session;
+        if (got.warmRefused) { markExitDead(country); continue; }
+        return true;
+      }
+      return false;
+    },
+  };
+  return route;
+}
+
+/** One request, failing over across exit countries on a gateway tunnel refusal.
+ *  Headers are rebuilt per exit so the cookie jar follows the session. */
+async function fetchRouted(
+  route: Route,
+  url: string,
+  headers: Record<string, string>,
+): Promise<{ res: Response; jar: CookieJar }> {
+  for (;;) {
+    const { client, jar } = route.session;
+    const hdrs = { ...headers };
+    const cookie = jar.header();
+    if (cookie) hdrs.Cookie = cookie;
+    try {
+      const res = await fetchThrough(client, url, hdrs, undefined, !route.hasNext());
+      return { res, jar };
+    } catch (err) {
+      if (!isTunnelRefusal(err) || !(await route.failover())) throw err;
+    }
+  }
 }
 
 /**
@@ -214,7 +342,7 @@ export async function readBody(
   return { raw, bytes, stopped };
 }
 
-function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
+function makeHttp(route: Route): TikTokHttp {
   async function once(
     url: string,
     headers: Record<string, string> | undefined,
@@ -226,11 +354,8 @@ function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
       'Accept-Language': 'en-US,en;q=0.9',
       ...(headers ?? {}),
     };
-    const cookie = jar.header();
-    if (cookie) hdrs.Cookie = cookie;
-
     const signed = signTikTokUrl(url, hdrs['User-Agent'] ?? CHROME_UA);
-    const res = await fetchThrough(client, signed, hdrs);
+    const { res, jar } = await fetchRouted(route, signed, hdrs);
     jar.absorb(res.headers);
     const { raw, bytes } = await readBody(res, res.ok ? stopWhen : undefined);
     meterBytes(wireBytes(res.headers, raw, bytes));
@@ -252,7 +377,7 @@ function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
       console.warn('[proxy:impit] WAF page but puzzle unsolved');
       return first;
     }
-    jar.apply(cookies);
+    route.session.jar.apply(cookies);
     console.log(`[proxy:impit] solved WAF (${cookies.map(c => c.name).join(',')}), retrying`);
     return once(url, headers, maxBytes, stopWhen);
   }
@@ -268,11 +393,9 @@ function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
       Accept: 'video/mp4,video/*,*/*',
       ...(headers ?? {}),
     };
-    const cookie = jar.header();
-    if (cookie) hdrs.Cookie = cookie;
     // CDN URLs are not /api/ — signTikTokUrl is a no-op, but skip it anyway
     // so we never mutate a signed playAddr query string.
-    const res = await fetchThrough(client, url, hdrs);
+    const { res, jar } = await fetchRouted(route, url, hdrs);
     jar.absorb(res.headers);
     const raw = Buffer.from(await res.arrayBuffer());
     const truncated = raw.length > maxBytes;
@@ -296,42 +419,9 @@ function makeHttp(client: ImpitLike, jar: CookieJar): TikTokHttp {
 }
 
 export async function createImpersonatedHttp(): Promise<TikTokHttp | null> {
-  const cfg = proxyConfig();
-  if (!cfg) return null;
-
-  if (sharedSession && sharedSession.cfgUrl === cfg.url) {
-    return makeHttp(sharedSession.client, sharedSession.jar);
-  }
-
-  let Impit: new (opts: Record<string, unknown>) => ImpitLike;
-  try {
-    ({ Impit } = await import('impit') as unknown as { Impit: new (opts: Record<string, unknown>) => ImpitLike });
-  } catch (err) {
-    console.warn(`[proxy:impit] not available: ${(err as Error).message}`);
-    return null;
-  }
-
-  // Do not add Proxy-Cheap `_session-`: that suffix 500s CONNECT (2026-08-14).
-  const client = new Impit({
-    browser: 'chrome',
-    proxyUrl: cfg.url,
-    ignoreTlsErrors: true,
-  });
-  const jar = new CookieJar();
-  console.log('[proxy:impit] chrome TLS via residential proxy');
-  try {
-    // Bounded like every other fetch here: a stalled warmup would hang
-    // scrape creation with no error (the catch below only sees failures).
-    const warm = await client.fetch('https://www.tiktok.com/', {
-      headers: { 'User-Agent': CHROME_UA, Accept: 'text/html' },
-      signal: AbortSignal.timeout(IMPIT_FETCH_TIMEOUT_MS),
-    });
-    jar.absorb(warm.headers);
-    // Cookies live in headers; the body is ~1-2MB we never read. Cancel it.
-    await warm.body?.cancel().catch(() => {});
-  } catch {
-    // first API call can still sign; cookies just help
-  }
-  sharedSession = { cfgUrl: cfg.url, client, jar };
-  return makeHttp(client, jar);
+  if (!proxyConfig(exitCountryOrder()[0])) return null;
+  const Impit = await loadImpit();
+  if (!Impit) return null;
+  const route = await openRoute(Impit);
+  return route ? makeHttp(route) : null;
 }
