@@ -27,6 +27,11 @@
 //     account costs one tab page.
 //   * Both pages stop reading once the blob we need has closed (~70% of the
 //     document).
+//   * Login walls are per exit IP (SLA-1753: one residential IP 302s to
+//     /accounts/login/?...&is_from_rle, the next serves the tab). So every
+//     page goes out on a fresh tunnel (a pooled retry would reuse the walled
+//     IP), and redirects are not followed: the 302 is ~0 bytes, the login
+//     page it points at is ~445KB.
 // ---------------------------------------------------------------------------
 
 import type { NormalizedVideo } from '../../normalizers.js';
@@ -48,7 +53,8 @@ export interface InstagramHttpBufferResult {
 
 /** Pluggable transport: tests inject fixtures, production goes through the proxy. */
 export interface InstagramHttp {
-  getText(url: string, opts?: { stopAfter?: string }): Promise<InstagramHttpResult>;
+  /** `profilePage`: also stop at `</head>` when the handle does not exist. */
+  getText(url: string, opts?: { stopAfter?: string; profilePage?: boolean }): Promise<InstagramHttpResult>;
   getBuffer(url: string, maxBytes: number): Promise<InstagramHttpBufferResult>;
 }
 
@@ -59,6 +65,11 @@ const IG_ID_EPOCH_MS = 1314220021721;
 
 /** Pages are ~650KB; the blobs we read close by ~510KB. */
 const PAGE_MAX_BYTES = 1024 * 1024;
+
+/** Tab attempts. A walled attempt costs a 302 and a handshake, not a page. */
+export const INSTAGRAM_TAB_ATTEMPTS = 5;
+/** Reel page attempts. */
+export const INSTAGRAM_REEL_ATTEMPTS = 3;
 
 /** The Reels tab only ever yields this many items logged out. */
 export const INSTAGRAM_TAB_PAGE_SIZE = 12;
@@ -79,8 +90,13 @@ const DOCUMENT_HEADERS: Record<string, string> = {
   'Sec-Fetch-Site': 'none',
 };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms));
+let sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
+
+/** Test seam — swaps the retry/pacing sleep; returns the previous one. */
+export function setInstagramSleep(fn: (ms: number) => Promise<void>): (ms: number) => Promise<void> {
+  const prev = sleep;
+  sleep = fn;
+  return prev;
 }
 
 /** True once `marker` appeared and the script element holding it has closed. */
@@ -89,14 +105,29 @@ export function blobClosed(text: string, marker: string): boolean {
   return at >= 0 && text.indexOf('</script>', at) > at;
 }
 
+/**
+ * A profile page whose `<head>` closed without og:description is Instagram's
+ * shell for a handle that does not exist: 200, ~540KB, no data blobs (probed
+ * 2026-11-28). A real profile has og:description ~10KB in.
+ */
+export function profileMissing(text: string): boolean {
+  const head = text.indexOf('</head>');
+  return head >= 0 && !text.slice(0, head).includes('og:description');
+}
+
 export const proxyInstagramHttp: InstagramHttp = {
   async getText(url, opts) {
     const marker = opts?.stopAfter;
+    const profilePage = Boolean(opts?.profilePage);
     const r = await proxyFetch(url, {
       headers: DOCUMENT_HEADERS,
       maxBytes: PAGE_MAX_BYTES,
-      stopWhen: marker ? (t) => blobClosed(t, marker) : undefined,
+      stopWhen: marker || profilePage
+        ? (t) => (marker ? blobClosed(t, marker) : false) || (profilePage && profileMissing(t))
+        : undefined,
       timeoutMs: 30_000,
+      freshExit: true,
+      redirect: 'manual',
     });
     return { status: r.status, ok: r.ok, text: r.text, bytes: r.bytes };
   },
@@ -400,21 +431,35 @@ export function normalizeReel(
 
 // --- fetchers ------------------------------------------------------------------
 
+interface PageOptions {
+  stopAfter: string;
+  attempts: number;
+  profilePage?: boolean;
+  /** Every attempt's http status, for the log line. */
+  statuses?: number[];
+  /** Stop retrying: the failed answer is final. */
+  giveUp?: (r: { text: string; status: number }) => boolean;
+}
+
 async function getPage(
   http: InstagramHttp,
   url: string,
   ok: (text: string) => boolean,
-  stopAfter: string,
-  attempts = 3,
+  opts: PageOptions,
 ): Promise<{ text: string; status: number } | null> {
+  const { attempts, statuses = [] } = opts;
   let last: { text: string; status: number } | null = null;
   for (let i = 0; i < attempts; i++) {
-    const r = await http.getText(url, { stopAfter });
+    const r = await http.getText(url, { stopAfter: opts.stopAfter, profilePage: opts.profilePage });
     last = { text: r.text, status: r.status };
+    statuses.push(r.status);
     if (r.ok && ok(r.text)) return last;
-    // 302 → login wall and dropped tunnels clear on a fresh exit IP; the
-    // gateway hands out a new one per connection.
-    if (i < attempts - 1) await sleep(500 + Math.random() * 1500);
+    if (opts.giveUp?.(last)) break;
+    // 302 → login wall and dropped tunnels clear on a fresh exit IP; every
+    // attempt opens its own tunnel (proxyInstagramHttp: freshExit), so a wall
+    // needs no cool-down, only the next IP.
+    const walled = r.status >= 300 && r.status < 400;
+    if (i < attempts - 1) await sleep(walled ? 100 + Math.random() * 300 : 500 + Math.random() * 1500);
   }
   return last && ok(last.text) ? last : null;
 }
@@ -442,13 +487,26 @@ export async function fetchCreatorReels(
     return { items: [], rawCount: 0, notices: [`"${query}" is not an Instagram username — pass @handle or an instagram.com profile URL`] };
   }
 
+  const statuses: number[] = [];
+  // Two exits agreeing the handle is gone is an answer, not a wall.
+  let missing = 0;
   const tab = await getPage(
     http,
     `${WEB_BASE}/${encodeURIComponent(username)}/reels/`,
     (t) => t.includes('polaris_clips_connection') || t.includes('"is_private":true'),
-    'polaris_clips_connection',
+    {
+      stopAfter: 'polaris_clips_connection',
+      attempts: INSTAGRAM_TAB_ATTEMPTS,
+      profilePage: true,
+      statuses,
+      giveUp: (r) => r.status === 200 && profileMissing(r.text) && ++missing >= 2,
+    },
   );
+  if (!tab && missing >= 2) {
+    return { items: [], rawCount: 0, notices: [`Instagram has no account @${username} — check the handle (renamed or deleted?)`] };
+  }
   if (!tab) {
+    console.warn(`[instagram] @${username} Reels tab not served after ${statuses.length} tries (http ${statuses.join(',')})`);
     return {
       items: [],
       rawCount: 0,
@@ -481,7 +539,7 @@ export async function fetchCreatorReels(
     const { r } = kept[i]!;
     let media: Record<string, any> | null = null;
     if (i < hydrateN) {
-      const p = await getPage(http, reelUrl(r.code), (t) => t.includes('xig_polaris_media') || t.includes(`"code":"${r.code}"`), 'xig_polaris_media', 2);
+      const p = await getPage(http, reelUrl(r.code), (t) => t.includes('xig_polaris_media') || t.includes(`"code":"${r.code}"`), { stopAfter: 'xig_polaris_media', attempts: INSTAGRAM_REEL_ATTEMPTS });
       media = p ? parseReelPage(p.text, r.code) : null;
       if (!media) missed++;
       if (i < hydrateN - 1) await sleep(300 + Math.random() * 700);
@@ -505,7 +563,7 @@ export async function fetchReelMedia(
 ): Promise<Record<string, any>> {
   const code = extractInstagramShortcode(url);
   if (!code) throw new Error(`Could not read an Instagram shortcode out of "${url}"`);
-  const page = await getPage(http, reelUrl(code), (t) => t.includes('xig_polaris_media') || t.includes(`"code":"${code}"`), 'xig_polaris_media');
+  const page = await getPage(http, reelUrl(code), (t) => t.includes('xig_polaris_media') || t.includes(`"code":"${code}"`), { stopAfter: 'xig_polaris_media', attempts: INSTAGRAM_REEL_ATTEMPTS });
   const media = page ? parseReelPage(page.text, code) : null;
   if (!media) {
     throw new Error(`Instagram Reel page had no media for ${code} (http=${page?.status ?? 0}) — the post may be deleted, private, or login-walled`);

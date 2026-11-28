@@ -24,7 +24,9 @@ import {
 import { extractHandle, extractVideoId, listPlayableVariants, pickSmallestVariant, resolvePlayableVideo } from './proxy-adapter.js';
 import { extractSlideshowImages, slideshowKeysFromRaw, videoFromWatchHtml } from './tiktok-web.js';
 import { slideshowPath } from '../storage.js';
-import { parseProxyUrl, proxyFetch, resetDispatcher, withStickySession } from './proxy-http.js';
+import {
+  exitCountryOrder, isTunnelRefusal, parseProxyUrl, proxyCountries, proxyFetch, resetDispatcher, withStickySession,
+} from './proxy-http.js';
 import {
   createTimeFromItemId,
   challengeIdFromFrontity,
@@ -185,6 +187,85 @@ describe('parseProxyUrl', () => {
     expect(parseProxyUrl('user:secret_country-DE@gateway.example.com:8080')?.password).toBe('secret_country-DE');
     process.env.SCRAPER_PROXY_COUNTRY = '';
     expect(parseProxyUrl('user:secret@gateway.example.com:8080')?.password).toBe('secret');
+  });
+});
+
+describe('proxy exit failover (SLA-1753)', () => {
+  const REAL_FETCH = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = REAL_FETCH; });
+
+  const gatewayRefusal = () => new Response('bad gateway', { status: 502, headers: { 'proxy-message': 'Upstream connection failed' } });
+
+  function recordingFetch(answer: (proxy: string) => Response) {
+    const calls: Array<{ proxy: string; headers: Record<string, string>; redirect: unknown }> = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit & { proxy?: string }) => {
+      const proxy = String(init?.proxy ?? '');
+      calls.push({ proxy, headers: (init?.headers ?? {}) as Record<string, string>, redirect: init?.redirect });
+      return answer(proxy);
+    }) as unknown as typeof fetch;
+    return calls;
+  }
+
+  test('SCRAPER_PROXY_COUNTRY is an ordered list; unset means US then GB', () => {
+    expect(proxyCountries()).toEqual(['US', 'GB']);
+    process.env.SCRAPER_PROXY_COUNTRY = 'GB, DE,GB';
+    expect(proxyCountries()).toEqual(['GB', 'DE']);
+    expect(parseProxyUrl('user:secret@gateway.example.com:8080')?.password).toBe('secret_country-GB');
+    process.env.SCRAPER_PROXY_COUNTRY = '';
+    expect(proxyCountries()).toEqual(['']);
+  });
+
+  test('only a gateway-side refusal counts as a dead tunnel', () => {
+    expect(isTunnelRefusal(gatewayRefusal())).toBe(true);
+    expect(isTunnelRefusal(new Response('', { status: 502 }))).toBe(false);
+    expect(isTunnelRefusal(new Response('', { status: 302, headers: { 'proxy-message': 'x' } }))).toBe(false);
+    expect(isTunnelRefusal(new TypeError('fetch failed', { cause: new Error('Proxy response (502) !== 200 when HTTP Tunneling') }))).toBe(true);
+    expect(isTunnelRefusal(new Error('Proxy rejected the CONNECT tunnel with status code 502.'))).toBe(true);
+    expect(isTunnelRefusal(new Error('ECONNRESET'))).toBe(false);
+  });
+
+  test('a refused US tunnel fails over to GB, and US sits out the cooldown', async () => {
+    process.env.SCRAPER_PROXY_URL = 'user:secret@gateway.example.com:8080';
+    const calls = recordingFetch((proxy) => proxy.includes('_country-US') ? gatewayRefusal() : new Response('ok', { status: 200 }));
+
+    const first = await proxyFetch('https://www.instagram.com/x/reels/');
+    expect(first.status).toBe(200);
+    expect(calls.map(c => c.proxy.match(/_country-(\w+)/)?.[1])).toEqual(['US', 'GB']);
+    expect(exitCountryOrder()).toEqual(['GB', 'US']);
+
+    calls.length = 0;
+    await proxyFetch('https://www.instagram.com/y/reels/');
+    expect(calls.map(c => c.proxy.match(/_country-(\w+)/)?.[1])).toEqual(['GB']);
+    expect(exitCountryOrder(Date.now() + 6 * 60_000)).toEqual(['US', 'GB']);
+  });
+
+  test('an origin 502 is returned as-is, not failed over', async () => {
+    process.env.SCRAPER_PROXY_URL = 'user:secret@gateway.example.com:8080';
+    const calls = recordingFetch(() => new Response('upstream', { status: 502 }));
+    const r = await proxyFetch('https://www.instagram.com/x/reels/');
+    expect(r.status).toBe(502);
+    expect(calls).toHaveLength(1);
+  });
+
+  test('the last country refusing returns its 502 instead of throwing', async () => {
+    process.env.SCRAPER_PROXY_URL = 'user:secret@gateway.example.com:8080';
+    const calls = recordingFetch(() => gatewayRefusal());
+    const r = await proxyFetch('https://www.instagram.com/x/reels/');
+    expect(r.status).toBe(502);
+    expect(calls).toHaveLength(2);
+  });
+
+  test('freshExit closes the tunnel; redirect passes through', async () => {
+    process.env.SCRAPER_PROXY_URL = 'user:secret@gateway.example.com:8080';
+    const calls = recordingFetch(() => new Response(null, { status: 302, headers: { location: '/accounts/login/' } }));
+    const r = await proxyFetch('https://www.instagram.com/x/reels/', { freshExit: true, redirect: 'manual' });
+    expect(r.status).toBe(302);
+    expect(calls[0]!.headers.Connection).toBe('close');
+    expect(calls[0]!.redirect).toBe('manual');
+
+    await proxyFetch('https://www.tiktok.com/@x');
+    expect(calls[1]!.headers.Connection).toBeUndefined();
+    expect(calls[1]!.redirect).toBe('follow');
   });
 });
 

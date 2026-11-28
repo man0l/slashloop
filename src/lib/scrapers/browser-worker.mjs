@@ -39,7 +39,8 @@ function parseProxyUrl(raw) {
   let password = u.password ? decodeURIComponent(u.password) : undefined;
   // Proxy-Cheap encodes geo in the password (`_country-US`). A random
   // exit in IN/CN/HK serves TikTok's discontinued /in/about page.
-  const country = (process.env.SCRAPER_PROXY_COUNTRY ?? 'US').trim();
+  // `US,GB` is a failover list for proxy-http; the browser pins the first.
+  const country = (process.env.SCRAPER_PROXY_COUNTRY ?? 'US').split(/[\s,]+/).find(Boolean) ?? '';
   if (password && country && !/_country-/i.test(password)) {
     password = `${password}_country-${country}`;
   }
